@@ -244,19 +244,14 @@ const CONNECT_DIRECTORY_TABS = (["people", "advisors", "nearby"] as const).map(
 );
 
 /**
- * Which half of the directory each tab pages through.
+ * Which directory audience each tab pages through.
  *
- * The split is a server-side audience rather than a filter over the rendered
- * page, because a filter applied after the page is cut can only ever subtract
- * from a page that was already chosen wrongly: pages of uneven size, and every
- * advisor past the first one unreachable.
- *
- * People and Advisors partition the directory, so putting advisors in their own
- * tab hides nobody -- everyone findable before is still findable, in exactly
- * one of the two.
+ * People searches the full directory, including verified RIAs. RIAs narrows
+ * that directory on the server before pagination; filtering a rendered page
+ * could leave later advisers unreachable.
  */
 const CONNECT_TAB_AUDIENCE: Record<ConnectTab, DirectoryAudience> = {
-  people: "people",
+  people: "all",
   advisors: "ria",
   // Around you runs its own directories; the value is never used for it.
   nearby: "all",
@@ -1113,13 +1108,10 @@ export default function ConnectPageClient() {
     connectionsRefreshingFirstPage,
     refreshConnectionsFirstPage,
   ]);
-  // Searching a name and finding nobody has one likely explanation the
-  // directory cannot act on: that person has not joined yet. Offered on People
-  // only -- People searches the whole of One, so "not here" really does mean
-  // "not on One". A name missing from RIAs means their adviser profile is not
-  // verified, and one missing from Around you means they are not nearby;
-  // neither is fixed by an app link, and offering one there would send someone
-  // to invite a person who is already a member.
+  // An unmatched name can be a typo or someone who has not joined. Offer a
+  // shareable invite on People, without claiming the person lacks an account.
+  // An unmatched RIA or nearby search says nothing about membership, so an
+  // invite would be especially misleading there.
   //
   // Resolved once, not inside the handler: an invite the build cannot produce
   // a working link for is not offered at all, rather than rendered as a button
@@ -2051,7 +2043,7 @@ export default function ConnectPageClient() {
           id: "people",
           title: "People",
           purpose:
-            "Search everyone you could connect with, and manage existing connections.",
+            "Search One profiles by name, and manage existing connections.",
         },
         {
           id: "advisors",
@@ -3460,7 +3452,7 @@ export default function ConnectPageClient() {
                                         icon={Share2}
                                         iconTone="blue"
                                         title="Invite them to One"
-                                        description="Send them the app. You can connect once they join."
+                                        description="Share an invite link with them."
                                         density="compact"
                                         onClick={() => {
                                           void handleInviteToOne();
