@@ -4906,7 +4906,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
                 density="compact"
                 leading={<LinkIdentityMark />}
                 title="Link is live"
-                description="Active, but unavailable on this device."
+                description="People who have this link can still see your location until it expires. Stop it to create a new link."
               />
               <div className="px-4 pb-4 pt-2">
                 <button
