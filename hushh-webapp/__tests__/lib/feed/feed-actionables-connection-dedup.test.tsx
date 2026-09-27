@@ -186,10 +186,14 @@ describe("useFeedActionables — connection request de-duplication", () => {
 
     expect(row.id).toBe(`connection:${CONNECTION_ID}`);
     expect(row.person?.photoUrl).toBe("https://example.test/divya.png");
+    // Report (Google Play user-generated content policy) sits before Decline,
+    // away from the primary Confirm; both destructive actions need a 2nd tap.
     expect(row.actions.map((action) => action.key)).toEqual([
+      "report",
       "decline",
       "confirm",
     ]);
+    expect(row.actions.find((action) => action.key === "report")?.confirm).toBe(true);
   });
 
   it("still renders ordinary consent requests from the consent lane", () => {

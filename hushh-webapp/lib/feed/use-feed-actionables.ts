@@ -56,6 +56,7 @@ import {
   locationConsentSummary,
 } from "@/lib/consent/location-consent";
 import { OneLocationService } from "@/lib/one-location/service";
+import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import type {
   OneLocationAccessRequest,
   OneLocationCircleMemberInvite,
@@ -832,6 +833,29 @@ export function useFeedActionables(): UseFeedActionablesResult {
               },
             ]
           : [
+              {
+                // Google Play user-generated content policy: report the
+                // request (and its message) to the Hussh team. The server also
+                // declines it and blocks the sender from asking again.
+                key: "report",
+                label: "Report",
+                tone: "danger",
+                disabled: !userId,
+                confirm: true,
+                run: async () => {
+                  const idToken = await user?.getIdToken();
+                  if (!idToken) return;
+                  await ConnectionsService.report({
+                    idToken,
+                    requestId: request.id,
+                    reason: "inappropriate",
+                  });
+                  toast.success("Reported. This person can't send you another request.");
+                  CacheSyncService.onConnectionCapabilityMutated(userId);
+                  notifyFeedActionResolved();
+                  await connectionsRefresh({ force: true });
+                },
+              },
               {
                 key: "decline",
                 label: "Decline",

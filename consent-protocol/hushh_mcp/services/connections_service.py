@@ -139,6 +139,11 @@ def _capability_description(capability_key: str | None) -> str:
     return "A connection capability selected by the other person."
 
 
+# Why a person reported a connection request. A closed enum, never free text:
+# the request's own message is already stored and is what the team reviews.
+CONNECTION_REPORT_REASONS = ("spam", "harassment", "inappropriate", "impersonation", "other")
+
+
 class ConnectionsError(RuntimeError):
     def __init__(self, code: str, message: str, *, status_code: int = 400) -> None:
         super().__init__(message)
@@ -1224,7 +1229,6 @@ class ConnectionsService:
             raise ConnectionsError(
                 "CONNECTION_NO_SELF", "You cannot connect with yourself.", status_code=422
             )
-
         # Direct identifiers are selectors, not authority. A scope-bearing
         # request must pass the same owner-controlled directory boundary as
         # discovery, otherwise a caller who knows an RIA user id could
@@ -1389,16 +1393,33 @@ class ConnectionsService:
                         status_code=409,
                     )
 
+            # The insert is also the block check: a person who declined-and-
+            # blocked this requester (Google Play user-generated content
+            # policy) gets no new request, and no extra round trip is added.
             row = self._execute_one(
                 """
                 INSERT INTO connection_requests (
                   requester_user_id, addressee_user_id, status, message, created_at, updated_at
                 )
-                VALUES (:requester, :addressee, 'pending', :message, NOW(), NOW())
+                SELECT :requester, :addressee, 'pending', :message, NOW(), NOW()
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM connection_requests blocked
+                  WHERE blocked.requester_user_id = :requester
+                    AND blocked.addressee_user_id = :addressee
+                    AND blocked.status = 'rejected'
+                    AND blocked.metadata ->> 'blocked_by' = :addressee
+                )
                 RETURNING id
                 """,
                 {"requester": requester_user_id, "addressee": target, "message": message},
             )
+            if not row:
+                # Neutral wording: a blocked person is not told they were blocked.
+                raise ConnectionsError(
+                    "CONNECTION_UNAVAILABLE",
+                    "You can't send a request to this person.",
+                    status_code=403,
+                )
             # All child proposals and their immutable events commit with the
             # parent request. The nudge stays outside this transaction.
             request_id = str((row or {}).get("id") or "")
@@ -2734,8 +2755,79 @@ class ConnectionsService:
         self._mirror_trusted_edge(peer_user_id, user_id)
         return {"status": "connected", "connectionId": (conn or {}).get("id")}
 
-    def reject_request(self, user_id: str, request_id: str) -> dict[str, Any]:
+    def report_request(self, user_id: str, request_id: str, *, reason: str) -> dict[str, Any]:
+        """Report a connection request (Google Play user-generated content
+        policy). The addressee's report also declines and blocks the sender."""
         user_id = (user_id or "").strip()
+        normalized = str(reason or "").strip().lower()
+        if normalized not in CONNECTION_REPORT_REASONS:
+            raise ConnectionsError(
+                "CONNECTION_REPORT_REASON_INVALID",
+                "Choose a reason for the report.",
+                status_code=422,
+            )
+        req = self._load_request(request_id)
+        requester = str(req.get("requester_user_id") or "")
+        addressee = str(req.get("addressee_user_id") or "")
+        if user_id not in (requester, addressee):
+            raise ConnectionsError(
+                "CONNECTION_NOT_PARTICIPANT",
+                "Only a person on this request can report it.",
+                status_code=403,
+            )
+        reported_user = requester if user_id == addressee else addressee
+        # The team's review queue: query Cloud Logging for this event, then read
+        # the request row (and its message) it points to.
+        logger.warning(
+            "one_connection_request_reported reason=%s reporter=%s reported=%s request=%s",
+            normalized,
+            user_id,
+            reported_user,
+            req.get("id"),
+        )
+        blocked = False
+        if user_id == addressee and str(req.get("status") or "") in ("pending", "rejected"):
+            self.reject_request(user_id, request_id, block=True)
+            blocked = True
+        return {
+            "reported": True,
+            "reason": normalized,
+            "blocked": blocked,
+            "requestId": req.get("id"),
+        }
+
+    def reject_request(
+        self, user_id: str, request_id: str, *, block: bool = False
+    ) -> dict[str, Any]:
+        """Decline a request. ``block`` also stops that person from sending this
+        user another request (recorded on the request's metadata)."""
+        user_id = (user_id or "").strip()
+        if block:
+            existing = self._load_request(request_id)
+            if (
+                str(existing.get("addressee_user_id")) == user_id
+                and str(existing.get("status") or "") == "rejected"
+            ):
+                # Blocking after an earlier plain decline.
+                with self._transaction():
+                    self._execute_one(
+                        """
+                        UPDATE connection_requests
+                        SET metadata = COALESCE(metadata, '{}'::jsonb)
+                              || jsonb_build_object('blocked_by', :blocker, 'blocked_at', NOW()),
+                            updated_at = NOW()
+                        WHERE id = :id AND addressee_user_id = :blocker
+                        RETURNING id
+                        """,
+                        {"id": existing.get("id"), "blocker": user_id},
+                    )
+                logger.warning(
+                    "one_connection_blocked blocker=%s blocked=%s request=%s",
+                    user_id,
+                    existing.get("requester_user_id"),
+                    existing.get("id"),
+                )
+                return {"status": "rejected", "requestId": existing.get("id"), "blocked": True}
         with self._transaction():
             req = self._load_request(request_id, for_update=True)
             if str(req.get("addressee_user_id")) != user_id:
@@ -2754,11 +2846,15 @@ class ConnectionsService:
             updated_request = self._execute_one(
                 """
                 UPDATE connection_requests
-                SET status = 'rejected', responded_at = NOW(), updated_at = NOW()
+                SET status = 'rejected', responded_at = NOW(), updated_at = NOW(),
+                    metadata = CASE WHEN :block
+                      THEN COALESCE(metadata, '{}'::jsonb)
+                           || jsonb_build_object('blocked_by', :blocker, 'blocked_at', NOW())
+                      ELSE metadata END
                 WHERE id = :id AND status = 'pending'
                 RETURNING id
                 """,
-                {"id": req.get("id")},
+                {"id": req.get("id"), "block": bool(block), "blocker": user_id},
             )
             if not updated_request:
                 raise ConnectionsError(
@@ -2790,6 +2886,14 @@ class ConnectionsService:
             accepted=False,
             connection_request_id=source_request_id,
         )
+        if block:
+            logger.warning(
+                "one_connection_blocked blocker=%s blocked=%s request=%s",
+                user_id,
+                requester,
+                source_request_id,
+            )
+            return {"status": "rejected", "requestId": req.get("id"), "blocked": True}
         return {"status": "rejected", "requestId": req.get("id")}
 
     def cancel_request(self, user_id: str, request_id: str) -> dict[str, Any]:
