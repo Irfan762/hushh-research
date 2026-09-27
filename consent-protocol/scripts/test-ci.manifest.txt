@@ -347,6 +347,8 @@ tests/services/test_location_nearby_visit_command_postgres.py
 # Agent Chat measurement instruments: AG-UI turn timing, the first-tool harness
 # and latency driver (offline math only), ADK EvalSet shape, conformance replay.
 tests/test_agui_turn_timing.py
+# Shutdown drain: a stream cut by SIGTERM still ends with a terminal RUN_ERROR.
+tests/test_agent_chat_drain.py
 tests/test_encrypted_adk_session_service.py
 tests/scripts/test_eval_one_first_tool.py
 tests/scripts/test_eval_pkm_structure_agent.py

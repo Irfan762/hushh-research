@@ -76,4 +76,7 @@ EXPOSE 8080
 
 # Run FastAPI with uvicornWorker via gunicorn
 # Cloud Run sets PORT env var, default to 8080
-CMD ["sh", "-c", "exec gunicorn server:app -w 2 -k uvicorn.workers.UvicornWorker --timeout 120 -b 0.0.0.0:${PORT:-8080}"]
+# Cloud Run sends SIGTERM and kills the container 10 s later. Keep gunicorn's
+# graceful shutdown (default 30 s) inside that window so workers stop on their
+# own terms: open agent-chat streams get their terminal event first.
+CMD ["sh", "-c", "exec gunicorn server:app -w 2 -c gunicorn.conf.py -k uvicorn.workers.UvicornWorker --timeout 120 --graceful-timeout 8 -b 0.0.0.0:${PORT:-8080}"]
