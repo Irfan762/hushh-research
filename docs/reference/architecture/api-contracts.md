@@ -826,7 +826,9 @@ the documented integration path for new clients.
 
 | Method | Path                       | Description                                                                                                         |
 | ------ | -------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| POST   | `/api/kai/support/message` | Send a profile-originated bug report, support request, or developer reachout through the Gmail-backed support inbox |
+| POST   | `/api/kai/support/message` | Firebase-authenticated support send from `one@hushh.ai` to the One inbox, with an internal support-lead BCC. Returns `accepted_by_provider` only after Gmail returns a receipt; known failure and uncertain delivery are distinct. The verified Firebase email, never client text, supplies Reply-To. No report body is persisted by this route. |
+
+`POST /api/account/welcome` is Firebase-authenticated and sends only a first-account welcome to the verified Firebase email. Existing-vault wrapper upsert and primary-method changes require both Firebase auth and a matching `X-Hushh-Consent` VAULT_OWNER bearer, like wrapper deletion. Committed passkey add/remove and existing-passphrase updates trigger a best-effort account notice from One; mail failure cannot roll back the vault change.
 
 #### Kai Analysis
 

@@ -55,10 +55,7 @@ import type {
   ConsentPendingLoadSurface,
 } from "@/lib/observability/events";
 import { resolveRouteId } from "@/lib/observability/route-map";
-import {
-  resolveRuntimeBackendUrl,
-  resolveRuntimeFrontendUrl,
-} from "@/lib/runtime/settings";
+import { resolveRuntimeBackendUrl } from "@/lib/runtime/settings";
 import { shouldSkipAuthMailForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
 import {
@@ -1741,49 +1738,21 @@ export class ApiService {
     });
   }
 
-  /**
-   * Ask the server to send a lifecycle mail through `hushh-mail-api`.
-   *
-   * Fire and forget by contract: the caller is a sign-in or a phone step, and
-   * neither may be delayed or failed by a mail. Every error resolves to `false`.
-   *
-   * `/api/auth/mail` is a Next.js route, so a native build — where `apiFetch`
-   * resolves against the Python backend — targets the web origin explicitly.
-   */
-  static async notifyAuthMail(
-    event:
-      "signed_in" | "signed_out" | "phone_conflict" | "capabilities_linked",
-    options?: {
-      phoneNumber?: string;
-      /** Currently connected capability ids; the server diffs these. */
-      capabilities?: string[];
-      /** Ids whose state was resolvable this pass. Absent ids are unknown, not absent. */
-      observed?: string[];
-      idToken?: string;
-    },
-  ): Promise<boolean> {
+  /** Ask the account authority for the first-account welcome; routine sign-ins skip. */
+  static async notifyFirstWelcome(options?: { idToken?: string }): Promise<boolean> {
     if (shouldSkipAuthMailForAutomation()) return false;
 
     try {
       const idToken = options?.idToken || (await this.getFirebaseToken());
       if (!idToken) return false;
 
-      const origin = Capacitor.isNativePlatform()
-        ? resolveRuntimeFrontendUrl()
-        : "";
-      const response = await apiFetch(`${origin}/api/auth/mail`, {
+      const response = await apiFetch("/api/account/welcome", {
         method: "POST",
         headers: { Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          event,
-          ...(options?.phoneNumber ? { phoneNumber: options.phoneNumber } : {}),
-          ...(options?.capabilities
-            ? { capabilities: options.capabilities }
-            : {}),
-          ...(options?.observed ? { observed: options.observed } : {}),
-        }),
       });
-      return response.ok;
+      if (!response.ok) return false;
+      const result = (await response.json().catch(() => null)) as { status?: string } | null;
+      return result?.status === "sent";
     } catch {
       return false;
     }

@@ -127,7 +127,6 @@ vi.mock("@/lib/services/api-service", () => ({
   ApiService: {
     getAccountSessionStatus: mocks.apiGetAccountSessionStatus,
     deleteSession: mocks.apiDeleteSession,
-    notifyAuthMail: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

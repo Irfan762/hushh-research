@@ -36,10 +36,6 @@
       "file": "app/api/app-config/review-mode/session/route.ts"
     },
     {
-      "template": "/api/auth/mail",
-      "file": "app/api/auth/mail/route.ts"
-    },
-    {
       "template": "/api/auth/session",
       "file": "app/api/auth/session/route.ts"
     },
@@ -9523,5 +9519,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "b1c6a7214be29922b912e18601c0ca60b309faf10aa07cace1927ea3922f44f8"
+  "content_sha256": "4bda38810daf39b39ab5e52d69989167d2fcd07174f55e32c4d9753c1b540497"
 }
