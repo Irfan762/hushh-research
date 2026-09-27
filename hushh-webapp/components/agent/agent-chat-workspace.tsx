@@ -312,11 +312,18 @@ import {
   getTextAttachmentTitle,
   mergePastedText,
   parseStoredTextAttachments,
+  PASTED_TEXT_ATTACHMENT_NAME,
   shouldCaptureLargePaste,
   type AgentTextAttachment,
   type PendingTextAttachment,
 } from "@/lib/agent/large-text-attachment";
 import { AgentMessageAttachments } from "@/components/agent/agent-message-attachments";
+import { AgentTextAttachmentViewButton } from "@/components/agent/agent-text-attachment-viewer";
+import {
+  findPendingAssistantTurn,
+  measureTranscriptReveal,
+  transcriptRevealScrollTop,
+} from "@/lib/agent/agent-chat-transcript-scroll";
 import {
   DRIVE_CHAT_RECOVERY_RETURN_EVENT,
   clearDriveChatRecovery,
@@ -2567,6 +2574,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
   const composerTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null);
+  // Everything the composer stacks over the transcript's bottom edge (queue,
+  // attachment chip, text box). Its top is where the visible transcript ends.
+  const composerStackRef = useRef<HTMLDivElement | null>(null);
   const composerExpandedRef = useRef(composerExpanded);
   composerExpandedRef.current = composerExpanded;
   const composerTransitionRectRef = useRef<DOMRect | null>(null);
@@ -3073,13 +3083,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
     const submittedTurn = scrollToSubmittedTurnRef.current;
     scrollToSubmittedTurnRef.current = false;
-    beginTranscriptProgrammaticScroll(
-      Math.max(0, transcript.scrollHeight - transcript.clientHeight),
+    // After a send the target is One's pending turn (the "One is preparing
+    // your response" row), not the end of the person's own prompt. Both it
+    // and the follow target are revealed ABOVE the composer overlay: a plain
+    // `scrollIntoView({ block: "end" })` lands inside the transcript's
+    // reserved bottom band, behind the composer, which is what hid the
+    // working indicator under a long prompt.
+    const target =
+      (submittedTurn ? findPendingAssistantTurn(transcript) : null) ?? messagesEnd;
+    const top = transcriptRevealScrollTop(
+      measureTranscriptReveal(transcript, target, composerStackRef.current),
     );
-    messagesEnd.scrollIntoView({
+    if (Math.abs(top - transcript.scrollTop) < 1) return;
+    beginTranscriptProgrammaticScroll(top);
+    transcript.scrollTo({
+      top,
       behavior: submittedTurn && !window.matchMedia("(prefers-reduced-motion: reduce)").matches
         ? "smooth" : "auto",
-      block: "end",
     });
   }, [
     beginTranscriptProgrammaticScroll,
@@ -6568,6 +6588,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     if ((!typedText.trim() && !attachmentText?.trim()) || isVoiceConnecting || voiceActive) {
       return;
     }
+    // Enter (form submit) and the Send button both land here, so both bring
+    // One's pending turn into view. The button used to call this directly
+    // and skip the marking, which lived only in the form's submit handler.
+    transcriptUserScrollRef.current = false;
+    scrollToSubmittedTurnRef.current = true;
     const selectedDriveFile = pendingDriveSearchSelectionRef.current;
     const driveSearchSelection = selectedDriveFile &&
       selectedDriveFile.ownerUid === user?.uid && isVaultUnlocked &&
@@ -6624,10 +6649,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (input.trim() || longPromptAttachment?.text.trim()) {
-      transcriptUserScrollRef.current = false;
-      scrollToSubmittedTurnRef.current = true;
-    }
     await submitComposerText();
   };
 
@@ -8574,6 +8595,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             )}
           >
             <div
+              ref={composerStackRef}
               className={cn(
                 "pointer-events-auto mx-auto w-full",
                 isCanonicalChatRoute
@@ -8706,7 +8728,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   ) : null}
                   {longPromptAttachment ? (
                     <div
-                      className="relative mb-2 rounded-[18px] border border-foreground/[0.12] bg-foreground/[0.045] p-3 pr-11 text-sm"
+                      className={cn(
+                        "relative mb-2 rounded-[18px] border border-foreground/[0.12] bg-foreground/[0.045] p-3 text-sm",
+                        longPromptAttachment.isExpanded ? "pr-11" : "pr-20",
+                      )}
                       data-testid="agent-chat-text-attachment"
                     >
                       <button
@@ -8736,6 +8761,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           </span>
                         </span>
                       </button>
+                      {/* Read the paste before sending without opening it for
+                        * editing. Hidden while it is open in the editor, which
+                        * already shows the live text. */}
+                      {!longPromptAttachment.isExpanded ? (
+                        <AgentTextAttachmentViewButton
+                          name={PASTED_TEXT_ATTACHMENT_NAME}
+                          text={longPromptAttachment.text}
+                          className="absolute right-10 top-2 h-8 w-8"
+                        />
+                      ) : null}
                       <Button
                         type="button"
                         size="icon"
