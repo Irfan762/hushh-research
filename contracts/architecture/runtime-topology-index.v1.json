@@ -664,6 +664,16 @@
       "primary_access_path": "atomic full-account deletion, old-revision-compatible actor/vault root deletion triggers, Firebase bearer verification, catalog-installed tombstone guards for every public scalar user_id, role-prefixed *_user_id/user_<role>_id, firebase_uid, and *_firebase_uid reference, and an indexed hash-only account-state presence preflight"
     },
     {
+      "data_class": "audit_regulated",
+      "exact_tables": [
+        "account_legal_acceptances"
+      ],
+      "id": "account_legal_acceptance",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "GET/POST /api/account/legal-acceptance (Firebase-authenticated, not vault-gated). The web and native app records acceptance at sign-in and after the Terms of Use or Privacy Policy version changes; reads return the latest acceptance of each document."
+    },
+    {
       "data_class": "personal_metadata",
       "exact_tables": [
         "actor_profiles",
@@ -5705,7 +5715,7 @@
     "action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
     "agent_registry": "f82115c2713ef5b9f8179fe00018e6837886a69a7fc97284b8da33f5c09de39b",
     "cache_manifest": "b8edb41e819d68f3de0c40ec9b971f214069786fe4d869ade00b24668c3b7b7e",
-    "data_plane": "ef618ad4a15306223705f996b02d5528f833b8e7f16acea173ad2eda03085148",
+    "data_plane": "4bd566a8d8d9030817966d292b1fda0b08f629e29f42aa1b9fd5a64fd9db4308",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "28931a57af05671c24af2a69e1c4f2476e5a8a69fde539dda68fcc0b978b2407",
     "route_index": "9c1d1649ac1b6118de6e394b09e596372feda71e6e52ee739cee07ea34bce5aa",
@@ -5724,6 +5734,6 @@
     "one_specialist_tools": 6,
     "physical_routes": 140,
     "semantic_routes": 14,
-    "table_families": 75
+    "table_families": 76
   }
 }

@@ -7,6 +7,7 @@ import { ArrowLeft, Shield } from "@/components/icons";
 import lightStyles from "./AuthStepLight.module.css";
 import { AuthService } from "@/lib/services/auth-service";
 import { ApiService } from "@/lib/services/api-service";
+import { LegalAcceptanceService } from "@/lib/services/legal-acceptance-service";
 import { useAuth } from "@/lib/firebase/auth-context";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
 import { SessionVerificationRecovery } from "@/components/auth/session-verification-recovery";
@@ -510,6 +511,7 @@ export function AuthStep({
         setNativeAuthState("authenticated");
         setNativeDataState("loaded");
         setNativeErrorCode(null);
+        void LegalAcceptanceService.recordSignInAcceptance(authenticatedUser);
         trackEvent("auth_succeeded", {
           action: "reviewer",
           result: "success",
@@ -697,6 +699,8 @@ export function AuthStep({
               result: "success",
             });
             void ApiService.notifyAuthMail("signed_in", { idToken });
+            // The sign-in screen states "By continuing you agree"; record it.
+            void LegalAcceptanceService.recordSignInAcceptance(authenticatedUser);
             if (growthJourney) {
               trackGrowthFunnelStepCompleted({
                 journey: growthJourney,
