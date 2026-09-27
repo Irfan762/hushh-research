@@ -561,28 +561,19 @@ export default function GmailInformationRequestsSection({
         });
       setPreference(nextPreference);
       if (nextPreference.monitoring_enabled && vaultOwnerToken) {
-        const [requests, activity] = await Promise.all([
-          GmailInformationRequestsService.list({
-            firebaseIdToken,
-            vaultOwnerToken,
-            limit: 100,
-          }),
-          GmailInformationRequestsService.list({
-            firebaseIdToken,
-            vaultOwnerToken,
-            limit: 100,
-            view: "activity",
-          }),
-        ]);
+        // The active queue is the first useful KYC surface. Activity is loaded
+        // only when its tab is opened, rather than making the KYC screen wait
+        // for two large independent list requests on every session entry.
+        const requests = await GmailInformationRequestsService.list({
+          firebaseIdToken,
+          vaultOwnerToken,
+          limit: 25,
+        });
         if (requestListVersion === requestListVersionRef.current) {
           setWorkflows(requests.workflows);
           setNextOffset(requests.next_offset);
           setTotalCount(requests.total_count);
         }
-        setActivityWorkflows(activity.workflows);
-        setActivityNextOffset(activity.next_offset);
-        setActivityTotalCount(activity.total_count);
-        setActivityLoaded(true);
       } else {
         setWorkflows([]);
         setNextOffset(null);
@@ -618,7 +609,6 @@ export default function GmailInformationRequestsSection({
       return false;
     }
     scanInFlightRef.current = true;
-    setLoading(true);
     setScanningInbox(true);
     setScannedCount(0);
     setError(null);
@@ -641,26 +631,23 @@ export default function GmailInformationRequestsSection({
         },
       });
       setScanSummary(scan);
-      const [requests, activity] = await Promise.all([
-        GmailInformationRequestsService.list({
-          firebaseIdToken,
-          vaultOwnerToken,
-          limit: 100,
-        }),
-        GmailInformationRequestsService.list({
-          firebaseIdToken,
-          vaultOwnerToken,
-          limit: 100,
-          view: "activity",
-        }),
-      ]);
-      setWorkflows(requests.workflows);
-      setNextOffset(requests.next_offset);
-      setTotalCount(requests.total_count);
-      setActivityWorkflows(activity.workflows);
-      setActivityNextOffset(activity.next_offset);
-      setActivityTotalCount(activity.total_count);
-      setActivityLoaded(true);
+      // Streamed request cards are durable before they reach the client. Keep
+      // them visible and reconcile only the active first page in the
+      // background; never make scan completion wait for a second full active
+      // list plus a hidden Activity list.
+      void GmailInformationRequestsService.list({
+        firebaseIdToken,
+        vaultOwnerToken,
+        limit: 25,
+      })
+        .then((requests) => {
+          setWorkflows((current) =>
+            requests.workflows.reduce(mergeWorkflow, current),
+          );
+          setNextOffset(requests.next_offset);
+          setTotalCount(requests.total_count);
+        })
+        .catch(() => undefined);
       return true;
     } catch (scanError) {
       setError(
@@ -676,7 +663,6 @@ export default function GmailInformationRequestsSection({
       }
       setScanningInbox(false);
       setScannedCount(null);
-      setLoading(false);
     }
   }, [idTokenProvider, vaultOwnerToken]);
 

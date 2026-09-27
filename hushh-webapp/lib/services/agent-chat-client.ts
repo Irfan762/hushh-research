@@ -622,7 +622,7 @@ export async function streamAgentChat(input: {
   let text = "";
   let failure: Error | null = null;
   let interrupted = false;
-  let intentionallyStoppedAtConfirmation = false;
+  let intentionallyStopped = false;
   let settleTerminalRun: (() => void) | null = null;
   const terminalRun = new Promise<void>((resolve) => {
     settleTerminalRun = resolve;
@@ -632,13 +632,25 @@ export async function streamAgentChat(input: {
     settleTerminalRun = null;
   };
   const stopAfterConfirmation = () => {
-    if (intentionallyStoppedAtConfirmation) return;
-    intentionallyStoppedAtConfirmation = true;
+    if (intentionallyStopped) return;
+    intentionallyStopped = true;
     interrupted = true;
     // A parked directive has no AG-UI interrupt to resume. The visible card
     // owns the next step, so leaving the model run alive would let it repeat
     // the action or append a second answer while the owner is deciding.
     handlers.onInterrupt?.({ conversationId: threadId });
+    finishTerminalRun();
+    agent.abortRun();
+  };
+  const stopAfterGmailInformationRequestDraft = () => {
+    if (intentionallyStopped) return;
+    intentionallyStopped = true;
+    interrupted = true;
+    // The model has already selected the source-bound tool and authored the
+    // editable reply. The browser has that body in the tool event and can
+    // immediately show the review card; a second model round only narrates
+    // that the draft exists.
+    handlers.onComplete?.({ conversationId: threadId });
     finishTerminalRun();
     agent.abortRun();
   };
@@ -882,6 +894,13 @@ export async function streamAgentChat(input: {
       );
       payload.raw.result = event.content;
       handlers.onToolResult?.(payload);
+      if (
+        toolName === "open_gmail_information_request_reply" &&
+        parseRecord(event.content)?.status === "draft_opened"
+      ) {
+        stopAfterGmailInformationRequestDraft();
+        return;
+      }
       const pendingIds = parsePendingConsentRequestIds(toolName, event.content);
       if (pendingIds.length > 0) {
         handlers.onPendingConsentRequests?.(pendingIds);
@@ -1113,7 +1132,7 @@ export async function streamAgentChat(input: {
       finishTerminalRun();
     },
     onRunErrorEvent: ({ event }) => {
-      if (intentionallyStoppedAtConfirmation) {
+      if (intentionallyStopped) {
         finishTerminalRun();
         return;
       }
@@ -1122,7 +1141,7 @@ export async function streamAgentChat(input: {
       finishTerminalRun();
     },
     onRunFailed: ({ error }) => {
-      if (intentionallyStoppedAtConfirmation) {
+      if (intentionallyStopped) {
         finishTerminalRun();
         return;
       }

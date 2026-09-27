@@ -47,6 +47,12 @@ describe("vault-backed custom connector configuration", () => {
     expect(storage.loadDomainSnapshot).toHaveBeenCalledWith({ ...access, domain: "runtime_secrets", force: true });
     expect(storage.loadDomainData).not.toHaveBeenCalled();
   });
+  it("uses the unlocked-session cache when a caller does not require a fresh connector snapshot", async () => {
+    storage.loadDomainData.mockResolvedValue({ connectors: { [record.connectorId]: JSON.stringify(record) } });
+    expect(await loadCustomConnectorSnapshot(access)).toEqual({ configurations: [record], invalid: [] });
+    expect(storage.loadDomainData).toHaveBeenCalledWith({ ...access, domain: "runtime_secrets" });
+    expect(storage.loadDomainSnapshot).not.toHaveBeenCalled();
+  });
   it.each([null, {}, { connectors: {} }])("allows a fresh Chat catalog when settings are absent: %j", async data => {
     storage.loadDomainSnapshot.mockResolvedValue({ data });
     const configurations = await loadCustomConnectorConfigurations(access, true);

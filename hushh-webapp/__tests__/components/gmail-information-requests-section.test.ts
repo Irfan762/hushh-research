@@ -491,7 +491,7 @@ describe("personal Gmail information-request scope boundary", () => {
     );
   });
 
-  it("loads verification activity with the request queue and keeps it separate", async () => {
+  it("defers verification activity until its tab is opened", async () => {
     gmailServiceMocks.getPreference.mockResolvedValue({
       user_id: "owner",
       monitoring_enabled: true,
@@ -517,20 +517,22 @@ describe("personal Gmail information-request scope boundary", () => {
     );
 
     await screen.findByRole("tab", { name: "Active requests" });
+    expect(gmailServiceMocks.list).not.toHaveBeenCalledWith(
+      expect.objectContaining({ view: "activity" }),
+    );
     const activity = screen.getByRole("tab", { name: /^Activity/ });
-    fireEvent.click(activity);
     fireEvent.click(activity);
 
     await waitFor(() =>
       expect(gmailServiceMocks.list).toHaveBeenCalledWith(
-        expect.objectContaining({ view: "activity", limit: 100 }),
+        expect.objectContaining({ view: "activity", limit: 25 }),
       ),
     );
     expect(
       gmailServiceMocks.list.mock.calls.filter(
         ([input]) => input.view === "activity",
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it("keeps request metadata in the queue and moves disclosure controls into review", async () => {

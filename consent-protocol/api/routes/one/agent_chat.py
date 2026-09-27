@@ -216,7 +216,16 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
 
 _app = App(
     name=ONE_APP_NAME,
-    root_agent=build_one_text_agent(allow_workspace_tools=True, include_thought_summaries=True),
+    root_agent=build_one_text_agent(
+        allow_workspace_tools=True,
+        include_thought_summaries=True,
+        tool_mode="typed_chat",
+    ),
+    resumability_config=ResumabilityConfig(is_resumable=True),
+)
+_gmail_information_request_app = App(
+    name=ONE_APP_NAME,
+    root_agent=build_one_text_agent(tool_mode="gmail_information_request"),
     resumability_config=ResumabilityConfig(is_resumable=True),
 )
 _intro_app = App(
@@ -299,6 +308,18 @@ _agent = TimedADKAgent.from_app(
     emit_messages_snapshot=True,
     capabilities=_authenticated_capabilities,
 )
+_gmail_information_request_agent = TimedADKAgent.from_app(
+    _gmail_information_request_app,
+    head=HEAD_ONE,
+    user_id_extractor=_user_id,
+    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
+    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
+    session_manager=_durable_session_manager,
+    use_in_memory_services=True,
+    use_thread_id_as_session_id=True,
+    emit_messages_snapshot=True,
+    capabilities=_authenticated_capabilities,
+)
 _intro_agent = TimedADKAgent.from_app(
     _intro_app,
     head=HEAD_INTRO,
@@ -318,7 +339,13 @@ _intro_agent = TimedADKAgent.from_app(
 
 async def _resolve_agent(_request: Request, input_data: RunAgentInput) -> ADKAgent:
     state = input_data.state if isinstance(input_data.state, dict) else {}
-    return _agent if state.get(STATE_CONSENT_TOKEN) else _intro_agent
+    if not state.get(STATE_CONSENT_TOKEN):
+        return _intro_agent
+    return (
+        _gmail_information_request_agent
+        if state.get(STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID)
+        else _agent
+    )
 
 
 add_adk_fastapi_endpoint(

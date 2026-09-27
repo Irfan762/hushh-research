@@ -152,6 +152,30 @@ def test_proposal_head_does_not_gain_search_or_intro_tools():
     ]
 
 
+def test_selected_gmail_information_request_head_has_only_its_source_bound_reply_tool():
+    assert agent_tree._one_roster_tools(tool_mode="gmail_information_request") == [
+        agent_tree.open_gmail_information_request_reply,
+    ]
+    agent = agent_tree.build_one_text_agent(
+        model="test-model", tool_mode="gmail_information_request"
+    )
+    assert agent.tools == [agent_tree.open_gmail_information_request_reply]
+
+
+def test_typed_chat_uses_the_browser_memory_packet_without_save_or_summary_tools():
+    typed_tools = agent_tree._one_roster_tools(
+        specialist_model="test-model", tool_mode="typed_chat"
+    )
+    full_tools = agent_tree._one_roster_tools(specialist_model="test-model")
+
+    assert agent_tree.read_my_pkm_domain_summary not in typed_tools
+    assert agent_tree.read_my_pkm_domain_summary in full_tools
+    # The legacy parked browser directive remains implemented for historical
+    # transcripts, but no current One roster can trigger a second model turn.
+    assert "add_to_pkm" not in {getattr(tool, "__name__", "") for tool in typed_tools}
+    assert "add_to_pkm" not in {getattr(tool, "__name__", "") for tool in full_tools}
+
+
 def test_drive_read_tools_are_only_in_admitted_chat_roster(monkeypatch):
     monkeypatch.setattr(agent_tree, "pod_mode", lambda: False)
     baseline = agent_tree._one_roster_tools(specialist_model="test-model")

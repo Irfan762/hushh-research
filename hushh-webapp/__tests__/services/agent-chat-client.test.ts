@@ -156,6 +156,42 @@ describe("AG-UI Agent One client", () => {
     })).rejects.toThrow("Synthetic unavailable");
     expect(mockTransport.runAgent).not.toHaveBeenCalled();
   });
+  it("settles a selected Gmail reply as soon as the model-authored editable draft is ready", async () => {
+    publishValidatedAuthSessionOwner("user-1");
+    const onToolResult = vi.fn();
+    const onComplete = vi.fn();
+    const body = "Here are the requested details.";
+    mockTransport.emitEvents = subscriber => {
+      subscriber.onToolCallStartEvent?.({ event: {
+        toolCallId: "gmail-reply", toolCallName: "open_gmail_information_request_reply",
+      } });
+      subscriber.onToolCallEndEvent?.({
+        event: { toolCallId: "gmail-reply" },
+        toolCallName: "open_gmail_information_request_reply",
+        toolCallArgs: { body, owner_supplied_requested_information: true },
+      });
+      subscriber.onToolCallResultEvent?.({ event: {
+        toolCallId: "gmail-reply", content: JSON.stringify({ status: "draft_opened" }),
+      } });
+    };
+
+    const result = await streamAgentChat({
+      vaultKey: TEST_VAULT_KEY,
+      userId: "user-1",
+      message: "My requested detail is ready.",
+      vaultOwnerToken: "owner-token",
+      gmailInformationRequestWorkflowId: "workflow-1",
+      handlers: { onToolResult, onComplete },
+    });
+
+    expect(onToolResult).toHaveBeenCalledWith(expect.objectContaining({
+      raw: expect.objectContaining({ toolName: "open_gmail_information_request_reply" }),
+      slots: expect.objectContaining({ body }),
+    }));
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(mockTransport.aborted).toBe(true);
+    expect(result).toMatchObject({ interrupted: true, text: "" });
+  });
   it("never treats native connector content as a debug payload or app directive", async () => {
     mockTransport.emitEvents = subscriber => {
       subscriber.onToolCallStartEvent?.({ event: { toolCallId: "mcp-call", toolCallName: `mcp_${"a".repeat(40)}` } });

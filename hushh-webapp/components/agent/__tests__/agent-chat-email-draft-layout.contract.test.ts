@@ -47,7 +47,17 @@ describe("Agent Chat email draft layout contract", () => {
     expect(source).toContain(
       "openGmailEmailDraftFromDirective(toolEvent, assistantMessageId);",
     );
-    expect(source).toContain("kycInformationSaveConfirmed:");
+    expect(source).toContain("ownerSuppliedRequestedInformation");
+    expect(source).toContain("sourceBoundReply?.ownerSuppliedRequestedInformation");
+    expect(source).toContain("kycOwnerReplyContainsRequestedInformation: true");
+    expect(source).toContain("const explicitKycIdentitySaveRequest");
+    expect(source).toContain("!params.kycWorkflowActive &&");
+    expect(source).toContain("kycRequestedFieldLabels:");
+    expect(source).toContain("buildKycFollowUpPkmSource");
+    expect(source).toContain("forceRefresh: true");
+    expect(source).toContain("requireDecrypted: true");
+    expect(source).toContain("pkm_kyc_context_refresh_failed");
+    expect(source).not.toContain("so it hasn't drafted a reply");
     expect(source).toContain("gmailInformationRequestWorkflowId:");
     expect(source).not.toContain(
       "current.filter((message) => message.id !== assistantMessageId)",

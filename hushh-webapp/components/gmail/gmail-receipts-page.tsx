@@ -448,6 +448,14 @@ export default function GmailReceiptsPage({
   const [workspace, setWorkspaceState] = useState<GmailWorkspace>(
     resolvedInitialWorkspace,
   );
+  // KYC request metadata is intentionally memory-only, but the live panel
+  // must survive a workspace-tab change. Once opened in this Mail session, it
+  // stays mounted (and hidden while inactive) so an in-flight scan and the
+  // already rendered queue are not discarded and restarted on return.
+  const [hasVisitedKyc, setHasVisitedKyc] = useState(
+    resolvedInitialWorkspace === "kyc",
+  );
+  const kycPanelOwnerRef = useRef<string | null>(user?.uid || null);
   const setWorkspace = useCallback(
     (nextWorkspace: GmailWorkspace) => {
       setWorkspaceState(nextWorkspace);
@@ -465,6 +473,15 @@ export default function GmailReceiptsPage({
         : getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace),
     );
   }, [initialWorkspace, journeyVariant, pathname, user?.uid]);
+  useEffect(() => {
+    const ownerId = user?.uid || null;
+    if (kycPanelOwnerRef.current === ownerId) return;
+    kycPanelOwnerRef.current = ownerId;
+    setHasVisitedKyc(workspace === "kyc");
+  }, [user?.uid, workspace]);
+  useEffect(() => {
+    if (workspace === "kyc") setHasVisitedKyc(true);
+  }, [workspace]);
   // This is intentionally memory-only. A KYC summary can be
   // sensitive, so workspace navigation must not write unfinished text to
   // browser storage just to preserve it.
@@ -2151,27 +2168,29 @@ export default function GmailReceiptsPage({
             </SurfaceInset>
           ) : null}
 
-          {isConnected && workspace === "kyc" ? (
-            <GmailVerificationOnboarding
-              userId={user?.uid || null}
-              vaultKey={vaultKey}
-              vaultOwnerToken={vaultOwnerToken}
-              onRequestVaultUnlock={requestVaultUnlock}
-              deferred={verificationDeferred}
-              onDeferredChange={setVerificationDeferred}
-              details={verificationDraft}
-              onDetailsChange={setVerificationDraft}
-            >
-              <GmailInformationRequestsSection
+          {isConnected && (workspace === "kyc" || hasVisitedKyc) ? (
+            <div hidden={workspace !== "kyc"}>
+              <GmailVerificationOnboarding
                 userId={user?.uid || null}
                 vaultKey={vaultKey}
                 vaultOwnerToken={vaultOwnerToken}
-                isConnected
-                idTokenProvider={user?.getIdToken ? idTokenProvider : null}
                 onRequestVaultUnlock={requestVaultUnlock}
-                onEnableGmailSend={handleEnableGmailSend}
-              />
-            </GmailVerificationOnboarding>
+                deferred={verificationDeferred}
+                onDeferredChange={setVerificationDeferred}
+                details={verificationDraft}
+                onDetailsChange={setVerificationDraft}
+              >
+                <GmailInformationRequestsSection
+                  userId={user?.uid || null}
+                  vaultKey={vaultKey}
+                  vaultOwnerToken={vaultOwnerToken}
+                  isConnected
+                  idTokenProvider={user?.getIdToken ? idTokenProvider : null}
+                  onRequestVaultUnlock={requestVaultUnlock}
+                  onEnableGmailSend={handleEnableGmailSend}
+                />
+              </GmailVerificationOnboarding>
+            </div>
           ) : null}
 
           {showReceiptOnboarding ? (

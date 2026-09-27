@@ -992,6 +992,7 @@ class TestGmailEmailDraftDirective:
         assert "do not draft a refusal" in instruction
         assert "ask the owner plainly for exactly the missing information" in instruction
         assert "save the details privately and prepare the email" in instruction
+        assert "owner_supplied_requested_information=true" in instruction
 
     @pytest.mark.asyncio
     async def test_opens_only_an_editable_draft_directive(self):
@@ -1086,7 +1087,9 @@ class TestGmailEmailDraftDirective:
         }
 
         result = await open_gmail_information_request_reply(
-            "Here are the requested details.", _tool_context(state)
+            "Here are the requested details.",
+            _tool_context(state),
+            owner_supplied_requested_information=False,
         )
 
         assert result["status"] == "draft_opened"
@@ -1097,6 +1100,39 @@ class TestGmailEmailDraftDirective:
                 "workflow_id": "workflow-1",
             },
         }
+
+    @pytest.mark.asyncio
+    async def test_selected_request_reply_accepts_the_owner_answer_signal_without_persisting_it(
+        self,
+    ):
+        state = {
+            STATE_USER_ID: "u1",
+            STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID: "workflow-1",
+        }
+
+        result = await open_gmail_information_request_reply(
+            "Here are the requested details.",
+            _tool_context(state),
+            owner_supplied_requested_information=True,
+        )
+
+        assert result["status"] == "draft_opened"
+        assert state[f"{STATE_PENDING_DIRECTIVE}:gmail_information_request_reply"]["payload"] == {
+            "kind": "gmail_information_request_reply",
+            "workflow_id": "workflow-1",
+        }
+
+    def test_selected_request_reply_requires_one_to_classify_the_owner_answer(self):
+        from google.adk.tools import FunctionTool
+
+        parameters = (
+            FunctionTool(open_gmail_information_request_reply)
+            ._get_declaration()
+            .parameters_json_schema
+        )
+
+        assert "owner_supplied_requested_information" in parameters["properties"]
+        assert "owner_supplied_requested_information" in parameters["required"]
 
 
 class TestRunAppAction:
@@ -1168,19 +1204,18 @@ class TestRunAppAction:
         assert not any(k.startswith(f"{_STATE_PENDING_DIRECTIVE}:") for k in state)
 
     @pytest.mark.asyncio
-    async def test_kyc_manual_only_action_is_refused(self):
-        # KYC draft approval stays a human action in the app (agent chat lane
-        # continues to own the KYC card flow; voice must not trigger it).
+    async def test_retired_kyc_approval_action_is_unknown(self):
+        # The legacy mailbox-KYC route no longer owns an action contract.
         state: dict = {}
         result = await run_app_action("kyc.draft.approve_send", {}, _tool_context(state))
-        assert result["status"] == "manual_only"
+        assert result["status"] == "unknown_action"
         assert not any(k.startswith(f"{_STATE_PENDING_DIRECTIVE}:") for k in state)
 
     @pytest.mark.asyncio
-    async def test_kyc_confirm_required_stays_unwired_without_selected_workflow(self):
+    async def test_retired_kyc_rejection_action_is_unknown(self):
         state: dict = {}
         result = await run_app_action("kyc.draft.reject", {}, _tool_context(state))
-        assert result["status"] == "unwired"
+        assert result["status"] == "unknown_action"
         assert not any(k.startswith(f"{_STATE_PENDING_DIRECTIVE}:") for k in state)
 
     @pytest.mark.asyncio

@@ -10,6 +10,7 @@ from ag_ui.core import (
     EventType,
     MessagesSnapshotEvent,
     ReasoningMessageContentEvent,
+    RunAgentInput,
     RunErrorEvent,
     RunFinishedEvent,
     StateDeltaEvent,
@@ -164,6 +165,32 @@ def test_history_and_both_capabilities_follow_public_policy():
         "streaming": False,
         "encrypted": False,
     }
+
+
+@pytest.mark.asyncio
+async def test_selected_gmail_request_uses_the_narrow_one_head():
+    from api.routes.one import agent_chat
+    from hushh_mcp.one_adk.agent_tree import (
+        STATE_CONSENT_TOKEN,
+        STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID,
+    )
+
+    input_data = RunAgentInput(
+        thread_id="thread",
+        run_id="run",
+        state={
+            STATE_CONSENT_TOKEN: "one_secret_ref:consent",
+            STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID: "workflow-1",
+        },
+        messages=[],
+        tools=[],
+        context=[],
+        forwarded_props={},
+    )
+
+    assert await agent_chat._resolve_agent(SimpleNamespace(), input_data) is (
+        agent_chat._gmail_information_request_agent
+    )
 
 
 def test_raw_provider_event_is_not_a_secondary_reasoning_channel():

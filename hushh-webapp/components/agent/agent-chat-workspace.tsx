@@ -155,6 +155,7 @@ import {
   clearAgentPkmContext,
   getPkmConfirmationCards,
   getPkmAutoSaveCards,
+  isAgentPkmDependentRequest,
   loadAgentPkmContext,
   peekAgentPkmContext,
   warmAgentPkmContext,
@@ -300,6 +301,7 @@ import {
   type EmailDeliveryError,
   type EmailDraft,
 } from "@/lib/services/email-delivery-service";
+import { buildKycFollowUpPkmSource } from "@/lib/pkm/kyc-follow-up-context";
 import {
   GmailInformationRequestsService,
   type GmailInformationRequestSourcePreview,
@@ -464,7 +466,7 @@ type AgentRunTurnOptions = {
   source: AgentTurnSource;
   personSelectionHandle?: string;
   gmailInformationRequestWorkflowId?: string;
-  kycInformationSaveConfirmed?: boolean;
+  kycRequestedFieldLabels?: string[];
   appendUserMessage?: boolean;
   replaceAssistantMessageId?: string | null;
   deferPkmContext?: boolean;
@@ -579,10 +581,16 @@ export function getGmailEmailDraftPayload(
 
 export function getGmailInformationRequestReplyPayload(
   event: AgentChatToolEvent | null,
-): { body: string } | null {
+): { body: string; ownerSuppliedRequestedInformation: boolean } | null {
   if (!event || event.raw.toolName !== "open_gmail_information_request_reply") return null;
   const body = typeof event.slots.body === "string" ? event.slots.body.trim() : "";
-  return body && body.length <= 12_000 ? { body } : null;
+  return body && body.length <= 12_000
+    ? {
+        body,
+        ownerSuppliedRequestedInformation:
+          event.slots.owner_supplied_requested_information === true,
+      }
+    : null;
 }
 
 export function getCalendarDirectiveFromToolEvent(
@@ -1744,6 +1752,7 @@ function AgentBubble({
             </>
           ) : shouldRenderStreamPanel ? (
             <AgentTurnStreamPanel
+              turnId={message.id}
               streamEvents={streamEvents}
               thinkingSummary={message.thinkingSummary}
               sources={message.sources}
@@ -1754,7 +1763,8 @@ function AgentBubble({
               onCompileDriveNotes={onCompileDriveNotes}
               onDownloadDriveNotes={onDownloadDriveNotes}
               driveCompilation={message.driveCompilation}
-              responseText={assistantText}
+              // Measure the actual AG-UI response, not its typewriter render.
+              responseText={message.text}
               isStreaming={isStreaming}
               isError={isError}
               opportunities={turnPanelOpportunities}
@@ -2418,6 +2428,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   >(null);
   const pkmAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const pkmCaptureJobsRef = useRef(new Map<string, Promise<AgentPkmCaptureStatus>>());
+  const activePkmCaptureJobsRef = useRef(new Map<string, Promise<AgentPkmCaptureStatus>>());
   const pkmCaptureReceiptsRef = useRef(new Map<string, Map<string, AgentPkmCaptureStatus>>());
   const latestVisibleTurnIdRef = useRef<string | null>(null);
   const inlineConsentRequestIdsRef = useRef<Set<string>>(new Set());
@@ -2473,6 +2484,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }
     pkmAbortControllersRef.current.clear();
     pkmCaptureJobsRef.current.clear();
+    activePkmCaptureJobsRef.current.clear();
     pkmCaptureReceiptsRef.current.clear();
     setActivePkmToolCount(0);
   }, []);
@@ -2483,6 +2495,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     for (const controller of pkmAbortControllersRef.current) controller.abort();
     pkmAbortControllersRef.current.clear();
     pkmCaptureJobsRef.current.clear();
+    activePkmCaptureJobsRef.current.clear();
     pkmCaptureReceiptsRef.current.clear();
     setActivePkmToolCount(0);
     setMessages((current) => current.map((message) =>
@@ -4486,15 +4499,26 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       assistantMessageId: string;
       sourceMessage: string;
       currentDomains: string[];
-      kycInformationSaveConfirmed?: boolean;
+      kycOwnerReplyContainsRequestedInformation?: boolean;
+      kycRequestedFieldLabels?: readonly string[];
+      kycWorkflowActive?: boolean;
     }): Promise<AgentPkmCaptureStatus> => {
       // Private source text is used only in this transient deduplication key.
       const jobKey = JSON.stringify([params.assistantMessageId, params.sourceMessage]);
+      const activeJobKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`;
       const existing = pkmCaptureJobsRef.current.get(jobKey);
       if (existing) return existing;
       const token = getVaultOwnerToken();
-      const ownerConfirmedKycSave = params.kycInformationSaveConfirmed === true;
-      if (!user?.uid || !vaultKey || !token || (!pkmCaptureEnabledRef.current && !ownerConfirmedKycSave)) {
+      const kycOwnerReplyContainsRequestedInformation =
+        params.kycOwnerReplyContainsRequestedInformation === true;
+      const explicitKycIdentitySaveRequest =
+        !params.kycWorkflowActive &&
+        isExplicitKycIdentitySaveRequest(params.sourceMessage);
+      if (!user?.uid || !vaultKey || !token || (
+        !pkmCaptureEnabledRef.current &&
+        !kycOwnerReplyContainsRequestedInformation &&
+        !explicitKycIdentitySaveRequest
+      )) {
         return Promise.resolve({ phase: "review", saved: 0 });
       }
       const userId = user.uid;
@@ -4502,10 +4526,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const controller = new AbortController();
       const guard = createAgentPkmCaptureGuard({
         userId, signal: controller.signal,
-        isEnabled: () => ownerConfirmedKycSave || (
+        isEnabled: () =>
+          kycOwnerReplyContainsRequestedInformation ||
+          explicitKycIdentitySaveRequest || (
           pkmCaptureEnabledRef.current && pkmCapturePolicyRef.current === policy &&
           isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, token)
-        ),
+          ),
       });
       pkmAbortControllersRef.current.add(controller);
       setActivePkmToolCount((count) => count + 1);
@@ -4526,22 +4552,30 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           // Yield presentation without creating an untracked detached timer.
           await guard.assertCurrent();
           settle({ phase: "preparing", saved: 0 });
-          if (ownerConfirmedKycSave || isExplicitKycIdentitySaveRequest(params.sourceMessage)) {
-            // A typed reply to an owner-selected KYC request is an explicit
-            // confirmation for the fixed, restricted KYC schema. The Gmail
-            // email never enters this writer; only the owner's message does.
+          if (
+            kycOwnerReplyContainsRequestedInformation ||
+            explicitKycIdentitySaveRequest
+          ) {
+            // A selected Gmail flow reaches this writer only after the model
+            // marked this exact owner message as the requested answer. The
+            // standalone explicit-save path remains available outside that
+            // flow. Gmail content never enters this writer; only the owner's
+            // message is extracted against the fixed schema.
             const ingestion = await ingestNaturalLanguagePkm({
               userId,
-              message: params.sourceMessage,
+              message: buildKycFollowUpPkmSource({
+                ownerResponse: params.sourceMessage,
+                requestedFieldLabels: params.kycRequestedFieldLabels,
+              }),
               currentDomains: params.currentDomains,
               vaultKey,
               vaultOwnerToken: token,
-              source: "agent_chat_kyc_owner_confirmed",
+              source: "agent_chat_kyc_owner_answer",
               memoryProfile: "kyc_identity_v1",
               confirmation: {
                 confirmedByUser: true,
                 surface: "chat",
-                source: "agent_chat_kyc_owner_confirmed",
+                source: "agent_chat_kyc_owner_answer",
               },
               writePolicy: "reviewable",
               batchSimpleDomainExtensions: true,
@@ -4551,6 +4585,32 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               saved: ingestion.save.saved,
               failed: ingestion.save.failed,
             });
+            if (ingestion.save.saved > 0) {
+              try {
+                // The reply draft can remain immediately available, but do
+                // not report this source-bound KYC answer as reusable until
+                // One's memory-only packet has been rebuilt from the
+                // encrypted write. This is deliberately client-side: vault
+                // keys and decrypted fields never leave this browser session.
+                await loadAgentPkmContext({
+                  userId,
+                  vaultOwnerToken: token,
+                  vaultKey,
+                  message: params.sourceMessage,
+                  forceRefresh: true,
+                  requireDecrypted: true,
+                });
+                await guard.assertCurrent();
+              } catch (error) {
+                // The ciphertext write succeeded; preserve that receipt and
+                // let the epoch force the next One turn to retry hydration.
+                // Keep diagnostics metadata-only.
+                appendDebugEvent(params.turnId, "pkm_kyc_context_refresh_failed", {
+                  error_name: error instanceof Error ? error.name : "UnknownError",
+                });
+                return settle({ phase: "partial", saved: ingestion.save.saved });
+              }
+            }
             return settle({
               phase: ingestion.save.saved > 0
                 ? (ingestion.save.failed ? "partial" : "saved")
@@ -4599,10 +4659,43 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             saved_count_bucket: toPkmFactCountBucket(result.saved), failed_count_bucket: toPkmFactCountBucket(result.failed),
             has_active_recipients: false,
           });
+          if (result.saved > 0) {
+            try {
+              // Rebuild the encrypted packet before this capture settles so
+              // a memory-aware follow-up cannot read a stale local snapshot.
+              await loadAgentPkmContext({
+                userId,
+                vaultOwnerToken: token,
+                vaultKey,
+                message: params.sourceMessage,
+                forceRefresh: true,
+                requireDecrypted: true,
+              });
+              await guard.assertCurrent();
+            } catch (error) {
+              appendDebugEvent(params.turnId, "pkm_auto_context_refresh_failed", {
+                error_name: error instanceof Error ? error.name : "UnknownError",
+              });
+              return settle({ phase: "partial", saved: result.saved });
+            }
+          }
           return settle({ phase: result.saved > 0 ? (result.failed || reviewRequired ? "partial" : "saved") : "failed", saved: result.saved });
-        } catch {
+        } catch (error) {
+          if (kycOwnerReplyContainsRequestedInformation) {
+            // The browser is the only place that can write the encrypted PKM.
+            // Keep diagnostics value-free: source text and extracted details
+            // must never reach logs or telemetry.
+            appendDebugEvent(params.turnId, "pkm_kyc_save_failed", {
+              error_name: error instanceof Error ? error.name : "UnknownError",
+            });
+            console.error("KYC PKM background save failed", {
+              turnId: params.turnId,
+              errorName: error instanceof Error ? error.name : "UnknownError",
+            });
+          }
           return settle({ phase: "failed", saved: 0 });
         } finally {
+          activePkmCaptureJobsRef.current.delete(activeJobKey);
           // A canceled old job must not decrement a new conversation's count.
           if (pkmAbortControllersRef.current.delete(controller)) {
             setActivePkmToolCount((count) => Math.max(0, count - 1));
@@ -4610,6 +4703,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         }
       })();
       pkmCaptureJobsRef.current.set(jobKey, job);
+      activePkmCaptureJobsRef.current.set(activeJobKey, job);
       return job;
     },
     [appendDebugEvent, getVaultOwnerToken, user?.uid, vaultKey],
@@ -4666,7 +4760,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const debugTurnId = `agent_turn_${turnId}`;
     const assistantMessageId = `msg-${turnId}-assistant`;
     const executedToolCalls = new Set<string>();
-    let pkmToolHandledFullTurn = false;
+    let pkmCaptureStarted = false;
+    let priorPkmWriteSettled = false;
     let toolStatusMessageId: string | null = null;
     let pkmStatusItemId: string | null = null;
     let turnPkmContext = EMPTY_PKM_CONTEXT;
@@ -4785,19 +4880,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         return { phase: "failed", saved: 0 } as AgentPkmCaptureStatus;
       }
 
-      const sourceText =
-        typeof toolEvent.slots.source_text === "string" &&
-        toolEvent.slots.source_text.trim()
-          ? toolEvent.slots.source_text.trim()
-          : text;
-      // One already chose capture passages. Do not run a second full-turn
-      // extraction over those passages after its explicit capture invocations.
-      pkmToolHandledFullTurn = true;
+      // Current typed One does not expose this legacy parked directive, but
+      // restored conversations may still emit it. Preserve the original owner
+      // text so trailing authorization is not stripped before encrypted save.
+      pkmCaptureStarted = true;
 
       return captureEligiblePkmFactsInBackground({
         turnId: `${debugTurnId}:${toolEvent.callId || "pkm.add"}`,
         assistantMessageId,
-        sourceMessage: sourceText,
+        sourceMessage: text,
         currentDomains: turnPkmContext.domains,
       });
     };
@@ -5132,6 +5223,34 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
     const streamAbortController = new AbortController();
     streamAbortControllerRef.current = streamAbortController;
+    if (isAgentPkmDependentRequest(text)) {
+      const pendingCaptures = [...activePkmCaptureJobsRef.current.values()];
+      if (pendingCaptures.length) {
+        const settled = await Promise.allSettled(pendingCaptures);
+        priorPkmWriteSettled = settled.some(
+          (result) => result.status === "fulfilled" && result.value.saved > 0,
+        );
+      }
+    }
+    // Start browser-only memory capture before model generation so durable
+    // fact extraction overlaps the answer. Selected Gmail requests remain
+    // source-bound and are captured only after One identifies the reply.
+    if (
+      options.source === "typed" &&
+      !options.gmailInformationRequestWorkflowId &&
+      (
+        pkmCaptureEnabledRef.current ||
+        isExplicitKycIdentitySaveRequest(text)
+      )
+    ) {
+      pkmCaptureStarted = true;
+      void captureEligiblePkmFactsInBackground({
+        turnId: debugTurnId,
+        assistantMessageId,
+        sourceMessage: text,
+        currentDomains: peekAgentPkmContext({ userId, message: text })?.domains || [],
+      });
+    }
     const pkmContextStartedAt = performance.now();
     performance.mark("hushh:agent-chat:pkm-prepare-start");
 
@@ -5146,7 +5265,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         userId,
         message: text,
       });
-      if (cachedContext?.text) {
+      if (cachedContext?.text && !priorPkmWriteSettled) {
         void loadAgentPkmContext({
           userId,
           vaultOwnerToken: token,
@@ -5161,7 +5280,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       // foreground paste wait for a full decrypted inventory to hydrate. A
       // warm session cache is still useful, but it is not required for this
       // explicitly deferred lane.
-      if (options.deferPkmContext) {
+      if (options.deferPkmContext && !priorPkmWriteSettled) {
         if (cachedContext?.text) {
           void loadAgentPkmContext({
             userId,
@@ -5182,6 +5301,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         vaultOwnerToken: token,
         vaultKey,
         message: text,
+        forceRefresh: priorPkmWriteSettled,
         requireDecrypted: true,
       });
       if (!context.text) {
@@ -5254,35 +5374,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         return;
       }
 
-      if (options.kycInformationSaveConfirmed) {
-        // Persist the owner's supplied KYC details before One reasons about
-        // the reply. Refreshing the decrypted context lets the same turn
-        // draft only after the encrypted write has actually completed.
-        pkmToolHandledFullTurn = true;
-        const capture = await captureEligiblePkmFactsInBackground({
-          turnId: debugTurnId,
-          assistantMessageId,
-          sourceMessage: text,
-          currentDomains: agentPkmContext.domains,
-          kycInformationSaveConfirmed: true,
-        });
-        if (capture.saved > 0) {
-          agentPkmContext = await loadAgentPkmContext({
-            userId,
-            vaultOwnerToken: token,
-            vaultKey,
-            message: text,
-            forceRefresh: true,
-            requireDecrypted: true,
-          });
-          turnPkmContext = agentPkmContext;
-        }
-        if (streamAbortController.signal.aborted) {
-          finishCanceledTurn();
-          return;
-        }
-      }
-
       if (!options.deferPkmContext) {
         upsertTurnStreamEvent({
           id: PRIVATE_MEMORY_PREPARATION_EVENT_ID,
@@ -5302,7 +5393,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         vaultKey: vaultKeyRef.current ?? "",
         loadConnectorConfigurations: async () => {
           if (!vaultKey) throw new Error("Unlock your vault to use connectors.");
-          return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token }, true)).configurations;
+          // Connector mutations already force a fresh snapshot. Ordinary turns
+          // reuse the unlocked-session cache instead of blocking on an
+          // encrypted PKM refresh before One can start streaming.
+          return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token })).configurations;
         },
         pkmContext: agentPkmContext.text || undefined,
         personSelectionHandle: options.personSelectionHandle,
@@ -5397,7 +5491,25 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             setActiveToolCalls(current => current.filter(item => item.id !== toolEvent.callId));
             appendDebugEvent(debugTurnId, "tool_result", toolEvent);
+            const sourceBoundReply = getGmailInformationRequestReplyPayload(toolEvent);
             openGmailEmailDraftFromDirective(toolEvent, assistantMessageId);
+            if (
+              sourceBoundReply?.ownerSuppliedRequestedInformation &&
+              options.gmailInformationRequestWorkflowId
+            ) {
+              // Drafting is already available to the owner. Persist only when
+              // One has explicitly identified this current reply as the
+              // requested KYC information; this write must never delay Send.
+              pkmCaptureStarted = true;
+              void captureEligiblePkmFactsInBackground({
+                turnId: debugTurnId,
+                assistantMessageId,
+                sourceMessage: text,
+                currentDomains: turnPkmContext.domains,
+                kycOwnerReplyContainsRequestedInformation: true,
+                kycRequestedFieldLabels: options.kycRequestedFieldLabels,
+              });
+            }
             const calendarDirective = getCalendarDirectiveFromToolEvent(toolEvent);
             if (calendarDirective) {
               setPendingSpecialistDirective(calendarDirective);
@@ -5538,12 +5650,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       // Only facts deliberately typed into the normal composer are eligible
       // for automatic capture. Assistant output, tool events, and Gmail
       // content never enter this client-side proposal path.
-      if (options.source === "typed" && !pkmToolHandledFullTurn) {
+      if (options.source === "typed" && !pkmCaptureStarted) {
+        pkmCaptureStarted = true;
         void captureEligiblePkmFactsInBackground({
           turnId: debugTurnId,
           assistantMessageId,
           sourceMessage: text,
           currentDomains: turnPkmContext.domains,
+          kycWorkflowActive: Boolean(options.gmailInformationRequestWorkflowId),
         });
       }
       void loadConversationList(true).catch(() => undefined);
@@ -5656,7 +5770,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         vaultKey: vaultKeyRef.current ?? "",
         loadConnectorConfigurations: async () => {
           if (!vaultKey) throw new Error("Unlock your vault to use connectors.");
-          return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token }, true)).configurations;
+          return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token })).configurations;
         },
         screenContext: buildOneVoiceStructuredScreenContext({
           appRuntimeState: appRuntimeStateRef.current,
@@ -6002,7 +6116,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       createdAtMs: Date.now(),
       deferPkmContext: options.deferPkmContext,
       gmailInformationRequestWorkflowId: gmailKycReplyRequest?.workflow_id,
-      kycInformationSaveConfirmed: Boolean(gmailKycReplyRequest?.workflow_id),
+      kycRequestedFieldLabels: gmailKycReplyRequest?.requested_field_labels,
     };
     const operation: QueuedWorkspaceOperation = {
       id: prompt.id,
@@ -6015,8 +6129,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             deferPkmContext: operation.prompt?.deferPkmContext,
             gmailInformationRequestWorkflowId:
               operation.prompt?.gmailInformationRequestWorkflowId,
-            kycInformationSaveConfirmed:
-              operation.prompt?.kycInformationSaveConfirmed,
+            kycRequestedFieldLabels: operation.prompt?.kycRequestedFieldLabels,
           });
           return;
         }

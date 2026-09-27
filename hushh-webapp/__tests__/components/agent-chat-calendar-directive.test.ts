@@ -279,11 +279,28 @@ describe("getGmailInformationRequestReplyPayload", () => {
     const event = makeToolEvent(
       "open_gmail_information_request_reply",
       { status: "draft_opened" },
+      {
+        body: "Here are the requested details.",
+        owner_supplied_requested_information: true,
+      },
+    );
+
+    expect(getGmailInformationRequestReplyPayload(event)).toEqual({
+      body: "Here are the requested details.",
+      ownerSuppliedRequestedInformation: true,
+    });
+  });
+
+  it("does not treat a draft based on existing information as a new KYC answer", () => {
+    const event = makeToolEvent(
+      "open_gmail_information_request_reply",
+      { status: "draft_opened" },
       { body: "Here are the requested details." },
     );
 
     expect(getGmailInformationRequestReplyPayload(event)).toEqual({
       body: "Here are the requested details.",
+      ownerSuppliedRequestedInformation: false,
     });
   });
 
