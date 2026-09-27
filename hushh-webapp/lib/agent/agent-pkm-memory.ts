@@ -265,6 +265,7 @@ export function isAgentPkmDependentRequest(message: string): boolean {
     /\bmy\s+(?:pkm|memory|vault|profile|preferences?|favo(?:u)?rites?|food|drinks?|games?|hobbies|interests?)\b/.test(
       text
     ) ||
+    /\b(?:what|which|who|where|when)\b[^.?!]{0,80}\bmy\b/.test(text) ||
     /\b(?:what|which|who)\b[^.?!]{0,80}\b(?:i|my)\b[^.?!]{0,80}\b(?:prefer|like|saved|remember)\b/.test(
       text
     )
@@ -750,7 +751,7 @@ export async function addToPKM(params: {
 
   const savedResults = completedResults.filter((result) => result.success);
   if (savedResults.length > 0 && (params.mayPublish?.() ?? true)) {
-    AgentPkmContextStore.invalidateUser(params.userId);
+    AgentPkmContextStore.invalidateAfterPkmMutation(params.userId);
   }
   return {
     attempted: completedResults.length,
@@ -927,8 +928,8 @@ export function warmAgentPkmContext(params: {
   const existing = agentPkmWarmups.get(params.userId);
   if (existing) return existing;
 
-  // The agent-safe packet is deliberately built once at unlock and stays only
-  // in browser RAM. Every subsequent One turn reads this same working set.
+  // The owner-authorized packet is built once at unlock and stays only in
+  // browser RAM. Every subsequent One turn reads this same working set.
   const warmup = AgentPkmContextStore.load({
     userId: params.userId,
     vaultKey: params.vaultKey,

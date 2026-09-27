@@ -86,6 +86,8 @@ export function isInformativeActivityEvent(
 }
 
 export type AgentTurnStreamPanelProps = {
+  /** Stable message identity prevents one mounted panel from reusing timing from a prior turn. */
+  turnId?: string;
   streamEvents: AgentVisibleStreamEvent[];
   thinkingSummary?: string;
   responseText: string;
@@ -257,6 +259,7 @@ export function driveBatchProgressToVisibleStreamEvent(
 }
 
 export function AgentTurnStreamPanel({
+  turnId,
   streamEvents,
   thinkingSummary = "",
   responseText,
@@ -274,15 +277,23 @@ export function AgentTurnStreamPanel({
   onDownloadDriveNotes,
   driveCompilation,
 }: AgentTurnStreamPanelProps) {
+  const activeTurnId = useRef<string | null>(null);
   const turnStartedAt = useRef<number | null>(null);
+  const firstTextAt = useRef<number | null>(null);
   const [firstTextMs, setFirstTextMs] = useState<number | null>(null);
   const [elapsedMs, setElapsedMs] = useState<number | null>(null);
   const [timingPhase, setTimingPhase] = useState<"idle" | "running" | "done">("idle");
   // Wall clock for routine steps: one that is still running shows once it is slow.
   const [clockMs, setClockMs] = useState(() => Date.now());
+  const timingTurnId = turnId || "legacy-turn";
   useEffect(() => {
-    if (isStreaming && timingPhase !== "running") {
+    if (
+      isStreaming &&
+      (timingPhase !== "running" || activeTurnId.current !== timingTurnId)
+    ) {
+      activeTurnId.current = timingTurnId;
       turnStartedAt.current = performance.now();
+      firstTextAt.current = null;
       setFirstTextMs(null);
       setElapsedMs(0);
       setTimingPhase("running");
@@ -298,11 +309,17 @@ export function AgentTurnStreamPanel({
         setElapsedMs(Math.max(0, performance.now() - turnStartedAt.current));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [isStreaming, timingPhase]);
+  }, [isStreaming, timingPhase, timingTurnId]);
   useEffect(() => {
-    if (firstTextMs === null && responseText.trim() && turnStartedAt.current !== null)
+    if (
+      firstTextAt.current === null &&
+      responseText.trim() &&
+      turnStartedAt.current !== null
+    ) {
+      firstTextAt.current = performance.now();
       setFirstTextMs(Math.max(0, performance.now() - turnStartedAt.current));
-  }, [firstTextMs, responseText]);
+    }
+  }, [responseText, timingTurnId]);
   const visibleEvents = useMemo(
     () => streamEvents.filter((event) => isInformativeActivityEvent(event, clockMs)),
     [streamEvents, clockMs],

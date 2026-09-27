@@ -136,6 +136,16 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('phase: reviewRequired ? "review" : "skipped"');
   });
 
+  it("settles a pending private write before a memory-dependent follow-up reads its packet", () => {
+    const workspace = read("components/agent/agent-chat-workspace.tsx");
+
+    expect(workspace).toContain("activePkmCaptureJobsRef");
+    expect(workspace).toContain("isAgentPkmDependentRequest(text)");
+    expect(workspace).toContain("await Promise.allSettled(pendingCaptures)");
+    expect(workspace).toContain("forceRefresh: priorPkmWriteSettled");
+    expect(workspace).toContain("pkm_auto_context_refresh_failed");
+  });
+
   it("keeps active assistant streams full-width and errors compact", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
 

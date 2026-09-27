@@ -220,6 +220,43 @@ async def test_kyc_identity_profile_marks_explicit_aadhaar_as_restricted_and_con
 
 
 @pytest.mark.asyncio
+async def test_kyc_identity_profile_keeps_a_college_email_separate_from_primary_email(
+    monkeypatch,
+) -> None:
+    service = PKMAgentLabService()
+    extraction = AsyncMock(
+        return_value={
+            "facts": [
+                {
+                    "field_id": "identity.identity_profile.education.email",
+                    "value": "22b4513@iitb.ac.in",
+                    "source_text": "Owner response: 22b4513@iitb.ac.in",
+                    "confidence": 0.99,
+                }
+            ],
+            "general_fallback_facts": [],
+        }
+    )
+    monkeypatch.setattr(service, "_run_agent_contract", extraction)
+
+    result = await service.generate_structure_preview(
+        user_id="owner",
+        message=("KYC requested fields: College email address\nOwner response: 22b4513@iitb.ac.in"),
+        current_domains=["identity"],
+        memory_profile="kyc_identity_v1",
+    )
+
+    assert extraction.await_count == 1
+    assert "college email" in extraction.await_args.kwargs["prompt"].lower()
+    card = result["preview_cards"][0]
+    assert card["canonical_field_id"] == "identity.identity_profile.education.email"
+    assert card["primary_json_path"] == "identity_profile.education.email"
+    assert card["candidate_payload"] == {
+        "identity_profile": {"education": {"email": "22b4513@iitb.ac.in"}}
+    }
+
+
+@pytest.mark.asyncio
 async def test_kyc_identity_profile_blocks_authentication_secrets_before_model_extraction(
     monkeypatch,
 ) -> None:

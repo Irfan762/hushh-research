@@ -79,8 +79,10 @@ const INTERNAL_KEYS = new Set([
 ]);
 const SECRET_KEY_PATTERN =
   /(?:^|[_-])(secret|secrets|password|passphrase|token|api[_-]?key|private[_-]?key|encryption[_-]?key|recovery[_-]?key|vault[_-]?key|credential|credentials|authorization|mnemonic)(?:$|[_-])/i;
-const AGENT_CONTEXT_SENSITIVE_KEY_PATTERN =
-  /(?:^|[_-])(account[_-]?(?:number|no)|routing[_-]?(?:number|no)|iban|swift|ssn|social[_-]?security|tax[_-]?(?:id|number)|passport(?:[_-]?(?:number|no))?|driver(?:s)?[_-]?licen[cs]e(?:[_-]?(?:number|no))?|licen[cs]e[_-]?(?:number|no)|identity[_-]?document|document[_-]?(?:number|no)|card[_-]?number|pan|cvv|cvc|pin|otp|one[_-]?time[_-]?(?:password|code)|aadhaar|aadhar|national[_-]?id|government[_-]?id)(?:$|[_-])/i;
+const AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN =
+  /(?:^|[_-])(account[_-]?(?:number|no)|routing[_-]?(?:number|no)|iban|swift|ssn|social[_-]?security|tax[_-]?(?:id|number)|passport(?:[_-]?(?:number|no))?|driver(?:s)?[_-]?licen[cs]e(?:[_-]?(?:number|no))?|licen[cs]e[_-]?(?:number|no)|identity[_-]?document|document[_-]?(?:number|no)|card[_-]?number|pan|aadhaar|aadhar|national[_-]?id|government[_-]?id)(?:$|[_-])/i;
+const AGENT_CONTEXT_NEVER_CONTEXT_KEY_PATTERN =
+  /(?:^|[_-])(cvv|cvc|pin|otp|one[_-]?time[_-]?(?:password|code))(?:$|[_-])/i;
 const AGENT_CONTEXT_SOURCE_KEY_PATTERN =
   /(?:^|[_-])(source[_-]?(?:text|document|file|artifact|extract|content)|document[_-]?(?:text|content|file)|raw[_-]?(?:text|content|document)|transcript|provenance)(?:$|[_-])/i;
 const INTERNAL_PKM_DOMAINS = new Set([
@@ -166,25 +168,40 @@ export function shouldSkipPkmMemoryKey(key: string): boolean {
   if (!normalized) return true;
   if (INTERNAL_KEYS.has(normalized)) return true;
   if (INTERNAL_PKM_DOMAINS.has(normalized) || SECRET_KEY_PATTERN.test(normalized)) return true;
-  if (normalized.endsWith("_id") && normalized !== "student_id") return true;
+  if (
+    normalized.endsWith("_id") &&
+    normalized !== "student_id" &&
+    !AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN.test(normalized)
+  ) {
+    return true;
+  }
   if (normalized.includes("cipher") || normalized.includes("token")) return true;
   return false;
 }
 
 /**
- * Returns whether a PKM key/domain must be omitted from the full profile
- * packet that is supplied to One on every unlocked chat turn. This is stricter
- * than the memory UI: an always-on model packet must never include regulated
- * identifiers or raw imported source material.
+ * Returns whether a PKM key/domain must be omitted from the owner-authorized
+ * profile packet supplied to One during an unlocked chat session. Credentials,
+ * one-time authenticators, source artifacts, and quarantine data are never
+ * agent context. Owner identity fields remain available, but are labelled as
+ * restricted disclosures in the packet so One does not volunteer them.
  */
 export function shouldSkipPkmAgentContextKey(key: string): boolean {
   const normalized = normalizeKey(key);
   return (
     shouldSkipPkmMemoryKey(key) ||
     normalized === "source_library" ||
-    AGENT_CONTEXT_SENSITIVE_KEY_PATTERN.test(normalized) ||
+    AGENT_CONTEXT_NEVER_CONTEXT_KEY_PATTERN.test(normalized) ||
     AGENT_CONTEXT_SOURCE_KEY_PATTERN.test(normalized)
   );
+}
+
+/**
+ * Marks owner records that One may use in this unlocked session only when the
+ * owner directly asks for them or asks One to prepare the relevant disclosure.
+ */
+export function isPkmAgentRestrictedDisclosureKey(key: string): boolean {
+  return AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN.test(normalizeKey(key));
 }
 
 function primitiveValue(value: unknown): string | null {

@@ -30,6 +30,16 @@ describe("isExplicitKycIdentitySaveRequest", () => {
     expect(
       isExplicitKycIdentitySaveRequest("Save my college roll no to my vault."),
     ).toBe(true);
+    expect(
+      isExplicitKycIdentitySaveRequest(
+        "My college roll no is 22b4513; save this for future.",
+      ),
+    ).toBe(true);
+    expect(
+      isExplicitKycIdentitySaveRequest(
+        "My address is 10 Example Road, but do not save it.",
+      ),
+    ).toBe(false);
   });
 
   it("does not treat ordinary chat or a KYC mention alone as save authorization", () => {

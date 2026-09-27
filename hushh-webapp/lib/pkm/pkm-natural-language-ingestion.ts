@@ -99,6 +99,12 @@ function logIngestion(event: string, fields: PkmIngestionLogFields): void {
 
 const EXPLICIT_PKM_SAVE_INTENT =
   /\b(?:save|store|remember|add|keep)\b[\s\S]{0,100}\b(?:my\s+)?(?:pkm|memory|vault)\b/i;
+const DIRECT_RESTRICTED_SAVE_INTENT =
+  /\b(?:save|store|remember|add|keep)\b[\s\S]{0,100}\b(?:this|that|it|these|them|for\s+(?:later|future)|my\s+(?:details|information|info|profile))\b/i;
+const LEADING_RESTRICTED_FIELD_SAVE_INTENT =
+  /\b(?:save|store|remember|add|keep)\s+(?:my\s+)?(?:aadha{1,2}r|pan|passport|driving\s+licen[cs]e|voter\s*id|roll\s*(?:number|no)|student\s*id|address)\b/i;
+const NEGATED_SAVE_INTENT =
+  /\b(?:do\s+not|don't|never|without)\s+(?:save|store|remember|add|keep)\b/i;
 const KYC_IDENTITY_FIELD_HINT =
   /\b(?:aadha{1,2}r|pan(?:\s+(?:number|no))?|passport(?:\s+number)?|driving\s+licen[cs]e(?:\s+number)?|voter\s*id(?:\s+number)?|roll\s*(?:number|no)|student\s*id|address)\b/i;
 
@@ -108,7 +114,18 @@ const KYC_IDENTITY_FIELD_HINT =
  * existing review/auto-save policy.
  */
 export function isExplicitKycIdentitySaveRequest(message: string): boolean {
-  return EXPLICIT_PKM_SAVE_INTENT.test(message) && KYC_IDENTITY_FIELD_HINT.test(message);
+  // The owner often supplies a value first and says "save this for future" at
+  // the end. Requiring the literal words PKM, memory, or vault made that
+  // direct authorization disappear before the restricted encrypted writer.
+  // Keep the field allowlist and a negation check: this expands phrasing, not
+  // the sensitive-information boundary.
+  return (
+    KYC_IDENTITY_FIELD_HINT.test(message) &&
+    !NEGATED_SAVE_INTENT.test(message) &&
+    (EXPLICIT_PKM_SAVE_INTENT.test(message) ||
+      DIRECT_RESTRICTED_SAVE_INTENT.test(message) ||
+      LEADING_RESTRICTED_FIELD_SAVE_INTENT.test(message))
+  );
 }
 
 function splitRecommendedPreview(preview: AgentPkmPreviewResponse): boolean {

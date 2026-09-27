@@ -4,6 +4,7 @@ import {
   buildPkmMemorySnapshot,
   deletePkmDomainValue,
   pkmMemoryRowLabels,
+  isPkmAgentRestrictedDisclosureKey,
   selectRelevantPkmMemoryCards,
   shouldSkipPkmAgentContextKey,
   shouldSkipPkmMemoryKey,
@@ -209,6 +210,7 @@ describe("PKM memory cards", () => {
       expect(shouldSkipPkmMemoryKey("vault_passphrase")).toBe(true);
       expect(shouldSkipPkmMemoryKey("access_token")).toBe(true);
       expect(shouldSkipPkmMemoryKey("artifact_id")).toBe(true);
+      expect(shouldSkipPkmMemoryKey("government_id")).toBe(false);
     });
 
     it("keeps the wallet domain memory-visible while pruning its secrets subtree", () => {
@@ -234,12 +236,22 @@ describe("PKM memory cards", () => {
   });
 
   describe("shouldSkipPkmAgentContextKey", () => {
-    it("keeps restricted KYC identifiers out of One's automatic PKM context", () => {
-      expect(shouldSkipPkmAgentContextKey("aadhaar_number")).toBe(true);
-      expect(shouldSkipPkmAgentContextKey("aadhar_number")).toBe(true);
-      expect(shouldSkipPkmAgentContextKey("pan_number")).toBe(true);
-      expect(shouldSkipPkmAgentContextKey("passport_number")).toBe(true);
+    it("keeps owner identity fields available while excluding credentials and one-time authenticators", () => {
+      expect(shouldSkipPkmAgentContextKey("aadhaar_number")).toBe(false);
+      expect(shouldSkipPkmAgentContextKey("aadhar_number")).toBe(false);
+      expect(shouldSkipPkmAgentContextKey("pan_number")).toBe(false);
+      expect(shouldSkipPkmAgentContextKey("passport_number")).toBe(false);
       expect(shouldSkipPkmAgentContextKey("roll_number")).toBe(false);
+      expect(shouldSkipPkmAgentContextKey("vault_passphrase")).toBe(true);
+      expect(shouldSkipPkmAgentContextKey("otp")).toBe(true);
+      expect(shouldSkipPkmAgentContextKey("source_document_text")).toBe(true);
+    });
+
+    it("labels restricted owner fields for the One instruction", () => {
+      expect(isPkmAgentRestrictedDisclosureKey("pan_number")).toBe(true);
+      expect(isPkmAgentRestrictedDisclosureKey("passport_number")).toBe(true);
+      expect(isPkmAgentRestrictedDisclosureKey("government_id")).toBe(true);
+      expect(isPkmAgentRestrictedDisclosureKey("college_email")).toBe(false);
     });
   });
 

@@ -189,6 +189,32 @@ describe("AgentTurnStreamPanel", () => {
     clock.mockRestore();
   });
 
+  it("resets timing when a new streamed message replaces the panel without an idle render", async () => {
+    let now = 1000;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => now);
+    const { rerender } = render(
+      <AgentTurnStreamPanel turnId="turn-a" streamEvents={[]} responseText="" isStreaming />,
+    );
+    now = 1800;
+    rerender(
+      <AgentTurnStreamPanel turnId="turn-a" streamEvents={[]} responseText="First answer" isStreaming />,
+    );
+    now = 3000;
+    rerender(
+      <AgentTurnStreamPanel turnId="turn-b" streamEvents={[]} responseText="" isStreaming />,
+    );
+    now = 3400;
+    rerender(
+      <AgentTurnStreamPanel turnId="turn-b" streamEvents={[]} responseText="Second answer" isStreaming />,
+    );
+    now = 4000;
+    rerender(
+      <AgentTurnStreamPanel turnId="turn-b" streamEvents={[]} responseText="Second answer" isStreaming={false} />,
+    );
+    expect(await screen.findByText("Response complete in 1.0s · first text in 0.4s")).toBeInTheDocument();
+    clock.mockRestore();
+  });
+
   it("uses the originating call for a parked directive so one tool stays one activity", () => {
     const event = agentToolEventToVisibleStreamEvent(
       "waiting",

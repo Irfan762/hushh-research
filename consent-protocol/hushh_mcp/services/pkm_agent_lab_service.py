@@ -4719,6 +4719,10 @@ class PKMAgentLabService:
             "professional, location, health, travel, food, shopping, entertainment, social, general. "
             "Fallback facts are review-first. Do not emit prose paragraphs, secrets, identifiers, or "
             "anything ambiguous.\n\n"
+            "The supplied text may begin with 'KYC requested fields:'. That line is transient "
+            "target context, never a fact to store. An owner response may be a bare value; use "
+            "the requested label to choose an allowed field only when it is an exact fit. Never "
+            "map an academic, college, university, or student email to the primary contact email.\n\n"
             f"Allowed fields: {json.dumps(allowed, ensure_ascii=False)}\n\n"
             f"User supplied text:\n{message}"
         )

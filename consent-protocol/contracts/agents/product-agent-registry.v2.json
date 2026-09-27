@@ -2935,7 +2935,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "fdef36c87ae0c05479264102e3d144ad90aad67e3e5e3e38e59d33022aa45636",
+      "system_instruction_sha256": "f46e0c827752ccb9ba26282f0740417246b19fcb543c9bd24aed3542e4bc0581",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -3741,7 +3741,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "215a004f68f3067e960384d3bf1771f8b460f266d933ffba1e905cea01557a79",
+      "system_instruction_sha256": "d0e9d0016dfa6b17d6e8c93297dc7bff78a92179ee745b13128942478aaf8cf7",
       "telemetry_namespace": "agent.one",
       "tools": [
         {

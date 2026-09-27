@@ -36,6 +36,7 @@ import {
   formatAgentPkmSaveSummary,
   getPkmAutoSaveCards,
   getPkmConfirmationCards,
+  isAgentPkmDependentRequest,
   loadAgentPkmContext,
   peekAgentPkmContext,
   previewAgentPkmMemory,
@@ -44,6 +45,7 @@ import {
 } from "@/lib/agent/agent-pkm-memory";
 import { AgentPkmContextStore } from "@/lib/agent/agent-pkm-context-store";
 import { publishValidatedAuthSessionOwner } from "@/lib/auth/session-owner";
+import { bumpPkmInvalidationEpoch } from "@/lib/cache/pkm-invalidation-epoch";
 import { advanceVaultSessionEpoch } from "@/lib/vault/session-epoch";
 import { createAgentPkmCaptureGuard, isAgentPkmProcessingReady } from "@/lib/agent/agent-pkm-capture-runtime";
 
@@ -52,7 +54,7 @@ it("keeps a confirmed old-generation receipt without invalidating the replacemen
   const guard = createAgentPkmCaptureGuard({
     userId: "owner-a", signal: new AbortController().signal, isEnabled: () => true,
   });
-  const invalidate = vi.spyOn(AgentPkmContextStore, "invalidateUser");
+  const invalidate = vi.spyOn(AgentPkmContextStore, "invalidateAfterPkmMutation");
   pkmSavePreparedDomainMock.mockImplementationOnce(async () => {
     publishValidatedAuthSessionOwner("owner-b");
     publishValidatedAuthSessionOwner("owner-a");
@@ -143,6 +145,12 @@ describe("agent PKM memory helpers", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("recognizes a direct question about a saved personal detail as memory-dependent", () => {
+    expect(isAgentPkmDependentRequest("Do you know my shoe size and address?")).toBe(true);
+    expect(isAgentPkmDependentRequest("What is my shoe size?")).toBe(true);
+    expect(isAgentPkmDependentRequest("Draft a short reply to this email.")).toBe(false);
   });
 
   it("keeps sharing and uncertain cards in review while exposing only private can-save cards", () => {
@@ -258,7 +266,7 @@ describe("agent PKM memory helpers", () => {
 
     expect(context.source).toBe("decrypted_session_pkm");
     expect(context.text).toContain("Source: decrypted locally");
-    expect(context.text).toContain("agent-safe-pkm/v1");
+    expect(context.text).toContain("owner-session-pkm/v2");
     expect(context.text).toContain("concise summaries");
     expect(context.coverage).toMatchObject({
       totalFactCount: 1,
@@ -306,7 +314,7 @@ describe("agent PKM memory helpers", () => {
     );
   });
 
-  it("loads the full agent-safe profile for a KYC lookup", async () => {
+  it("loads the full owner profile for a KYC lookup", async () => {
     pkmBlob = {
       preferences: { writing: { default_style: "concise summaries" } },
       identity: { identity_profile: { full_name: "Test Person", declared_age: "23" } },
@@ -370,7 +378,7 @@ describe("agent PKM memory helpers", () => {
     ).toMatchObject({ kind: "exact", domain: "preferences" });
   });
 
-  it("returns the full agent-safe packet regardless of prompt wording", async () => {
+  it("returns the full owner packet regardless of prompt wording", async () => {
     const context = await loadAgentPkmContext({
       userId: "user_1",
       vaultOwnerToken: "vault_token",
@@ -404,7 +412,7 @@ describe("agent PKM memory helpers", () => {
     expect(context.text).not.toContain("x".repeat(200));
   });
 
-  it("warms the full agent-safe packet into browser RAM after unlock", async () => {
+  it("warms the full owner packet into browser RAM after unlock", async () => {
     await warmAgentPkmContext({
       userId: "user_1",
       vaultOwnerToken: "vault_token",
@@ -414,7 +422,7 @@ describe("agent PKM memory helpers", () => {
     expect(pkmGetMetadataMock).toHaveBeenCalledTimes(1);
     expect(pkmGetManyStaleFirstMock).toHaveBeenCalledTimes(1);
     const packet = peekAgentPkmContext({ userId: "user_1", message: "unrelated request" });
-    expect(packet?.text).toContain("agent-safe-pkm/v1");
+    expect(packet?.text).toContain("owner-session-pkm/v2");
     expect(packet?.text).toContain("concise summaries");
   });
 
@@ -506,7 +514,7 @@ describe("agent PKM memory helpers", () => {
     expect(pkmGetManyStaleFirstMock).not.toHaveBeenCalled();
   });
 
-  it("never projects secrets, regulated identifiers, source artifacts, or quarantined information into One's packet", async () => {
+  it("keeps owner records in One's packet while excluding secrets, source artifacts, and quarantined information", async () => {
     pkmBlob = {
       preferences: {
         writing: { default_style: "concise summaries" },
@@ -522,10 +530,10 @@ describe("agent PKM memory helpers", () => {
       },
       identity: {
         student_id: "safe-student-id",
-        passport_number: "must-not-reach-agent-context",
+        passport_number: "owner-passport-fixture",
       },
       financial: {
-        account_number: "must-not-reach-agent-context",
+        account_number: "owner-account-fixture",
         portfolio_name: "long-term holdings",
       },
       source_library: {
@@ -556,9 +564,137 @@ describe("agent PKM memory helpers", () => {
     expect(context.text).toContain("concise summaries");
     expect(context.text).toContain("safe-student-id");
     expect(context.text).toContain("long-term holdings");
+    expect(context.text).toContain("[Restricted owner field] Identity > Passport Number");
+    expect(context.text).toContain("[Restricted owner field] Financial > Account Number");
+    expect(context.text).toContain("owner-passport-fixture");
+    expect(context.text).toContain("owner-account-fixture");
     expect(context.text).not.toContain("runtime_secrets");
     expect(context.text).not.toContain("gemini_api_key");
     expect(context.text).not.toContain("must-not-reach-agent-context");
+  });
+
+  it("reloads a restricted owner field after a PKM write during the unlocked session", async () => {
+    pkmBlob = {
+      identity: {
+        identity_documents: { pan_number: "owner-identifier-before" },
+      },
+    };
+    pkmGetMetadataMock.mockResolvedValue({
+      ...METADATA,
+      domains: [{ ...METADATA.domains[0], key: "identity", displayName: "Identity" }],
+    });
+    const params = {
+      userId: "user_1",
+      vaultOwnerToken: "vault_token",
+      vaultKey: "vault_key",
+    };
+
+    const initial = await loadAgentPkmContext(params);
+    expect(initial.text).toContain("owner-identifier-before");
+
+    pkmBlob = {
+      identity: {
+        identity_documents: { pan_number: "owner-identifier-after" },
+      },
+    };
+    window.dispatchEvent(
+      new CustomEvent("pkm-domain-changed", { detail: { userId: "user_1", domain: "identity" } }),
+    );
+
+    expect(peekAgentPkmContext({ userId: "user_1" })).toBeNull();
+    const refreshed = await loadAgentPkmContext(params);
+    expect(refreshed.text).toContain("owner-identifier-after");
+    expect(refreshed.text).not.toContain("owner-identifier-before");
+    expect(pkmGetManyStaleFirstMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a pre-write One packet when the PKM epoch advanced without a window event", async () => {
+    const userId = "agent_context_epoch_owner";
+    pkmBlob = {
+      preferences: {
+        writing: { default_style: "before-write" },
+      },
+    };
+    const params = {
+      userId,
+      vaultOwnerToken: "vault_token",
+      vaultKey: "vault_key",
+    };
+
+    const initial = await loadAgentPkmContext(params);
+    expect(initial.text).toContain("before-write");
+
+    pkmBlob = {
+      preferences: {
+        writing: { default_style: "after-write" },
+      },
+    };
+    // Models the synchronous CacheSync mutation signal when a window-only
+    // event is missed by the chat workspace.
+    bumpPkmInvalidationEpoch(userId);
+
+    expect(peekAgentPkmContext({ userId })).toBeNull();
+    const refreshed = await loadAgentPkmContext(params);
+
+    expect(refreshed.text).toContain("after-write");
+    expect(refreshed.text).not.toContain("before-write");
+    expect(pkmGetMetadataMock).toHaveBeenLastCalledWith(userId, true, "vault_token");
+    expect(pkmGetManyStaleFirstMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forceRefresh: true, backgroundRefresh: false }),
+    );
+  });
+
+  it("does not publish an in-flight pre-write packet after the PKM epoch advances", async () => {
+    const userId = "agent_context_epoch_race_owner";
+    let signalSnapshotsStarted: (() => void) | null = null;
+    const snapshotsStarted = new Promise<void>((resolve) => {
+      signalSnapshotsStarted = resolve;
+    });
+    let releaseSnapshots: ((value: {
+      snapshots: Record<string, { data: Record<string, unknown> }>;
+      failedDomains: string[];
+    }) => void) | null = null;
+    pkmBlob = {
+      preferences: {
+        writing: { default_style: "before-write" },
+      },
+    };
+    pkmGetManyStaleFirstMock.mockImplementationOnce(() => new Promise((resolve) => {
+      signalSnapshotsStarted?.();
+      releaseSnapshots = resolve;
+    }));
+
+    const pending = loadAgentPkmContext({
+      userId,
+      vaultOwnerToken: "vault_token",
+      vaultKey: "vault_key",
+    });
+    await snapshotsStarted;
+    expect(pkmGetManyStaleFirstMock).toHaveBeenCalledTimes(1);
+
+    pkmBlob = {
+      preferences: {
+        writing: { default_style: "after-write" },
+      },
+    };
+    bumpPkmInvalidationEpoch(userId);
+    releaseSnapshots?.({
+      snapshots: {
+        preferences: {
+          data: { writing: { default_style: "before-write" } },
+        },
+      },
+      failedDomains: [],
+    });
+
+    const refreshed = await pending;
+
+    expect(refreshed.text).toContain("after-write");
+    expect(refreshed.text).not.toContain("before-write");
+    expect(peekAgentPkmContext({ userId })?.text).toContain("after-write");
+    expect(pkmGetManyStaleFirstMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ forceRefresh: true, backgroundRefresh: false }),
+    );
   });
 
   it("keeps a bounded local inventory and reports safety omissions", async () => {
