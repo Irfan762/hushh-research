@@ -232,6 +232,66 @@ function readString(record: Record<string, unknown>, key: string): string {
 const GENERIC_AGENT_CHAT_ERROR =
   "One couldn't complete that response. Please try again.";
 
+/** Shown when a turn's stream stops before the server said it finished or failed. */
+export const AGENT_CHAT_STREAM_LOST_ERROR =
+  "One lost the connection before finishing that response. Please try again.";
+
+/**
+ * How long a turn's stream may be silent before the turn is treated as lost.
+ * The server writes a `: ping` comment every 15 s while a model or tool call is
+ * pending (sse-starlette's keep-alive), so this is six missed pings. It is keyed
+ * on bytes, never on content: a slow model is not a dead connection.
+ */
+export const AGENT_CHAT_STREAM_IDLE_MS = 90_000;
+const AGENT_CHAT_STREAM_WATCHDOG_TICK_MS = 5_000;
+
+/**
+ * Byte-level liveness for One's AG-UI stream. The serving instance can be
+ * killed, redeployed or scaled down mid-turn; the stream then either stops
+ * sending or closes without RUN_FINISHED / RUN_ERROR, and `@ag-ui/client`
+ * completes such a run quietly. `fetch` is the HttpAgent transport with every
+ * body chunk noted; `start` arms the silence watchdog for one run.
+ */
+function createAgentStreamLiveness(onSilent: () => void) {
+  let lastBytesAtMs = Date.now();
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const touch = () => {
+    lastBytesAtMs = Date.now();
+  };
+  const stop = () => {
+    if (timer !== null) clearInterval(timer);
+    timer = null;
+  };
+  return {
+    fetch: async (init: RequestInit | undefined): Promise<Response> => {
+      const response = await nativeStreamFetch("/api/one/agent-chat", init);
+      touch();
+      if (!response.ok || !response.body) return response;
+      const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          touch();
+          controller.enqueue(chunk);
+        },
+      }));
+      return new Response(body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: response.headers,
+      });
+    },
+    start: () => {
+      stop();
+      touch();
+      timer = setInterval(() => {
+        if (Date.now() - lastBytesAtMs < AGENT_CHAT_STREAM_IDLE_MS) return;
+        stop();
+        onSilent();
+      }, AGENT_CHAT_STREAM_WATCHDOG_TICK_MS);
+    },
+    stop,
+  };
+}
+
 type ParkedAppActionDirective = {
   actionId: string;
   slots: Record<string, unknown>;
@@ -1006,17 +1066,25 @@ export async function streamAgentChat(input: {
     throw error;
   }
   const chatKey = Object.values(chatKeyHeaders)[0] ?? "";
+  const liveness = createAgentStreamLiveness(() => {
+    loseStream();
+    agent.abortRun();
+  });
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
     headers: { Authorization: `Bearer ${input.vaultOwnerToken}`, ...chatKeyHeaders },
     initialMessages: [{ id: crypto.randomUUID(), role: "user", content: input.message }],
-    fetch: (_url, init) => nativeStreamFetch("/api/one/agent-chat", init),
+    fetch: (_url, init) => liveness.fetch(init),
   });
   let text = "";
   let failure: Error | null = null;
   let interrupted = false;
   let intentionallyStoppedAtConfirmation = false;
+  // Per run: whether the server ended it (RUN_FINISHED or RUN_ERROR), and
+  // whether this client gave up on its stream.
+  let runTerminal = false;
+  let streamLost = false;
   // Server events seen, and whether one was terminal. The bridge starts the
   // turn's own task only after RUN_STARTED, so a second event proves a turn is
   // running server-side and will outlive this stream.
@@ -1031,6 +1099,29 @@ export async function streamAgentChat(input: {
   const finishTerminalRun = () => {
     settleTerminalRun?.();
     settleTerminalRun = null;
+  };
+  // The stream stopped without the server ending the run: the instance died,
+  // was replaced, or went silent. Fail the turn so the person can retry
+  // instead of watching a working state that nothing will ever settle. A run
+  // this client stopped on purpose (confirmation, detach, cancel) is not lost.
+  const loseStream = () => {
+    if (runTerminal || streamLost || failure || intentionallyStoppedAtConfirmation ||
+        detached || input.signal?.aborted) return;
+    streamLost = true;
+    failure = new Error(AGENT_CHAT_STREAM_LOST_ERROR);
+    handlers.onError?.(failure.message);
+    finishTerminalRun();
+  };
+  const runUntilTerminal = async (parameters: Parameters<HttpAgent["runAgent"]>[0]) => {
+    runTerminal = false;
+    streamLost = false;
+    liveness.start();
+    try {
+      await agent.runAgent(parameters, subscriber);
+    } finally {
+      liveness.stop();
+    }
+    if (!runTerminal) loseStream();
   };
   const stopAfterConfirmation = () => {
     if (intentionallyStoppedAtConfirmation) return;
@@ -1100,7 +1191,7 @@ export async function streamAgentChat(input: {
         resume: async (status: "resolved" | "cancelled", payload?: unknown) => {
           const interruptId = interruptsByToolCall.get(callId);
           if (!interruptId) throw new Error("This Agent One action is no longer resumable.");
-          await agent.runAgent({
+          await runUntilTerminal({
             tools,
             context: [],
             forwardedProps: {
@@ -1115,7 +1206,7 @@ export async function streamAgentChat(input: {
               screenContext: input.screenContext,
             },
             resume: [{ interruptId, status, payload }],
-          }, subscriber);
+          });
         },
       },
     };
@@ -1465,6 +1556,7 @@ export async function streamAgentChat(input: {
       }
     },
     onRunFinishedEvent: (params) => {
+      runTerminal = true;
       if (params.outcome === "interrupt") {
         for (const interrupt of params.interrupts) {
           if (interrupt.toolCallId) interruptsByToolCall.set(interrupt.toolCallId, interrupt.id);
@@ -1504,7 +1596,7 @@ export async function streamAgentChat(input: {
               input.signal?.addEventListener("abort", abortResume, { once: true });
               signal?.addEventListener("abort", abortResume, { once: true });
               try {
-                await agent.runAgent({
+                await runUntilTerminal({
                   tools, context: [],
                   forwardedProps: {
                     ...await connectorProjection(),
@@ -1521,7 +1613,7 @@ export async function streamAgentChat(input: {
                     } } : {}),
                   },
                   resume: [{ interruptId, status: "resolved", payload: { confirmed: approval !== null } }],
-                }, subscriber);
+                });
                 if (signal?.aborted || !mcpSessionCurrent()) throw new Error("The connector session changed.");
                 if (failure) throw failure;
               } finally {
@@ -1544,6 +1636,7 @@ export async function streamAgentChat(input: {
       finishTerminalRun();
     },
     onRunErrorEvent: ({ event }) => {
+      runTerminal = true;
       if (intentionallyStoppedAtConfirmation) {
         finishTerminalRun();
         return;
@@ -1557,8 +1650,9 @@ export async function streamAgentChat(input: {
     },
     onRunFailed: ({ error }) => {
       // Our own abort of a detached stream is not a failure of the turn, which
-      // is still running server-side.
-      if (intentionallyStoppedAtConfirmation || detached) {
+      // is still running server-side. A stream this client already gave up on
+      // was reported once; its abort must not replace that with a second error.
+      if (intentionallyStoppedAtConfirmation || detached || streamLost) {
         finishTerminalRun();
         return;
       }
@@ -1589,7 +1683,7 @@ export async function streamAgentChat(input: {
     },
   });
   try {
-    await agent.runAgent({
+    await runUntilTerminal({
       tools,
       context: [],
       forwardedProps: {
@@ -1607,7 +1701,7 @@ export async function streamAgentChat(input: {
         // stops reading; a web tab's closed stream must not wake a phone.
         notifyOnDetach: Capacitor.isNativePlatform(),
       },
-    }, subscriber);
+    });
     await terminalRun;
   } catch (error) {
     // AG-UI reports a failed request to the subscriber, then rejects with the
@@ -1644,14 +1738,28 @@ export async function streamAgentIntro(input: {
 }): Promise<{ conversationId: string | null; model: string | null; text: string }> {
   const threadId = crypto.randomUUID();
   const handlers = input.handlers ?? {};
+  let text = "";
+  let failure: Error | null = null;
+  let runTerminal = false;
+  let streamLost = false;
+  // Same guarantee as a vault turn: a stream that stops without the server
+  // ending the run fails the turn instead of leaving it waiting.
+  const loseStream = () => {
+    if (runTerminal || streamLost || failure || input.signal?.aborted) return;
+    streamLost = true;
+    failure = new Error(AGENT_CHAT_STREAM_LOST_ERROR);
+    handlers.onError?.(failure.message);
+  };
+  const liveness = createAgentStreamLiveness(() => {
+    loseStream();
+    agent.abortRun();
+  });
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
     initialMessages: [{ id: crypto.randomUUID(), role: "user", content: input.message }],
-    fetch: (_url, init) => nativeStreamFetch("/api/one/agent-chat", init),
+    fetch: (_url, init) => liveness.fetch(init),
   });
-  let text = "";
-  let failure: Error | null = null;
   const subscriber: AgentSubscriber = {
     ...publicOutputSubscriber,
     onRunStartedEvent: () => handlers.onStart?.({ conversationId: threadId }),
@@ -1665,18 +1773,24 @@ export async function streamAgentIntro(input: {
       text += event.delta;
       handlers.onToken?.(event.delta);
     },
-    onRunFinishedEvent: () => handlers.onComplete?.({ conversationId: threadId }),
+    onRunFinishedEvent: () => {
+      runTerminal = true;
+      handlers.onComplete?.({ conversationId: threadId });
+    },
     onRunErrorEvent: ({ event }) => {
+      runTerminal = true;
       failure = new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
       handlers.onError?.(failure.message);
     },
     onRunFailed: ({ error }) => {
+      if (streamLost) return;
       failure = new Error(formatAgentChatErrorMessage(error.message || ""));
       handlers.onError?.(failure.message);
     },
   };
   const abort = () => agent.abortRun();
   input.signal?.addEventListener("abort", abort, { once: true });
+  liveness.start();
   try {
     await agent.runAgent({
       tools: [],
@@ -1684,8 +1798,10 @@ export async function streamAgentIntro(input: {
       forwardedProps: { screenContext: input.screenContext, timezone: resolveBrowserTimeZone() },
     }, subscriber);
   } finally {
+    liveness.stop();
     input.signal?.removeEventListener("abort", abort);
   }
+  if (!runTerminal) loseStream();
   if (failure) throw failure;
   return { conversationId: threadId, model: null, text };
 }
