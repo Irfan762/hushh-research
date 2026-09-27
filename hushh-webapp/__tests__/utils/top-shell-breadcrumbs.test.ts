@@ -292,7 +292,7 @@ describe("top shell breadcrumbs", () => {
       width: "content",
       align: "center",
       hideBack: true,
-      items: [{ label: "One", href: "/" }, { label: "Setup" }],
+      items: [],
     });
 
     expect(resolveTopShellBreadcrumb("/one/setup/")).toEqual({
@@ -300,7 +300,7 @@ describe("top shell breadcrumbs", () => {
       width: "content",
       align: "center",
       hideBack: true,
-      items: [{ label: "One", href: "/" }, { label: "Setup" }],
+      items: [],
     });
 
     const fromDashboard = new URLSearchParams();
@@ -401,7 +401,7 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/setup",
       width: "content",
       align: "center",
-      hideBack: true,
+      hideBack: false,
       items: [
         { label: "Set up", href: "/one/setup" },
         { label: "Choose your AI" },
