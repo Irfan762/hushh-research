@@ -231,16 +231,20 @@ export function AgentConnectionsDrawer({
         className={cn(
           // The panel floats inset from the edges (the padding), like an iPadOS
           // sidebar, so its rounded corners and shadow never butt against the
-          // header or the bottom bar. Closed, it also clears its own shadow.
-          "absolute bottom-[var(--app-bottom-shell-height,0px)] transform p-2 transition-transform duration-200 motion-reduce:transition-none ease-[cubic-bezier(0.32,0.72,0,1)]",
+          // header or the bottom bar. The inset margin passes taps through to
+          // the close layer; only the panel itself catches them. Closed, it
+          // also clears its own shadow. Motion uses the shared sheet tier.
+          "pointer-events-none absolute bottom-[var(--app-bottom-shell-height,0px)] transform p-2 transition-transform motion-reduce:transition-none",
           "left-0 top-[var(--agent-chat-header-height)] z-(--z-sheet) w-[min(88vw,336px)]",
-          historyOpen ? "translate-x-0" : "translate-x-[calc(-100%_-_3rem)]",
+          historyOpen
+            ? "translate-x-0 duration-(--motion-sheet-enter-duration) ease-(--motion-sheet-enter-ease)"
+            : "translate-x-[calc(-100%_-_3rem)] duration-(--motion-sheet-exit-duration) ease-(--motion-sheet-exit-ease)",
         )}
       >
         <div
           hidden={mode !== "chats"}
           inert={mode !== "chats"}
-          className="h-full min-h-0"
+          className="pointer-events-auto h-full min-h-0"
         >
           {chats}
         </div>

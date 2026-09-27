@@ -273,8 +273,8 @@ for (const width of [390, 768, 1440])
     expect(box.y).toBeGreaterThanOrEqual(56 + 7);
     expect(barTop - (box.y + box.height)).toBeGreaterThanOrEqual(7);
     expect(box.x + box.width).toBeLessThan(width);
-    // Tapping outside the floating panel still closes it.
-    await page.mouse.click(Math.min(width - 8, box.x + box.width + 24), box.y + box.height / 2);
+    // A tap just outside the panel, inside its 8px inset margin, still closes it.
+    await page.mouse.click(box.x + box.width + 4, box.y + box.height / 2);
     await expect(page.getByRole("dialog", { name: "Agent chat history", exact: true })).toHaveCount(0);
     // Closed, the panel and its shadow sit fully off-screen.
     await expect

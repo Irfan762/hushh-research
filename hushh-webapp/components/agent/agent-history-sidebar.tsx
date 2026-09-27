@@ -454,7 +454,7 @@ export function AgentHistorySidebar({
         {isMobileMode ? (
           <div className="px-4 pb-1 pt-4">
             <div className="flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-baseline gap-2">
+              <div className="flex min-w-0 items-center gap-2">
                 <h2 className="truncate text-[22px] font-bold leading-7 tracking-[-0.022em] text-foreground">
                   {listTitle}
                 </h2>
@@ -692,8 +692,10 @@ export function AgentHistorySidebar({
                 <div key={group.key}>
                   <div
                     className={cn(
-                      "px-2 pb-1 pt-2 text-muted-foreground/70",
-                      isMobileMode ? "text-[13px] font-semibold" : "text-[11px] font-medium tracking-wide",
+                      "px-2 pb-1 pt-2",
+                      isMobileMode
+                        ? "text-[13px] font-semibold text-muted-foreground"
+                        : "text-[11px] font-medium tracking-wide text-muted-foreground/70",
                     )}
                   >
                     {group.label}
