@@ -544,16 +544,25 @@ export function useFeedActionables(): UseFeedActionablesResult {
         // Confirm/Decline and the scoped Review route.
         if (entry.kind === "connection_request") continue;
         if (entry.kind === "outgoing_request" || (isDriveSharingEntry(entry) && entry.metadata?.direction !== "incoming")) continue;
+        const requesterLabel = resolveConsentRequesterLabel({
+          counterpartLabel: entry.counterpart_label,
+          counterpartEmail: entry.counterpart_email,
+          counterpartSecondaryLabel: entry.counterpart_secondary_label,
+          counterpartId: entry.counterpart_id,
+        });
         items.push({
           id: `consent:${entry.id}`,
           icon: ShieldCheck,
           iconTone: "accent",
-          title: resolveConsentRequesterLabel({
-            counterpartLabel: entry.counterpart_label,
-            counterpartEmail: entry.counterpart_email,
-            counterpartSecondaryLabel: entry.counterpart_secondary_label,
-            counterpartId: entry.counterpart_id,
-          }),
+          person:
+            ["ria", "investor", "person"].includes(entry.counterpart_type) &&
+            (entry.counterpart_id || entry.counterpart_image_url)
+              ? {
+                  displayName: requesterLabel,
+                  photoUrl: entry.counterpart_image_url ?? null,
+                }
+              : null,
+          title: requesterLabel,
           description: consentSummary(entry),
           href: buildConsentCenterHref("pending", {
             requestId: driveSharingSelectionId(entry),
@@ -748,7 +757,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
           label !== "Someone"
             ? {
                 displayName: label,
-                photoUrl: null,
+                photoUrl: invite.inviterPhotoUrl ?? null,
               }
             : null,
         title: label,
