@@ -80,7 +80,7 @@ export function WalletAgentIcon({
 export function LocationAgentIcon({
   size = "1em",
   weight = "duotone",
-  color = "#EF4444",
+  color = "#007AFF",
   className,
   ...props
 }: AgentIconProps) {
