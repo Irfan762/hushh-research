@@ -7151,8 +7151,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             />
           ) : null}
 
+          {/* One's transcript region is hidden as a WHOLE, not just the
+              scroller inside it. This wrapper is `flex-1` beside Puppy's own
+              `flex-1` surface, so leaving it displayed while only its child
+              went display:none made the empty box take half the column and
+              Puppy One rendered at half height with its composer mid-screen. */}
           <div
-            className="relative min-h-0 flex-1 overflow-hidden"
+            className={cn(
+              "relative min-h-0 flex-1 overflow-hidden",
+              isPuppySurface && "hidden",
+            )}
             inert={isHistoryDrawerOpen}
           >
             <div
@@ -7215,7 +7223,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               className={cn(
                 "h-full w-full overflow-y-auto px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
                 "pb-[calc(var(--agent-chat-composer-bottom,5rem)+5.5rem)] lg:px-8",
-                isPuppySurface && "hidden",
               )}
               tabIndex={0}
               role="region"
