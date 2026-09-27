@@ -229,9 +229,10 @@ function AppShellFrame({ children }: ProvidersProps) {
       searchParams?.get("circleId") ?? null,
     );
   // Focused tasks clear the bottom command/navigation stack while keeping the
-  // top shell route context. AI selection owns its mobile Continue action.
+  // top shell route context. Setup pages own their bottom completion actions.
   const bottomChromeHidden =
     hidesPersistentChrome ||
+    routeLayout.route === ROUTES.ONE_SETUP ||
     routeLayout.route === ROUTES.ONE_SETUP_CONNECTIONS ||
     focusedLocationBottomTask ||
     focusedConnectCircleChromeFlow;
