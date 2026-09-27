@@ -55,6 +55,14 @@ ENV PATH=/usr/local/bin:$PATH
 
 # Copy application code
 COPY . .
+
+# The generated action catalog is static per image, so its passage vectors are
+# computed here, once, instead of by every instance and worker at startup (about
+# 70s per instance on Cloud Run, 2026-09-27). Runs the runtime's own code against
+# the exact tree this image serves, offline, with the baked model. A missing or
+# mismatched file at runtime only means the catalog is embedded live.
+RUN HF_HUB_OFFLINE=1 python -m scripts.ops.bake_action_catalog_vectors
+
 RUN python -m compileall -q .
 
 # Run as a non-root, least-privilege user (FedRAMP CM-6 / SC-2). The app writes

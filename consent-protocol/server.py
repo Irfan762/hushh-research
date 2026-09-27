@@ -628,7 +628,10 @@ async def startup_action_retrieval_warmup() -> None:
 
     ``list_app_actions`` ranks the generated action catalog with a small
     embedding model. Loaded lazily, the first search on each instance paid for
-    the model load and for embedding the whole catalog. Only an image that
+    the model load and for embedding the whole catalog. The image now bakes the
+    catalog's vectors (``scripts/ops/bake_action_catalog_vectors.py``), so this
+    loads the model and reads them; a missing or stale file falls back to
+    embedding here, as before. Only an image that
     bakes the model warms it (the Dockerfile sets its directory), so local
     runs and tests never load a model at startup. Runs in a worker thread and
     never blocks readiness or health; a failure leaves the lazy path in place.
