@@ -244,9 +244,9 @@ for (const width of [390, 768])
   });
 
 for (const width of [390, 768, 1440])
-  test(`chat sidebar floats inset with no tinted band at ${width}px`, async ({ page }) => {
-    // The old dim layer stopped at the header and at the bottom bar, so both stayed
-    // bright around a grey band: a white strip above the panel and a patch below.
+  test(`chat sidebar floats inset over the shared sheet scrim at ${width}px`, async ({ page }) => {
+    // The chat behind the history drawer recedes exactly as it does behind a sheet
+    // or dialog: the same --app-scrim-color dim and --app-scrim-filter blur.
     const barHeight = 88;
     await page.setViewportSize({ width, height: 720 });
     await page.evaluate((height) => {
@@ -259,12 +259,35 @@ for (const width of [390, 768, 1440])
     // Let the slide-in settle before measuring geometry.
     await expect.poll(async () => (await panel.boundingBox())!.x).toBeGreaterThanOrEqual(7);
     const scrim = page.locator("[data-agent-history-scrim]");
-    const scrimStyle = await scrim.evaluate((element) => {
-      const style = getComputedStyle(element);
-      return { background: style.backgroundColor, filter: style.backdropFilter, pointer: style.pointerEvents };
-    });
-    expect(scrimStyle.background).toBe("rgba(0, 0, 0, 0)");
-    expect(scrimStyle.filter === "none" || scrimStyle.filter === "").toBe(true);
+    const readScrim = () =>
+      scrim.evaluate((element) => {
+        const style = getComputedStyle(element);
+        // Resolve the canonical tokens through a probe so the comparison is
+        // computed-to-computed, whatever the pointer media query picked.
+        const probe = document.createElement("div");
+        probe.style.backgroundColor = "var(--app-scrim-color)";
+        probe.style.backdropFilter = "var(--app-scrim-filter)";
+        document.body.appendChild(probe);
+        const canonical = getComputedStyle(probe);
+        const result = {
+          background: style.backgroundColor,
+          filter: style.backdropFilter,
+          canonicalBackground: canonical.backgroundColor,
+          canonicalFilter: canonical.backdropFilter,
+          opacity: style.opacity,
+          visibility: style.visibility,
+          pointer: style.pointerEvents,
+        };
+        probe.remove();
+        return result;
+      });
+    await expect.poll(async () => (await readScrim()).opacity).toBe("1");
+    const scrimStyle = await readScrim();
+    expect(scrimStyle.filter).toContain("blur(");
+    expect(scrimStyle.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(scrimStyle.background).toBe(scrimStyle.canonicalBackground);
+    expect(scrimStyle.filter).toBe(scrimStyle.canonicalFilter);
+    expect(scrimStyle.visibility).toBe("visible");
     expect(scrimStyle.pointer).toBe("auto");
     const box = (await panel.boundingBox())!;
     const barTop = 720 - barHeight;
@@ -283,7 +306,20 @@ for (const width of [390, 768, 1440])
         return closed ? closed.x + closed.width : 0;
       })
       .toBeLessThanOrEqual(-24);
+    // Closed, the scrim fades out and leaves no live backdrop filter behind.
+    await expect.poll(async () => (await readScrim()).visibility).toBe("hidden");
+    expect((await readScrim()).opacity).toBe("0");
   });
+
+test("chat sidebar scrim does not animate under reduced motion", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.getByRole("button", { name: "Open drawer", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Agent chat history", exact: true })).toBeVisible();
+  const transition = await page
+    .locator("[data-agent-history-scrim]")
+    .evaluate((element) => getComputedStyle(element).transitionProperty);
+  expect(transition).toBe("none");
+});
 
 for (const width of [390, 768])
   test(`chat sidebar ends above the fixed bottom bar at ${width}px`, async ({ page }) => {
