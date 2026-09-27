@@ -495,6 +495,11 @@ Three small mobile UX/nav fixes (commit `909ea793d`):
 - **Root cause:** `HushhSessionPrivacyShield` covers the WebView on every `willResignActive` (correct: it keeps private information out of the switcher snapshot). The cover always drew status text and an animating spinner, so iOS captured a "loading" screen into the snapshot and showed it until JS acknowledged the generation.
 - **Fix:** the cover is now the launch screen (`.systemBackground` + `Splash`, aspect-fill). The lock icon, status text and spinner are removed entirely. Only the 8 s recovery panel (explanation + Try again / Restart session) can appear over it. Release fades the cover out over 0.12 s. The generation/document acknowledgement contract is unchanged. File: `ios/App/App/Plugins/HushhSessionPrivacyPlugin.swift`.
 
+### B59 — An accepted sent connection request appeared in My connections only after a manual refresh (iOS)
+- **Symptom:** after someone accepted your request, Connect → My connections did not change until you pulled or tapped refresh.
+- **Root cause:** the only live signal on native is the `connection_request_resolved` push. The consent SSE fallback is web-only. With notifications off or not yet granted, a dev-signed build, or a delayed APNs delivery, nothing told the mounted screen to reconcile.
+- **Fix:** `useOutgoingRequestResolutionWatch` (`lib/connections/`) reads pending outgoing request ids every 5 s. It runs only while a request is pending and the app is visibly active. Any change calls the page's existing `reconcileConnectionSurfaces`. Push stays the primary path. Test: `__tests__/app/connect/page-client.test.tsx`, "shows an accepted sent request without a push or manual refresh".
+
 ---
 
 ## 🧪 QA test phone numbers (UAT, fixed OTP `000000`)
