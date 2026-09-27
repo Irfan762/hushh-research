@@ -397,7 +397,7 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/setup",
       width: "content",
       align: "center",
-      hideBack: true,
+      hideBack: false,
       items: [
         { label: "Set up", href: "/one/setup" },
         { label: "Choose your AI" },

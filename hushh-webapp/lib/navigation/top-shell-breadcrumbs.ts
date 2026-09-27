@@ -292,17 +292,12 @@ function resolveTopShellBreadcrumbInner(
   }
 
   if (pathname === ROUTES.ONE_SETUP_CONNECTIONS) {
-    // Choosing an AI is now the direct post-auth landing for an unresolved
-    // user (post-auth-route-service.ts's PRE_VAULT_ROUTE) -- the same "no
-    // confirmed previous step" situation the bare hub below hides its own
-    // back arrow for. A hardcoded retrace to the hub is stale here: most
-    // arrivals never visited it, and finishing this step now goes straight
-    // home regardless of how it was reached.
+    // Keep the shared back control beside Set up, matching other setup steps.
     return {
       backHref: ROUTES.ONE_SETUP,
       width: "content",
       align: "center",
-      hideBack: true,
+      hideBack: false,
       items: [
         { label: "Set up", href: ROUTES.ONE_SETUP },
         // Matches the on-screen title; a crumb that disagrees with the heading
