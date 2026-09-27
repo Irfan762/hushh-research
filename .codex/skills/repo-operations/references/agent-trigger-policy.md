@@ -5,7 +5,7 @@ This reference defines when the `repo-operations` skill should trigger and when 
 ## Trigger this skill for
 
 1. failing CI or GitHub Actions questions
-2. branch protection, merge queue, or PR freshness policy
+2. refreshing a branch from `main`, maintainer PR landing, an explicitly requested direct push to `main`, branch protection, merge queue, or PR freshness policy
 3. UAT or production deployment work
 4. Cloud Run, Cloud Build, runtime rollout, or rollback questions
 5. env, secret, or parity verification
@@ -32,6 +32,8 @@ This reference defines when the `repo-operations` skill should trigger and when 
 2. “Check main branch protection and merge queue.”
 3. “Verify env parity for production rollout.”
 4. “Is this PR blocked by freshness or by branch protection?”
+5. “Fetch `main` into my current branch, then land PR #123 with maintainer bypass.”
+6. “Push my completed current branch directly to `main` after the required preflight.”
 
 ## Bad examples
 

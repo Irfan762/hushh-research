@@ -17,6 +17,18 @@
       {
         "prompt": "verify env and secret parity between UAT and production",
         "top_k": 3
+      },
+      {
+        "prompt": "fetch origin/main into my current branch, then land PR #123 with maintainer admin bypass",
+        "top_k": 3
+      },
+      {
+        "prompt": "push my completed current branch directly to main after the required preflight",
+        "top_k": 3
+      },
+      {
+        "prompt": "land this maintainer pull request into main, preserve my working branch, and verify the head SHA",
+        "top_k": 3
       }
     ],
     "negative": [
