@@ -461,6 +461,9 @@ tests/test_cloudrun_revision_provenance.py
 # connector calls pause for exact-call review without leaking arguments or results.
 tests/services/test_consent_db_request_statuses.py
 tests/test_one_output_privacy.py
+# A long paste travels as its own text/plain document part: the model reads it as a
+# named, delimited document and history restores it as a chip, not message text.
+tests/test_one_text_attachments.py
 tests/test_governed_mcp_toolset.py
 tests/test_one_turn_location.py
 tests/test_mcp_review_service.py
