@@ -499,9 +499,10 @@ for (const viewport of [
         visibleMaskProbe.remove();
         return result;
       });
-    // The shared top bar owns the single "Connect" title, as on Feed; the
-    // body repeats no heading, so the tab row is the first thing to clear.
-    await expect(page.getByTestId("top-app-bar-breadcrumb-trail")).toHaveText("Connect");
+    // The shared top bar owns the single "Connect" title, as on Feed (this
+    // fixture renders the page body only; connect-page-layout.contract.test
+    // guards the top-bar title). The body repeats no heading, so the tab row
+    // is the first thing to clear.
     await expect(page.getByRole("heading", { name: "Connect" })).toHaveCount(0);
     const segmentedControl = (await page.getByText("Connections · Circles").boundingBox())!;
     expect(segmentedControl.y).toBeGreaterThanOrEqual(topClearance.visibleMask);

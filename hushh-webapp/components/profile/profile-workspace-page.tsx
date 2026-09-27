@@ -4652,7 +4652,7 @@ function ProfilePageContent({
             <SettingsGroup title="Legal" separatorInset>
               <SettingsRow
                 icon={ShieldCheck}
-                iconTone="green"
+                iconTone="capability"
                 title="Privacy Policy"
                 testId="profile-legal-privacy-row"
                 chevron
@@ -4660,7 +4660,7 @@ function ProfilePageContent({
               />
               <SettingsRow
                 icon={ScrollText}
-                iconTone="blue"
+                iconTone="capability"
                 title="Terms of Use"
                 testId="profile-legal-terms-row"
                 chevron
