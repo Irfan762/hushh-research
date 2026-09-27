@@ -71,7 +71,7 @@ async def sharing(documents, monkeypatch):
             "254_drive_bulk_shares.sql",
             "256_drive_request_bulk_search.sql",
         ):
-            connection.execute(text((MIGRATIONS / name).read_text()))
+            connection.exec_driver_sql((MIGRATIONS / name).read_text())
         connection.commit()
     return DriveSharingStore(db=documents.db, authority_key="synthetic-ledger-key")
 
