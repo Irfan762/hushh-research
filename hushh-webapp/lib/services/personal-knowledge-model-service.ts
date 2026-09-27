@@ -2305,17 +2305,36 @@ export class PersonalKnowledgeModelService {
           ? (errorDetailPayload as { detail?: unknown }).detail
           : errorDetailPayload;
       const errorDetailRecord =
-        errorDetail && typeof errorDetail === "object"
+        errorDetail && typeof errorDetail === "object" && !Array.isArray(errorDetail)
           ? (errorDetail as Record<string, unknown>)
           : null;
-      const errorCode =
+      let errorCode =
         errorDetailRecord && typeof errorDetailRecord.code === "string"
           ? errorDetailRecord.code
           : undefined;
-      const errorMessage =
+      let errorMessage =
         errorDetailRecord && typeof errorDetailRecord.message === "string"
           ? errorDetailRecord.message
           : undefined;
+      // FastAPI's OWN request-validation failures (a pydantic model on
+      // StoreDomainRequest rejecting the body, e.g. structure_decision's
+      // json_paths max_length cap) never reach our route code, so they carry
+      // none of the {code, message} shape above -- `detail` is instead a
+      // list of {loc, msg, type}. Read the first entry rather than falling
+      // back to a bare status: this is exactly the shape a manifest that's
+      // grown past the path cap fails with.
+      if (!errorCode && !errorMessage && Array.isArray(errorDetail) && errorDetail.length > 0) {
+        const firstError = errorDetail[0];
+        if (firstError && typeof firstError === "object") {
+          const record = firstError as Record<string, unknown>;
+          errorCode = typeof record.type === "string" ? record.type : undefined;
+          const loc = Array.isArray(record.loc)
+            ? record.loc.filter((part) => typeof part === "string" || typeof part === "number").join(".")
+            : undefined;
+          const msg = typeof record.msg === "string" ? record.msg : undefined;
+          errorMessage = [loc, msg].filter(Boolean).join(": ") || undefined;
+        }
+      }
       throw new Error(
         `Failed to store domain data: ${response.status}` +
           (errorCode || errorMessage
