@@ -96,6 +96,7 @@ vi.mock("@/lib/services/api-service", () => ({
 import {
   AGENT_CHAT_STREAM_IDLE_MS,
   AGENT_CHAT_STREAM_LOST_ERROR,
+  AgentChatStreamLostError,
   formatAgentChatErrorMessage,
   parseRestoredTurnActivity,
   getAgentChatHistory,
@@ -1432,9 +1433,12 @@ describe("a chat turn never waits forever", () => {
     const onError = vi.fn();
     const onComplete = vi.fn();
 
-    await expect(streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "what can we do here",
-      conversationId: "thread-lost", vaultOwnerToken: "owner-token", handlers: { onError, onComplete } }))
-      .rejects.toThrow(AGENT_CHAT_STREAM_LOST_ERROR);
+    const turn = streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "what can we do here",
+      conversationId: "thread-lost", vaultOwnerToken: "owner-token", handlers: { onError, onComplete } });
+    await expect(turn).rejects.toThrow(AGENT_CHAT_STREAM_LOST_ERROR);
+    // Retry needs the turn's conversation to ask history before resending it.
+    await expect(turn).rejects.toBeInstanceOf(AgentChatStreamLostError);
+    await expect(turn).rejects.toMatchObject({ conversationId: "thread-lost" });
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onComplete).not.toHaveBeenCalled();
 

@@ -387,6 +387,13 @@ export function describeAgentPkmCardDestination(
   return { kind: "location", label: pkmScopeBreadcrumb(domainTitle, resolveCardScope(card)) };
 }
 
+/** The one sentence every review surface (chat and Profile) shows for a destination. */
+export function formatAgentPkmCardDestination(destination: AgentPkmCardDestination): string {
+  if (destination.kind === "location") return `Saves to ${destination.label}`;
+  if (destination.kind === "not_saved") return "This part won’t be saved.";
+  return "Where this would be saved couldn’t be worked out yet.";
+}
+
 function resolveCardSharingPosture(card: AgentPkmPreviewCard): string {
   if ((card.sharing_impact?.active_recipient_count || 0) > 0) {
     return "Approved for sharing with the recipients shown above.";

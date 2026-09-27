@@ -38,8 +38,8 @@ import {
   addToPKM,
   clearAgentPkmContext,
   describeAgentPkmCardDestination,
+  formatAgentPkmCardDestination,
   getIgnoredPkmCards,
-  type AgentPkmCardDestination,
   type AgentPkmPreviewCard,
 } from "@/lib/agent/agent-pkm-memory";
 import { prepareNaturalLanguagePkm } from "@/lib/pkm/pkm-natural-language-ingestion";
@@ -119,12 +119,6 @@ function cardImpactKey(card: PkmMemoryCard): string {
   return `${card.domain}::${cardScopePath(card)}`;
 }
 
-function captureDestinationText(destination: AgentPkmCardDestination): string {
-  if (destination.kind === "location") return `Saves to ${destination.label}`;
-  if (destination.kind === "not_saved") return "This part won’t be saved.";
-  return "Where this would be saved couldn’t be worked out yet.";
-}
-
 /** The reviewed card's destination, then how it is shared. */
 function CaptureCardDescription({
   card,
@@ -144,7 +138,7 @@ function CaptureCardDescription({
         data-testid="memory-capture-destination"
         data-destination-kind={destination.kind}
       >
-        {captureDestinationText(destination)}
+        {formatAgentPkmCardDestination(destination)}
       </span>
       {destination.kind === "not_saved" ? null : <span className="block">{sharing}</span>}
     </>

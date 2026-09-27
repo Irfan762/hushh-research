@@ -19,16 +19,19 @@ const { addToPKM, clearAgentPkmContext, previewAgentPkmMemory, trackEvent } = vi
   trackEvent: vi.fn(),
 }));
 
-vi.mock("@/lib/agent/agent-pkm-memory", async (importOriginal) => ({
-  addToPKM,
-  clearAgentPkmContext,
-  // Real: the review row must name the place the save path would write to.
-  describeAgentPkmCardDestination: (
-    await importOriginal<typeof import("@/lib/agent/agent-pkm-memory")>()
-  ).describeAgentPkmCardDestination,
-  getIgnoredPkmCards: () => [],
-  previewAgentPkmMemory,
-}));
+vi.mock("@/lib/agent/agent-pkm-memory", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent/agent-pkm-memory")>();
+  return {
+    addToPKM,
+    clearAgentPkmContext,
+    // Real: the review row must name the place the save path would write to,
+    // in the same words the chat review panel uses.
+    describeAgentPkmCardDestination: actual.describeAgentPkmCardDestination,
+    formatAgentPkmCardDestination: actual.formatAgentPkmCardDestination,
+    getIgnoredPkmCards: () => [],
+    previewAgentPkmMemory,
+  };
+});
 
 vi.mock("@/lib/observability/client", () => ({ trackEvent }));
 

@@ -192,7 +192,9 @@ import {
   subscribeAgentTurnSettled,
   subscribeOpenAgentConversation,
   waitForWatchedAgentTurn,
+  watchDetachedAgentTurn,
 } from "@/lib/agent/agent-chat-turn-watch";
+import { dispatchAgentChatHistoryInvalidated } from "@/lib/agent/agent-chat-history-events";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { isRiaAdvisoryAccessReady } from "@/lib/ria/ria-profile-view-model";
@@ -210,7 +212,10 @@ import {
   snapKaiBottomChromeVisible,
 } from "@/lib/navigation/kai-bottom-chrome-visibility";
 import {
+  AGENT_CHAT_STREAM_LOST_ERROR,
+  AgentChatStreamLostError,
   deleteAgentChatConversation,
+  getLostAgentTurnOutcome,
   renameAgentChatConversation,
   streamAgentChat,
   streamAgentIntro,
@@ -352,7 +357,72 @@ type AgentMessage = {
   structuredExperience?: AgentStructuredExperience | null;
   structuredExperiences?: AgentStructuredExperienceEntry[];
   driveCompilation?: DriveCompilationUiState;
+  /** Why a partial answer stopped, shown below the text that did arrive. */
+  errorNotice?: string;
+  /** The stream was lost, not the turn: Retry checks history before resending. */
+  lostTurn?: AgentLostTurn;
 };
+
+type AgentLostTurn = { conversationId: string; startedAtMs: number };
+
+/** Short inline notice under a partial answer whose connection was lost. */
+export const AGENT_PARTIAL_ANSWER_LOST_NOTICE = "Connection lost before One finished.";
+
+/**
+ * Settle an assistant bubble as failed. With no text yet the reason is the
+ * message; with a partial answer the text stays and the reason shows as a
+ * short notice below it, so the person knows why it stopped. Idempotent: the
+ * stream's error callback and the thrown error both land here for one failure.
+ */
+export function settleAssistantMessageError<T extends AgentMessage>(
+  current: T,
+  reason: string,
+  error?: unknown,
+): T {
+  const lostTurn = error instanceof AgentChatStreamLostError
+    ? { conversationId: error.conversationId, startedAtMs: error.startedAtMs }
+    : current.lostTurn;
+  if (current.status === "error") return lostTurn ? { ...current, lostTurn } : current;
+  const partial = current.text.trim().length > 0;
+  return {
+    ...current,
+    text: partial ? current.text : reason,
+    ...(partial
+      ? { errorNotice: reason === AGENT_CHAT_STREAM_LOST_ERROR ? AGENT_PARTIAL_ANSWER_LOST_NOTICE : reason }
+      : {}),
+    ...(lostTurn ? { lostTurn } : {}),
+    status: "error",
+    streamEvents: settleVisibleStreamEvents(current.streamEvents, "error"),
+  };
+}
+
+export type LostTurnRetryPlan = "rerun" | "restore" | "reattach";
+
+/**
+ * Before a lost turn is sent again, ask history where it stands: an answer the
+ * server already saved is shown ("restore"), a turn still running is waited on
+ * ("reattach"), and only a turn that never finished is sent again ("rerun").
+ * An unreadable history falls back to today's resend.
+ */
+export async function planLostTurnRetry(input: {
+  lostTurn: AgentLostTurn | undefined;
+  retryText: string;
+  vaultOwnerToken: string | null;
+  vaultKey: string | null;
+}): Promise<LostTurnRetryPlan> {
+  if (!input.lostTurn || !input.vaultOwnerToken || !input.vaultKey) return "rerun";
+  try {
+    const outcome = await getLostAgentTurnOutcome({
+      conversationId: input.lostTurn.conversationId,
+      userMessage: input.retryText,
+      vaultOwnerToken: input.vaultOwnerToken,
+      vaultKey: input.vaultKey,
+    });
+    return outcome === "answered" ? "restore" : outcome === "pending" ? "reattach" : "rerun";
+  } catch {
+    return "rerun";
+  }
+}
 
 export type AgentStructuredExperienceEntry = {
   id: string;
@@ -1622,7 +1692,7 @@ export function GmailInformationRequestAttachment({
   );
 }
 
-function AgentBubble({
+export function AgentBubble({
   message,
   onOpenConnections,
   onInformationRequestSubmitted,
@@ -1806,6 +1876,15 @@ function AgentBubble({
             canRenderPendingConsentRequest ? null : (
             <AgentThinkingDots />
           )}
+          {!isUser && isError && message.errorNotice ? (
+            <p
+              role="status"
+              data-testid="agent-message-error-notice"
+              className="mt-2 text-xs font-medium text-destructive"
+            >
+              {message.errorNotice}
+            </p>
+          ) : null}
         </div>
         {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} /> : null}
         <div
@@ -5673,15 +5752,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
             flushAssistantDelta();
-            updateMessage(assistantMessageId, (current) => ({
-              ...current,
-              text: current.text || message,
-              status: "error",
-              streamEvents: settleVisibleStreamEvents(
-                current.streamEvents,
-                "error",
-              ),
-            }));
+            updateMessage(assistantMessageId, (current) =>
+              settleAssistantMessageError(current, message),
+            );
             setIsChatLoading(false);
             setIsStreaming(false);
           },
@@ -5744,15 +5817,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         error instanceof Error && error.message
           ? error.message
           : "Agent chat request failed.";
-      updateMessage(assistantMessageId, (current) => ({
-        ...current,
-        text: current.text || message,
-        status: "error",
-        streamEvents: settleVisibleStreamEvents(
-          current.streamEvents,
-          "error",
-        ),
-      }));
+      updateMessage(assistantMessageId, (current) =>
+        settleAssistantMessageError(current, message, error),
+      );
       if (isChatKeyRefusal(error)) {
         // Chat is locked, not failed. Keep the unsent message, show the unlock
         // flow, and send it once after unlock. Refreshing the conversation list
@@ -5921,11 +5988,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
             flushAssistantDelta();
-            updateMessage(assistantMessageId, (current) => ({
-              ...current,
-              text: current.text || message,
-              status: "error",
-            }));
+            updateMessage(assistantMessageId, (current) =>
+              settleAssistantMessageError(current, message),
+            );
             setIsChatLoading(false);
             setIsStreaming(false);
           },
@@ -5971,11 +6036,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           error instanceof Error && error.message
             ? error.message
             : "Agent chat request failed.";
-        updateMessage(assistantMessageId, (current) => ({
-          ...current,
-          text: current.text || message,
-          status: "error",
-        }));
+        updateMessage(assistantMessageId, (current) =>
+          settleAssistantMessageError(current, message, error),
+        );
       }
       void loadConversationList(true).catch(() => undefined);
       setIsChatLoading(false);
@@ -6146,11 +6209,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
             flushAssistantDelta();
-            updateMessage(assistantMessageId, (current) => ({
-              ...current,
-              text: current.text || message,
-              status: "error",
-            }));
+            updateMessage(assistantMessageId, (current) =>
+              settleAssistantMessageError(current, message),
+            );
             setIsChatLoading(false);
             setIsStreaming(false);
           },
@@ -6169,11 +6230,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           error instanceof Error && error.message
             ? error.message
             : "Agent chat request failed.";
-        updateMessage(assistantMessageId, (current) => ({
-          ...current,
-          text: current.text || message,
-          status: "error",
-        }));
+        updateMessage(assistantMessageId, (current) =>
+          settleAssistantMessageError(current, message, error),
+        );
       }
       setIsChatLoading(false);
       setIsStreaming(false);
@@ -6646,6 +6705,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSendFailed={handleEmailSendFailed}
           sourceBoundEnvelope={gmailKycEmailDraftEnvelope}
           onDraftChange={handleEmailDraftChange}
+          onOpenConnections={openConnectorSurface}
           sourceBoundReply={
             workflowId
               ? {
@@ -6718,6 +6778,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       return;
     }
     setWalletWidgets([]);
+    const lostTurn = messages[assistantIndex]?.lostTurn;
+    const retryFromConversation = conversationIdRef.current;
+    const stillInSameChat = () => conversationIdRef.current === retryFromConversation;
     // Pre-vault / anonymous turns go through the informational intro tier, which
     // runAgentTurn early-returns on (no vault access). Route the retry to the
     // same tier the original turn used so the button is not a no-op there.
@@ -6726,6 +6789,36 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       run: async () => {
         if (!hasChatAccess) {
           await runIntroTurn(retryText);
+          return;
+        }
+        // Only the stream was lost: the server may have finished and saved
+        // this turn, or still be running it. Never run it a second time.
+        const token = getVaultOwnerToken();
+        const plan = await planLostTurnRetry({
+          lostTurn, retryText, vaultOwnerToken: token, vaultKey: vaultKeyRef.current,
+        });
+        if (!stillInSameChat()) return;
+        if (plan === "restore" && lostTurn && token && user?.uid) {
+          dispatchAgentChatHistoryInvalidated(user.uid);
+          await restoreConversationMessages(lostTurn.conversationId, token, stillInSameChat);
+          return;
+        }
+        if (plan === "reattach" && lostTurn && user?.uid) {
+          // The settled-turn effect reloads the saved answer in place.
+          updateConversationId(lostTurn.conversationId);
+          updateMessage(messageId, (message) => ({
+            ...message,
+            status: "streaming",
+            errorNotice: undefined,
+            lostTurn: undefined,
+          }));
+          setIsChatLoading(true);
+          setIsStreaming(true);
+          watchDetachedAgentTurn({
+            ownerId: user.uid,
+            conversationId: lostTurn.conversationId,
+            startedAtMs: lostTurn.startedAtMs,
+          });
           return;
         }
         await runAgentTurn(retryText, {
