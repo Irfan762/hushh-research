@@ -246,8 +246,12 @@ Live head keeps an explicit pin.
 - One support and account notices use the delegated `one@hushh.ai` mailbox. Support
   reports go to One with a fixed internal BCC to the support lead; account notices
   have no BCC. `SUPPORT_EMAIL_TEST_TO` redirects account notices in test mode. The
-  sender and delegated user must both be One for these routes. UAT and production carry no overrides; the
-  dev project's `SUPPORT_EMAIL_*` secrets point at `one@hushh.ai` in test mode. The
+  sender and delegated user must both be One for these routes. Production uses
+  the One defaults; UAT mounts explicit `SUPPORT_EMAIL_DELEGATED_USER` and
+  `SUPPORT_EMAIL_FROM` secrets, which the deploy preflight requires to equal
+  `one@hushh.ai`. Rotate stale UAT versions before a backend release, then
+  verify the new serving revision. The dev project's `SUPPORT_EMAIL_*` secrets
+  point at `one@hushh.ai` in test mode. The
   mailbox credential is never stored in the repo or Secret Manager; sending rides
   the delegated service identity. Forwarding from `one@hushh.ai` to a person is a
   Google Workspace admin setting, not a repo concern.
