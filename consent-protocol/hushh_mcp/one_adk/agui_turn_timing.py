@@ -57,6 +57,7 @@ from hushh_mcp.one_adk.run_errors import (
     transient_model_error_for_exception,
     transient_model_run_error,
 )
+from hushh_mcp.one_adk.text_attachments import render_text_attachments_for_model
 from hushh_mcp.services.chat_key import (
     CHAT_KEY_ERROR_MESSAGES,
     CHAT_KEY_ERRORS,
@@ -673,6 +674,7 @@ def record_connector_discovery(elapsed_ms: float) -> None:
 def timed_one_before_model(callback_context: Any, llm_request: Any) -> LlmResponse | None:
     """Preserve the external-read barrier and record privacy-safe request sizes."""
     drop_empty_history_parts(llm_request)
+    render_text_attachments_for_model(llm_request)
     guarded_response = before_external_read_model(callback_context, llm_request)
     if guarded_response is not None:
         return guarded_response
