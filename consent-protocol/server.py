@@ -132,6 +132,7 @@ def _parse_cors_allowed_origins() -> list[str]:
 # Import rate limiting
 from slowapi.errors import RateLimitExceeded  # noqa: E402
 
+from api.middlewares.agent_chat_drain import AgentChatDrainMiddleware  # noqa: E402
 from api.middlewares.chat_key import ChatKeyMiddleware, chat_key_error_handler  # noqa: E402
 from api.middlewares.observability import (  # noqa: E402
     configure_opentelemetry,
@@ -298,6 +299,10 @@ async def normalize_mcp_root(request: Request, call_next):
 
 
 app.mount("/mcp", remote_mcp_app)
+
+# Outside every BaseHTTPMiddleware so it writes to the server's own ``send``:
+# an agent-chat stream cancelled by shutdown still ends with a terminal event.
+app.add_middleware(AgentChatDrainMiddleware)
 
 # Registered last so it is the outermost application middleware: it strips the
 # chat key header before any other layer can read it and releases the key when the

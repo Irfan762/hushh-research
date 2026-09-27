@@ -36,6 +36,13 @@ _DRIVE_CONNECTION_ANSWERS = {
         "and links in this chat have not been verified again. Reconnect Google Drive "
         "in Connectors, then ask me again."
     ),
+    # read_workspace_tool reports a missing or narrowed Drive grant this way.
+    # Approving access is the only remedy, so retrying the same read cannot help.
+    "permission_required": (
+        "Google Drive needs your permission before I can check it. Earlier filenames "
+        "and links in this chat have not been verified again. Connect Google Drive in "
+        "Connectors and approve access, then ask me again."
+    ),
 }
 MAIL_TOOL = "ask_email_agent"
 READ_TOOLS = {
@@ -208,7 +215,8 @@ def after_external_read_tool(tool: Any, args: dict, tool_context: Any, tool_resp
     outcome = (
         status
         if isinstance(status, str)
-        and status in {"ok", "input_required", "connect_required", "reconnect_required"}
+        and status
+        in {"ok", "input_required", "connect_required", "reconnect_required", "permission_required"}
         else "failed"
     )
     tool_context.state[STATE_DRIVE_READ_OUTCOME] = {
