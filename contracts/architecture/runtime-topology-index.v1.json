@@ -5190,6 +5190,29 @@
       "implementation_override": null,
       "lifecycle": "canonical",
       "native_surface_id": null,
+      "page_file": "app/privacy/page.tsx",
+      "pathname": "/privacy",
+      "route_mode": "hidden",
+      "semantic_routes": [],
+      "voice": {
+        "action_ids": [],
+        "delegate_agent_ids": [],
+        "playbook_id": "route.privacy.policy"
+      }
+    },
+    {
+      "alias": null,
+      "api_dependencies": [],
+      "cache": {
+        "policy": "memory-only",
+        "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+        "resource_classes": [
+          "unknown"
+        ]
+      },
+      "implementation_override": null,
+      "lifecycle": "canonical",
+      "native_surface_id": null,
       "page_file": "app/products/hushh-tech/launch/page.tsx",
       "pathname": "/products/hushh-tech/launch",
       "route_mode": "hidden",
@@ -5656,6 +5679,29 @@
       "implementation_override": null,
       "lifecycle": "canonical",
       "native_surface_id": null,
+      "page_file": "app/terms/page.tsx",
+      "pathname": "/terms",
+      "route_mode": "hidden",
+      "semantic_routes": [],
+      "voice": {
+        "action_ids": [],
+        "delegate_agent_ids": [],
+        "playbook_id": "route.terms.of.use"
+      }
+    },
+    {
+      "alias": null,
+      "api_dependencies": [],
+      "cache": {
+        "policy": "memory-only",
+        "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+        "resource_classes": [
+          "unknown"
+        ]
+      },
+      "implementation_override": null,
+      "lifecycle": "canonical",
+      "native_surface_id": null,
       "page_file": "app/welcome/page.tsx",
       "pathname": "/welcome",
       "route_mode": "standard",
@@ -5703,13 +5749,13 @@
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
     "agent_registry": "b052806c33090cb1b58fb1b4add01c39ac4bb296baa0713a90b08a482b648560",
-    "cache_manifest": "b8edb41e819d68f3de0c40ec9b971f214069786fe4d869ade00b24668c3b7b7e",
+    "cache_manifest": "7ed4a0cf2f8504a940b59e874ccde800cf3feead6c5fab7e8f00daa26c629e3c",
     "data_plane": "985345cfa5a19f908e2e06f74415076544c392eb879f92607d950193898fcbee",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "62a54d78776db967dd224f16d8ec9ae31f6cccb9a5f58e83c0b97a9d8a241dea",
-    "route_index": "9c1d1649ac1b6118de6e394b09e596372feda71e6e52ee739cee07ea34bce5aa",
-    "route_layout": "0078f6a0f60cc0296733f32ba580139d2eba8723a1eadfb42c424d8b0d944c04",
-    "surface_map": "b8956cfbefc6edff1a5e3fa5b082b9a8a38aa723986391a1ddefff4414bbfce3",
+    "route_index": "a93ea81cfafed91dd93fbe0a51399a988a8ed2a7014d0b93cb8efdf777ddc35d",
+    "route_layout": "624527215c7cad78fe8e1212445b829eb687b1c7af71bcbf93eefd0a34c766fb",
+    "surface_map": "e5abf5a47396385975ad4406e06fae86c6863f5b200a96901dee43c37c694b8c",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
@@ -5721,7 +5767,7 @@
     "decision_required": 2,
     "in_process_specialists": 5,
     "one_specialist_tools": 6,
-    "physical_routes": 140,
+    "physical_routes": 142,
     "semantic_routes": 14,
     "table_families": 75
   }
