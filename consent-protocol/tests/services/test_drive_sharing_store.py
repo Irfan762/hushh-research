@@ -71,7 +71,9 @@ async def sharing(documents, monkeypatch):
             "254_drive_bulk_shares.sql",
             "256_drive_request_bulk_search.sql",
         ):
-            connection.exec_driver_sql((MIGRATIONS / name).read_text())
+            # Raw SQL preserves JSON colons; double percent signs for psycopg2's
+            # parameter parser while retaining PostgreSQL format() placeholders.
+            connection.exec_driver_sql((MIGRATIONS / name).read_text().replace("%", "%%"))
         connection.commit()
     return DriveSharingStore(db=documents.db, authority_key="synthetic-ledger-key")
 
