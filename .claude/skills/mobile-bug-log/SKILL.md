@@ -490,6 +490,11 @@ Three small mobile UX/nav fixes (commit `909ea793d`):
 - **Root cause:** an instrumentation outlives the adb client that started it. Stopping a card on the Mac left its 30-minute hold running on the phone, and the next card's instrumentation tore it down mid-run.
 - **Fix:** the card force-stops the package before starting. `PERF_SKIP_INSTALL=1` skips the reinstall (wireless streamed installs of an unchanged APK hung for minutes).
 
+### B58 — "Protecting private information…" + spinner in the app switcher and on every resume (iOS)
+- **Symptom:** the app-switcher card, and a brief flash on return, showed a lock icon, "Protecting private information…", and a spinning indicator. It also appeared after Control Center, Notification Center, screenshots, and system prompts.
+- **Root cause:** `HushhSessionPrivacyShield` covers the WebView on every `willResignActive` (correct: it keeps private information out of the switcher snapshot). The cover always drew status text and an animating spinner, so iOS captured a "loading" screen into the snapshot and showed it until JS acknowledged the generation.
+- **Fix:** the cover is now the launch screen (`.systemBackground` + `Splash`, aspect-fill). The lock icon, status text and spinner are removed entirely. Only the 8 s recovery panel (explanation + Try again / Restart session) can appear over it. Release fades the cover out over 0.12 s. The generation/document acknowledgement contract is unchanged. File: `ios/App/App/Plugins/HushhSessionPrivacyPlugin.swift`.
+
 ---
 
 ## 🧪 QA test phone numbers (UAT, fixed OTP `000000`)
