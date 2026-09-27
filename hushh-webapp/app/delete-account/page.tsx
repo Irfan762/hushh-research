@@ -6,7 +6,7 @@ import type { Metadata } from "next";
 // verified. Keep the in-app steps in sync with the Profile "Delete account" flow.
 const SUPPORT_EMAIL = "support@hushh.ai";
 const REQUEST_SUBJECT = "Delete my Hussh One account";
-const PRIVACY_POLICY_URL = "https://www.hushh.ai/privacy";
+const PRIVACY_POLICY_URL = "/privacy";
 
 export const metadata: Metadata = {
   title: "Delete your Hussh One account · Hussh",

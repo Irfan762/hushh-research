@@ -26,6 +26,8 @@ import {
   SendIcon as SendHorizontal,
   TrashIcon as Trash2,
   UserCircleIcon as User,
+  ShieldCheck,
+  ScrollText,
 } from "@/components/icons";
 import {
   AccountProfileIcon,
@@ -4645,6 +4647,25 @@ function ProfilePageContent({
                   onClick={() => router.push("/one/profile/pkm-agent-lab")}
                 />
               ) : null}
+            </SettingsGroup>
+
+            <SettingsGroup title="Legal" separatorInset>
+              <SettingsRow
+                icon={ShieldCheck}
+                iconTone="green"
+                title="Privacy Policy"
+                testId="profile-legal-privacy-row"
+                chevron
+                onClick={() => router.push(ROUTES.PRIVACY)}
+              />
+              <SettingsRow
+                icon={ScrollText}
+                iconTone="blue"
+                title="Terms of Use"
+                testId="profile-legal-terms-row"
+                chevron
+                onClick={() => router.push(ROUTES.TERMS)}
+              />
             </SettingsGroup>
 
             <SettingsGroup title={PROFILE_LABELS.accountAccess} separatorInset>

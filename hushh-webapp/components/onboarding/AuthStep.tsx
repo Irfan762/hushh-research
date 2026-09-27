@@ -34,7 +34,7 @@ import {
   normalizeInternalRouteHref,
   ROUTES,
 } from "@/lib/navigation/routes";
-import { type KaiLegalDocumentType } from "@/lib/legal/kai-legal-content";
+import { type LegalDocumentType } from "@/lib/legal/legal-documents";
 import { trackEvent } from "@/lib/observability/client";
 import {
   resolveGrowthEntrySurface,
@@ -180,7 +180,7 @@ export function AuthStep({
     [redirectPath],
   );
   const [activeLegalDoc, setActiveLegalDoc] =
-    useState<KaiLegalDocumentType | null>(null);
+    useState<LegalDocumentType | null>(null);
   const legalReturnControlIdRef = useRef<string | null>(null);
   const legalCloseResolversRef = useRef<Array<() => void>>([]);
 
@@ -253,7 +253,7 @@ export function AuthStep({
     };
   }, [updateProviderAttemptPhase, user]);
 
-  const openLegalDoc = useCallback(async (docType: KaiLegalDocumentType) => {
+  const openLegalDoc = useCallback(async (docType: LegalDocumentType) => {
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => {
         legalReturnControlIdRef.current =
