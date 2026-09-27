@@ -3357,6 +3357,21 @@ class FourUserMemoryService(OneLocationAgentService):
                     }
             return None
         if (
+            "FROM one_location_public_invites" in sql
+            and "invite_id" in params
+            and "owner_user_id" not in params
+        ):
+            invite = self.public_invites.get(params["invite_id"])
+            if invite and "remaining_seconds" in sql:
+                return {
+                    **invite,
+                    "expired_by_db_clock": invite["expires_at"] <= datetime.now(timezone.utc),
+                    "remaining_seconds": (
+                        invite["expires_at"] - datetime.now(timezone.utc)
+                    ).total_seconds(),
+                }
+            return invite
+        if (
             "UPDATE one_location_public_invites" in sql
             and "status = 'expired'" in sql
             and "owner_user_id" in params
@@ -5726,6 +5741,8 @@ def test_public_invite_expiry_is_decided_by_the_database_clock() -> None:
     # Behaviourally: a link inside its window survives a read.
     service = FourUserMemoryService()
     created = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+    resolved = service.resolve_public_invite(public_token=created["publicToken"])
+    assert 0 < resolved["expiresInSeconds"] <= 3600
     assert (
         service.resolve_public_invite(public_token=created["publicToken"])["invite"]["status"]
         == "active"
@@ -5738,6 +5755,45 @@ def test_public_invite_expiry_is_decided_by_the_database_clock() -> None:
     with pytest.raises(OneLocationAgentError) as exc:
         service.resolve_public_invite(public_token=created["publicToken"])
     assert exc.value.code == "LOCATION_PUBLIC_INVITE_NOT_ACTIVE"
+
+
+def test_owner_public_invite_state_uses_the_database_expiry_verdict() -> None:
+    row = {"status": "active", "expired_by_db_clock": False}
+    assert OneLocationAgentService._project_public_invite_expired(row)["status"] == "active"
+    row["expired_by_db_clock"] = True
+    assert OneLocationAgentService._project_public_invite_expired(row)["status"] == "expired"
+
+
+def test_public_invite_resolve_rechecks_a_concurrent_revoke() -> None:
+    service = FourUserMemoryService()
+    created = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+    original_execute_one = service._execute_one
+
+    def revoke_after_lookup(sql, params=None):
+        if "UPDATE one_location_public_invites" in sql and "status = 'expired'" in sql:
+            service.public_invites[created["invite"]["id"]]["status"] = "revoked"
+        return original_execute_one(sql, params)
+
+    service._execute_one = revoke_after_lookup
+    with pytest.raises(OneLocationAgentError) as error:
+        service.resolve_public_invite(public_token=created["publicToken"])
+    assert error.value.code == "LOCATION_PUBLIC_INVITE_NOT_ACTIVE"
+
+
+def test_public_invite_resolve_reads_a_concurrent_extension() -> None:
+    service = FourUserMemoryService()
+    created = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+    original_execute_one = service._execute_one
+    extended_expiry = datetime.now(timezone.utc) + timedelta(hours=2)
+
+    def extend_after_lookup(sql, params=None):
+        if "UPDATE one_location_public_invites" in sql and "status = 'expired'" in sql:
+            service.public_invites[created["invite"]["id"]]["expires_at"] = extended_expiry
+        return original_execute_one(sql, params)
+
+    service._execute_one = extend_after_lookup
+    resolved = service.resolve_public_invite(public_token=created["publicToken"])
+    assert datetime.fromisoformat(resolved["invite"]["expiresAt"]) == extended_expiry
 
 
 def _point(latitude: float, longitude: float, captured_at: str) -> dict:
@@ -7966,21 +8022,58 @@ def test_an_expired_link_does_not_block_a_new_one() -> None:
     assert len(_active_public_invites(service)) == 1
 
 
-def test_a_link_whose_token_cannot_be_recovered_is_replaced() -> None:
-    # A row minted before tokens were derived from the id. Its token is gone
-    # for good, so leaving it active would strand the owner behind a link
-    # nothing can show and no create button.
+def test_an_unrecoverable_link_stays_live_until_expiry() -> None:
+    # An older row has no derivable token, but people holding the original
+    # bearer must not lose access merely because the owner tries Create again.
     service = FourUserMemoryService()
 
     first = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
     legacy = service.public_invites[first["invite"]["id"]]
     legacy["metadata"] = {}
+    original_expiry = legacy["expires_at"]
 
+    with pytest.raises(OneLocationAgentError) as error:
+        service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+
+    assert error.value.code == "LOCATION_PUBLIC_INVITE_UNRECOVERABLE"
+    assert error.value.status_code == 409
+    assert legacy["status"] == "active"
+    assert legacy["expires_at"] == original_expiry
+    assert len(_active_public_invites(service)) == 1
+    assert (
+        service.resolve_public_invite(public_token=first["publicToken"])["invite"]["status"]
+        == "active"
+    )
+
+    service.revoke_public_invite(owner_user_id="user_a", invite_id=first["invite"]["id"])
     second = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
-
     assert second["publicToken"] != first["publicToken"]
-    assert second.get("reused") is not True
-    assert legacy["status"] == "revoked"
+
+
+def test_signing_key_change_does_not_revoke_a_shared_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    service = FourUserMemoryService()
+    monkeypatch.setattr(
+        one_location_agent_module,
+        "get_core_security_settings",
+        lambda: SimpleNamespace(app_signing_key="signing-key-a"),
+    )
+    first = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+    original_expiry = service.public_invites[first["invite"]["id"]]["expires_at"]
+
+    monkeypatch.setattr(
+        one_location_agent_module,
+        "get_core_security_settings",
+        lambda: SimpleNamespace(app_signing_key="signing-key-b"),
+    )
+    with pytest.raises(OneLocationAgentError) as error:
+        service.create_public_invite(owner_user_id="user_a", duration_hours=1)
+
+    assert error.value.code == "LOCATION_PUBLIC_INVITE_UNRECOVERABLE"
+    assert service.public_invites[first["invite"]["id"]]["expires_at"] == original_expiry
+    assert (
+        service.resolve_public_invite(public_token=first["publicToken"])["invite"]["status"]
+        == "active"
+    )
     assert len(_active_public_invites(service)) == 1
 
 
@@ -8615,12 +8708,18 @@ def test_public_invite_named_url_keeps_bare_token_compatible(name: str, slug: st
     assert named_token == f"{slug}.{created['publicToken']}"
     assert created["invite"]["publicUrl"] == created["publicUrl"]
     resolved = service.resolve_public_invite(public_token=named_token)
-    assert resolved == service.resolve_public_invite(public_token=created["publicToken"])
+
+    def stable_payload(token: str) -> dict:
+        payload = service.resolve_public_invite(public_token=token)
+        assert 0 < payload["expiresInSeconds"] <= 3600
+        return {key: value for key, value in payload.items() if key != "expiresInSeconds"}
+
+    assert stable_payload(named_token) == stable_payload(created["publicToken"])
     assert resolved["invite"]["ownerLabel"] == name
     # Changing the decorative name cannot change the resolved owner or grant access.
-    assert (
-        service.resolve_public_invite(public_token=f"someone.{created['publicToken']}") == resolved
-    )
+    assert stable_payload(f"someone.{created['publicToken']}") == {
+        key: value for key, value in resolved.items() if key != "expiresInSeconds"
+    }
     reused = service.create_public_invite(owner_user_id="user_a", duration_hours=1)
     assert reused["reused"] is True
     assert reused["publicUrl"] == created["publicUrl"]
