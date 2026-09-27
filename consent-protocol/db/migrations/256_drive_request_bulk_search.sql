@@ -13,14 +13,24 @@ ALTER TABLE drive_bulk_shares
   ADD COLUMN IF NOT EXISTS origin_request_id UUID,
   ADD COLUMN IF NOT EXISTS origin_request_revision BIGINT;
 
-ALTER TABLE drive_bulk_shares
-  ADD CONSTRAINT drive_bulk_origin_request_fk
-    FOREIGN KEY (origin_request_id,user_id)
-    REFERENCES drive_share_requests(request_id,user_id);
-
-ALTER TABLE drive_bulk_shares
-  ADD CONSTRAINT drive_bulk_origin_request_revision_check
-    CHECK ((origin_request_id IS NULL) = (origin_request_revision IS NULL));
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'drive_bulk_origin_request_fk'
+                   AND conrelid = 'drive_bulk_shares'::regclass) THEN
+    ALTER TABLE drive_bulk_shares
+      ADD CONSTRAINT drive_bulk_origin_request_fk
+        FOREIGN KEY (origin_request_id,user_id)
+        REFERENCES drive_share_requests(request_id,user_id);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname = 'drive_bulk_origin_request_revision_check'
+                   AND conrelid = 'drive_bulk_shares'::regclass) THEN
+    ALTER TABLE drive_bulk_shares
+      ADD CONSTRAINT drive_bulk_origin_request_revision_check
+        CHECK ((origin_request_id IS NULL) = (origin_request_revision IS NULL));
+  END IF;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS drive_bulk_origin_request_unique
   ON drive_bulk_shares(user_id,origin_request_id)
