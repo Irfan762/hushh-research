@@ -375,12 +375,23 @@ jobs:
           if-no-files-found: ignore
 
   web-targeted-check:
-    name: "Web Targeted Contracts"
+    name: "Web Targeted Contracts (${{ matrix.part }})"
     needs: [preflight-gate]
     if: >-
       !cancelled() && needs['preflight-gate'].result == 'success' &&
       (needs['preflight-gate'].outputs.frontend == 'true')
     runs-on: ubuntu-latest
+    # Two legs that partition the matched packs (scripts/ci/web-targeted-check.sh,
+    # WEB_TARGETED_PART): `node` runs the Vitest and verifier packs and never
+    # downloads a browser; `browser` runs the Playwright packs, several at once.
+    # On one runner the browser packs ran one test at a time and were ~11 of
+    # the lane's ~13 minutes (run 36346187928). ci-status reads the aggregate
+    # result, which is `success` only when every leg succeeded. fail-fast is
+    # off so a red leg never hides the other leg's verdict.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [node, browser]
     # Was 15, which the job could not fit. Downloading Chromium and WebKit
     # took 13-15 minutes on its own, so the lane either died mid-download or
     # reached the checks with ~100 seconds left and was cancelled part-way
@@ -404,6 +415,7 @@ jobs:
       # frontend-targeted lane must use the same locked runtime dependencies
       # rather than falling back to the runner's ambient Python installation.
       - uses: ./consent-protocol/.github/actions/setup-python-uv
+        if: matrix.part == 'node'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           protocol-dir: ./consent-protocol
@@ -414,6 +426,7 @@ jobs:
       # PR restores them instead of re-downloading ~400MB per run.
       - name: Cache Playwright browsers
         id: playwright-cache
+        if: matrix.part == 'browser'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -424,6 +437,7 @@ jobs:
       # ignores an author border-radius that Chromium honours, so a
       # Chromium-only run passes controls that are visibly broken on an iPhone.
       - name: Install Playwright browsers
+        if: matrix.part == 'browser'
         run: |
           set -euo pipefail
           # The one dependency install for this job. It is the same
@@ -444,7 +458,14 @@ jobs:
       - name: Run targeted web contract checks
         run: bash scripts/ci/orchestrate.sh web-targeted
         env:
-          WEB_CI_DEPS_INSTALLED: "1"
+          WEB_TARGETED_PART: ${{ matrix.part }}
+          # Only the browser leg ran npm ci in the step above; the node leg
+          # installs inside the script.
+          WEB_CI_DEPS_INSTALLED: ${{ matrix.part == 'browser' && '1' || '0' }}
+          # 3 of the runner's 4 vCPUs run tests; the fourth keeps the Node test
+          # runner and fixture builds from starving a browser. Only the Playwright
+          # config reads it, so it is inert in the node leg.
+          PLAYWRIGHT_WORKERS: "3"
           WEB_TARGETED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           WEB_TARGETED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           WEB_TARGETED_BASE_REF: ${{ github.base_ref || 'main' }}
@@ -453,7 +474,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: web-targeted-npm-audit-report
+          name: web-targeted-npm-audit-report-${{ matrix.part }}
           path: hushh-webapp/npm-audit-report.json
           if-no-files-found: ignore
 
@@ -463,13 +484,23 @@ jobs:
   # critical path. Until 2026-09 the full suite ran only in the merge queue,
   # which every maintainer bypasses, so a red unit test gated nothing.
   web-full-suite-check:
-    name: "Web Full Suite (Vitest)"
+    name: "Web Full Suite (Vitest) ${{ matrix.shard }}/3"
     needs: [preflight-gate]
     if: >-
       !cancelled() && needs['preflight-gate'].result == 'success' &&
       (needs['preflight-gate'].outputs.frontend == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Three Vitest shards (`vitest --shard`, every test file in exactly one).
+    # On one runner the suite took 425-715s of a 7.5-13.8 minute lane (runs
+    # 36346187928, 36345696733). ci-status reads the aggregate result, which is
+    # `success` only when all three shards succeeded, so its "frontend changed
+    # requires a successful full suite" rule still holds. fail-fast is off so
+    # one red shard never cancels the others and hides their failures.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -495,6 +526,7 @@ jobs:
       - name: Run the full Vitest suite and contract verifiers
         run: bash scripts/ci/orchestrate.sh web-full-suite
         env:
+          WEB_FULL_SUITE_SHARD: ${{ matrix.shard }}/3
           CAPABILITY_GRAPH_BASE_REF: origin/${{ github.base_ref || 'main' }}
           CI_NATIVE_PARITY_REQUIRED: ${{ env.CI_NATIVE_PARITY_REQUIRED }}
 
@@ -569,38 +601,63 @@ jobs:
           plutil -insert GOOGLE_APP_ID -string "1:123456789:ios:abcdef1234567890abcdef" "$PLIST"
           plutil -lint "$PLIST"
 
-      - name: Prepare generated Capacitor iOS project
+      # Swift package resolution is network-bound (174s cold on run
+      # 36346187928) and needs only node_modules and the committed
+      # CapApp-SPM/Package.swift, so it runs underneath the ~220s web export
+      # instead of after it. It is a prefetch, never the verdict: the wait step
+      # below lets it finish before cap sync writes the project, and the resolve
+      # step after sync runs again against what sync generated.
+      #
+      # There is deliberately no actions/cache for these packages. A cache saved
+      # by a pull_request run is scoped to that PR, so a new PR never restored
+      # one (every restore key missed on 36346187928), each save cost ~80s and
+      # ~4.5GB of the repository's 10GB cache budget, evicting the npm cache
+      # every other lane restores from main.
+      - name: Prefetch Swift packages in the background
         shell: bash
         run: |
           set -euo pipefail
-          npm run --prefix hushh-webapp cap:build
-          npm run --prefix hushh-webapp cap:sync:ios
+          nohup bash -c '
+            rc=0
+            xcodebuild -resolvePackageDependencies \
+              -project "${XCODE_PROJECT}" \
+              -scheme "${XCODE_SCHEME}" \
+              -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm" || rc=$?
+            echo "$rc" > "${RUNNER_TEMP}/spm-prefetch.exit"
+          ' > "${RUNNER_TEMP}/spm-prefetch.log" 2>&1 &
+          echo "$!" > "${RUNNER_TEMP}/spm-prefetch.pid"
 
-      - name: Cache Swift packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/spm
-            ~/Library/Caches/org.swift.swiftpm
-          key: spm-ci-${{ runner.os }}-${{ hashFiles('hushh-webapp/ios/App/CapApp-SPM/Package.swift', 'hushh-webapp/ios/**/Package.resolved') }}
-          restore-keys: |
-            spm-ci-${{ runner.os }}-
-            spm-${{ runner.os }}-
+      - name: Build the native web export
+        shell: bash
+        run: npm run --prefix hushh-webapp cap:build
 
-      - name: Resolve Swift package dependencies
+      - name: Wait for the Swift package prefetch
+        shell: bash
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          pid="$(cat "${RUNNER_TEMP}/spm-prefetch.pid")"
+          while kill -0 "$pid" 2>/dev/null; do sleep 2; done
+          rc="$(cat "${RUNNER_TEMP}/spm-prefetch.exit" 2>/dev/null || echo missing)"
+          echo "Swift package prefetch exit: $rc"
+          if [ "$rc" != "0" ]; then
+            # Not fatal: the resolve step below is authoritative and fails on
+            # its own if resolution is really broken.
+            echo "::warning::Swift package prefetch exited $rc; the resolve step will retry."
+            tail -n 40 "${RUNNER_TEMP}/spm-prefetch.log" || true
+          fi
+
+      - name: Sync the generated Capacitor iOS project
+        shell: bash
+        run: npm run --prefix hushh-webapp cap:sync:ios
+
+      # A cold simulator boot sat between the build and the first test (~110s
+      # from link to first test on 36346187928). Booting now overlaps it with
+      # resolution and compilation; xcodebuild waits for a device still booting.
+      - name: Boot the iPhone Simulator in the background
         shell: bash
         run: |
           set -euo pipefail
-          xcodebuild -resolvePackageDependencies \
-            -project "${XCODE_PROJECT}" \
-            -scheme "${XCODE_SCHEME}" \
-            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm"
-
-      - name: Compile app and run native iOS unit tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          set -o pipefail
           SIMULATOR_ID="$(python3 - <<'PY'
           import json
           import subprocess
@@ -621,6 +678,25 @@ jobs:
           raise SystemExit("No available iPhone Simulator is installed on the CI runner.")
           PY
           )"
+          echo "SIMULATOR_ID=${SIMULATOR_ID}" >> "$GITHUB_ENV"
+          nohup xcrun simctl bootstatus "${SIMULATOR_ID}" -b \
+            > "${RUNNER_TEMP}/simulator-boot.log" 2>&1 &
+
+      - name: Resolve Swift package dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project "${XCODE_PROJECT}" \
+            -scheme "${XCODE_SCHEME}" \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm"
+
+      - name: Compile app and run native iOS unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          test -n "${SIMULATOR_ID:-}" || { echo "::error::SIMULATOR_ID was not selected"; exit 1; }
           xcodebuild test \
             -project "${XCODE_PROJECT}" \
             -scheme "${XCODE_SCHEME}" \
@@ -700,6 +776,8 @@ jobs:
           path: |
             ${{ runner.temp }}/AppTests.xcresult
             ${{ runner.temp }}/xcodebuild-ios-tests.log
+            ${{ runner.temp }}/spm-prefetch.log
+            ${{ runner.temp }}/simulator-boot.log
           if-no-files-found: ignore
           retention-days: 7
 
