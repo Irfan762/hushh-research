@@ -400,6 +400,8 @@ tests/test_agent_runtime_declarations.py
 tests/test_one_manifest_subagent_prompts.py
 tests/test_nav_a2a_agent.py
 tests/test_one_adk_agent_tree.py
+# Finance market tools: providers receive the ticker only, never owner identity.
+tests/test_one_finance_market_tools.py
 tests/test_a2a_delegation_scopes.py
 tests/test_connections_a2a.py
 tests/test_specialist_availability.py
