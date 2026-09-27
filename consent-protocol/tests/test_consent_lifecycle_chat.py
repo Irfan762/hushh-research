@@ -50,6 +50,7 @@ from hushh_mcp.one_adk.action_tools import (
     list_pending_information_requests,
     propose_information_request,
 )
+from hushh_mcp.services.client_connector_service import ClientConnectorService
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_lifecycle_service import (
     ConsentLifecycleService,
@@ -57,7 +58,6 @@ from hushh_mcp.services.consent_lifecycle_service import (
 from hushh_mcp.services.information_request_service import (
     InformationRequestService,
 )
-from hushh_mcp.services.one_email_kyc_service import OneEmailKycService
 
 STATE_USER_ID = action_tools._STATE_USER_ID
 STATE_CONSENT_TOKEN = action_tools._STATE_CONSENT_TOKEN
@@ -123,8 +123,8 @@ def _profile(profile: dict = PROFILE):
 def _connector(configured: bool = True):
     connector = {"connector_key_id": "ck_1"} if configured else None
     return patch.object(
-        OneEmailKycService,
-        "get_client_connector",
+        ClientConnectorService,
+        "get",
         new=AsyncMock(return_value={"configured": configured, "connector": connector}),
     )
 

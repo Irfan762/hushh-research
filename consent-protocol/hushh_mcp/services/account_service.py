@@ -222,7 +222,6 @@ class AccountService:
             "kai_receipt_memory_artifacts": text(
                 "DELETE FROM kai_receipt_memory_artifacts WHERE user_id = :user_id"
             ),
-            "one_kyc_workflows": text("DELETE FROM one_kyc_workflows WHERE user_id = :user_id"),
             "one_location_access_requests": text(
                 """
                 DELETE FROM one_location_access_requests
@@ -620,17 +619,6 @@ class AccountService:
                 WHERE user_id = :user_id
                 ORDER BY issued_at DESC
                 LIMIT 500
-                """
-            ),
-            "one_kyc_workflows": text(
-                """
-                SELECT workflow_id, user_id, status, gmail_thread_id, sender_email,
-                       counterparty_label, required_fields, requested_scope,
-                       consent_request_id, draft_status, last_error_code,
-                       created_at, updated_at
-                FROM one_kyc_workflows
-                WHERE user_id = :user_id
-                ORDER BY created_at DESC
                 """
             ),
             "verified_email_aliases": text(
@@ -1476,8 +1464,6 @@ class AccountService:
         results["internal_access_events"] = True
         self._delete_user_rows_if_table_exists(conn, table_name="user_push_tokens", params=params)
         results["push_tokens"] = True
-        self._delete_user_rows_if_table_exists(conn, table_name="one_kyc_workflows", params=params)
-        results["one_kyc_workflows"] = True
         self._delete_owned_named_circles(
             conn,
             user_id=user_id,
@@ -1701,7 +1687,6 @@ class AccountService:
             "marketplace_access_requests": False,
             "marketplace_recipient_keys": False,
             "marketplace_opportunity_signals": False,
-            "one_kyc_workflows": False,
             "one_referral_risk_reviews": False,
             "one_referral_events": False,
             "one_referral_relationships": False,
@@ -1964,12 +1949,6 @@ class AccountService:
                     conn, table_name="user_push_tokens", params=params
                 )
                 results["push_tokens"] = True
-                self._delete_user_rows_if_table_exists(
-                    conn,
-                    table_name="one_kyc_workflows",
-                    params=params,
-                )
-                results["one_kyc_workflows"] = True
                 self._delete_owned_named_circles(
                     conn,
                     user_id=user_id,
@@ -2233,7 +2212,6 @@ class AccountService:
             "investor_marketplace_profile": False,
             "consent_audit": False,
             "internal_access_events": False,
-            "one_kyc_workflows": False,
             "actor_profile": False,
             "runtime_persona_state": False,
         }
@@ -2345,12 +2323,6 @@ class AccountService:
                     params,
                 )
                 results["internal_access_events"] = True
-                self._delete_user_rows_if_table_exists(
-                    conn,
-                    table_name="one_kyc_workflows",
-                    params=params,
-                )
-                results["one_kyc_workflows"] = True
                 conn.execute(
                     text(
                         """
