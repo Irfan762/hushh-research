@@ -5275,6 +5275,7 @@ class PKMAgentLabService:
             "- candidate_payload must align with target_domain and the intent frame.\n"
             "- Choose the action that names this person's information most honestly.\n"
             "- A domain is a SUBJECT AREA of a person's life, not a container of convenience. Before reusing one, ask whether a person would genuinely say this belongs there.\n"
+            "- The three actions: match_existing_domain means an offered domain already fits; extend_domain means an offered domain fits but needs a new subtree; create_domain means naming a new domain.\n"
             "- create_domain is a normal, expected outcome. A person is not a fixed list of categories. If a statement is about a distinct part of who they are, name a new domain for it.\n"
             "- Do not stretch an existing domain to absorb something it is not about. Measured: the wording this replaced produced zero new domains across ten statements and filed someone's communication style under ria, the financial-advisor domain.\n"
             "- You may propose a new safe lowercase snake_case top-level domain when no existing domain is semantically accurate.\n"

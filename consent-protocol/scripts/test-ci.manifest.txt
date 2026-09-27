@@ -488,3 +488,4 @@ tests/test_chat_history_byok.py
 # replay. CI runs the static checks; the behaviour checks run only when
 # CHAT_CUTOVER_TEST_DATABASE_URL points at a throwaway real-schema Postgres.
 tests/test_chat_history_cutover_migration.py
+tests/test_structure_agent_prompt_is_unambiguous.py
