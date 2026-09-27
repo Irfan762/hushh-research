@@ -226,7 +226,8 @@
     "252_calendar_mail_feed_projection.sql",
     "253_kai_run_state.sql",
     "254_drive_bulk_shares.sql",
-    "255_account_legal_acceptances.sql"
+    "255_account_legal_acceptances.sql",
+    "256_drive_request_bulk_search.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -431,6 +432,7 @@
     ]
   },
   "rollback_migrations": {
+    "256_drive_request_bulk_search.sql": "rollback/256_drive_request_bulk_search.rollback.sql",
     "255_account_legal_acceptances.sql": "rollback/255_account_legal_acceptances.rollback.sql",
     "253_kai_run_state.sql": "rollback/253_kai_run_state.rollback.sql",
     "252_calendar_mail_feed_projection.sql": "rollback/252_calendar_mail_feed_projection.rollback.sql",

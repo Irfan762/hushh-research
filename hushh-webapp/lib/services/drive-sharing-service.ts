@@ -2,6 +2,12 @@ import { DOCUMENT_REQUEST_UUID } from "@/lib/consent/document-share-consent";
 import { ApiService } from "@/lib/services/api-service";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
 import { parseSSEBlocks } from "@/lib/streaming/sse-parser";
+import {
+  parseDriveSearchResults,
+  parseDriveSearchStatus,
+  type DriveSearchResults,
+  type DriveSearchStatus,
+} from "@/lib/services/drive-search-service";
 
 export type SharingStatus = {
   requestId: string;
@@ -56,6 +62,10 @@ export type SharingReview = {
   canApprove: boolean;
   canTrustFutureRequests: boolean;
   preparationError: SharingPreparationError | null;
+  durableAvailable?: boolean;
+  /** Present on servers with durable, request-bound Drive search. */
+  search?: DriveSearchStatus | null;
+  bulkShare?: DriveBulkShareView | null;
 };
 const SHARING_PREPARATION_ERRORS = [
   "no_relevant_files",
@@ -75,7 +85,12 @@ function preparationError(value: unknown): SharingPreparationError | null {
 }
 export type SharingDelivery = {
   status: string;
-  files: {
+  files: SharingDeliveryFile[];
+  fileCount?: number;
+  sharedCount?: number;
+  bulkShareId?: string | null;
+};
+export type SharingDeliveryFile = {
     name: string;
     status: string;
     revocationStatus: string | null;
@@ -83,7 +98,10 @@ export type SharingDelivery = {
     managed: boolean;
     openUrl: string | null;
     manageInGoogle: boolean;
-  }[];
+};
+export type SharingDeliveryFilePage = {
+  files: SharingDeliveryFile[];
+  nextCursor: string | null;
 };
 export type SharingRevocationReview = {
   revision: number;
@@ -653,6 +671,21 @@ function parseBulkFilePage(value: RecordValue): DriveBulkShareFilePage {
     nextCursor: value.nextCursor == null ? null : bulkText(value.nextCursor, 1024) };
 }
 
+function parseDeliveryFile(file: RecordValue): SharingDeliveryFile {
+  const openUrl = file.openUrl == null ? null : string(file.openUrl, 512);
+  if (openUrl && !/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]+\/view$/.test(openUrl))
+    throw new DriveSharingError("invalid_response");
+  return {
+    name: string(file.name, 1024),
+    status: string(file.status, 80),
+    revocationStatus: file.revocationStatus == null ? null : string(file.revocationStatus, 80),
+    grantId: file.grantId == null ? null : id(file.grantId),
+    managed: file.managed === true,
+    openUrl,
+    manageInGoogle: file.manageInGoogle === true,
+  };
+}
+
 function bulkFileUrl(value: unknown): string {
   let url: URL;
   try { url = new URL(bulkText(value, 2048)); } catch { throw new DriveSharingError("invalid_response"); }
@@ -875,6 +908,17 @@ export class DriveSharingService {
     const expiresAt = result.expiresAt == null ? null : date(result.expiresAt);
     const reviewDigest =
       result.reviewDigest == null ? null : digest(result.reviewDigest);
+    const hasDurableSearch = "search" in result || "bulkShare" in result;
+    if (hasDurableSearch && (!("search" in result) || !("bulkShare" in result)))
+      throw new DriveSharingError("invalid_response");
+    if (result.durableAvailable === true && !hasDurableSearch)
+      throw new DriveSharingError("invalid_response");
+    const search = result.search == null ? null : parseDriveSearchStatus(result.search);
+    const bulkShare = result.bulkShare == null ? null : parseBulkShareView(record(result.bulkShare));
+    if (bulkShare && (!search || bulkShare.searchJobId !== search.jobId || bulkShare.recipientCount !== 1))
+      throw new DriveSharingError("invalid_response");
+    if (result.durableAvailable !== undefined && typeof result.durableAvailable !== "boolean")
+      throw new DriveSharingError("invalid_response");
     return {
       revision: revision(result.revision),
       status: string(result.status, 80),
@@ -907,7 +951,48 @@ export class DriveSharingService {
         !!reviewDigest,
       canTrustFutureRequests: result.canTrustFutureRequests === true,
       preparationError: preparationError(result.preparationError),
+      ...(result.durableAvailable === true ? { durableAvailable: true } : {}),
+      ...(hasDurableSearch ? { search, bulkShare } : {}),
     };
+  }
+
+  /** Start or recover the durable search bound to this incoming request. */
+  static async startRequestSearch(
+    token: string, requestId: string, guard: SharingSessionGuard,
+  ): Promise<DriveSearchStatus> {
+    const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return parseDriveSearchStatus(await this.request(token, requestId, guard, "/search",
+      typeof timeZone === "string" && timeZone ? { timeZone } : {}));
+  }
+
+  /** A small page from the request-bound search, never the whole Drive set. */
+  static async requestSearchFiles(
+    token: string, requestId: string, jobId: string, guard: SharingSessionGuard,
+    cursor: string | null = null,
+  ): Promise<DriveSearchResults> {
+    const suffix = cursor == null ? "" : `?cursor=${encodeURIComponent(bulkText(cursor, 1024))}`;
+    return parseDriveSearchResults(await this.request(token, requestId, guard, `/search/files${suffix}`), jobId);
+  }
+
+  /** Freeze the owner's selected subset before the separate Share decision. */
+  static async prepareRequestBulk(
+    token: string, requestId: string, search: DriveSearchStatus,
+    excludedPositions: number[], guard: SharingSessionGuard,
+  ): Promise<DriveBulkShareView> {
+    if (search.status !== "completed" || search.incompleteSearch ||
+      search.matched - (search.unshareableCount ?? 0) <= 0 ||
+      excludedPositions.length >= search.matched ||
+      new Set(excludedPositions).size !== excludedPositions.length ||
+      excludedPositions.some(position => !Number.isSafeInteger(position) || position < 1 || position > search.matched))
+      throw new DriveSharingError("invalid_selection");
+    const result = parseBulkShareView(await this.request(token, requestId, guard, "/bulk", {
+      excludedPositions: [...excludedPositions].sort((a, b) => a - b),
+    }));
+    if (result.searchJobId !== search.jobId || result.fileCount <= 0 ||
+      result.fileCount > search.matched - excludedPositions.length ||
+      result.recipientCount !== 1)
+      throw new DriveSharingError("invalid_response");
+    return result;
   }
 
   static async delivery(
@@ -920,28 +1005,25 @@ export class DriveSharingService {
       throw new DriveSharingError("invalid_response");
     return {
       status: string(result.status, 80),
-      files: files(result.files, (file) => {
-        const openUrl = file.openUrl == null ? null : string(file.openUrl, 512);
-        if (
-          openUrl &&
-          !/^https:\/\/drive\.google\.com\/file\/d\/[A-Za-z0-9_-]+\/view$/.test(
-            openUrl,
-          )
-        )
-          throw new DriveSharingError("invalid_response");
-        return {
-          name: string(file.name, 1024),
-          status: string(file.status, 80),
-          revocationStatus:
-            file.revocationStatus == null
-              ? null
-              : string(file.revocationStatus, 80),
-          grantId: file.grantId == null ? null : id(file.grantId),
-          managed: file.managed === true,
-          openUrl,
-          manageInGoogle: file.manageInGoogle === true,
-        };
+      files: files(result.files, parseDeliveryFile),
+      ...(result.bulkShareId == null ? {} : {
+        bulkShareId: id(result.bulkShareId),
+        fileCount: bulkCount(result.fileCount, 10_000),
+        sharedCount: bulkCount(result.sharedCount, 10_000),
       }),
+    };
+  }
+
+  static async deliveryFiles(
+    token: string, requestId: string, guard: SharingSessionGuard,
+    cursor: string | null = null,
+  ): Promise<SharingDeliveryFilePage> {
+    const suffix = cursor == null ? "" : `?cursor=${encodeURIComponent(bulkText(cursor, 1024))}`;
+    const result = await this.request(token, requestId, guard, `/delivery/files${suffix}`);
+    if (id(result.requestId) !== requestId) throw new DriveSharingError("invalid_response");
+    return {
+      files: files(result.files, parseDeliveryFile),
+      nextCursor: result.nextCursor == null ? null : bulkText(result.nextCursor, 1024),
     };
   }
 

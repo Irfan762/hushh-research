@@ -1,6 +1,6 @@
 {
   "contract_name": "dev_minimum_schema",
-  "expected_migration_version": 255,
+  "expected_migration_version": 256,
   "migration_version_policy": "minimum",
   "required_functions": [
     "project_calendar_mail_feed",
@@ -435,6 +435,8 @@
       "file_count",
       "recipient_count",
       "excluded_envelope",
+      "origin_request_id",
+      "origin_request_revision",
       "approved_at",
       "stopped_at",
       "created_at",
@@ -511,6 +513,7 @@
       "status",
       "revision",
       "matched",
+      "unshareable_count",
       "pages_scanned",
       "incomplete_search",
       "checkpoint_envelope",
@@ -650,6 +653,7 @@
       "preparation_next_at",
       "preparation_inspected_at",
       "preparation_error_code",
+      "bulk_search_started_at",
       "created_at",
       "updated_at",
       "expires_at"

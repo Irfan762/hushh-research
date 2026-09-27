@@ -18,7 +18,7 @@ from sqlalchemy import text
 from hushh_mcp.services.connector_feature_admission import connector_feature_enabled
 from hushh_mcp.services.drive_live_preferences import DriveLivePreferences
 from hushh_mcp.services.drive_sharing_contract import DriveSharingCipher, DriveSharingError
-from hushh_mcp.services.google_drive_adapter import DriveReadError
+from hushh_mcp.services.google_drive_adapter import FILE_ID, DriveReadError
 
 _TERMINAL = frozenset(
     {"succeeded", "preexisting", "skipped", "failed", "present_unattributed", "absent"}
@@ -155,6 +155,40 @@ class DriveBulkShareStore(DriveLivePreferences):
             ).scalar_one()
         )
 
+    @staticmethod
+    def _request_recipient_current(connection, owner, recipient):
+        if not connector_feature_enabled("drive_document_sharing", recipient):
+            return False
+        return bool(
+            connection.execute(
+                text("""
+            SELECT EXISTS(SELECT 1 FROM connections
+              WHERE status='active' AND ((user_a_id=:owner AND user_b_id=:recipient)
+                OR (user_b_id=:owner AND user_a_id=:recipient)))
+        """),
+                {"owner": owner, "recipient": recipient},
+            ).scalar_one()
+        )
+
+    def _share_recipient_current(self, connection, share, owner, recipient):
+        if share["origin_request_id"] is None:
+            return self._recipient_current(connection, owner, recipient)
+        request = self._row(
+            connection,
+            """SELECT recipient_user_id,status,revision,expires_at
+            FROM drive_share_requests WHERE request_id=:request AND user_id=:owner""",
+            {"request": share["origin_request_id"], "owner": owner},
+        )
+        return bool(
+            request
+            and request["recipient_user_id"] == recipient
+            and request["status"] == "approved"
+            and request["revision"] == share["origin_request_revision"]
+            and request["expires_at"]
+            > connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+            and self._request_recipient_current(connection, owner, recipient)
+        )
+
     def _recipients(self, connection, row):
         recipients = []
         for item in connection.execute(
@@ -261,10 +295,30 @@ class DriveBulkShareStore(DriveLivePreferences):
         }
 
     async def create_review(
-        self, *, user_id, search_job_id, client_request_id, recipients, excluded
+        self,
+        *,
+        user_id,
+        search_job_id,
+        client_request_id,
+        recipients,
+        excluded,
+        origin_request_id=None,
+        excluded_positions=None,
     ):
         search = _uuid(search_job_id)
         client = _uuid(client_request_id)
+        origin = _uuid(origin_request_id) if origin_request_id is not None else None
+        positions = excluded_positions if excluded_positions is not None else []
+        if (
+            not isinstance(positions, list)
+            or len(positions) > 10000
+            or any(type(item) is not int or not 1 <= item <= 10000 for item in positions)
+            or len(positions) != len(set(positions))
+            or positions
+            and origin is None
+        ):
+            raise DriveSharingError("invalid_argument")
+        positions = sorted(positions)
         if not isinstance(recipients, list) or len(recipients) > 10:
             raise DriveSharingError("invalid_argument")
         cleaned = [_safe_recipient(item, user_id) for item in recipients]
@@ -283,11 +337,21 @@ class DriveBulkShareStore(DriveLivePreferences):
             ):
                 raise DriveSharingError("invalid_argument")
             safe_excluded.append({"name": item.get("name"), "reason": item["reason"]})
-        digest = self.cipher.digest("bulk-share-request", [user_id, search])
+        digest = self.cipher.digest(
+            "bulk-share-request",
+            [user_id, search] if origin is None else [user_id, search, origin, positions],
+        )
         share = str(uuid4())
 
         def operation(connection):
             current = self.live_active(connection, user_id=user_id)
+            if origin is not None:
+                connection.execute(
+                    text("""DELETE FROM drive_bulk_shares
+                    WHERE user_id=:user AND origin_request_id=:request
+                      AND status='review_ready' AND expires_at<=clock_timestamp()"""),
+                    {"user": user_id, "request": origin},
+                )
             existing = self._row(
                 connection,
                 "SELECT * FROM drive_bulk_shares WHERE user_id=:user AND client_request_id=:client",
@@ -310,6 +374,8 @@ class DriveBulkShareStore(DriveLivePreferences):
                 {"user": user_id, "search": search},
             )
             if prior_search:
+                if prior_search["request_digest"] != digest:
+                    raise DriveSharingError("bulk_conflict")
                 if (
                     prior_search["status"] == "review_ready"
                     and prior_search["connection_generation"] != current["connection_generation"]
@@ -329,15 +395,54 @@ class DriveBulkShareStore(DriveLivePreferences):
                 raise DriveSharingError("search_incomplete")
             if source["connection_generation"] != current["connection_generation"]:
                 raise DriveSharingError("connection_changed")
+            request_row = None
+            if origin is not None:
+                if str(source["client_request_id"]) != origin:
+                    raise DriveSharingError("request_changed")
+                request_row = self._row(
+                    connection,
+                    "SELECT * FROM drive_share_requests WHERE request_id=:request AND user_id=:user FOR UPDATE",
+                    {"request": origin, "user": user_id},
+                )
+                if (
+                    request_row is None
+                    or request_row["bulk_search_started_at"] is None
+                    or request_row["status"] != "pending"
+                    or request_row["expires_at"]
+                    <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+                    or len(cleaned) != 1
+                    or cleaned[0]["user_id"] != request_row["recipient_user_id"]
+                ):
+                    raise DriveSharingError("request_changed")
+                private = self._open(
+                    request_row["request_envelope"],
+                    user_id=user_id,
+                    resource_id=origin,
+                    purpose="request",
+                )
+                frozen = private.get("recipient") if isinstance(private, dict) else None
+                if (
+                    not isinstance(frozen, dict)
+                    or any(cleaned[0][key] != frozen.get(key) for key in ("email", "subject"))
+                    or cleaned[0]["kind"] != frozen.get("kind", "google_provider")
+                    or not self._request_recipient_current(
+                        connection, user_id, cleaned[0]["user_id"]
+                    )
+                ):
+                    raise DriveSharingError("recipient_changed")
             if not 1 <= source["matched"] <= 10000:
                 raise DriveSharingError("invalid_argument")
             for recipient in cleaned:
-                if not self._recipient_current(connection, user_id, recipient["user_id"]):
+                if not (
+                    self._request_recipient_current(connection, user_id, recipient["user_id"])
+                    if origin is not None
+                    else self._recipient_current(connection, user_id, recipient["user_id"])
+                ):
                     raise DriveSharingError("bulk_changed")
             files = list(
                 connection.execute(
                     text(
-                        "SELECT position,file_digest FROM drive_owner_search_results WHERE job_id=:job AND user_id=:user ORDER BY position"
+                        "SELECT position,file_digest,metadata_envelope FROM drive_owner_search_results WHERE job_id=:job AND user_id=:user ORDER BY position"
                     ),
                     {"job": search, "user": user_id},
                 ).mappings()
@@ -346,6 +451,22 @@ class DriveBulkShareStore(DriveLivePreferences):
                 range(1, len(files) + 1)
             ):
                 raise DriveSharingError("search_incomplete")
+            if positions and any(item > len(files) for item in positions):
+                raise DriveSharingError("invalid_argument")
+            excluded_set = set(positions)
+            if origin is not None:
+                for item in files:
+                    metadata = self._open(
+                        item["metadata_envelope"],
+                        user_id=user_id,
+                        resource_id=f"{search}:{item['position']}",
+                        purpose="owner-search-result",
+                    )
+                    if metadata.get("shareable") is False:
+                        excluded_set.add(item["position"])
+            chosen_files = [item for item in files if item["position"] not in excluded_set]
+            if not chosen_files:
+                raise DriveSharingError("no_files")
             review_digest = self.cipher.digest(
                 "bulk-share-review-v1",
                 [
@@ -354,7 +475,7 @@ class DriveBulkShareStore(DriveLivePreferences):
                     search,
                     source["revision"],
                     current["connection_generation"],
-                    [item["file_digest"] for item in files],
+                    [item["file_digest"] for item in chosen_files],
                     [
                         (item["user_id"], item["email"], item["subject"], item["kind"])
                         for item in cleaned
@@ -367,9 +488,11 @@ class DriveBulkShareStore(DriveLivePreferences):
                 """INSERT INTO drive_bulk_shares(
                   share_id,user_id,search_job_id,client_request_id,request_digest,
                   connection_generation,search_revision,review_digest,file_count,
-                  recipient_count,excluded_envelope)
+                  recipient_count,excluded_envelope,origin_request_id,origin_request_revision,
+                  expires_at)
                   VALUES(:share,:user,:search,:client,:digest,:generation,:revision,:review,
-                    :files,:recipients,CAST(:excluded AS jsonb)) RETURNING *""",
+                    :files,:recipients,CAST(:excluded AS jsonb),:origin,:origin_revision,
+                    COALESCE(:expires,clock_timestamp()+INTERVAL '24 hours')) RETURNING *""",
                 {
                     "share": share,
                     "user": user_id,
@@ -379,9 +502,12 @@ class DriveBulkShareStore(DriveLivePreferences):
                     "generation": current["connection_generation"],
                     "revision": source["revision"],
                     "review": review_digest,
-                    "files": len(files),
+                    "files": len(chosen_files),
                     "recipients": len(cleaned),
                     "excluded": self._seal_excluded(safe_excluded, user_id=user_id, share_id=share),
+                    "origin": origin,
+                    "origin_revision": request_row["revision"] if request_row else None,
+                    "expires": request_row["expires_at"] if request_row else None,
                 },
             )
             connection.execute(
@@ -391,8 +517,14 @@ class DriveBulkShareStore(DriveLivePreferences):
                 SELECT :share,user_id,position,job_id,position,file_digest,metadata_envelope
                   FROM drive_owner_search_results
                   WHERE job_id=:search AND user_id=:user
+                    AND position <> ALL(CAST(:excluded_positions AS integer[]))
                 """),
-                {"share": share, "search": search, "user": user_id},
+                {
+                    "share": share,
+                    "search": search,
+                    "user": user_id,
+                    "excluded_positions": sorted(excluded_set),
+                },
             )
             for recipient in cleaned:
                 connection.execute(
@@ -433,6 +565,21 @@ class DriveBulkShareStore(DriveLivePreferences):
                 {"user": user_id, "search": search},
             ).mappings()
             return {"shares": [self._view(connection, dict(row)) for row in rows]}
+
+        return await self._transaction(operation)
+
+    async def by_request(self, *, user_id, request_id):
+        request = _uuid(request_id)
+
+        def operation(connection):
+            row = self._row(
+                connection,
+                """SELECT * FROM drive_bulk_shares
+                WHERE user_id=:user AND origin_request_id=:request
+                  AND expires_at>clock_timestamp()""",
+                {"user": user_id, "request": request},
+            )
+            return self._view(connection, row) if row else None
 
         return await self._transaction(operation)
 
@@ -527,11 +674,35 @@ class DriveBulkShareStore(DriveLivePreferences):
                 raise DriveSharingError("bulk_changed")
             self.live_active(connection, user_id=user_id, generation=row["connection_generation"])
             recipients = self._recipients(connection, row)
+            origin = None
+            if row["origin_request_id"] is not None:
+                origin = self._row(
+                    connection,
+                    """SELECT * FROM drive_share_requests
+                    WHERE request_id=:request AND user_id=:user FOR UPDATE""",
+                    {"request": row["origin_request_id"], "user": user_id},
+                )
+                if (
+                    origin is None
+                    or origin["status"] != "pending"
+                    or origin["revision"] != row["origin_request_revision"]
+                    or origin["expires_at"]
+                    <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+                ):
+                    raise DriveSharingError("request_changed")
             if len(recipients) != row["recipient_count"] or any(
-                not self._recipient_current(connection, user_id, item["user_id"])
+                not (
+                    self._request_recipient_current(connection, user_id, item["user_id"])
+                    if origin is not None
+                    else self._recipient_current(connection, user_id, item["user_id"])
+                )
                 for item in recipients
             ):
                 raise DriveSharingError("bulk_changed")
+            if origin is not None and (
+                len(recipients) != 1 or recipients[0]["user_id"] != origin["recipient_user_id"]
+            ):
+                raise DriveSharingError("recipient_changed")
             # The owner connection row is locked above, so concurrent approvals
             # serialize here. A stopped share may still have a dispatched POST;
             # wait for its receipt or reconciliation before starting another
@@ -580,10 +751,30 @@ class DriveBulkShareStore(DriveLivePreferences):
             updated = self._row(
                 connection,
                 """UPDATE drive_bulk_shares SET status='queued',approved_at=clock_timestamp(),
-                expires_at=clock_timestamp()+INTERVAL '7 days',revision=revision+1,
+                expires_at=GREATEST(expires_at,clock_timestamp()+INTERVAL '7 days'),revision=revision+1,
                 updated_at=clock_timestamp() WHERE share_id=:share RETURNING *""",
                 {"share": share},
             )
+            if origin is not None:
+                request = self._row(
+                    connection,
+                    """UPDATE drive_share_requests
+                    SET status='approved',updated_at=clock_timestamp()
+                    WHERE request_id=:request RETURNING *""",
+                    {"request": origin["request_id"]},
+                )
+                connection.execute(
+                    text("""INSERT INTO drive_share_events(
+                    event_id,request_id,user_id,revision,event_type)
+                    VALUES(:id,:request,:user,:revision,'document_share_decided')
+                    ON CONFLICT (request_id,user_id,revision,event_type) DO NOTHING"""),
+                    {
+                        "id": str(uuid4()),
+                        "request": origin["request_id"],
+                        "user": origin["recipient_user_id"],
+                        "revision": request["revision"],
+                    },
+                )
             return self._view(connection, updated)
 
         return await self._transaction(operation)
@@ -668,10 +859,38 @@ class DriveBulkShareStore(DriveLivePreferences):
         status = "partial" if successes and errors else "failed" if errors else "completed"
         connection.execute(
             text("""UPDATE drive_bulk_shares SET status=:status,revision=revision+1,
-              updated_at=clock_timestamp(),expires_at=clock_timestamp()+INTERVAL '7 days'
+              updated_at=clock_timestamp(),expires_at=GREATEST(expires_at,clock_timestamp()+INTERVAL '7 days')
               WHERE share_id=:share"""),
             {"share": share, "status": status},
         )
+        origin = self._row(
+            connection,
+            "SELECT origin_request_id FROM drive_bulk_shares WHERE share_id=:share",
+            {"share": share},
+        )
+        if origin and origin["origin_request_id"] is not None:
+            request_status = "completed" if status == "completed" else "partial"
+            updated_request = self._row(
+                connection,
+                """UPDATE drive_share_requests
+                SET status=:status,updated_at=clock_timestamp()
+                WHERE request_id=:request AND status='approved' RETURNING *""",
+                {"status": request_status, "request": origin["origin_request_id"]},
+            )
+            if updated_request:
+                for audience in (updated_request["user_id"], updated_request["recipient_user_id"]):
+                    connection.execute(
+                        text("""INSERT INTO drive_share_events(
+                      event_id,request_id,user_id,revision,event_type)
+                      VALUES(:id,:request,:user,:revision,'document_share_outcome')
+                      ON CONFLICT (request_id,user_id,revision,event_type) DO NOTHING"""),
+                        {
+                            "id": str(uuid4()),
+                            "request": updated_request["request_id"],
+                            "user": audience,
+                            "revision": updated_request["revision"],
+                        },
+                    )
 
     async def due(self, limit=400):
         if type(limit) is not int or not 1 <= limit <= 500:
@@ -767,8 +986,8 @@ class DriveBulkShareStore(DriveLivePreferences):
                 )
                 self._finalize(connection, share)
                 return None
-            if effect["state"] == "queued" and not self._recipient_current(
-                connection, user_id, recipient_user_id
+            if effect["state"] == "queued" and not self._share_recipient_current(
+                connection, row, user_id, recipient_user_id
             ):
                 connection.execute(
                     text("""UPDATE drive_bulk_share_effects SET state='skipped',
@@ -864,7 +1083,9 @@ class DriveBulkShareStore(DriveLivePreferences):
             and (
                 share["status"] not in _ACTIVE
                 or share["expires_at"] <= datetime.now(UTC)
-                or not self._recipient_current(connection, job["user_id"], job["recipient_user_id"])
+                or not self._share_recipient_current(
+                    connection, share, job["user_id"], job["recipient_user_id"]
+                )
             )
         ):
             raise DriveSharingError("bulk_changed")
@@ -1130,11 +1351,22 @@ class DriveBulkShareStore(DriveLivePreferences):
                 {"share": share, "recipient": recipient_user_id},
             ).scalar_one()
             if count == 0:
+                request_share = self._row(
+                    connection,
+                    "SELECT origin_request_id,approved_at FROM drive_bulk_shares WHERE share_id=:share",
+                    {"share": share},
+                )
+                if (
+                    request_share
+                    and request_share["origin_request_id"] is not None
+                    and request_share["approved_at"] is not None
+                ):
+                    return {"shareId": share, "files": [], "sharedCount": 0, "nextCursor": None}
                 raise DriveSharingError("bulk_not_found")
             rows = list(
                 connection.execute(
                     text("""
-                    SELECT f.* FROM drive_bulk_share_files f
+                    SELECT f.*,e.state AS grant_state FROM drive_bulk_share_files f
                     JOIN drive_bulk_share_effects e
                       ON e.share_id=f.share_id AND e.position=f.position
                     WHERE f.share_id=:share AND e.recipient_user_id=:recipient
@@ -1152,10 +1384,14 @@ class DriveBulkShareStore(DriveLivePreferences):
             files = []
             for row in rows[:limit]:
                 metadata = self._file(row, owner)
+                file_id = metadata.get("id")
+                if not isinstance(file_id, str) or not FILE_ID.fullmatch(file_id):
+                    raise DriveSharingError("sharing_storage_unavailable")
                 files.append(
                     {
                         "name": metadata["name"],
-                        "openUrl": metadata.get("openUrl"),
+                        "status": row["grant_state"],
+                        "openUrl": f"https://drive.google.com/file/d/{file_id}/view",
                         "modifiedTime": metadata.get("modifiedTime"),
                     }
                 )

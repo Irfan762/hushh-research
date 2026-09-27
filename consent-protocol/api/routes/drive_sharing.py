@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from typing import Any, Literal, cast
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -231,6 +232,14 @@ class BulkShareStopRequest(StrictRequest):
     pass
 
 
+class RequestSearchStart(StrictRequest):
+    timeZone: str = Field(default="UTC", min_length=1, max_length=64)
+
+
+class RequestBulkPrepare(StrictRequest):
+    excludedPositions: list[int] = Field(default_factory=list, max_length=10000)
+
+
 class ApprovalRequest(DecisionRequest):
     reviewDigest: str = Field(pattern=r"^[0-9a-f]{64}$")
     documentIds: list[UUID] = Field(min_length=1, max_length=25)
@@ -423,12 +432,89 @@ async def lookup_client_request(client_request_id: UUID, owner: Owner = Depends(
 
 @router.get("/requests/{request_id}/review")
 async def owner_review(request_id: UUID, owner: Owner = Depends(_owner)):
-    return await _call("review", owner=owner, request_id=str(request_id))
+    review = await _call("review", owner=owner, request_id=str(request_id))
+    if review.get("durableAvailable"):
+        review.update(
+            await _call(
+                "review_context",
+                owner=owner,
+                factory=_request_bulk_service,
+                request_id=str(request_id),
+            )
+        )
+    return review
+
+
+def _request_bulk_service():
+    from hushh_mcp.services.drive_request_bulk_service import DriveRequestBulkService
+
+    return DriveRequestBulkService()
+
+
+@router.post("/requests/{request_id}/search")
+async def start_request_search(
+    request_id: UUID, body: RequestSearchStart, owner: Owner = Depends(_owner)
+):
+    try:
+        ZoneInfo(body.timeZone)
+    except (ValueError, ZoneInfoNotFoundError):
+        raise _error(DriveSharingError("invalid_argument")) from None
+    return await _call(
+        "start_search",
+        owner=owner,
+        factory=_request_bulk_service,
+        request_id=str(request_id),
+        timezone=body.timeZone,
+    )
+
+
+@router.get("/requests/{request_id}/search")
+async def request_search_status(request_id: UUID, owner: Owner = Depends(_owner)):
+    return await _call(
+        "search_status", owner=owner, factory=_request_bulk_service, request_id=str(request_id)
+    )
+
+
+@router.get("/requests/{request_id}/search/files")
+async def request_search_files(
+    request_id: UUID,
+    cursor: str | None = Query(default=None, max_length=2048),
+    owner: Owner = Depends(_owner),
+):
+    return await _call(
+        "search_files",
+        owner=owner,
+        factory=_request_bulk_service,
+        request_id=str(request_id),
+        cursor=cursor,
+    )
+
+
+@router.post("/requests/{request_id}/bulk")
+async def prepare_request_bulk(
+    request_id: UUID, body: RequestBulkPrepare, owner: Owner = Depends(_owner)
+):
+    return await _call(
+        "prepare",
+        owner=owner,
+        factory=_request_bulk_service,
+        request_id=str(request_id),
+        excluded_positions=body.excludedPositions,
+    )
 
 
 @router.get("/requests/{request_id}/delivery")
 async def delivery(request_id: UUID, owner: Owner = Depends(_owner)):
     return await _call("delivery", owner=owner, request_id=str(request_id))
+
+
+@router.get("/requests/{request_id}/delivery/files")
+async def delivery_files(
+    request_id: UUID,
+    cursor: str | None = Query(default=None, max_length=2048),
+    owner: Owner = Depends(_owner),
+):
+    return await _call("delivery_files", owner=owner, request_id=str(request_id), cursor=cursor)
 
 
 @router.post("/requests/{request_id}/prepare")
