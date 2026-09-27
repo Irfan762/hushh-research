@@ -2798,13 +2798,10 @@ async def analyze_stream_post(
             raise HTTPException(status_code=403, detail="Token user mismatch")
 
         start_cursor = _parse_cursor(body.resume_cursor)
-        if getattr(run, "is_durable_replay", False):
-            # Durable replay carries only the terminal frame; the client's
-            # resume cursor came from a live buffer on another (now-missed)
-            # instance. Replay the terminal frame from 0 rather than 410-ing on
-            # a stale cursor -- otherwise recovery would trade a 404 for a 410.
-            start_cursor = 0
-        elif start_cursor > run.latest_cursor:
+        # A run held by another process is followed, not replayed from a local
+        # buffer; its cursor only numbers the terminal frame past what the
+        # client has seen, so the stale-cursor 410 does not apply.
+        if not getattr(run, "is_durable_replay", False) and start_cursor > run.latest_cursor:
             raise HTTPException(
                 status_code=410,
                 detail={
@@ -3000,13 +2997,10 @@ async def analyze_run_stream(
         )
 
     start_cursor = _parse_cursor(cursor)
-    if getattr(run, "is_durable_replay", False):
-        # Durable replay carries only the terminal frame; the client's resume
-        # cursor came from a live buffer on another (now-missed) instance.
-        # Replay the terminal frame from 0 rather than 410-ing on a stale cursor
-        # -- otherwise recovery would trade a 404 for a 410.
-        start_cursor = 0
-    elif start_cursor > run.latest_cursor:
+    # A run held by another process is followed, not replayed from a local
+    # buffer; its cursor only numbers the terminal frame past what the client
+    # has seen, so the stale-cursor 410 does not apply.
+    if not getattr(run, "is_durable_replay", False) and start_cursor > run.latest_cursor:
         raise HTTPException(
             status_code=410,
             detail={

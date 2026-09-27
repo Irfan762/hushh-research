@@ -333,12 +333,18 @@ for (const width of [320, 390, 768, 1440])
     await drawer.getByRole("searchbox", { name: "Search connectors" }).clear();
     for (const [connector, account, names] of [
       ["Gmail", "mail-owner@synthetic.invalid", ["Disconnect Mail"]],
-      ["Google Drive", "drive-owner@synthetic.invalid", ["Disconnect Drive", "Choose files", "Retry Drive"]],
+      ["Google Drive", "drive-owner@synthetic.invalid", ["Disconnect Drive", "Choose files"]],
     ] as const) {
       await drawer.getByRole("button", { name: connector, exact: true }).click();
       await expect(drawer.getByRole("button", { name: "Back to connectors" })).toBeFocused();
       await expect(drawer.getByText(account)).toBeVisible();
       if (connector === "Google Drive") {
+        await expect(drawer.getByRole("button", { name: "Retry Drive" })).toHaveCount(0);
+        if (width === 1440) expect((await drawer.boundingBox())!.height).toBeLessThan(600);
+        if (width === 1440) await testInfo.attach("Drive connected details", {
+          body: await page.screenshot({ path: testInfo.outputPath("drive-connected-details.png") }),
+          contentType: "image/png",
+        });
         await expect(drawer.getByRole("button", { name: "Choose files", exact: true })).not.toBeVisible();
         await drawer.getByText("Previously added files", { exact: true }).click();
       }
@@ -510,9 +516,9 @@ test("background processing needs explicit consent and can be paused without rem
     await page.getByRole("button", { name: "Pick synthetic file" }).click();
   };
   await selectFile();
-  const consent = page.getByRole("checkbox", { name: /Allow Hushh to process these files on its servers/ });
-  await expect(page.getByText(/Relevant excerpts may be sent to Gemini to prepare suggestions/)).toBeVisible();
-  await expect(page.getByText(/encrypted file index is held by Hushh, not your vault/)).toBeVisible();
+  const consent = page.getByRole("checkbox", { name: /Prepare these files while the app is closed/ });
+  await expect(page.getByText(/Relevant excerpts may be sent to Gemini/)).toBeVisible();
+  await expect(page.getByText(/Prepared file information is stored outside your vault/)).toBeVisible();
   await expect(consent).not.toBeChecked();
   await consent.check();
   expect(writes).toHaveLength(0);
@@ -524,7 +530,16 @@ test("background processing needs explicit consent and can be paused without rem
   await page.getByRole("button", { name: "Add selected files" }).click();
   const processing = page.getByRole("checkbox", { name: /^Background processing for / });
   await expect(processing).toBeChecked();
-  await expect(page.getByText(/Turning this off stops new processing but keeps the index until you remove the file/)).toBeVisible();
+  await expect(page.getByText(/Turning this off stops new preparation; remove the file to clear what was prepared/)).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 440 });
+  const dialog = page.getByRole("dialog", { name: "Connectors", exact: true });
+  const remove = dialog.getByRole("button", { name: /^Remove .+$/ });
+  await remove.scrollIntoViewIfNeeded();
+  const removeBox = (await remove.boundingBox())!;
+  const dialogBox = (await dialog.boundingBox())!;
+  expect(removeBox.y).toBeGreaterThanOrEqual(dialogBox.y);
+  expect(removeBox.y + removeBox.height).toBeLessThanOrEqual(dialogBox.y + dialogBox.height + 1);
+  await page.setViewportSize({ width: 1280, height: 720 });
   expect(writes[0].body.processingConsent).toBe("selected-files-background-v1");
   await expect(page.getByRole("button", { name: /^Sync .+ now$/ })).toBeVisible();
   await processing.click();

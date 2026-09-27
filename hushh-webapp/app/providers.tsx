@@ -101,6 +101,8 @@ import { RiaSurfaceScopeSync } from "@/components/ria/ria-surface-scope-sync";
 import { NativeTestBootstrap } from "@/components/app-ui/native-test-bootstrap";
 import { NativeTestRouteStatus } from "@/components/app-ui/native-test-route-status";
 import { InteractionRuntime } from "@/components/app-ui/interaction-runtime";
+import { AgentChatTurnNotifier } from "@/components/agent/agent-chat-turn-notifier";
+import { AgentConsentContinuationNotifier } from "@/components/agent/agent-consent-continuation-notifier";
 import { RenderPerfProbe } from "@/components/app-ui/render-perf-probe";
 import { RenderPerfProfiler } from "@/components/app-ui/render-perf-profiler";
 import {
@@ -227,9 +229,10 @@ function AppShellFrame({ children }: ProvidersProps) {
       searchParams?.get("circleId") ?? null,
     );
   // Focused tasks clear the bottom command/navigation stack while keeping the
-  // top shell route context. AI selection owns its mobile Continue action.
+  // top shell route context. Setup pages own their bottom completion actions.
   const bottomChromeHidden =
     hidesPersistentChrome ||
+    routeLayout.route === ROUTES.ONE_SETUP ||
     routeLayout.route === ROUTES.ONE_SETUP_CONNECTIONS ||
     focusedLocationBottomTask ||
     focusedConnectCircleChromeFlow;
@@ -624,6 +627,11 @@ function AppShellFrame({ children }: ProvidersProps) {
                   <NativeTestBootstrap />
                   <NativeTestRouteStatus />
                   <InteractionRuntime />
+                  {/* One turns outlive the screen that started them: reattach,
+                      and say "One replied" when the person is elsewhere. */}
+                  <AgentChatTurnNotifier />
+                  {/* A request sent from chat continues once it is answered. */}
+                  <AgentConsentContinuationNotifier />
                   <RenderPerfProbe />
                   <FoundationPublicAmbient />
                   {!hidesPersistentChrome ? (
