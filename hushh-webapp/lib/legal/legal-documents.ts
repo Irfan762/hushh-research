@@ -104,7 +104,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
       ),
       h("Contacts"),
       p(
-        "If you choose “Check my contacts”, phone numbers are standardized on your device and turned into one-way codes. Only those codes and the last four digits are checked for matches. One never stores your contacts’ names or numbers, and nobody is contacted for you.",
+        "If you choose “Check my contacts”, phone numbers are standardized on your device and turned into one-way codes. Only those codes and the last four digits are checked for matches. One never stores your contacts’ names or numbers, and nobody is contacted for you. When a contact is on One and can be found, the two of you are connected; this gives neither of you access to the other’s location or information.",
       ),
       h("Messages to One’s mailbox"),
       p(
@@ -139,7 +139,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
       ),
       h("Information protected with keys we hold"),
       p(
-        "Some information has to be usable by our servers when you are not in the app, so it is encrypted with keys Hussh manages rather than your vault key. This includes sign-in tokens for Google services, files you add from Google Drive, and nearby check-ins and place ratings.",
+        "Some information has to be usable by our servers when you are not in the app, so it is encrypted with keys Hussh manages rather than your vault key. This includes sign-in tokens for Google services, files you add from Google Drive, and nearby check-ins.",
       ),
     ],
   },
@@ -151,9 +151,9 @@ const PRIVACY_SECTIONS: LegalSection[] = [
         "One answers you with Google Gemini, running on Google Cloud Vertex AI, unless you choose a different model. For each request, the model receives what that request needs: your message, relevant parts of your conversation, and, when relevant or when you ask, your memories and information from connected services. That can include sensitive information you asked One to use.",
       ),
       list(
-        "Google processes these requests as our service provider under Google Cloud’s terms. Requests may be processed in Google Cloud locations in the United States and the European Union.",
+        "Google processes these requests as our service provider under Google Cloud’s terms. Requests may be processed in any Google Cloud location, including the United States and the European Union.",
         "In Settings you can use your own API key for Gemini, Anthropic, OpenAI, or xAI Grok instead. Requests then go to that provider under your own account with them. Your key is stored in your vault.",
-        "If voice mode is available to you, your speech is streamed to Google’s Gemini Live model, through Google’s Gemini API, to understand and answer you.",
+        "If voice mode is available to you, your speech is streamed to Google’s Gemini Live model on Google Cloud Vertex AI in the United States to understand and answer you.",
         "Hussh does not use your information, your memories, or your connected services’ information to train AI models.",
       ),
     ],
@@ -164,7 +164,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     blocks: [
       h("Approximate location with a request"),
       p(
-        "If your device already allows One to use your location, One includes an approximate position, rounded on your device to about one kilometre, with a chat request so it can answer questions like “what’s the weather here”. One never asks for location permission to do this. Our servers keep it in memory for that request only, and it is not written to our database or to our logs as a location. The AI model receives the rounded position, and if One uses it to answer, that answer is saved in your encrypted chat history like any other reply.",
+        "If your device already allows One to use your location, One includes an approximate position, rounded on your device to about one kilometre, with a chat request so it can answer questions like “what’s the weather here”. One does not show a permission prompt for this; if location is off, it may tell you how to turn it on. Our servers keep it in memory for that request only, and it is not written to our database or to our logs as a location. The AI model receives the rounded position, and if One uses it to answer, that answer is saved in your encrypted chat history like any other reply.",
       ),
       h("Live location sharing"),
       p(
@@ -175,7 +175,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
       ),
       h("Nearby"),
       p(
-        "If you check in at a place or rate it, we store that with the place so One can use it for you.",
+        "Check-ins are encrypted and deleted after seven days. A rating you give is kept with the place and, for most kinds of place, counts toward an anonymous public average that never shows who rated.",
       ),
     ],
   },
@@ -252,9 +252,9 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     title: "Sharing with people and businesses you choose",
     blocks: [
       list(
-        "Consent-based sharing. When you approve a request to share information with another person or a business, your device encrypts the records to the recipient’s key, so our servers cannot read what is shared. The recipient gets only the categories you approve, and never other categories. Access expires, seven days by default, and you can revoke it at any time. Revoking removes the stored copy, but cannot take back what the recipient already opened.",
+        "Consent-based sharing. When you approve a request to share information with another person or a business, your device encrypts the records to the recipient’s key, so our servers cannot read what is shared. The recipient gets only the categories you approve, and never other categories. Access expires after the period shown when you approve (seven days by default for requests from people), and you can revoke it at any time. Revoking removes the stored copy, but cannot take back what the recipient already opened.",
         "Businesses asking for your preferences. A business can ask for specific details, such as your privacy preferences, and gets only the fields you approve.",
-        "Being found. You choose whether people can find you by your phone number, and whether you appear in the marketplace. Both are off unless you turn them on in Profile.",
+        "Being found. If your phone number is verified, people who have it in their contacts can find you and connect with you unless you turn this off in Profile. You appear in the marketplace only if you turn it on.",
         "Live location, as described above.",
       ),
     ],
@@ -276,7 +276,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
         "We measure how One is used with Google Analytics on the web and Firebase Analytics in the apps. Events are limited to an allowlist of fields about screens and features and do not include the content of your messages, memories, or connected services. Instead of your account identifier, analytics receives a one-way code derived from it. That code is pseudonymous rather than anonymous: someone who already knows your account identifier could link it to you.",
       ),
       p(
-        "On the web we also load Google Tag Manager, which loads our analytics. One uses a secure session cookie to keep you signed in and a few cookies to remember interface settings, and Google Analytics sets its own cookies. We do not use advertising trackers, and One does not track you across other companies’ apps or websites for advertising.",
+        "On the web we also load Google Tag Manager, which loads our analytics. One uses a secure session cookie to keep you signed in and a few cookies to remember interface settings, and Google Analytics sets its own cookies. We do not add advertising tags, and we do not use your information to personalize ads or track you across other companies’ apps or websites for advertising.",
       ),
     ],
   },
@@ -311,7 +311,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
       ),
       h("What we keep after deletion"),
       list(
-        "Records of consents you granted or revoked, including your account identifier and the scope and purpose of each, because they are the audit trail of who was allowed to see what.",
+        "Receipts of the preference subscriptions you granted to or revoked from businesses, including your account identifier, the business, the fields, and the purpose, because they form a tamper-evident ledger.",
         "A one-way code derived from your account identifier, so a deleted account cannot be silently recreated or restored.",
         "Database backups, which expire on their own schedule. Deleted information remains in backups until they expire.",
       ),
@@ -351,7 +351,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     title: "Where information is processed",
     blocks: [
       p(
-        "Hussh is based in the United States, and One runs on Google Cloud in the United States. AI requests may be processed in Google Cloud locations in the United States and the European Union. If you use One from elsewhere, your information is transferred to and processed in those places.",
+        "Hussh is based in the United States, and One runs on Google Cloud in the United States. AI requests may be processed in any Google Cloud location, including the United States and the European Union. If you use One from elsewhere, your information is transferred to and processed in those places.",
       ),
     ],
   },
