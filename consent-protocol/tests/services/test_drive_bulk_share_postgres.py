@@ -31,6 +31,20 @@ def bulk(lifecycle, monkeypatch):
     with lifecycle.db.engine.begin() as connection:
         connection.execute(text((MIGRATIONS / "251_drive_owner_search_jobs.sql").read_text()))
         connection.execute(text((MIGRATIONS / "254_drive_bulk_shares.sql").read_text()))
+        # Migration 256 also needs share-request tables absent from this generic
+        # bulk fixture. Mirror only its columns used by the generic runtime.
+        connection.execute(
+            text("""ALTER TABLE drive_owner_search_jobs
+            ADD COLUMN unshareable_count INTEGER NOT NULL DEFAULT 0
+            CHECK (unshareable_count BETWEEN 0 AND 10000)""")
+        )
+        connection.execute(
+            text("""ALTER TABLE drive_bulk_shares
+            ADD COLUMN origin_request_id UUID,
+            ADD COLUMN origin_request_revision BIGINT,
+            ADD CONSTRAINT drive_bulk_origin_request_revision_check
+              CHECK ((origin_request_id IS NULL) = (origin_request_revision IS NULL))""")
+        )
         connection.execute(
             text("""UPDATE external_mcp_connectors SET transport_kind='google_drive_rest',
             mcp_endpoint=:endpoint,capability_policy=CAST(:policy AS jsonb)
