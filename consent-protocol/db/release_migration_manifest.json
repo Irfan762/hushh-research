@@ -223,7 +223,8 @@
     "249_one_chat_history_legacy_cutover.sql",
     "250_gmail_mailbox_action_proposals.sql",
     "251_drive_owner_search_jobs.sql",
-    "252_calendar_mail_feed_projection.sql"
+    "252_calendar_mail_feed_projection.sql",
+    "253_kai_run_state.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -427,6 +428,7 @@
     ]
   },
   "rollback_migrations": {
+    "253_kai_run_state.sql": "rollback/253_kai_run_state.rollback.sql",
     "252_calendar_mail_feed_projection.sql": "rollback/252_calendar_mail_feed_projection.rollback.sql",
     "249_one_chat_history_legacy_cutover.sql": "rollback/249_one_chat_history_legacy_cutover.rollback.sql",
     "250_gmail_mailbox_action_proposals.sql": "rollback/250_gmail_mailbox_action_proposals.rollback.sql",

@@ -429,7 +429,11 @@ describe("AuthProvider terminal session invalidation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Finish account-A deletion" }));
 
-    expect(await screen.findByText("Signed out")).toBeInTheDocument();
+    await waitFor(() => expect(mocks.replaceDocument).toHaveBeenCalledWith("/"));
+    // The loading gate stays held until the document unloads; releasing it
+    // lets route guards race a client-side /login replace against this one.
+    expect(screen.getByText("Checking session")).toBeInTheDocument();
+    expect(screen.queryByText("Signed out")).not.toBeInTheDocument();
     expect(currentUser.getIdToken).not.toHaveBeenCalled();
     expect(mocks.authServiceSignOut).toHaveBeenCalledTimes(1);
     expect(mocks.apiDeleteSession).toHaveBeenCalledTimes(1);

@@ -2215,7 +2215,7 @@ export default function GmailReceiptsPage({
           ) : null}
 
           {showReceiptOnboarding ? (
-            <section className="mx-auto flex w-full max-w-md flex-col items-center border-t border-[color:var(--app-separator)] px-4 py-10 text-center sm:py-12">
+            <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
               <div aria-hidden="true" className="mb-5 flex size-16 items-center justify-center rounded-[20px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
                 <Receipt className="size-9" />
               </div>

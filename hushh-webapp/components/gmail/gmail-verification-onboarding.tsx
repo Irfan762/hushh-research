@@ -200,7 +200,7 @@ export function GmailVerificationOnboarding({
   }
 
   return (
-    <section className="mx-auto w-full max-w-md space-y-4 border-t border-[color:var(--app-separator)] pt-6">
+    <section className="mx-auto w-full max-w-md space-y-4 pt-6">
       <div className="flex flex-col items-center text-center">
         <div aria-hidden="true" className="mb-4 flex size-16 items-center justify-center rounded-[20px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
           <KycAgentIcon color="currentColor" className="size-9" />

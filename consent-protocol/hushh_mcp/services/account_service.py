@@ -171,6 +171,7 @@ class AccountService:
             ),
             "pwm_documents": text("DELETE FROM pwm_documents WHERE user_id = :user_id"),
             "kai_analyze_runs": text("DELETE FROM kai_analyze_runs WHERE user_id = :user_id"),
+            "kai_run_state": text("DELETE FROM kai_run_state WHERE user_id = :user_id"),
             "kai_gmail_connections": text(
                 "DELETE FROM kai_gmail_connections WHERE user_id = :user_id"
             ),
@@ -1343,6 +1344,7 @@ class AccountService:
                 "kai_gmail_connections",
                 "kai_receipt_memory_artifacts",
                 "kai_analyze_runs",
+                "kai_run_state",
                 "consent_export_refresh_jobs",
                 "consent_exports",
                 "connected_system_audit_events",
@@ -1682,6 +1684,7 @@ class AccountService:
             "pkm_domain_revisions": False,
             "world_model_index_v2": False,
             "kai_analyze_runs": False,
+            "kai_run_state": False,
             "kai_gmail_connections": False,
             "kai_gmail_receipts": False,
             "kai_gmail_sync_runs": False,
@@ -1810,6 +1813,7 @@ class AccountService:
                         "kai_gmail_connections",
                         "kai_receipt_memory_artifacts",
                         "kai_analyze_runs",
+                        "kai_run_state",
                         "consent_export_refresh_jobs",
                         "consent_exports",
                         "connected_system_audit_events",

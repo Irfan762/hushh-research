@@ -46,6 +46,9 @@ test("profile sign-out replaces the document without refresh despite stalled not
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === "/") {
       events.push("home-document");
+      // A server-rendered home document is not instant; the old page must
+      // stay gated while it loads instead of re-rendering as signed out.
+      await new Promise((resolve) => setTimeout(resolve, 300));
       await route.fulfill({ contentType: "text/html", body: "<h1>Welcome</h1>" });
     } else {
       await route.fulfill({ contentType: "text/html", body: `<div id="root"></div><script>${script}</script>` });
@@ -61,4 +64,5 @@ test("profile sign-out replaces the document without refresh despite stalled not
     expect(events.indexOf(event)).toBeLessThan(events.indexOf("home-document"));
   }
   await expect(page.getByRole("heading", { name: "Profile" })).toHaveCount(0);
+  expect(events).not.toContain("guard-login-redirect");
 });

@@ -13,6 +13,7 @@ from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
     STATE_EXTERNAL_READ,
     STATE_EXTERNAL_READ_CONTINUATION,
+    STATE_SELECTED_DRIVE_SHARE,
 )
 
 _EPHEMERAL = frozenset(
@@ -21,7 +22,9 @@ _EPHEMERAL = frozenset(
         STATE_DRIVE_READ_OUTCOME,
         STATE_EXTERNAL_READ,
         STATE_EXTERNAL_READ_CONTINUATION,
+        STATE_SELECTED_DRIVE_SHARE,
         "temp:hussh:workspace_chat_admission",
+        "temp:hussh:drive_search_selection",
         "temp:hussh:mcp_approval",
         # Agent Chat stores source text behind an in-process request secret.
         # Remove both handles before encrypting a conversation snapshot so a

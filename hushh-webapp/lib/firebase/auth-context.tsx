@@ -1020,9 +1020,11 @@ export function AuthProvider({ children }: AuthProviderProps) {
           // End the authenticated document on web as well as native. Profile
           // sheets, cached router state and old stream callbacks cannot retain
           // the previous screen and require a manual refresh to leave it.
+          // Keep the loading gate held until the document unloads: releasing
+          // it lets route guards issue a competing client-side /login replace
+          // that cancels this navigation and strands the page on a loader.
           terminalNavigationCommitted = true;
           replaceWindowLocation(redirectTo);
-          if (!IS_NATIVE) setLoading(false);
         }
       })();
 
