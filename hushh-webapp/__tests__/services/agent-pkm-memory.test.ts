@@ -33,6 +33,7 @@ vi.mock("@/lib/services/pkm-write-coordinator", () => ({
 import {
   addToPKM,
   clearAgentPkmContext,
+  describeAgentPkmCardDestination,
   formatAgentPkmSaveSummary,
   getPkmAutoSaveCards,
   getPkmConfirmationCards,
@@ -1020,5 +1021,35 @@ describe("agent PKM memory helpers", () => {
     expect(result.saved).toBe(0);
     expect(result.failed).toBe(1);
     expect(pkmSavePreparedDomainMock).not.toHaveBeenCalled();
+  });
+
+  it("names the destination the save path would write to, and never guesses one", () => {
+    const card: AgentPkmPreviewCard = {
+      card_id: "c1",
+      source_text: "I hold 10 shares of ACME.",
+      write_mode: "confirm_first",
+      target_domain: "shopping",
+      structure_decision: { target_domain: "financial" },
+      primary_json_path: "investments.holdings",
+    };
+    // structure_decision outranks the flat target_domain, exactly as addToPKM resolves it.
+    expect(
+      describeAgentPkmCardDestination(card, new Map([["financial", "Finance"]])),
+    ).toEqual({ kind: "location", label: "Finance › Investments › Holdings" });
+    expect(describeAgentPkmCardDestination({ ...card, structure_decision: {} })).toEqual({
+      kind: "location",
+      label: "Shopping › Investments › Holdings",
+    });
+    // Negative controls: a location the structure agent did not settle, or a
+    // preview the save path refuses, is reported honestly rather than faked.
+    expect(
+      describeAgentPkmCardDestination({ ...card, structure_decision: {}, target_domain: "unresolved" }),
+    ).toEqual({ kind: "undetermined" });
+    expect(describeAgentPkmCardDestination({ ...card, preview_degraded: true })).toEqual({
+      kind: "undetermined",
+    });
+    expect(describeAgentPkmCardDestination({ ...card, write_mode: "do_not_save" })).toEqual({
+      kind: "not_saved",
+    });
   });
 });

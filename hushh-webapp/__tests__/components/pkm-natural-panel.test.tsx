@@ -19,9 +19,13 @@ const { addToPKM, clearAgentPkmContext, previewAgentPkmMemory, trackEvent } = vi
   trackEvent: vi.fn(),
 }));
 
-vi.mock("@/lib/agent/agent-pkm-memory", () => ({
+vi.mock("@/lib/agent/agent-pkm-memory", async (importOriginal) => ({
   addToPKM,
   clearAgentPkmContext,
+  // Real: the review row must name the place the save path would write to.
+  describeAgentPkmCardDestination: (
+    await importOriginal<typeof import("@/lib/agent/agent-pkm-memory")>()
+  ).describeAgentPkmCardDestination,
   getIgnoredPkmCards: () => [],
   previewAgentPkmMemory,
 }));
@@ -692,7 +696,8 @@ describe("PkmNaturalPanel — Memory redesign", () => {
   it("shows the proposed source detail and invalidates it when the note changes", async () => {
     previewAgentPkmMemory.mockResolvedValueOnce({ cards: [{
       card_id: "synthetic-review", source_text: "My test role is Synthetic Reviewer.",
-      write_mode: "confirm_first",
+      write_mode: "confirm_first", target_domain: "financial",
+      primary_json_path: "investments.holdings",
     }] });
     await openMainScreen();
     fireEvent.click(screen.getByRole("tab", { name: "Add" }));
@@ -700,6 +705,10 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     fireEvent.change(note, { target: { value: "My test role is Synthetic Reviewer." } });
     fireEvent.click(screen.getByRole("button", { name: "Review memory" }));
     expect(await screen.findByText("My test role is Synthetic Reviewer.", { selector: ":not(textarea)" })).toBeTruthy();
+    // The founder-reported gap: the preview echoed the note and never said where it would go.
+    expect(screen.getByTestId("memory-capture-destination").textContent).toBe(
+      "Saves to Financial › Investments › Holdings",
+    );
     fireEvent.change(note, { target: { value: "A different note" } });
     expect(screen.queryByRole("button", { name: "Save to Memory" })).toBeNull();
     expect(addToPKM).not.toHaveBeenCalled();
