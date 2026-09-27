@@ -288,7 +288,7 @@ describe("top shell breadcrumbs", () => {
       width: "content",
       align: "center",
       hideBack: true,
-      items: [{ label: "One", href: "/" }, { label: "Setup" }],
+      items: [],
     });
 
     expect(resolveTopShellBreadcrumb("/one/setup/")).toEqual({
@@ -296,7 +296,7 @@ describe("top shell breadcrumbs", () => {
       width: "content",
       align: "center",
       hideBack: true,
-      items: [{ label: "One", href: "/" }, { label: "Setup" }],
+      items: [],
     });
 
     const fromDashboard = new URLSearchParams();

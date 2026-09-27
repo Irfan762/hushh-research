@@ -665,7 +665,7 @@ function resolveTopShellBreadcrumbInner(
       width: "content",
       align: "center",
       hideBack: true,
-      items: [{ label: "One", href: returnHref }, { label: "Setup" }],
+      items: [],
     };
   }
 
