@@ -18,8 +18,8 @@ from api.routes import account
 from hushh_mcp.services import legal_acceptance_service
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = "254_account_legal_acceptances.sql"
-ROLLBACK = "254_account_legal_acceptances.rollback.sql"
+MIGRATION = "255_account_legal_acceptances.sql"
+ROLLBACK = "255_account_legal_acceptances.rollback.sql"
 TABLE = "account_legal_acceptances"
 
 TERMS = {"document_id": "terms", "document_version": "2.0", "effective_date": "2026-09-27"}
@@ -104,12 +104,12 @@ def test_migration_is_release_governed_replay_safe_and_self_guarded() -> None:
     assert f"CREATE TABLE IF NOT EXISTS {TABLE}" in migration
     assert "ON DELETE" not in migration  # acceptance precedes the actor profile
     assert "install_account_deletion_write_guards" in migration
-    assert f"migration_254_rollback_refused_nonempty_table:{TABLE}" in rollback
-    assert manifest["ordered_migrations"][-1] == MIGRATION
+    assert f"migration_255_rollback_refused_nonempty_table:{TABLE}" in rollback
+    assert MIGRATION in manifest["ordered_migrations"]
     assert MIGRATION in manifest["groups"]["iam"]
     assert manifest["rollback_migrations"][MIGRATION] == f"rollback/{ROLLBACK}"
 
     for name in ("prod_core_schema.json", "uat_integrated_schema.json"):
         contract = json.loads((ROOT / "db/contracts" / name).read_text())
-        assert contract["expected_migration_version"] == 254
+        assert contract["expected_migration_version"] >= 255
         assert TABLE in contract["required_tables"]

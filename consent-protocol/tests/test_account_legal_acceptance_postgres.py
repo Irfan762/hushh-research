@@ -1,4 +1,4 @@
-"""Migration 254 replays cleanly and acceptance is idempotent on real PostgreSQL.
+"""Migration 255 replays cleanly and acceptance is idempotent on real PostgreSQL.
 
 Applies the migration twice (every deploy replays it), records the same version
 twice, then a newer one, and proves the rollback refuses to drop recorded
@@ -19,8 +19,8 @@ import pytest
 from hushh_mcp.services import legal_acceptance_service
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = "254_account_legal_acceptances.sql"
-ROLLBACK = "254_account_legal_acceptances.rollback.sql"
+MIGRATION = "255_account_legal_acceptances.sql"
+ROLLBACK = "255_account_legal_acceptances.rollback.sql"
 TABLE = "account_legal_acceptances"
 
 

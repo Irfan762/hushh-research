@@ -13,7 +13,7 @@ BEGIN
       INTO has_rows;
     IF has_rows THEN
       RAISE EXCEPTION
-        'migration_254_rollback_refused_nonempty_table:account_legal_acceptances';
+        'migration_255_rollback_refused_nonempty_table:account_legal_acceptances';
     END IF;
   END IF;
 END
