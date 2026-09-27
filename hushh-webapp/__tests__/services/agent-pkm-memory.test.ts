@@ -438,6 +438,67 @@ describe("agent PKM memory helpers", () => {
     expect(context.text).toContain("400 dollars");
   });
 
+  it("puts the device-computed spending totals ahead of a clipped transaction sample", async () => {
+    // Regression (2026-09-27): with thousands of imported transactions the
+    // round-robin never reached a monthly_cash_flow row, so a spending answer
+    // could only sum whichever raw rows happened to fit the budget. The raw rows
+    // come first here, as Plaid's first assemble writes them, and outnumber the
+    // inventory cap on their own.
+    const itemIds = Array.from({ length: 400 }, (_, index) => `plaid-item-${index}`);
+    const fact = <T,>(value: T) => ({ value, computed_at: "2026-09-27T00:00:00Z", source_item_ids: itemIds });
+    const months = Array.from({ length: 12 }, (_, index) => ({
+      month: `2025-${String(index + 1).padStart(2, "0")}`,
+      income: 5000,
+      spend: 3000 + index,
+      net: 2000 - index,
+    }));
+    pkmBlob = {
+      financial: {
+        transactions_v1: Object.fromEntries(
+          Array.from({ length: 3000 }, (_, index) => [
+            `txn${index}`,
+            { amount: 12.5 + index, date: "2026-09-01", merchant_name: `Merchant ${index}`, category_primary: "FOOD_AND_DRINK" },
+          ]),
+        ),
+        derived_v1: {
+          schema: "plaid-derived-v1",
+          computed_at: "2026-09-27T00:00:00Z",
+          net_worth: fact(84000),
+          cash_flow_trend: fact("positive"),
+          monthly_cash_flow: fact(months),
+          recurring_bills: fact([
+            { label: "Streaming", category: "ENTERTAINMENT", cadence: "monthly", typical_amount: 15.49, occurrences: 6, last_date: "2026-09-01" },
+          ]),
+        },
+      },
+    };
+    pkmGetMetadataMock.mockResolvedValue({
+      ...METADATA,
+      domains: [{ ...METADATA.domains[0], key: "financial", displayName: "Financial" }],
+    });
+
+    const context = await loadAgentPkmContext({
+      userId: "user_1",
+      vaultOwnerToken: "vault_token",
+      vaultKey: "vault_key",
+    });
+
+    expect(context.coverage.clipped).toBe(true);
+    expect(context.text.length).toBeLessThanOrEqual(12_000);
+    // Every month is one line, so its income and spend read together.
+    for (const row of months) {
+      expect(context.text).toContain(
+        `- Financial > Derived V1 > Monthly Cash Flow > Value: Month: ${row.month}; Income: 5000; Spend: ${row.spend}; Net: ${row.net}`,
+      );
+    }
+    expect(context.text).toContain("Recurring Bills > Value: Label: Streaming; Category: ENTERTAINMENT");
+    expect(context.text).toContain("Financial > Derived V1 > Net Worth > Value: 84000");
+    // Provenance ids are budget noise, not facts.
+    expect(context.text).not.toContain("plaid-item-");
+    // The raw sample still fills the rest of the budget.
+    expect(context.text).toContain("Transactions V1");
+  });
+
   it("warms the full agent-safe packet into browser RAM after unlock", async () => {
     await warmAgentPkmContext({
       userId: "user_1",
