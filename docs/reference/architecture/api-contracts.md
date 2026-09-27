@@ -1537,6 +1537,36 @@ Only one bulk share can be prepared for a saved search, including across chats o
 repeated requests with different client IDs; reopening recovers the same review
 or progress rather than queueing duplicate grants.
 
+#### Complete search for a document request
+
+An incoming document request can use the same checkpointed Drive REST search and
+bulk grant worker, bound to that request's single verified recipient. This path
+starts only under the owner's current authority. It searches metadata in bounded
+pages across the owner's files and shared drives, retains encrypted result rows,
+and lets the owner leave the review screen while collection continues. A request
+search is separate from generic Trusted circle bulk sharing: it never broadens
+the recipient list. Ordinary live requests with earlier small reviews switch to
+the complete search when the owner opens them; explicit owner-selected exact
+file reviews retain their original selection.
+
+| Method / suffix under `/sharing/requests/{id}` | Contract |
+| --- | --- |
+| `POST /search` | Start or resume the request-bound metadata search. The request ID is the idempotency key; no content or permission is read or written. |
+| `GET /search` | Owner-only checkpoint status, including matched count, pages scanned, incomplete flag, and terminal error. A running or incomplete search cannot be approved as the full set. |
+| `GET /search/files?cursor=…` | Owner-only pages of matching file metadata with stable positions for review. The list may grow until the search completes. |
+| `POST /bulk` | Freeze the completed search for this request's verified recipient, omitting owner-deselected and unavailable shortcut positions. Returns the exact review digest and selected count; no permission is created. |
+
+The owner approves the frozen review through `/sharing/bulk/{shareId}/approve`
+with `confirmed: true`.
+That HTTP 202 response means queued, while the bulk worker confirms or reports
+each Google Viewer grant. The original request and recipient delivery status
+follow those effects; pending or failed files never appear as delivered. Request
+cancellation, expiry, connection changes, and a changed recipient fence further
+search and sharing. Search results are Drive metadata matches for owner review,
+not proof that every document's contents cover a requested period. The existing
+owner search operational cache uses server-held encryption and is not strict
+client-key zero knowledge, as described above.
+
 ### Exact-file Drive sharing (default-off)
 
 All routes below use `/api/connectors/google_drive/sharing` and require a current Vault

@@ -272,6 +272,11 @@ def erase_drive_account_in_transaction(connection, *, user_id, permanent, cipher
                     text("DELETE FROM drive_share_live_sources WHERE request_id=:request"),
                     identifiers,
                 )
+            if _exists(connection, "drive_bulk_shares"):
+                connection.execute(
+                    text("DELETE FROM drive_bulk_shares WHERE origin_request_id=:request"),
+                    identifiers,
+                )
             connection.execute(
                 text("DELETE FROM drive_share_requests WHERE request_id=:request"), identifiers
             )

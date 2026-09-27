@@ -66,6 +66,10 @@ async def sharing(documents, monkeypatch):
             "233_drive_suggestion_preparation.sql",
             "234_drive_permission_management_retention.sql",
             "234_drive_permission_management_retention.sql",
+            "241_drive_live_sharing.sql",
+            "251_drive_owner_search_jobs.sql",
+            "254_drive_bulk_shares.sql",
+            "256_drive_request_bulk_search.sql",
         ):
             connection.execute(text((MIGRATIONS / name).read_text()))
         connection.commit()
