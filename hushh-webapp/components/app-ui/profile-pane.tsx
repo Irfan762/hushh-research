@@ -1,6 +1,6 @@
 "use client";
 
-import { memo } from "react";
+import { memo, useState } from "react";
 
 import {
   ArrowLeftIcon as ArrowLeft,
@@ -13,6 +13,7 @@ import { useVault } from "@/lib/vault/vault-context";
 import {
   canGoBackProfilePane,
   popProfilePaneLocation,
+  profilePaneLocationKey,
   resolveProfilePaneUrlState,
 } from "@/lib/navigation/profile-pane";
 import {
@@ -52,28 +53,42 @@ export const ProfilePane = memo(function ProfilePane({ open, onOpenChange }: Pro
   const pathname = usePathname() || "/";
   const searchParams = useSearchParams();
   const paneState = resolveProfilePaneUrlState(searchParams);
-  const canGoBack = canGoBackProfilePane(paneState.location);
-  const panelTitle = paneState.location.panel
-      ? paneState.location.panel === "my-data"
+  // Closing removes the pane query, which also resets the URL location to the
+  // root in the same commit that starts the exit slide. Showing that reset
+  // meant closing from a sub-panel retitled the header to "Profile" and slid
+  // the inner stack back while the sheet slid out: two motions and a flicker.
+  // Hold the last open location until the pane is open again.
+  const [heldLocation, setHeldLocation] = useState(paneState.location);
+  if (
+    paneState.open &&
+    profilePaneLocationKey(paneState.location) !==
+      profilePaneLocationKey(heldLocation)
+  ) {
+    setHeldLocation(paneState.location);
+  }
+  const location = paneState.open ? paneState.location : heldLocation;
+  const canGoBack = canGoBackProfilePane(location);
+  const panelTitle = location.panel
+      ? location.panel === "my-data"
         ? "Memory"
-        : paneState.location.panel === "connected-systems"
+        : location.panel === "connected-systems"
           ? "Connected Systems"
-          : paneState.location.panel === "gmail"
+          : location.panel === "gmail"
             ? "Mail receipts"
-            : paneState.location.panel === "account"
+            : location.panel === "account"
               ? "Your account"
-              : paneState.location.panel === "preferences"
+              : location.panel === "preferences"
                 ? "Appearance & preferences"
-                : paneState.location.panel === "security"
+                : location.panel === "security"
                   ? "Security & privacy"
-                  : paneState.location.panel === "referrals"
+                  : location.panel === "referrals"
                     ? "Invite friends"
                     : "Help & feedback"
       : "Profile";
   // A detail is named for what it is ("Trusted devices"), matching its entry
   // in the Profile stack; it used to read "Profile detail" for all of them.
   // Details without a fixed name (a domain, a connection) keep the panel's.
-  const detail = paneState.location.detail;
+  const detail = location.detail;
   const title = detail ? (PROFILE_DETAIL_TITLES[detail] ?? panelTitle) : panelTitle;
 
   // URL state requests a destination, not admission. Keep it for resume, but
@@ -142,7 +157,7 @@ export const ProfilePane = memo(function ProfilePane({ open, onOpenChange }: Pro
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-[max(1.5rem,env(safe-area-inset-bottom))] [-webkit-overflow-scrolling:touch]"
           data-profile-pane-scroll-root="true"
         >
-          <ProfilePage presentation="pane" />
+          <ProfilePage presentation="pane" paneLocation={location} />
         </div>
       </SheetContent>
     </Sheet>

@@ -1166,9 +1166,7 @@
       "file": "app/connect/page-client.tsx",
       "includes": [
         "AppPageShell",
-        "AppPageHeaderRegion",
         "AppPageContentRegion",
-        "PageHeader",
         "SurfaceStack"
       ]
     },
