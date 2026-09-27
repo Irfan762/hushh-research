@@ -2755,53 +2755,46 @@ class ConnectionsService:
         self._mirror_trusted_edge(peer_user_id, user_id)
         return {"status": "connected", "connectionId": (conn or {}).get("id")}
 
-    def report_request(self, user_id: str, request_id: str, *, reason: str) -> dict[str, Any]:
-        """Report a connection request (Google Play user-generated content
-        policy). The addressee's report also declines and blocks the sender."""
-        user_id = (user_id or "").strip()
-        normalized = str(reason or "").strip().lower()
-        if normalized not in CONNECTION_REPORT_REASONS:
-            raise ConnectionsError(
-                "CONNECTION_REPORT_REASON_INVALID",
-                "Choose a reason for the report.",
-                status_code=422,
-            )
-        req = self._load_request(request_id)
-        requester = str(req.get("requester_user_id") or "")
-        addressee = str(req.get("addressee_user_id") or "")
-        if user_id not in (requester, addressee):
-            raise ConnectionsError(
-                "CONNECTION_NOT_PARTICIPANT",
-                "Only a person on this request can report it.",
-                status_code=403,
-            )
-        reported_user = requester if user_id == addressee else addressee
+    def _log_request_report(
+        self, *, reason: str | None, reporter: str, reported: Any, request_id: Any
+    ) -> None:
+        if reason is None:
+            return
         # The team's review queue: query Cloud Logging for this event, then read
         # the request row (and its message) it points to.
         logger.warning(
             "one_connection_request_reported reason=%s reporter=%s reported=%s request=%s",
-            normalized,
-            user_id,
-            reported_user,
-            req.get("id"),
+            reason,
+            reporter,
+            reported,
+            request_id,
         )
-        blocked = False
-        if user_id == addressee and str(req.get("status") or "") in ("pending", "rejected"):
-            self.reject_request(user_id, request_id, block=True)
-            blocked = True
-        return {
-            "reported": True,
-            "reason": normalized,
-            "blocked": blocked,
-            "requestId": req.get("id"),
-        }
 
     def reject_request(
-        self, user_id: str, request_id: str, *, block: bool = False
+        self,
+        user_id: str,
+        request_id: str,
+        *,
+        block: bool = False,
+        report_reason: str | None = None,
     ) -> dict[str, Any]:
         """Decline a request. ``block`` also stops that person from sending this
-        user another request (recorded on the request's metadata)."""
+        user another request (recorded on the request's metadata).
+
+        ``report_reason`` is the recipient's in-app "Report" (Google Play
+        user-generated content policy): it always blocks, and logs a
+        reviewable ``one_connection_request_reported`` record.
+        """
         user_id = (user_id or "").strip()
+        reason = str(report_reason or "").strip().lower() or None
+        if reason is not None:
+            if reason not in CONNECTION_REPORT_REASONS:
+                raise ConnectionsError(
+                    "CONNECTION_REPORT_REASON_INVALID",
+                    "Choose a reason for the report.",
+                    status_code=422,
+                )
+            block = True
         if block:
             existing = self._load_request(request_id)
             if (
@@ -2826,6 +2819,12 @@ class ConnectionsService:
                     user_id,
                     existing.get("requester_user_id"),
                     existing.get("id"),
+                )
+                self._log_request_report(
+                    reason=reason,
+                    reporter=user_id,
+                    reported=existing.get("requester_user_id"),
+                    request_id=existing.get("id"),
                 )
                 return {"status": "rejected", "requestId": existing.get("id"), "blocked": True}
         with self._transaction():
@@ -2892,6 +2891,9 @@ class ConnectionsService:
                 user_id,
                 requester,
                 source_request_id,
+            )
+            self._log_request_report(
+                reason=reason, reporter=user_id, reported=requester, request_id=source_request_id
             )
             return {"status": "rejected", "requestId": req.get("id"), "blocked": True}
         return {"status": "rejected", "requestId": req.get("id")}

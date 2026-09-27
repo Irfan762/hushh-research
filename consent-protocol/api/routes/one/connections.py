@@ -366,13 +366,16 @@ def accept_connection_request(
 
 
 class RejectConnectionRequestBody(BaseModel):
-    """Optional. ``block`` also stops the sender from requesting this person again."""
+    """Optional. ``block`` also stops the sender from requesting this person again.
+
+    ``report_reason`` reports the request and its message to the Hussh team
+    (Google Play user-generated content policy) and always blocks.
+    """
 
     block: bool = False
-
-
-class ReportConnectionRequestBody(BaseModel):
-    reason: Literal["spam", "harassment", "inappropriate", "impersonation", "other"]
+    report_reason: (
+        Literal["spam", "harassment", "inappropriate", "impersonation", "other"] | None
+    ) = None
 
 
 @router.post("/connections/requests/{request_id}/reject")
@@ -384,24 +387,11 @@ def reject_connection_request(
     try:
         return {
             "result": _service().reject_request(
-                firebase_uid, request_id, block=bool(payload and payload.block)
+                firebase_uid,
+                request_id,
+                block=bool(payload and payload.block),
+                report_reason=payload.report_reason if payload else None,
             )
-        }
-    except Exception as exc:  # noqa: BLE001
-        raise _handle(exc) from exc
-
-
-@router.post("/connections/requests/{request_id}/report")
-def report_connection_request(
-    payload: ReportConnectionRequestBody,
-    request_id: str = Path(...),
-    firebase_uid: str = Depends(require_firebase_auth),
-):
-    """Google Play user-generated content policy: report a request (and its
-    message). The addressee's report also declines and blocks the sender."""
-    try:
-        return {
-            "result": _service().report_request(firebase_uid, request_id, reason=payload.reason)
         }
     except Exception as exc:  # noqa: BLE001
         raise _handle(exc) from exc

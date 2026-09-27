@@ -120,14 +120,11 @@ def test_recipient_report_logs_for_review_and_blocks_the_sender(
     service = _service({"request": _request()}, calls)
 
     with caplog.at_level(logging.WARNING):
-        result = service.report_request("recipient", "req-1", reason="harassment")
+        result = service.reject_request("recipient", "req-1", report_reason="harassment")
 
-    assert result == {
-        "reported": True,
-        "reason": "harassment",
-        "blocked": True,
-        "requestId": "req-1",
-    }
+    assert result == {"status": "rejected", "requestId": "req-1", "blocked": True}
+    _, params = next(c for c in calls if "SET status = 'rejected'" in c[0])
+    assert params == {"id": "req-1", "block": True, "blocker": "recipient"}
     messages = [r.getMessage() for r in caplog.records]
     assert any(
         "one_connection_request_reported reason=harassment reporter=recipient reported=sender" in m
@@ -136,31 +133,41 @@ def test_recipient_report_logs_for_review_and_blocks_the_sender(
     assert any("one_connection_blocked blocker=recipient blocked=sender" in m for m in messages)
 
 
-def test_sender_report_is_logged_without_blocking() -> None:
+def test_report_after_an_earlier_decline_still_blocks_and_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
-    service = _service({"request": _request()}, calls)
+    service = _service({"request": _request("rejected")}, calls)
 
-    result = service.report_request("sender", "req-1", reason="impersonation")
+    with caplog.at_level(logging.WARNING):
+        result = service.reject_request("recipient", "req-1", report_reason="spam")
 
-    assert result["blocked"] is False
-    assert not any("SET status = 'rejected'" in sql for sql, _ in calls)
+    assert result["blocked"] is True
+    assert any(
+        "one_connection_request_reported reason=spam" in r.getMessage() for r in caplog.records
+    )
 
 
-def test_outsiders_and_free_text_reasons_are_rejected() -> None:
+def test_only_the_recipient_can_report_and_free_text_reasons_are_rejected() -> None:
     calls: list[tuple[str, dict[str, Any]]] = []
     service = _service({"request": _request()}, calls)
 
     with pytest.raises(ConnectionsError) as outsider:
-        service.report_request("someone-else", "req-1", reason="spam")
-    assert outsider.value.code == "CONNECTION_NOT_PARTICIPANT"
+        service.reject_request("someone-else", "req-1", report_reason="spam")
+    assert outsider.value.code == "CONNECTION_NOT_ADDRESSEE"
 
     with pytest.raises(ConnectionsError) as bad_reason:
-        service.report_request("recipient", "req-1", reason="they were rude to me")
+        service.reject_request("recipient", "req-1", report_reason="they were rude to me")
     assert bad_reason.value.code == "CONNECTION_REPORT_REASON_INVALID"
+    assert not any("SET status = 'rejected'" in sql for sql, _ in calls)
 
 
-def test_route_and_service_share_the_reason_enum() -> None:
-    from api.routes.one.connections import ReportConnectionRequestBody
+def test_reject_route_accepts_report_on_the_existing_endpoint() -> None:
+    from api.routes.one import connections as routes
 
-    annotation = str(ReportConnectionRequestBody.model_fields["reason"].annotation)
+    annotation = str(routes.RejectConnectionRequestBody.model_fields["report_reason"].annotation)
     assert all(reason in annotation for reason in CONNECTION_REPORT_REASONS)
+    # No new endpoint: reporting rides on the existing reject route.
+    paths = {getattr(r, "path", "") for r in routes.router.routes}
+    assert "/api/one/connections/requests/{request_id}/report" not in paths
+    assert not any(p.endswith("/report") for p in paths)

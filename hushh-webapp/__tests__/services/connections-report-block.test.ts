@@ -19,16 +19,17 @@ describe("ConnectionsService report and block", () => {
     );
   });
 
-  it("reports a request with a reason from the closed enum", async () => {
+  it("reports a request, declining and blocking, with a reason from the closed enum", async () => {
     await ConnectionsService.report({
       idToken: "token",
       requestId: "req/1",
       reason: "harassment",
     });
     const [path, init] = apiFetch.mock.calls[0];
-    expect(path).toBe("/api/one/connections/requests/req%2F1/report");
+    // No new endpoint: a report rides on the existing reject route.
+    expect(path).toBe("/api/one/connections/requests/req%2F1/reject");
     expect(init.method).toBe("POST");
-    expect(JSON.parse(init.body)).toEqual({ reason: "harassment" });
+    expect(JSON.parse(init.body)).toEqual({ block: true, report_reason: "harassment" });
   });
 
   it("sends block only when asked, and a plain decline stays bodyless", async () => {

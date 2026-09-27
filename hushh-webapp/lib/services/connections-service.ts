@@ -635,20 +635,21 @@ export class ConnectionsService {
 
   /**
    * Report a connection request and its message to the Hussh team (Google
-   * Play user-generated content policy). A recipient's report also declines
-   * the request and blocks the sender.
+   * Play user-generated content policy). The report also declines the
+   * request and blocks the sender.
    */
   static async report(opts: {
     idToken: string;
     requestId: string;
     reason: ConnectionReportReason;
   }): Promise<void> {
+    // Rides on the existing reject route: a report always declines and blocks.
     const response = await ApiService.apiFetch(
-      `/api/one/connections/requests/${encodeURIComponent(opts.requestId)}/report`,
+      `/api/one/connections/requests/${encodeURIComponent(opts.requestId)}/reject`,
       {
         method: "POST",
         headers: { ...authHeaders(opts.idToken), "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: opts.reason }),
+        body: JSON.stringify({ block: true, report_reason: opts.reason }),
       },
     );
     await jsonOrThrow<unknown>(response);

@@ -115,6 +115,7 @@ import {
 import { copyTextToClipboard } from "@/components/agent/chat-markdown-link";
 import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
+import { isAndroid } from "@/lib/capacitor/platform";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
 import {
@@ -1851,7 +1852,9 @@ function AgentBubble({
               >
                 <ThumbsDown className="h-3.5 w-3.5" weight={disliked ? "fill" : "regular"} />
               </button>
-              {onReport ? (
+              {onReport && isAndroid() ? (
+                // Google Play AI-Generated Content policy. Android only for
+                // now, so iOS and web chat stay exactly as they are.
                 <AgentResponseReportButton reported={reported} onReport={onReport} />
               ) : null}
                 </>
@@ -4576,9 +4579,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       });
       setMessageRatings((current) => ({ ...current, [messageId]: "down" }));
       setReportedMessageIds((current) => new Set(current).add(messageId));
-      toast.success("Thanks for reporting this response.", {
-        description: "The Hussh team reviews every report.",
-      });
+      toast.success("Thanks. The Hussh team reviews every report.");
     },
     [conversationId, getVaultOwnerToken],
   );
