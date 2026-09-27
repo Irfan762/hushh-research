@@ -4203,11 +4203,10 @@ body:has([data-testid="one-location-onboarding"])
   --app-bg-start: oklch(0.146 0.004 285.9);
   --app-bg-mid: oklch(0.146 0.004 285.9);
   --app-bg-end: oklch(0.146 0.004 285.9);
-  --app-layout-surface: color-mix(
-    in oklab,
-    var(--background) 92%,
-    var(--app-accent) 8%
-  );
+  /* Same base as the page body, exactly as in light. An 8% accent mix here
+     painted the top chrome as a lighter band (#1c1a18 over a #0e0e10 page
+     with the gold accent); chrome must recede into the page, not tint it. */
+  --app-layout-surface: var(--app-grouped-background);
 
   --glass1: #ffffff40 !important;
   --glass2: #6464643b !important;

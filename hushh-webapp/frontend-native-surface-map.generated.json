@@ -2445,9 +2445,7 @@
         "shell_verification_file": "app/connect/page-client.tsx",
         "shell_verification_includes": [
           "AppPageShell",
-          "AppPageHeaderRegion",
           "AppPageContentRegion",
-          "PageHeader",
           "SurfaceStack"
         ],
         "interaction_layer_policy": {
@@ -9523,5 +9521,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "b1c6a7214be29922b912e18601c0ca60b309faf10aa07cace1927ea3922f44f8"
+  "content_sha256": "3639202e253c1c28daec56ad63b5927678cc6a2f365e7bff65b1a39786ac1f69"
 }

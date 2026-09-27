@@ -245,7 +245,11 @@ scrolled fully above fixed chrome on compact viewports. 9. Decorative glass fade
     visible shell height and stops there with a hard edge: no fade band or
     gradient tail (founder direction, 2026-09-27). `bar-with-tabs` stays solid
     through the visible tab underline and the edge moves with partial or full
-    header collapse. The `--top-fade-active` band below the edge is layout
+    header collapse. It paints the page's own base (`--app-layout-surface`,
+    which is `--app-grouped-background` in both themes), so at rest the bar is
+    indistinguishable from the page; never mix the accent into that base
+    (a dark 8% accent mix read as a lighter band, 2026-09-27). The
+    `--top-fade-active` band below the edge is layout
     clearance only, not painted chrome. The route-body gap below a tab row is
     reading space, not mask geometry; never include it in the solid chrome
     height.
