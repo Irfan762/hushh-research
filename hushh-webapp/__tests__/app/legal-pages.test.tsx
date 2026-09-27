@@ -7,7 +7,11 @@ import { describe, expect, it } from "vitest";
 import PrivacyPolicyPage from "@/app/privacy/page";
 import TermsOfUsePage from "@/app/terms/page";
 import { AuthLegalDialog } from "@/components/onboarding/AuthLegalDialog";
-import { LEGAL_DOCUMENTS } from "@/lib/legal/legal-documents";
+import { RUNTIME_PROVIDER_CATALOG } from "@/lib/connections/runtime-provider-catalog";
+import {
+  LEGAL_DOCUMENTS,
+  type LegalDocument,
+} from "@/lib/legal/legal-documents";
 import {
   ROUTES,
   isOnboardingAdmissionExemptRoute,
@@ -16,6 +20,20 @@ import {
 
 const REPO = path.resolve(__dirname, "../..");
 const read = (file: string) => readFileSync(path.join(REPO, file), "utf8");
+
+const plainText = (doc: LegalDocument) =>
+  doc.sections
+    .flatMap((section) => [
+      section.title,
+      ...section.blocks.flatMap((block) => {
+        if (block.kind === "h") return [block.text];
+        const lines = block.kind === "p" ? [block.text] : block.items;
+        return lines.flat().map((part) =>
+          typeof part === "string" ? part : part.text,
+        );
+      }),
+    ])
+    .join("\n");
 
 // /privacy and /terms are the URLs given to the Google OAuth consent screen and
 // the store listings, and the documents a person agrees to at sign-in. They
@@ -41,7 +59,7 @@ describe("Privacy Policy and Terms of Use pages", () => {
       ).toBeTruthy();
       expect(
         screen.getAllByText(
-          `Last updated ${doc.lastUpdatedLabel} · Version ${doc.version}`,
+          `Effective ${doc.lastUpdatedLabel} · Version ${doc.version}`,
         ).length,
       ).toBeGreaterThan(0);
       expect(doc.lastUpdated).toMatch(/^\d{4}-\d{2}-\d{2}$/);
@@ -68,6 +86,53 @@ describe("Privacy Policy and Terms of Use pages", () => {
     expect(section.textContent).toContain(
       "develop, improve, or train generalized AI or machine learning models",
     );
+  });
+
+  it("describe One as a private agent, with Kai as one feature among many", () => {
+    const privacyIds = LEGAL_DOCUMENTS.privacy.sections.map((s) => s.id);
+    for (const id of [
+      "vault-and-chats",
+      "ai-models",
+      "kai",
+      "location",
+      "google-services",
+      "your-connectors",
+      "banks-plaid",
+      "sharing-with-people",
+      "retention-and-deletion",
+      "us-state-privacy",
+      "children",
+      "international",
+    ]) {
+      expect(privacyIds).toContain(id);
+    }
+    const termsIds = LEGAL_DOCUMENTS.terms.sections.map((s) => s.id);
+    expect(termsIds).toContain("emergency-alerts");
+    expect(termsIds).toContain("not-professional-advice");
+
+    for (const doc of Object.values(LEGAL_DOCUMENTS)) {
+      expect(doc.title).not.toMatch(/Kai/);
+      expect(doc.summary).toContain("private agent");
+      // Kai is named only as the investing feature, never as the product.
+      expect(plainText(doc)).not.toMatch(/Agent Kai|Kai app|Kai\u2019s (Privacy|Terms)/);
+    }
+    expect(() => read("lib/legal/kai-legal-content.ts")).toThrow();
+  });
+
+  // The policy once offered bring-your-own-key for providers the app had not
+  // shipped. A provider the in-app catalog marks coming_soon is not a choice a
+  // person can make, so the policy must not describe it as one.
+  it("names only model providers a person can actually choose", () => {
+    const privacy = plainText(LEGAL_DOCUMENTS.privacy);
+    const available = RUNTIME_PROVIDER_CATALOG.filter(
+      (p) => p.availability === "available",
+    );
+    expect(available.map((p) => p.id)).toContain("gemini");
+    expect(privacy).toContain("Gemini");
+    for (const provider of RUNTIME_PROVIDER_CATALOG) {
+      if (provider.availability === "available") continue;
+      expect(privacy).not.toContain(provider.name);
+    }
   });
 
   it("is what the sign-in sheet shows, with a link to the full page", () => {

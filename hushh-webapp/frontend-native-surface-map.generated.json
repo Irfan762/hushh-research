@@ -208,10 +208,6 @@
       "file": "app/api/kai/[...path]/route.ts"
     },
     {
-      "template": "/api/legal/{doc}",
-      "file": "app/api/legal/[doc]/route.ts"
-    },
-    {
       "template": "/api/marketplace/{path*}",
       "file": "app/api/marketplace/[...path]/route.ts"
     },
@@ -9629,5 +9625,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "442b57395a99f49d1d370b1b3b84ce97ecf5e3a4b2910080e2d6ff1b31f361df"
+  "content_sha256": "aef141cad95cf93804acdf15ad60f9117d0cf6cac9e77d8d27fb9ccafa813c40"
 }

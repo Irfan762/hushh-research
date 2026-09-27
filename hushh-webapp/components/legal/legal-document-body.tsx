@@ -75,7 +75,7 @@ function Block({ block, compact }: { block: LegalBlock; compact: boolean }) {
 export function LegalDocumentMeta({ doc }: { doc: LegalDocument }) {
   return (
     <>
-      Last updated {doc.lastUpdatedLabel} · Version {doc.version}
+      Effective {doc.lastUpdatedLabel} · Version {doc.version}
     </>
   );
 }
