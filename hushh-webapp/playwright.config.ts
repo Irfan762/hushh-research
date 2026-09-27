@@ -87,6 +87,7 @@ export default defineConfig({
       // iPhone; its fixture builds its own document.
       testMatch: [
         /text-attachment-viewer\.layout\.spec\.ts/,
+        /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
         /ai-selection\.layout\.spec\.ts/,
         /setup-hub\.layout\.spec\.ts/,
