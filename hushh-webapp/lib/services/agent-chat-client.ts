@@ -237,6 +237,23 @@ export const AGENT_CHAT_STREAM_LOST_ERROR =
   "One lost the connection before finishing that response. Please try again.";
 
 /**
+ * A turn whose stream was lost. The server may still finish and save it, so
+ * the turn's conversation and start time travel with the error: Retry checks
+ * history for this turn before it ever sends the message again.
+ */
+export class AgentChatStreamLostError extends Error {
+  readonly conversationId: string;
+  readonly startedAtMs: number;
+
+  constructor(conversationId: string, startedAtMs: number) {
+    super(AGENT_CHAT_STREAM_LOST_ERROR);
+    this.name = "AgentChatStreamLostError";
+    this.conversationId = conversationId;
+    this.startedAtMs = startedAtMs;
+  }
+}
+
+/**
  * How long a turn's stream may be silent before the turn is treated as lost.
  * The server writes a `: ping` comment every 15 s while a model or tool call is
  * pending (sse-starlette's keep-alive), so this is six missed pings. It is keyed
@@ -1108,7 +1125,7 @@ export async function streamAgentChat(input: {
     if (runTerminal || streamLost || failure || intentionallyStoppedAtConfirmation ||
         detached || input.signal?.aborted) return;
     streamLost = true;
-    failure = new Error(AGENT_CHAT_STREAM_LOST_ERROR);
+    failure = new AgentChatStreamLostError(threadId, startedAtMs);
     handlers.onError?.(failure.message);
     finishTerminalRun();
   };
@@ -1897,6 +1914,43 @@ export async function getAgentChatTurnState(input: {
   const pending = payload.turn?.pending === true;
   const last = Array.isArray(payload.messages) ? payload.messages[payload.messages.length - 1] : undefined;
   return { pending, answered: !pending && last?.role === "assistant" };
+}
+
+export type LostAgentTurnOutcome = "pending" | "answered" | "not_answered";
+
+/**
+ * Where a turn whose stream was lost stands, read from the same history
+ * endpoint the turn watch uses. ``answered`` requires the newest exchange to be
+ * this exact message followed by One's reply, so a turn that never reached the
+ * server is not mistaken for an earlier answer. Only the enum leaves here.
+ */
+export async function getLostAgentTurnOutcome(input: {
+  conversationId: string;
+  userMessage: string;
+  vaultOwnerToken: string;
+  vaultKey: string;
+}): Promise<LostAgentTurnOutcome> {
+  const response = await ApiService.getAgentChatHistory({
+    conversationId: input.conversationId,
+    vaultOwnerToken: input.vaultOwnerToken,
+    vaultKey: input.vaultKey,
+    limit: 2,
+  });
+  // The first turn of a conversation that never reached the server.
+  if (response.status === 404) return "not_answered";
+  if (!response.ok) {
+    throw new Error(await readError(response));
+  }
+  const payload = (await response.json()) as {
+    messages?: Array<{ role?: unknown; content?: unknown }>;
+    turn?: { pending?: unknown };
+  };
+  if (payload.turn?.pending === true) return "pending";
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const [question, answer] = messages.slice(-2);
+  const sameMessage = question?.role === "user" && typeof question.content === "string" &&
+    question.content.trim() === input.userMessage.trim();
+  return sameMessage && answer?.role === "assistant" ? "answered" : "not_answered";
 }
 
 /**
