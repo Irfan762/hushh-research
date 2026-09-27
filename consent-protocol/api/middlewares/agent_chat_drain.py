@@ -37,7 +37,8 @@ SERVER_RESTARTING_FRAME = (
 def _is_event_stream(message: Message) -> bool:
     for name, value in message.get("headers") or ():
         if name.lower() == b"content-type":
-            return value.split(b";", 1)[0].strip().lower() == b"text/event-stream"
+            media_type: bytes = value.split(b";", 1)[0].strip().lower()
+            return media_type == b"text/event-stream"
     return False
 
 
