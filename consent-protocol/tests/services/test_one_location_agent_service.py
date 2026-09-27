@@ -12,6 +12,7 @@ import pytest
 import hushh_mcp.services.one_location_agent_service as one_location_agent_module
 import hushh_mcp.services.one_location_agent_service as one_location_service_module
 from hushh_mcp.operons.location.policy import normalize_duration_hours
+from hushh_mcp.services.contact_sync_contract import CONTACT_SYNC_CONSENT_CONTRACT_VERSION
 from hushh_mcp.services.one_location_agent_service import (
     _DIRECTORY_SEPARATOR_FOLD,
     _DIRECTORY_SEPARATOR_SQL,
@@ -1665,6 +1666,8 @@ class FourUserMemoryService(OneLocationAgentService):
         self.organization_memberships: list[dict] = []
         self.consent_audit_rows: list[dict] = []
         self.marketplace_profiles: dict[str, dict] = {}
+        self.profile_user_ids: set[str] = set(self.identities)
+        self.contact_preferences: dict[str, dict] = {}
         self.persona_states: dict[str, dict] = {}
         self.auto_approve_preferences: dict[str, dict] = {}
 
@@ -2127,7 +2130,8 @@ class FourUserMemoryService(OneLocationAgentService):
             ]
             rows.sort(key=lambda k: k.get("created_at"), reverse=True)
             return rows[:1]
-        if "FROM actor_identity_cache a" in sql:
+        if "FROM actor_identity_cache a" in sql or "LEFT JOIN actor_identity_cache identity" in sql:
+            is_connect_directory = "LEFT JOIN actor_identity_cache identity" in sql
             owner = params["owner_user_id"]
             if "FROM connections c" in sql and "one_location_circle_memberships mine" in sql:
                 eligible_ids = {
@@ -2183,31 +2187,43 @@ class FourUserMemoryService(OneLocationAgentService):
                 for tc in self.trusted_connections.values()
                 if tc.get("status") == "active" and tc.get("owner_user_id") == owner
             }
-            marketplace_connected_ids = set()
-            for relationship in self.professional_relationships:
-                if str(relationship.get("status") or "") != "approved":
-                    continue
-                investor_id = str(relationship.get("investor_user_id") or "")
-                ria_id = str(relationship.get("ria_user_id") or "")
-                if owner == investor_id and ria_id:
-                    marketplace_connected_ids.add(ria_id)
-                elif owner == ria_id and investor_id:
-                    marketplace_connected_ids.add(investor_id)
-            for user_id, identity in self.identities.items():
+            directory_user_ids = self.profile_user_ids if is_connect_directory else self.identities
+            for user_id in directory_user_ids:
                 if user_id == owner:
                     continue
+                identity = self.identities.get(user_id) or {}
+                marketplace = self.marketplace_profiles.get(user_id) or {}
                 network_connected = user_id in connected_ids
                 if not network_connected:
-                    eligible = identity["phone_verified"] or user_id in marketplace_connected_ids
-                    if not eligible:
+                    if marketplace.get("is_discoverable") is False:
                         continue
-                    profile = self.marketplace_profiles.get(user_id)
-                    if profile is not None and profile.get("is_discoverable") is False:
+                    preference = self.contact_preferences.get(user_id) or {}
+                    rule_version = int(preference.get("rule_version") or 0)
+                    default = (
+                        rule_version == 0
+                        and preference.get("enabled_at") is None
+                        and preference.get("contract_version") is None
+                    )
+                    enabled = (
+                        preference.get("contact_discoverable") is True
+                        and preference.get("enabled_at") is not None
+                        and rule_version > 0
+                        and preference.get("contract_version")
+                        == CONTACT_SYNC_CONSENT_CONTRACT_VERSION
+                    )
+                    if not (default or enabled):
                         continue
                 key = self._active_key(user_id)
                 rows.append(
                     {
                         **identity,
+                        "user_id": user_id,
+                        "display_name": identity.get("display_name")
+                        or marketplace.get("display_name"),
+                        "phone_number": (
+                            identity.get("phone_number") if identity.get("phone_verified") else None
+                        ),
+                        "phone_verified": bool(identity.get("phone_verified")),
                         "key_id": key["key_id"] if key else None,
                         "public_key_jwk": key["public_key_jwk"] if key else None,
                         "algorithm": key["algorithm"] if key else None,
@@ -3851,6 +3867,26 @@ def test_directory_candidates_includes_phone_verified_without_connection() -> No
     assert "user_c" in candidate_ids
 
 
+def test_directory_candidates_include_existing_profiles_without_verified_phone_or_cache() -> None:
+    service = FourUserMemoryService()
+    service.identities["user_c"]["phone_verified"] = False
+    service.profile_user_ids.add("user_without_cache")
+    service.marketplace_profiles["user_without_cache"] = {
+        "user_id": "user_without_cache",
+        "display_name": "Cache Missing Member",
+        "is_discoverable": True,
+    }
+
+    candidates = {
+        candidate["userId"]: candidate
+        for candidate in service.list_directory_candidates(owner_user_id="user_a")
+    }
+
+    assert "user_c" in candidates
+    assert candidates["user_c"]["phoneVerified"] is False
+    assert candidates["user_without_cache"]["displayName"] == "Cache Missing Member"
+
+
 def test_directory_candidates_excludes_marketplace_hidden() -> None:
     service = FourUserMemoryService()
     service.marketplace_profiles["user_b"] = {
@@ -3864,12 +3900,29 @@ def test_directory_candidates_excludes_marketplace_hidden() -> None:
     assert "user_c" in candidate_ids
 
 
+def test_directory_candidates_exclude_explicit_contact_opt_out_for_strangers() -> None:
+    service = FourUserMemoryService()
+    service.contact_preferences["user_b"] = {
+        "contact_discoverable": False,
+        "rule_version": 1,
+    }
+
+    candidate_ids = {c["userId"] for c in service.list_directory_candidates(owner_user_id="user_a")}
+
+    assert "user_b" not in candidate_ids
+    assert "user_c" in candidate_ids
+
+
 def test_directory_candidates_query_targets_actor_identity_cache() -> None:
     service = RecipientDirectoryProbe()
     assert service.list_directory_candidates(owner_user_id="owner") == []
-    assert "FROM actor_identity_cache a" in service.sql
-    assert "a.phone_verified = TRUE" in service.sql
-    assert "a.user_id <> :owner_user_id" in service.sql
+    assert "FROM actor_profiles profile" in service.sql
+    assert "LEFT JOIN actor_identity_cache identity" in service.sql
+    assert "a.phone_verified = TRUE" not in service.sql
+    assert "profile.user_id <> :owner_user_id" in service.sql
+    assert "marketplace.is_discoverable IS DISTINCT FROM FALSE" in service.sql
+    assert "profile.contact_sync_consent_rule_version" in service.sql
+    assert service.params["contact_sync_contract_version"] == CONTACT_SYNC_CONSENT_CONTRACT_VERSION
 
 
 def test_recipient_payload_masks_email_for_directory_disambiguation() -> None:
@@ -3939,8 +3992,7 @@ def test_directory_candidate_search_filters_before_pagination(
         "name_prefix": "cara%",
         "word_prefix": "% cara%",
         "token_prefixes": ["% cara%"],
-        "email_prefix": "cara%",
-        "email_query": "cara",
+        "contact_sync_contract_version": CONTACT_SYNC_CONSENT_CONTRACT_VERSION,
         # Every caller that predates the advisor split still asks for both
         # halves, so adding the tab changed nobody else's result set.
         "audience": "all",
@@ -3992,10 +4044,9 @@ def test_directory_search_matches_prefixes_not_substrings() -> None:
     # that also returns "Anand" because it contains an n is not an index.
     assert service.params["name_prefix"] == "n%"
     assert service.params["word_prefix"] == "% n%"
-    assert service.params["email_prefix"] == "n%"
-    assert service.params["email_query"] == "n"
     assert service.sql.count("LIKE :name_prefix ESCAPE '!'") == 2
     assert "LIKE :word_prefix ESCAPE '!'" in service.sql
+    assert "LIKE :email_prefix" not in service.sql
 
 
 def test_directory_search_ranks_name_prefix_above_word_prefix_then_alphabetically() -> None:

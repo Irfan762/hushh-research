@@ -4,12 +4,11 @@ export type ConnectionRelationship =
   "none" | "pending_outgoing" | "pending_incoming" | "connected";
 
 /**
- * Which half of the directory a search is asking about.
+ * Which part of the directory a search is asking about.
  *
- * The two named audiences partition it: every findable person is in exactly
- * one, so separating advisors never makes anyone unreachable. `"all"` is what
- * every caller that predates the split still gets, and is what spoken-name
- * resolution uses -- someone saying a name is not saying which tab it is in.
+ * `"all"` includes regular people and verified RIAs, and is used by Connect
+ * People and spoken-name resolution. `"ria"` narrows the same directory to
+ * verified advisers; `"people"` remains for legacy non-RIA callers.
  */
 export type DirectoryAudience = "all" | "people" | "ria";
 
