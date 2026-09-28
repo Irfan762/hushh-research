@@ -128,7 +128,8 @@ describe("Agent One proactive Calendar cards wiring contract", () => {
   it("keeps Calendar available through explicit governed directives", () => {
     expect(source).toContain("getCalendarDirectiveFromToolEvent");
     expect(source).toContain("runCalendarDirective");
-    expect(source).toContain("GoogleCalendarService");
+    // Connect goes through the shared in-place connector (no chat redirect).
+    expect(source).toContain("connectCalendarInPlace");
     expect(source).toContain('delegateAgentId === "agent_calendar"');
   });
 });
@@ -160,11 +161,18 @@ describe("Agent One in-chat Calendar directive cards wiring contract", () => {
     );
   });
 
-  it("keeps Calendar connection confirmation on the existing OAuth path", () => {
+  it("keeps Calendar connection confirmation in place on the shared OAuth path", () => {
     const connectIndex = normalized.indexOf('type === "calendar.connect"');
     const block = normalized.slice(connectIndex, connectIndex + 1200);
-    expect(block).toContain("GoogleCalendarService.startConnect(");
-    expect(block).toContain("clearCalendarSetupOAuthReturn();");
+    expect(block).toContain('runDirectiveConnect("calendar");');
+    expect(block).not.toContain("location.assign");
+    // The shared connector still owns the existing Calendar start + journey reset.
+    const shared = readFileSync(
+      join(process.cwd(), "lib/connections/google-connect-in-place.ts"),
+      "utf8",
+    );
+    expect(shared).toContain("GoogleCalendarService.startConnect(");
+    expect(shared).toContain("clearCalendarSetupOAuthReturn();");
   });
 
   it("routes explicit proposal confirmation through the existing action queue", () => {

@@ -48,6 +48,8 @@ import {
   waitForDrivePopup,
   waitForOAuthPopup,
 } from "@/lib/profile/drive-oauth-popup";
+import { connectCalendarInPlace } from "@/lib/connections/google-connect-in-place";
+import { OAUTH_WINDOW_BLOCKED_COPY } from "@/lib/connections/oauth-window";
 import {
   ExternalConnectorService,
   type ConnectorOverview,
@@ -244,6 +246,7 @@ function OwnerConnectorsPanel({
   const [mailPopupPending, setMailPopupPending] = useState(false);
   const [plaidBusy, setPlaidBusy] = useState(false);
   const [calendarBusy, setCalendarBusy] = useState(false);
+  const [calendarPopupPending, setCalendarPopupPending] = useState(false);
   const [calendarMessage, setCalendarMessage] = useState("");
   const [pending, setPending] = useState<PendingDriveSelection | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
@@ -276,6 +279,8 @@ function OwnerConnectorsPanel({
   const mailLock = useRef(false);
   const drivePopupCancel = useRef<AbortController | null>(null);
   const mailPopupCancel = useRef<AbortController | null>(null);
+  const calendarLock = useRef(false);
+  const calendarPopupCancel = useRef<AbortController | null>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<HTMLElement>(null);
   // A native app-url return and the browser bridge promise can both arrive for
@@ -1039,7 +1044,7 @@ function OwnerConnectorsPanel({
     const popup = native ? null : openGmailOAuthPopup(attempt);
     if (!native && !popup) {
       setMailMessage(
-        "Allow popups, then retry. Your chat and draft stay here.",
+        OAUTH_WINDOW_BLOCKED_COPY,
       );
       return;
     }
@@ -1175,6 +1180,56 @@ function OwnerConnectorsPanel({
         if (!signal.aborted) setMailBusy(false);
       }
     })();
+  };
+
+  /**
+   * Connects Calendar without leaving the drawer. Web opens Google's consent
+   * in a popup (a new tab if the popup is refused) through the same callback
+   * page and settlement contract as the Calendar workspace; native uses the
+   * platform Google sign-in sheet. The WebView never navigates, so the vault
+   * stays unlocked. A settlement is only a hint: the owner-authenticated
+   * status read decides what the drawer shows.
+   */
+  const connectCalendar = (accessLevel: "read" | "manage" = "read") => {
+    const signal = controller.current?.signal;
+    if (!user || !signal || signal.aborted || calendarLock.current) return;
+    const attemptCancel = new AbortController();
+    // Opens the consent window synchronously, inside this click.
+    const attempt = connectCalendarInPlace({
+      owner: user,
+      accessLevel,
+      signal,
+      cancelSignal: attemptCancel.signal,
+    });
+    if (attempt.surface === "blocked") {
+      setCalendarMessage(
+        OAUTH_WINDOW_BLOCKED_COPY,
+      );
+      return;
+    }
+    if (attempt.surface === "window") {
+      calendarPopupCancel.current = attemptCancel;
+      setCalendarPopupPending(true);
+    }
+    calendarLock.current = true;
+    setCalendarBusy(true);
+    setCalendarMessage("");
+    void attempt.result.then((outcome) => {
+      if (calendarPopupCancel.current === attemptCancel)
+        calendarPopupCancel.current = null;
+      calendarLock.current = false;
+      if (outcome === "stale" || signal.aborted) return;
+      setCalendarPopupPending(false);
+      setCalendarBusy(false);
+      if (outcome === "connected") calendar.refresh();
+      setCalendarMessage(
+        outcome === "connected"
+          ? "Calendar connected."
+          : outcome === "failed"
+            ? "Could not finish Calendar connection. Try again."
+            : "Calendar not connected.",
+      );
+    });
   };
 
   const canConnectDrive =
@@ -1355,9 +1410,10 @@ function OwnerConnectorsPanel({
             setConfirm("calendar");
             return;
           }
-          onBack();
-          router.push(ROUTES.CALENDAR);
+          showConnector("calendar");
+          connectCalendar();
         },
+        disabled: calendarBusy,
       },
       trailingText: !calendar.loaded ? "Checking…" : undefined,
     },
@@ -1906,10 +1962,11 @@ function OwnerConnectorsPanel({
                 {calendar.connected ? (
                   <Button size="compact" variant="outline" disabled={calendarBusy} onClick={() => setConfirm("calendar")}>Disconnect Calendar</Button>
                 ) : (
-                  <Button size="compact" disabled={calendarBusy} onClick={() => { onBack(); router.push(ROUTES.CALENDAR); }}>Connect Calendar</Button>
+                  <Button size="compact" disabled={calendarBusy} onClick={() => connectCalendar()}>Connect Calendar</Button>
                 )}
+                {calendarPopupPending && <Button size="compact" variant="outline" onClick={() => calendarPopupCancel.current?.abort()}>Cancel sign-in</Button>}
                 {calendar.error ? <Button size="compact" variant="ghost" onClick={() => calendar.refresh()}>Retry</Button> : null}
-                {calendarMessage ? <p role="status" className="text-sm text-muted-foreground">{calendarMessage}</p> : null}
+                {calendarBusy || calendarMessage ? <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{calendarPopupPending ? "Finish signing in with Google in the window that opened." : calendarBusy ? "Updating Calendar…" : calendarMessage}</p> : null}
               </section>
             )}
             {activeConnector === "plaid" && (

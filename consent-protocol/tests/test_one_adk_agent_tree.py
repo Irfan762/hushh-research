@@ -479,23 +479,23 @@ class TestAgentTreeShape:
                 state={
                     STATE_VOICE_CONTEXT: {
                         "route_playbook": {
-                            "purpose": "Sign in with a verified provider.",
-                            "primary_action_id": "auth.sign_in_apple",
+                            "purpose": "Verify a phone number.",
+                            "primary_action_id": "phone_mandate.submit_number",
                         },
                         "available_action_ids": [
-                            "auth.sign_in_apple",
-                            "auth.sign_in_google",
-                            "auth.close_legal",
+                            "phone_mandate.submit_number",
+                            "phone_mandate.submit_code",
+                            "phone_mandate.close_country_picker",
                         ],
                         "ui": {
                             "interaction_layer": {
-                                "layer_id": "login_terms",
-                                "kind": "legal",
+                                "layer_id": "phone_country_picker",
+                                "kind": "country_picker",
                                 "modality": "modal",
                                 "lifecycle_state": "open",
-                                "dismiss_action_id": "auth.close_legal",
-                                "visible_action_ids": ["auth.close_legal"],
-                                "visible_control_ids": ["auth_close_legal"],
+                                "dismiss_action_id": "phone_mandate.close_country_picker",
+                                "visible_action_ids": ["phone_mandate.close_country_picker"],
+                                "visible_control_ids": ["phone-flow-country"],
                                 "options": [],
                                 "underlying_actions_available": False,
                                 "agent_continuity": "interactive",
@@ -508,10 +508,10 @@ class TestAgentTreeShape:
 
         assert "ACTIVE INTERACTION LAYER" in instruction
         assert "strongest current context" in instruction
-        assert "Close legal document => auth.close_legal" in instruction
+        assert "Close Country Picker => phone_mandate.close_country_picker" in instruction
         assert "Do not offer or execute controls behind this layer" in instruction
-        assert "Continue with Apple => auth.sign_in_apple" not in instruction
-        assert "Continue with Google => auth.sign_in_google" not in instruction
+        assert "Submit Phone Number => phone_mandate.submit_number" not in instruction
+        assert "Submit Verification Code => phone_mandate.submit_code" not in instruction
         assert "Never claim success until the correlated browser settlement" in instruction
 
     def test_runtime_instruction_keeps_exact_provider_actions_intelligence_driven(self):

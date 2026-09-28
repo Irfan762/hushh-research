@@ -259,18 +259,19 @@ import {
   gmailMailboxDetails,
   runGmailMailboxDirective,
 } from "@/lib/agent/gmail-mailbox-directive-runtime";
-import { clearCalendarSetupOAuthReturn } from "@/lib/calendar/calendar-oauth-journey";
 import {
-  createGoogleOAuthPopupAttempt,
-  persistGoogleOAuthSameWindowAttempt,
-} from "@/lib/google/google-oauth-popup";
+  connectCalendarInPlace,
+  connectGmailInPlace,
+  inPlaceConnectCopy,
+} from "@/lib/connections/google-connect-in-place";
+import { useInPlaceConnect } from "@/lib/connections/use-in-place-connect";
+import { OAUTH_WINDOW_BLOCKED_COPY } from "@/lib/connections/oauth-window";
 import {
   runLocationDirective,
   type DelegateResult,
 } from "@/lib/agent/specialist-directive-runtime";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import { ROUTES } from "@/lib/navigation/routes";
-import { GoogleCalendarService } from "@/lib/services/google-calendar-service";
 import { cn } from "@/lib/utils";
 import {
   useConsentActions,
@@ -353,7 +354,6 @@ import {
   GmailInformationRequestsService,
   type GmailInformationRequestSourcePreview,
 } from "@/lib/services/gmail-information-requests-service";
-import { GmailReceiptsService } from "@/lib/services/gmail-receipts-service";
 
 type AgentMessage = {
   id: string;
@@ -2503,6 +2503,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const [specialistBusyItemId, setSpecialistBusyItemId] = useState<
     string | null
   >(null);
+  // Google connects from chat never navigate this window: the vault key is
+  // memory-only. Each surface holds at most one in-place attempt.
+  const gmailSendConnect = useInPlaceConnect();
+  const directiveConnect = useInPlaceConnect();
+  const directiveConnectWaiting = directiveConnect.pending?.cancellable === true;
   const voiceState = useAgentVoiceState((state) => state.status);
   const [hasPortfolioData, setHasPortfolioData] = useState(false);
   const [welcomePromptSetIndex, setWelcomePromptSetIndex] = useState(0);
@@ -2769,25 +2774,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     compiledDriveMarkdownRef.current.clear();
     setMessages(clearDriveCompilationFromMessages);
   }, [conversationId]);
-  const handleEnableGmailSend = useCallback(async () => {
-    if (!user?.uid || !user?.getIdToken) return;
-    try {
-      const idToken = await user.getIdToken();
-      const loginHint = user.providerData?.some(
-        (provider) => provider.providerId === "google.com",
-      )
-        ? user.email ?? null
-        : null;
-      const start = await GmailReceiptsService.startConnect({
-        idToken,
-        userId: user.uid,
-        loginHint,
-        includeGrantedScopes: true,
-        purpose: "send",
-      });
-      window.location.assign(start.authorize_url);
-    } catch {}
-  }, [user]);
   const availablePersonas = useMemo(() => {
     const personas = new Set<typeof activePersona>([activePersona]);
     personas.add("investor");
@@ -3586,6 +3572,104 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     setEmailDraftOpen(true);
   };
 
+  /**
+   * Grants Gmail sending in place. Call directly from the click: the consent
+   * window opens synchronously. On success the reviewed draft reopens, so the
+   * pending send resumes exactly where the person left it; nothing is sent
+   * until they send it again.
+   */
+  const handleEnableGmailSend = (item?: EmailDeliveryHistoryItem) => {
+    const owner = user;
+    if (!owner?.uid || !owner.getIdToken) return;
+    const ownerId = owner.uid;
+    const started = gmailSendConnect.start(
+      item?.id ?? "gmail_send",
+      (controls) =>
+        connectGmailInPlace({
+          owner,
+          purpose: "send",
+          ...controls,
+          isCurrent: () => workspaceOwnerIdRef.current === ownerId,
+        }),
+      (outcome, { cancelled }) => {
+        if (outcome === "connected") {
+          toast.success(inPlaceConnectCopy("gmail_send", outcome));
+          if (item) retryEmailDelivery(item);
+        } else if (outcome === "failed") {
+          toast.error(inPlaceConnectCopy("gmail_send", outcome));
+        } else if (!cancelled) {
+          toast.info(inPlaceConnectCopy("gmail_send", outcome));
+        }
+      },
+    );
+    if (started === "blocked") toast.info(OAUTH_WINDOW_BLOCKED_COPY);
+  };
+
+  /**
+   * Runs a connect requested by a specialist card. The card stays visible and
+   * cancellable while Google's window is open; on success it is cleared, as
+   * the old redirect-return did, and the person stays in this chat.
+   */
+  const runDirectiveConnect = (kind: "gmail_modify" | "calendar") => {
+    const owner = user;
+    if (!owner?.uid) return;
+    const ownerId = owner.uid;
+    const payload = (pendingSpecialistDirective?.directive.payload ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const isCurrent = () => workspaceOwnerIdRef.current === ownerId;
+    const started = directiveConnect.start(
+      kind,
+      (controls) =>
+        kind === "calendar"
+          ? connectCalendarInPlace({
+              owner,
+              accessLevel: payload.accessLevel === "manage" ? "manage" : "read",
+              ...controls,
+              isCurrent,
+            })
+          : connectGmailInPlace({
+              owner,
+              purpose: "modify",
+              ...controls,
+              isCurrent,
+            }),
+      (outcome, { cancelled, surface }) => {
+        setSpecialistBusy(false);
+        if (
+          kind === "calendar" &&
+          (outcome === "failed" || (outcome === "connected" && surface === "native"))
+        ) {
+          // Web outcomes are recorded by the verified callback page itself.
+          trackEvent("one_calendar_action", {
+            route_id: "one_calendar",
+            action: "connected",
+            result: outcome === "connected" ? "success" : "error",
+          });
+        }
+        // Cancel already dismissed the card and said so.
+        if (cancelled) return;
+        if (outcome === "connected") {
+          setPendingSpecialistDirective(null);
+          toast.success(inPlaceConnectCopy(kind, outcome));
+        } else if (outcome === "failed") {
+          toast.error(inPlaceConnectCopy(kind, outcome));
+        } else {
+          toast.info(inPlaceConnectCopy(kind, outcome));
+        }
+      },
+    );
+    if (started === "started") setSpecialistBusy(true);
+    else if (started === "blocked") toast.info(OAUTH_WINDOW_BLOCKED_COPY);
+    else if (started === "unsupported") {
+      // The native Google sign-in plugins request an explicit scope list and do
+      // not yet include gmail.modify; never start a grant they would reject.
+      setPendingSpecialistDirective(null);
+      addErrorMessage("Allow Gmail changes from One on the web for now.");
+    }
+  };
+
   const openGmailEmailDraftFromDirective = useCallback(
     (event: AgentChatToolEvent, assistantMessageId: string): boolean => {
       const sourceBoundReply = getGmailInformationRequestReplyPayload(event);
@@ -4095,34 +4179,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       timestamp: formatNow(),
       status: "error",
     });
-  };
-
-  const handleEnableGmailModify = async () => {
-    if (!user?.uid || !user?.getIdToken) return;
-    if (Capacitor.isNativePlatform()) {
-      // The native Google sign-in plugins request an explicit scope list and do
-      // not yet include gmail.modify; never start a grant they would reject.
-      addErrorMessage("Allow Gmail changes from One on the web for now.");
-      return;
-    }
-    try {
-      const idToken = await user.getIdToken();
-      const loginHint = user.providerData?.some(
-        (provider) => provider.providerId === "google.com",
-      )
-        ? user.email ?? null
-        : null;
-      const start = await GmailReceiptsService.startConnect({
-        idToken,
-        userId: user.uid,
-        loginHint,
-        includeGrantedScopes: true,
-        purpose: "modify",
-      });
-      window.location.assign(start.authorize_url);
-    } catch {
-      addErrorMessage("Unable to request Gmail permission. Please try again.");
-    }
   };
 
   useEffect(() => {
@@ -7012,7 +7068,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       className={sidebarClassName}
       collapsed={collapsed}
       mode={mode}
-      hideCloseButton={true}
+      // The drawer now runs full height over the chat header (2026-09-28), so the
+      // header's hamburger-to-cross sits under the panel; the panel carries its
+      // own close control instead of leaving a modal with no visible way out.
+      hideCloseButton={false}
       surface={agentSurface}
       onClose={onClose}
       onToggleCollapsed={toggleHistoryDrawer}
@@ -7748,6 +7807,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       key={item.id}
                       item={item}
                       onEnableGmailSend={handleEnableGmailSend}
+                      enablingGmailSend={gmailSendConnect.pending?.key === item.id}
+                      onCancelEnableGmailSend={
+                        gmailSendConnect.pending?.cancellable
+                          ? gmailSendConnect.cancel
+                          : undefined
+                      }
                       onRetry={retryEmailDelivery}
                     />
                   ))}
@@ -8161,53 +8226,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           );
                           return;
                         }
-                        const operationOwnerId = user.uid;
-                        setSpecialistBusy(true);
-                        try {
-                          const accessLevel =
-                            payload.accessLevel === "manage"
-                              ? "manage"
-                              : "read";
-                          clearCalendarSetupOAuthReturn();
-                          const start =
-                            await GoogleCalendarService.startConnect({
-                              idToken: await user.getIdToken(),
-                              userId: operationOwnerId,
-                              accessLevel,
-                            });
-                          if (workspaceOwnerIdRef.current !== operationOwnerId) {
-                            return;
-                          }
-                          const attempt = createGoogleOAuthPopupAttempt(
-                            "calendar",
-                            { ownerId: operationOwnerId, accessLevel },
-                          );
-                          if (!persistGoogleOAuthSameWindowAttempt(attempt)) {
-                            throw new Error(
-                              "Calendar sign-in could not be started safely. Please try again.",
-                            );
-                          }
-                          setPendingSpecialistDirective(null);
-                          window.location.assign(start.authorize_url);
-                        } catch (error) {
-                          if (workspaceOwnerIdRef.current !== operationOwnerId) {
-                            return;
-                          }
-                          trackEvent("one_calendar_action", {
-                            route_id: "one_calendar",
-                            action: "connected",
-                            result: "error",
-                          });
-                          addErrorMessage(
-                            error instanceof Error
-                              ? error.message
-                              : "Unable to request Google Calendar permission.",
-                          );
-                        } finally {
-                          if (workspaceOwnerIdRef.current === operationOwnerId) {
-                            setSpecialistBusy(false);
-                          }
-                        }
+                        // Opens Google's window synchronously, in this click;
+                        // the chat window never navigates.
+                        runDirectiveConnect("calendar");
                         return;
                       }
                       if (type !== "calendar.execute_proposal") {
@@ -8226,7 +8247,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       }
                       enqueueCalendarDirective(directive, token, user.uid);
                     }}
+                    busyLabel={
+                      directiveConnectWaiting ? "Waiting for Google…" : undefined
+                    }
+                    cancelWhileBusy={directiveConnectWaiting}
                     onCancel={() => {
+                      directiveConnect.cancel();
                       setPendingSpecialistDirective(null);
                       toast.info(
                         "Calendar change cancelled. Nothing was changed.",
@@ -8346,9 +8372,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       const type = String(payload.type ?? "");
                       if (type === "gmail.connect") {
                         // The restricted gmail.modify scope is requested only
-                        // here, on first use, on top of existing grants.
-                        setPendingSpecialistDirective(null);
-                        await handleEnableGmailModify();
+                        // here, on first use, on top of existing grants, in a
+                        // window opened synchronously by this click.
+                        runDirectiveConnect("gmail_modify");
                         return;
                       }
                       if (type !== "gmail.execute_mailbox_proposal") {
@@ -8370,7 +8396,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         vaultOwnerToken,
                       });
                     }}
+                    busyLabel={
+                      directiveConnectWaiting ? "Waiting for Google…" : undefined
+                    }
+                    cancelWhileBusy={directiveConnectWaiting}
                     onCancel={() => {
+                      directiveConnect.cancel();
                       setPendingSpecialistDirective(null);
                       toast.info("Gmail change cancelled. Nothing was changed.");
                     }}
@@ -8605,6 +8636,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   key={item.id}
                   item={item}
                   onEnableGmailSend={handleEnableGmailSend}
+                  enablingGmailSend={gmailSendConnect.pending?.key === item.id}
+                  onCancelEnableGmailSend={
+                    gmailSendConnect.pending?.cancellable
+                      ? gmailSendConnect.cancel
+                      : undefined
+                  }
                   onRetry={retryEmailDelivery}
                 />
               ))}
