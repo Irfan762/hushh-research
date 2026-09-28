@@ -12,7 +12,7 @@
  */
 
 import { humanizeConsentScope } from "@/lib/consent/consent-display";
-import { REQUEST_DURATION_OPTIONS } from "@/lib/agent/action-directive-summary";
+import { requestDurationLabel } from "@/lib/agent/action-directive-summary";
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 
@@ -100,26 +100,19 @@ export function formatDecideBy(
 /**
  * How long access lasts, worded one way on every surface.
  *
- * The requester's form already offers "1 day / 3 days / 1 week / 30 days"
- * (REQUEST_DURATION_OPTIONS), so those are the words; anything off that list
- * falls back to whole days, then hours, then minutes.
+ * Whole hours go through the one shared formatter (`requestDurationLabel`),
+ * which is also the rule the server writes into Chat history, so the owner's
+ * sheet says "7 days" exactly where the requester's card does. Only a
+ * sub-hour duration (location sharing) reads in minutes.
  */
 export function formatConsentDuration(hours: unknown): string | null {
   const numeric = typeof hours === "number" ? hours : Number(hours);
   if (!Number.isFinite(numeric) || numeric <= 0) return null;
-  const named = REQUEST_DURATION_OPTIONS.find(
-    (option) => option.hours === numeric,
-  );
-  if (named) return named.label;
   if (numeric < 1) {
     const minutes = Math.round(numeric * 60);
     return `${minutes} min`;
   }
-  if (numeric % 24 === 0) {
-    const days = numeric / 24;
-    return `${days} day${days === 1 ? "" : "s"}`;
-  }
-  return `${numeric} hour${numeric === 1 ? "" : "s"}`;
+  return requestDurationLabel(numeric);
 }
 
 /** "1 item", "3 items". */

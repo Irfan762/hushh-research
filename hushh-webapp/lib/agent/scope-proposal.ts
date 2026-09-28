@@ -8,7 +8,11 @@
  * the ask card can render as one sentence. It never carries values, only the
  * requestable reference and its human label.
  */
-import { REQUEST_DURATION_OPTIONS, DEFAULT_REQUEST_DURATION_HOURS } from "@/lib/agent/action-directive-summary";
+import {
+  REQUEST_DURATION_OPTIONS,
+  DEFAULT_REQUEST_DURATION_HOURS,
+  requestDurationLabel,
+} from "@/lib/agent/action-directive-summary";
 
 export type ScopeProposalItem = {
   /** Opaque requestable reference; submitted, never rendered. */
@@ -96,11 +100,5 @@ export function parseScopeProposal(content: unknown): ScopeProposal | null {
   return { proposed, durationHours: parseProposalDurationHours(record), reasonSuggestion };
 }
 
-/** "7 days", "1 day", "30 days": the ask sentence always counts days. */
-export function proposalDurationLabel(hours: number): string {
-  if (hours % 24 === 0) {
-    const days = hours / 24;
-    return `${days} ${days === 1 ? "day" : "days"}`;
-  }
-  return `${hours} ${hours === 1 ? "hour" : "hours"}`;
-}
+/** The ask sentence's duration: the one shared wording (`requestDurationLabel`). */
+export const proposalDurationLabel = requestDurationLabel;

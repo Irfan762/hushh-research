@@ -45,7 +45,7 @@ describe("owner consent copy", () => {
   });
 
   it("words a duration one way, the way the requester chose it", () => {
-    expect(formatConsentDuration(168)).toBe("1 week");
+    expect(formatConsentDuration(168)).toBe("7 days");
     expect(formatConsentDuration("24")).toBe("1 day");
     expect(formatConsentDuration(48)).toBe("2 days");
     expect(formatConsentDuration(4)).toBe("4 hours");

@@ -1617,11 +1617,11 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(valueFor("Decide by")).toMatch(/^Oct 5/);
     // The request carries the same name its access will.
     expect(valueFor("Access")).toBe("Food preferences");
-    // One duration wording: the requester chose "1 week", so the owner's
-    // picker says "1 week" too, not "7 days".
+    // One duration wording: the requester's card says "7 days", so the
+    // owner's picker says "7 days" too, never "1 week".
     expect(
       screen.getByRole("combobox", { name: "Access duration" }),
-    ).toHaveTextContent("1 week");
+    ).toHaveTextContent("7 days");
     expect(dialog).not.toHaveTextContent("Unavailable");
     expect(dialog).not.toHaveTextContent("Decision due");
     // What an Allow would hand over, counted on this device.

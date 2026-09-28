@@ -201,7 +201,7 @@ function connectionScopeProposals(
 }
 
 // Labels come from the one duration wording the requester's form uses, so the
-// owner reads "1 week" where the person who asked chose "1 week".
+// owner reads "7 days" where the person who asked chose "7 days".
 const DURATION_OPTIONS = [24, 168, 720, 2160].map((hours) => ({
   value: String(hours),
   label: formatConsentDuration(hours) || `${hours} hours`,
@@ -301,7 +301,7 @@ function parseDurationHours(value?: string | null) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-/** One wording for a duration on every surface ("1 day", "1 week"). */
+/** One wording for a duration on every surface ("1 day", "7 days"). */
 function formatDurationHours(value?: number | string | null) {
   return formatConsentDuration(value);
 }
