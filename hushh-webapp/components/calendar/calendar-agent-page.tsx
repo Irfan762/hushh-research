@@ -25,13 +25,7 @@ import {
   CALENDAR_SETUP_REGION_CLASSNAME,
   CALENDAR_SETUP_SHELL_CLASSNAME,
 } from "@/components/calendar/calendar-agent-page-layout";
-import {
-  SurfaceCard,
-  SurfaceCardContent,
-  SurfaceCardDescription,
-  SurfaceCardHeader,
-  SurfaceCardTitle,
-} from "@/components/app-ui/surfaces";
+
 import { useAuth } from "@/hooks/use-auth";
 import { HushhAuth } from "@/lib/capacitor";
 import { Button } from "@/lib/morphy-ux/button";
@@ -62,13 +56,20 @@ import { waitForOAuthPopup } from "@/lib/profile/drive-oauth-popup";
 
 const CALENDAR_OAUTH_POPUP_TIMEOUT_MS = 120_000;
 
-function CalendarConnectIcon() {
+function CalendarConnectIcon({
+  className = "size-6 mb-2",
+  style = { color: "#FF3B30" },
+}: {
+  className?: string;
+  style?: React.CSSProperties;
+}) {
   return (
     <svg
       viewBox="0 0 48 48"
       fill="none"
       aria-hidden="true"
-      className="size-12"
+      className={className}
+      style={style}
     >
       <rect
         x="8.5"
@@ -491,20 +492,16 @@ export function CalendarAgentPage({
       }}
     >
       <AppPageContentRegion className={CALENDAR_SETUP_REGION_CLASSNAME}>
-        <SurfaceCard className="overflow-hidden w-full shadow-md text-center">
-          <SurfaceCardHeader className="pb-3 pt-5 flex flex-col items-center text-center space-y-0.5">
-            <div className="mb-2 flex size-24 items-center justify-center rounded-[22px] bg-destructive/10 text-destructive">
-              <CalendarConnectIcon />
-            </div>
-            <SurfaceCardTitle className="text-lg font-semibold tracking-tight">
+        <div className="flex flex-col items-center text-center space-y-0.5 pb-3 pt-5">
+            <CalendarConnectIcon className="size-6 mb-2" style={{ color: "#FF3B30" }} />
+            <p className="text-lg font-semibold tracking-tight">
               {connected ? "Google Calendar" : "Connect Google Calendar"}
-            </SurfaceCardTitle>
-            <SurfaceCardDescription className="text-xs text-muted-foreground !mt-0.5">
+            </p>
+            <p className="text-xs text-muted-foreground mt-0.5">
               {detail}
-            </SurfaceCardDescription>
-          </SurfaceCardHeader>
+            </p>
 
-          <SurfaceCardContent className="space-y-4 pt-0">
+          <div className="space-y-4 pt-0">
             {connectionPending || loading || (!status && !user) ? (
               <span className="inline-flex items-center gap-2 border-t border-border/60 pt-4 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
@@ -610,8 +607,8 @@ export function CalendarAgentPage({
                 </button>
               </div>
             ) : null}
-          </SurfaceCardContent>
-        </SurfaceCard>
+          </div>
+        </div>
 
         {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
           <SetupCompletionFooter
