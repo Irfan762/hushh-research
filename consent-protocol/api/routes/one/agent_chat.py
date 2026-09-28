@@ -51,6 +51,11 @@ from hushh_mcp.one_adk.consent_continuation import (
     admit_consent_continuation,
     continued_outcomes,
 )
+from hushh_mcp.one_adk.consent_redaction import (
+    access_ended_outcome,
+    redaction_for_history,
+    shared_record_for_history,
+)
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
@@ -1632,6 +1637,49 @@ async def list_conversations(
     }
 
 
+# At most this many shared requests are re-checked per history load.
+_MAX_CONSENT_ACCESS_CHECKS = 10
+
+
+async def _consent_access_for_history(
+    owner: str, state: Any
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(invocation_id -> bundle_id, bundle_id -> ended outcome)`` for this load.
+
+    A bundle latched as ended by a model turn is ended. Otherwise its current
+    outcome is read (requester-bound) so a revoke is honoured on the very next
+    history load, before any new turn runs. A failed read redacts: the safe
+    direction, for this response only.
+    """
+    by_invocation, ended = redaction_for_history(state)
+    pending = [bundle for bundle in dict.fromkeys(by_invocation.values()) if bundle not in ended]
+    service = InformationRequestService()
+    for bundle_id in pending[:_MAX_CONSENT_ACCESS_CHECKS]:
+        try:
+            outcome = access_ended_outcome(
+                await service.get(requester_user_id=owner, bundle_id=bundle_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - unknown means redact
+            logger.info("one.history_consent_access_unknown error=%s", type(exc).__name__)
+            outcome = "revoked"
+        if outcome:
+            ended[bundle_id] = outcome
+    for bundle_id in pending[_MAX_CONSENT_ACCESS_CHECKS:]:
+        ended[bundle_id] = "revoked"
+    return by_invocation, ended
+
+
+def _consent_access_metadata(state: Any, bundle_id: str, ended: dict[str, str]) -> dict[str, Any]:
+    """The ``metadata.consentAccess`` field on an assistant message (CONTRACT C3)."""
+    outcome = ended.get(bundle_id)
+    return {
+        "bundleId": bundle_id,
+        "state": "ended" if outcome else "live",
+        "outcome": outcome,
+        **shared_record_for_history(state, bundle_id),
+    }
+
+
 @router.get("/api/one/agent-chat/history/{conversation_id}")
 async def conversation_history(
     conversation_id: str,
@@ -1671,8 +1719,11 @@ async def conversation_history(
                 if isinstance(receipt.get("structured"), dict):
                     receipts[event.invocation_id] = receipt["structured"]
     # A follow-up turn that reported an owner's answer shows as a status chip.
+    # A bundle can be continued twice (answer, then end of access), so every
+    # outcome label is a chip once this conversation continued any request.
     consent_outcomes = continued_outcomes(session.state)
-    outcome_labels = {CONSENT_OUTCOME_LABELS[outcome] for outcome in consent_outcomes.values()}
+    outcome_labels = set(CONSENT_OUTCOME_LABELS.values()) if consent_outcomes else set()
+    consent_by_invocation, consent_ended = await _consent_access_for_history(user_id, session.state)
     # A turn a push tap started about a feed update shows as the same kind of chip.
     if opened_feed_items(session.state):
         outcome_labels.add(FEED_ATTENTION_LABEL)
@@ -1730,6 +1781,26 @@ async def conversation_history(
                 metadata = {**(metadata or {}), "specialist_read": receipts[turn]}
         if event.author == "user" and text in outcome_labels:
             metadata = {**(metadata or {}), "kind": "selection", "display": text}
+        consent_bundle = consent_by_invocation.get(str(turn or ""))
+        if consent_bundle and event.author == "user" and text in outcome_labels:
+            # The status chip that opened the answer turn names its request.
+            metadata = {
+                **(metadata or {}),
+                "consentBundleId": consent_bundle,
+                **({"consentAccessEnded": True} if consent_bundle in consent_ended else {}),
+            }
+        elif consent_bundle and event.author != "user":
+            access = _consent_access_metadata(session.state, consent_bundle, consent_ended)
+            tag = {"consentBundleId": consent_bundle, "consentAccess": access}
+            if access["state"] == "ended":
+                # Revoke redacts everywhere: the text, its cards and its
+                # activity never leave the server again (founder decision 1).
+                # One "Access ended" message per turn, at the turn's anchor.
+                if not is_anchor:
+                    continue
+                text, metadata = "", {**tag, "consentAccessEnded": True}
+            else:
+                metadata = {**(metadata or {}), **tag}
         messages.append(
             {
                 "id": event.id or f"{event.invocation_id}:{len(messages)}",
@@ -1751,6 +1822,8 @@ async def conversation_history(
         "turn": {"pending": newest_turn_pending(session.events)},
         # Requests whose answer this conversation already continued with.
         "consentOutcomes": consent_outcomes,
+        # Shared requests whose access has ended: {bundle_id: "revoked"|"expired"}.
+        "consentAccessEnded": consent_ended,
     }
 
 
