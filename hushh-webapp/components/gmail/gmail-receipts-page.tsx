@@ -2115,27 +2115,27 @@ export default function GmailReceiptsPage({
               workspace === "overview" &&
               showMailManagement &&
               !loadingStatus ? (
-                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-row">
+                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-col">
+                  <Button
+                    type="button"
+                    size="prominent"
+                    onClick={() => void handleConnectGmail()}
+                    disabled={gmailActionBusy !== null}
+                    className="min-h-11 w-full px-2 sm:px-4"
+                  >
+                    <RefreshCw className="mr-1.5 h-4 w-4 shrink-0" />
+                    <span className="truncate">Reconnect Mail</span>
+                  </Button>
                   <Button
                     type="button"
                     variant="destructive"
                     effect="fade"
                     onClick={() => setShowDisconnectConfirm(true)}
                     disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
+                    className="min-h-11 w-full px-2 sm:px-4"
                   >
                     <Trash2 className="mr-1.5 h-4 w-4 shrink-0" />
                     <span className="truncate">Disconnect Mail</span>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="muted"
-                    onClick={() => void handleConnectGmail()}
-                    disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
-                  >
-                    <RefreshCw className="mr-1.5 h-4 w-4 shrink-0" />
-                    <span className="truncate">Reconnect Mail</span>
                   </Button>
                 </div>
               ) : null}
