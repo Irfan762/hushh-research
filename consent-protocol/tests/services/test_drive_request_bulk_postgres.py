@@ -203,6 +203,7 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
             "request": {"query": "Standup notes from last 3 months", "timezone": "UTC"},
             "request_origin_id": request_id,
             "request_revision": context["revision"],
+            "request_shareability_version": 1,
             "arguments": arguments,
             "queries": [{"arguments": arguments}],
             "query_index": 0,
@@ -626,6 +627,10 @@ async def test_request_freezes_all_525_matches_for_only_b(request_bulk, sharing)
     search = await _complete_shared_drive_search(
         request_bulk, sharing, request_id=request["requestId"]
     )
+    search_status = await DriveOwnerSearchStore(db=request_bulk.db).status(
+        user_id="owner", job_id=search
+    )
+    assert search_status["coverage"]["shareabilityVerified"] is True
     review = await request_bulk.create_review(
         user_id="owner",
         search_job_id=search,
