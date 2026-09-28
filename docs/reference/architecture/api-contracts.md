@@ -354,6 +354,21 @@ when the grant belongs to a person request. Clients use it to fetch current
 bundle status and encrypted exports even after the recent `requestHistory`
 projection is truncated; it is a locator, not decryption authority.
 
+`GET /api/one/people/{person_ref}/scope-catalog?query=&page=&limit=&catalog_revision=`
+is the server-side search behind the request card's Change picker (consent
+lifecycle Contract C4). Same authentication, `404` and `private, no-store` rules
+as above. It searches human labels plus a small synonym table
+(`hushh_mcp/consent/scope_matcher.py`), so "restaurant" finds food; an empty
+`query` lists everything grouped by domain. `limit` is 1–100 (default 20) and
+`page` is 1–1000. The response is
+`{person:{personRef,displayName}, query, items:[{scope,scopeRef,label,description,domain,domainLabel,sensitivity,wildcard,pathSegments,why?}], page, limit, hasMore, nextPage, totalCount, catalogRevision, paginationReset, catalogTruncated, domains:[{domain,label,count}]}`.
+Items carry an opaque `scopeRef` (repeated as `scope`, matching the proposal card), never a raw `attr.*` scope or a value.
+`why` explains a search hit in plain words. Labels come from
+`hushh_mcp/consent/scope_labels.py`. Scopes that
+`hushh_mcp/consent/requestable_scope_policy.py` refuses (runtime secrets,
+credentials, keys, tokens, protocol namespaces) never appear, here or in any
+other person-to-person catalog, and are refused again at request creation.
+
 ### One Runtime Configuration
 
 | Method | Path                               | Auth            | Description                                                                                                                                                                                                                                                                                                               |
