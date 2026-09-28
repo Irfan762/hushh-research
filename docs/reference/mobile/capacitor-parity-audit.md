@@ -66,9 +66,9 @@ that cannot complete.
 
 Current inventory policy:
 
-- 103 routes are native-required and must pass on iOS and Android: 98
-  functional routes and 5 callback routes.
-- 17 routes are explicit exclusions: `/blog`, `/blog/[slug]`, `/circle/join`,
+- Route counts and the complete exclusions list are owned by
+  `native-route-inventory.json`; `/circle/join` is now native-required.
+- Explicit exclusions include `/blog`, `/blog/[slug]`,
   `/developers`, `/kai/optimize`, `/oauth/authorize`, `/one/calendar`,
   `/one/kai/optimize`, `/one/location/check-in/hotel`, `/one/profile/google/oauth/return`,
   `/one/profile/integrations`, `/one/profile/pkm-agent-lab`, `/one/puppy`,
@@ -82,6 +82,13 @@ product route remains `/people/[personRef]`; Capacitor emits one inert UUID
 fixture to include the dynamic client bundle, then resolves the actual opaque
 reference through the shared native-aware API transport. No public identity,
 scope metadata, grant, or plaintext value is compiled into the application.
+
+Shared invitations use the existing static `/circle/join` surface. Native
+HTTPS `/one/location/invite/<token>` arrivals normalize to
+`/circle/join?invite=<token>` before routing, without claiming the invitation.
+The generic Invite to One URL is the exact root and carries no inviter identity.
+See [invitation continuity and release sequencing](../quality/one-onboarding-architecture.md#guest-introduction-and-invitation-continuity)
+for the iOS association rollout switch and the required real-device checks.
 
 ## Browser API Policy
 
