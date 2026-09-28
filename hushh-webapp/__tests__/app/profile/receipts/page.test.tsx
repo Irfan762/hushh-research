@@ -1349,6 +1349,23 @@ describe("ProfileReceiptsPage", () => {
     ).toBeVisible();
   });
 
+  it("hides Disconnect for a disconnected remembered account and restores it after reconnect", async () => {
+    const connected = makeGmailView();
+    mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
+      status: { ...connected.status, connected: false, status: "disconnected", revoked: true, google_email: "akshat@example.com" },
+      presentation: { ...connected.presentation, state: "disconnected", isConnected: false },
+    }));
+    const { rerender } = render(<ProfileReceiptsPage />);
+    expect(await screen.findByRole("button", { name: /reconnect mail/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /disconnect/i })).not.toBeInTheDocument();
+
+    mocks.useGmailConnectorStatus.mockReturnValue(connected);
+    rerender(<ProfileReceiptsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: /^manage$/i }));
+    expect(screen.getByRole("button", { name: /^disconnect mail$/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /^reconnect mail$/i })).toBeVisible();
+  });
+
   it("retains the KYC panel while switching between Mail tabs", async () => {
     render(<ProfileReceiptsPage />);
     fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
