@@ -154,8 +154,12 @@ const CONSENT_OUTCOMES: ReadonlySet<string> = new Set<ConsentOutcome>([
   "revoked",
 ]);
 
-/** The outcomes the server's continuation admission accepts as the turn's outcome. */
-export type ConsentContinuationWireOutcome = "granted" | "denied" | "expired";
+/**
+ * The outcomes the server's continuation admission accepts as the turn's
+ * outcome: all five, each as itself (`CONSENT_OUTCOME_LABELS` in
+ * `consent_continuation.py`).
+ */
+export type ConsentContinuationWireOutcome = ConsentOutcome;
 
 /**
  * The fixed text of the follow-up turn, sent as its message. It MUST equal
@@ -165,23 +169,29 @@ export type ConsentContinuationWireOutcome = "granted" | "denied" | "expired";
  */
 export const CONSENT_OUTCOME_LABELS: Record<ConsentContinuationWireOutcome, string> = {
   granted: "Consent approved",
+  partially_granted: "Partly approved",
   denied: "Request declined",
   expired: "Request expired",
+  revoked: "Access ended",
 };
 
 /**
- * How each outcome travels to the server. This mirrors the server's
- * `bundle_outcome` exactly: any shared item reads as `granted`, a stop or a
- * lapse with nothing shared reads as `expired`. Admission compares the sent
- * outcome with its own reading of the ledger, so the two must agree.
+ * How each outcome travels to the server: as itself. Admission compares the
+ * sent outcome with the ledger's own `progress.outcome`, which distinguishes a
+ * partial approval and a stop from a lapse, so mapping them would be refused.
  */
 export const CONSENT_WIRE_OUTCOME: Record<ConsentOutcome, ConsentContinuationWireOutcome> = {
   granted: "granted",
-  partially_granted: "granted",
+  partially_granted: "partially_granted",
   denied: "denied",
   expired: "expired",
-  revoked: "expired",
+  revoked: "revoked",
 };
+
+/** Outcomes that carry the other person's information into the answer turn. */
+export function isSharedOutcome(outcome: string | null | undefined): outcome is "granted" | "partially_granted" {
+  return outcome === "granted" || outcome === "partially_granted";
+}
 
 /** The exact message a follow-up turn for this outcome sends. */
 export function consentContinuationSentLabel(outcome: ConsentOutcome): string {

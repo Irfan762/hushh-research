@@ -7,13 +7,14 @@
 // the conversation's own sealed history: every outgoing request card whose
 // answer that conversation has not continued yet (`rebuildWaitingRequests`).
 
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 import {
   consentContinuationSentLabel,
   CONSENT_WIRE_OUTCOME,
   formatSharedInformationForAgent,
   isAccessEndedOutcome,
+  isSharedOutcome,
   openGrantedPersonInformation,
   wireOutcomeForSentLabel,
   type ConsentContinuationWireOutcome,
@@ -180,8 +181,11 @@ export type InformationRequestContinuationPhase = "reading" | "answered";
 
 const phases = new Map<string, InformationRequestContinuationPhase>();
 const phaseListeners = new Set<() => void>();
+/** Bumped on every phase change, so a reader over many cards re-renders. */
+let phaseVersion = 0;
 
 function emitPhase(): void {
+  phaseVersion += 1;
   for (const listener of phaseListeners) listener();
 }
 
@@ -221,6 +225,21 @@ export function useInformationRequestPhase(
     () => informationRequestPhase(ownerId, bundleId),
     () => null,
   );
+}
+
+/**
+ * Every card's phase for one owner, live: the `(bundleId) => phase` reader the
+ * chat provides as `ConsentCardPhaseContext`. Its identity changes whenever
+ * any phase changes, so each card reading it re-renders.
+ */
+export function useInformationRequestPhaseReader(
+  ownerId: string | null | undefined,
+): (bundleId: string) => InformationRequestContinuationPhase | null {
+  const version = useSyncExternalStore(subscribePhase, () => phaseVersion, () => 0);
+  return useMemo(() => {
+    void version;
+    return (bundleId: string) => informationRequestPhase(ownerId, bundleId);
+  }, [ownerId, version]);
 }
 
 // --- Doorbell: an adaptive check while a request waits and the chat shows --
@@ -410,6 +429,10 @@ export function rebuildWaitingRequests(input: {
     }));
 }
 
+function isKnownWireOutcome(value: string): value is ConsentContinuationWireOutcome {
+  return Object.prototype.hasOwnProperty.call(CONSENT_WIRE_OUTCOME, value);
+}
+
 export type ConsentTranscriptTag = {
   bundleId: string;
   /** The outcome this conversation continued with, as the server recorded it. */
@@ -439,8 +462,10 @@ export function tagConsentContinuationMessages(input: {
       current = null;
       const outcome = message.kind === "selection" ? wireOutcomeForSentLabel(message.text) : null;
       if (!outcome) continue;
+      // A server tag wins, even for a bundle continued twice (an answer, then
+      // the end of that access).
       const tagged = message.consentBundleId?.toLowerCase();
-      const bundleId = tagged && !assigned.has(tagged)
+      const bundleId = tagged
         ? tagged
         : input.cards.find((card) => !assigned.has(card.bundleId)
           && continued.get(card.bundleId) === outcome)?.bundleId;
@@ -453,7 +478,7 @@ export function tagConsentContinuationMessages(input: {
     const serverTag = message.consentBundleId?.toLowerCase();
     if (serverTag) {
       const recorded = continued.get(serverTag);
-      const continuedOutcome = recorded === "granted" || recorded === "denied" || recorded === "expired"
+      const continuedOutcome = recorded && isKnownWireOutcome(recorded)
         ? recorded
         : current?.bundleId === serverTag ? current.continuedOutcome : "granted";
       tags.set(message.id, { bundleId: serverTag, continuedOutcome, role: "answer" });
@@ -477,7 +502,7 @@ export function redactedConsentAnswers(input: {
 }): Set<string> {
   const hidden = new Set<string>(input.serverRedacted ?? []);
   for (const [messageId, tag] of input.tags) {
-    if (tag.role !== "answer" || tag.continuedOutcome !== "granted") continue;
+    if (tag.role !== "answer" || !isSharedOutcome(tag.continuedOutcome)) continue;
     if (isAccessEndedOutcome(input.liveOutcomes[tag.bundleId])) hidden.add(messageId);
   }
   return hidden;
@@ -526,7 +551,7 @@ export async function prepareConsentContinuation(input: {
 } | null> {
   const message = consentContinuationSentLabel(input.outcome);
   const wire = CONSENT_WIRE_OUTCOME[input.outcome];
-  if (wire !== "granted") {
+  if (!isSharedOutcome(wire)) {
     return { message, continuation: { bundleId: input.bundleId, outcome: wire }, sharedLabels: [] };
   }
   const opened = await openGrantedPersonInformation(input);
@@ -535,7 +560,7 @@ export async function prepareConsentContinuation(input: {
   if (!sharedInformation) throw new Error("Nothing readable was shared.");
   return {
     message,
-    continuation: { bundleId: input.bundleId, outcome: "granted", sharedInformation },
+    continuation: { bundleId: input.bundleId, outcome: wire, sharedInformation },
     sharedLabels: opened.values.map((value) => value.label),
   };
 }

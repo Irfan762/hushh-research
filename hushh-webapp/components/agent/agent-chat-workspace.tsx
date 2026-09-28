@@ -32,11 +32,15 @@ import {
   revealConsentContinuationReply,
   setInformationRequestPhase,
   tagConsentContinuationMessages,
+  useInformationRequestPhaseReader,
   watchSentInformationRequest,
 } from "@/lib/agent/consent-continuation";
+import { ConsentCardPhaseContext } from "@/components/agent/consent/requester-consent-card";
+import { AccessEndedNotice } from "@/components/agent/consent/access-ended-notice";
 import {
   consentOutcomeDisplayText,
   informationRequestOutcome,
+  isSharedOutcome,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
 import { PersonProfileService } from "@/lib/services/person-profile-service";
@@ -255,6 +259,7 @@ import {
   type AgentChatConsentContinuation,
   type AgentChatConversation,
   type AgentChatMessage as StoredAgentChatMessage,
+  type AgentChatConsentAccess,
   type AgentChatToolEvent,
   type PendingEmailDraftContext,
   type SpecialistDirectiveEvent,
@@ -377,25 +382,6 @@ import {
   type GmailInformationRequestSourcePreview,
 } from "@/lib/services/gmail-information-requests-service";
 
-/**
- * One's answer from shared information whose sharing has ended.
- * Local stand-in with the same props as Lane C1's `AccessEndedNotice`
- * (`components/agent/consent/`); swap this for that import when it lands.
- */
-export function AccessEndedNotice({ personName, label }: { personName: string; label: string }) {
-  const who = personName.trim() || "the other person";
-  const what = label.trim() || "what they shared";
-  return (
-    <div role="status" data-testid="access-ended-notice"
-      className="max-w-[85%] rounded-2xl border border-border/60 bg-muted/40 px-4 py-3 text-sm">
-      <p className="font-medium text-foreground">Access ended</p>
-      <p className="mt-1 leading-5 text-muted-foreground">
-        {`Access to ${what} from ${who} ended, so this answer is hidden. Ask again if you need it.`}
-      </p>
-    </div>
-  );
-}
-
 type AgentMessage = {
   id: string;
   /**
@@ -441,6 +427,8 @@ type AgentMessage = {
   consentChipText?: string;
   /** The server already hid this answer because the sharing it used ended. */
   consentAccessEnded?: boolean;
+  /** Whose shared information this answer used (`metadata.consentAccess`), names and labels only. */
+  consentAccess?: AgentChatConsentAccess;
 };
 
 type AgentLostTurn = { conversationId: string; startedAtMs: number };
@@ -2144,6 +2132,7 @@ export function storedMessageToAgentMessage(
     ...(streamEvents.length ? { streamEvents } : {}),
     ...(message.metadata?.consentBundleId ? { consentBundleId: message.metadata.consentBundleId } : {}),
     ...(message.metadata?.consentAccessEnded ? { consentAccessEnded: true } : {}),
+    ...(message.metadata?.consentAccess ? { consentAccess: message.metadata.consentAccess } : {}),
   };
 }
 
@@ -6711,6 +6700,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     };
   }, [conversationId, hasChatAccess, outgoingRequestKey, user?.uid, vaultKey, vaultOwnerToken]);
 
+  // Each outgoing card reads "Reading…" then "Answered" from the continuation.
+  const consentCardPhaseFor = useInformationRequestPhaseReader(user?.uid);
+
   const consentTags = useMemo(() => tagConsentContinuationMessages({
     messages,
     cards: outgoingRequestCards,
@@ -6718,7 +6710,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   }), [continuedOutcomes, messages, outgoingRequestCards]);
   const sharedAnswerBundleKey = useMemo(() => [...new Set(
     [...consentTags.values()]
-      .filter((tag) => tag.role === "answer" && tag.continuedOutcome === "granted")
+      .filter((tag) => tag.role === "answer" && isSharedOutcome(tag.continuedOutcome))
       .map((tag) => tag.bundleId),
   )].sort().join(","), [consentTags]);
 
@@ -6764,12 +6756,28 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const redactedAnswerIds = useMemo(() => redactedConsentAnswers({
     tags: consentTags,
     liveOutcomes: liveBundleOutcomes,
-    serverRedacted: new Set(messages.filter((message) => message.consentAccessEnded).map((message) => message.id)),
+    serverRedacted: new Set(messages
+      .filter((message) => message.consentAccessEnded || message.consentAccess?.state === "ended")
+      .map((message) => message.id)),
   }), [consentTags, liveBundleOutcomes, messages]);
 
   const outgoingRequestCardFor = (messageId: string) => {
     const tag = consentTags.get(messageId);
     return tag ? outgoingRequestCards.find((card) => card.bundleId === tag.bundleId) ?? null : null;
+  };
+
+  // The server's names and labels win (they survive a conversation that no
+  // longer holds the card); the card this chat sent fills any gap.
+  const accessEndedNoticeFor = (message: AgentMessage) => {
+    const access = message.consentAccess;
+    const card = outgoingRequestCardFor(message.id);
+    const bundleId = (access?.bundleId ?? consentTags.get(message.id)?.bundleId ?? "").toLowerCase();
+    const live = bundleId ? liveBundleOutcomes[bundleId] : null;
+    return {
+      personName: access?.personName || card?.personName || "",
+      labels: access?.labels.length ? access.labels : card?.labels ?? [],
+      reason: access?.outcome ?? (live === "expired" ? "expired" as const : "revoked" as const),
+    };
   };
 
   const consentChipLabel = (message: AgentMessage): string => {
@@ -7105,7 +7113,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (
         pendingSpecialistDirective &&
         message.role === "assistant" &&
-        !message.text.trim()
+        !message.text.trim() &&
+        // An ended answer arrives with empty text and renders "Access ended".
+        !message.consentAccessEnded
       ) {
         return false;
       }
@@ -7441,6 +7451,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       <AgentConsentContinuationContext.Provider value={hasChatAccess
         ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
         : null}>
+      <ConsentCardPhaseContext.Provider value={consentCardPhaseFor}>
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
@@ -7852,10 +7863,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 <Fragment key={message.id}>
                   {renderChatOnboarding({ kind: "before", messageId: message.id, visibleMessageIds })}
                   {message.role === "assistant" && redactedAnswerIds.has(message.id) ? (
-                    <AccessEndedNotice
-                      personName={outgoingRequestCardFor(message.id)?.personName ?? ""}
-                      label={(outgoingRequestCardFor(message.id)?.labels ?? []).join(", ")}
-                    />
+                    <AccessEndedNotice variant="message" {...accessEndedNoticeFor(message)} />
                   ) : message.kind === "selection" ? (
                     <SelectionChip label={consentChipLabel(message)} />
                   ) : (
@@ -9268,6 +9276,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSuccess={() => setVaultDialogOpen(false)}
         />
       ) : null}
+      </ConsentCardPhaseContext.Provider>
       </AgentConsentContinuationContext.Provider>
       </AgentPersonSelectionContext.Provider>
     </div>

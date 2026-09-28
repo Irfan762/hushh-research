@@ -29,6 +29,7 @@ import {
   informationRequestOutcome,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
+import { parseConsentAccess } from "@/lib/services/agent-chat-client";
 
 const OWNER = "owner-1";
 const BUNDLE_A = "0f0e0d0c-0b0a-4908-8706-050403020100";
@@ -267,7 +268,8 @@ describe("outcome chip: human display, fixed sent label", () => {
   ) as Record<string, string>;
 
   it("sends exactly the server's admission labels", () => {
-    expect(Object.keys(serverLabels).length).toBeGreaterThanOrEqual(3);
+    expect(Object.keys(serverLabels).length).toBeGreaterThanOrEqual(5);
+    expect(serverLabels).toEqual(CONSENT_OUTCOME_LABELS);
     for (const [outcome, label] of Object.entries(CONSENT_OUTCOME_LABELS)) {
       expect(serverLabels[outcome]).toBe(label);
     }
@@ -321,9 +323,10 @@ describe("outcome chip: human display, fixed sent label", () => {
       items: [item("granted")],
       progress: { outcome: "revoked" },
     } as Parameters<typeof informationRequestOutcome>[0])).toBe("revoked");
-    // Every rich outcome travels as what the server's bundle_outcome reports.
-    expect(CONSENT_WIRE_OUTCOME.partially_granted).toBe("granted");
-    expect(CONSENT_WIRE_OUTCOME.revoked).toBe("expired");
+    // Every rich outcome travels as itself: the server's progress.outcome
+    // distinguishes them and admission refuses a mapped one.
+    expect(CONSENT_WIRE_OUTCOME.partially_granted).toBe("partially_granted");
+    expect(CONSENT_WIRE_OUTCOME.revoked).toBe("revoked");
   });
 });
 
@@ -399,6 +402,42 @@ describe("continuation answers and access ended", () => {
     expect([...redactedConsentAnswers({ tags, liveOutcomes: { [BUNDLE_B]: "revoked" } })]).toEqual(["answer"]);
     expect([...redactedConsentAnswers({ tags, liveOutcomes: {}, serverRedacted: new Set(["answer"]) })])
       .toEqual(["answer"]);
+  });
+
+  it("hides every server-tagged answer from a partial approval, and a second chip for the same bundle", () => {
+    // Lane A tags EVERY answer while access was live, then "Access ended" may
+    // continue the same bundle once more.
+    const messages = [
+      cardMessage(BUNDLE_A),
+      { id: "chip", role: "user" as const, kind: "selection" as const, text: "Partly approved", consentBundleId: BUNDLE_A },
+      { id: "answer-1", role: "assistant" as const, text: "From Kushal", consentBundleId: BUNDLE_A },
+      { id: "ask-again", role: "user" as const, text: "And dessert?" },
+      { id: "answer-2", role: "assistant" as const, text: "Still from Kushal", consentBundleId: BUNDLE_A },
+      { id: "ended-chip", role: "user" as const, kind: "selection" as const, text: "Access ended", consentBundleId: BUNDLE_A },
+    ];
+    const tags = tagConsentContinuationMessages({
+      messages,
+      cards: collectOutgoingRequestCards(messages),
+      continued: { [BUNDLE_A]: "partially_granted" },
+    });
+    expect(tags.get("chip")).toEqual({ bundleId: BUNDLE_A, continuedOutcome: "partially_granted", role: "chip" });
+    expect(tags.get("ended-chip")).toEqual({ bundleId: BUNDLE_A, continuedOutcome: "revoked", role: "chip" });
+    expect([...redactedConsentAnswers({ tags, liveOutcomes: { [BUNDLE_A]: "revoked" } })].sort())
+      .toEqual(["answer-1", "answer-2"]);
+  });
+
+  it("reads the server's consentAccess names and labels, with the response map as the reason", () => {
+    const access = parseConsentAccess(
+      { bundleId: BUNDLE_A, state: "ended", outcome: null, personName: "Kushal Trivedi", labels: ["Food preferences", 7] },
+      { [BUNDLE_A]: "expired" },
+    );
+    expect(access).toEqual({
+      bundleId: BUNDLE_A, state: "ended", outcome: "expired", personName: "Kushal Trivedi", labels: ["Food preferences"],
+    });
+    expect(parseConsentAccess({ bundleId: BUNDLE_A, state: "live", outcome: null, personName: null, labels: [] }))
+      .toMatchObject({ state: "live", outcome: null });
+    expect(parseConsentAccess({ state: "ended" })).toBeUndefined();
+    expect(parseConsentAccess("ended")).toBeUndefined();
   });
 });
 
