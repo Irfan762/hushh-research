@@ -194,3 +194,20 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
   A model failure is recorded as `failed` and retried after an hour.
 - Live eval before promotion: none yet. Mocked contract tests only; extraction
   quality on real mailboxes and calendars is unmeasured.
+
+### Declared: consent scope catalog search (contract C4)
+
+Keyword and synonym matching in `consent-protocol/hushh_mcp/consent/scope_matcher.py`
+would sit on the drift list above. It is declared, and scoped, as catalog search:
+
+- Owning agent: `agent_one`, tool `propose_information_request`; manifest
+  `consent-protocol/hushh_mcp/agents/one/agent.yaml`. The same ranker backs
+  `GET /api/one/people/{person_ref}/scope-catalog`.
+- Scope: it ranks the owner's requestable catalog by human labels, domains and a small
+  synonym table. It never sees a value and never decides intent; the model does.
+- Never overrides the model: the model's own words are matched first, verbatim. Search
+  only resolves words that named nothing, then the question only if nothing matched.
+- Explainable: every pick carries a `why` shown on the ask card, and a no-match fallback
+  is offered as a suggestion to change. The person's tap on Send is the decision.
+- Live eval before promotion: none yet. Deterministic ranking tests only
+  (`consent-protocol/tests/test_scope_search_ranking.py`).
