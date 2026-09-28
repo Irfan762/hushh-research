@@ -24,8 +24,10 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("only the explicit One invite opens the introduction at the root", async ({ page }) => {
+  // Cold WebKit must settle Firebase restoration before deciding guest entry.
+  test.setTimeout(60000);
   await page.goto("/", { waitUntil: "domcontentloaded" });
-  await expect(page).toHaveURL((url) => url.pathname === "/login");
+  await expect(page).toHaveURL((url) => url.pathname === "/login", { timeout: 30000 });
   await expect(page.getByTestId("guest-preview")).toHaveCount(0);
   await page.goto("/?invite=one", { waitUntil: "domcontentloaded" });
   const preview = page.getByTestId("guest-preview");
@@ -33,8 +35,11 @@ test("only the explicit One invite opens the introduction at the root", async ({
   await preview.getByRole("button", { name: "Meet your agents" }).click();
   await preview.getByRole("button", { name: "See what’s next" }).click();
   await preview.getByRole("button", { name: "Create your One", exact: true }).click();
-  await expect(page).toHaveURL((url) => url.pathname === "/login");
+  await expect(page).toHaveURL((url) => url.pathname === "/login" && url.searchParams.get("redirect") === "/?invite=one");
   await expect(page.getByTestId("auth-step-primary")).toBeVisible();
+  await page.getByRole("button", { name: "Go back", exact: true }).click();
+  await expect(page).toHaveURL((url) => url.pathname === "/" && url.searchParams.get("invite") === "one");
+  await expect(preview).toBeVisible();
 });
 
 function watchRuntime(page: Page) {

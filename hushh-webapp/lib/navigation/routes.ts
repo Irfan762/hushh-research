@@ -5,6 +5,9 @@
 
 export { ONE_SETUP_CAPABILITY_IDS } from "@/lib/onboarding/setup-capability-ids";
 
+/** Presentation-only guest entry. It grants no connection or Circle access. */
+export const INVITE_TO_ONE_PATH = "/?invite=one";
+
 /** The Finance workspace is a One-owned query-tabbed route, not a nested market page. */
 export const KAI_MARKET_PATH = "/one/kai";
 /** Browser-only Firebase handoff; never part of signed-in app navigation. */
@@ -255,8 +258,10 @@ export function buildWelcomeRoute(redirect?: string | null) {
   const safeRedirect = normalizeInternalRouteHref(redirect);
   if (
     safeRedirect &&
-    isInvitationPreviewRoute(safeRedirect.split(/[?#]/, 1)[0] ?? "")
-  ) return safeRedirect;
+    (safeRedirect === INVITE_TO_ONE_PATH ||
+      isInvitationPreviewRoute(safeRedirect.split(/[?#]/, 1)[0] ?? ""))
+  )
+    return safeRedirect;
   return withQuery(ROUTES.HOME, {
     redirect: safeRedirect,
   });
@@ -550,7 +555,9 @@ export function resolveOneSetupReturnTo(
     : null;
 }
 
-export function buildOneSetupConnectionsRoute(returnTo?: string | null): string {
+export function buildOneSetupConnectionsRoute(
+  returnTo?: string | null,
+): string {
   return withQuery(ROUTES.ONE_SETUP_CONNECTIONS, {
     return_to: resolveOneSetupReturnTo(returnTo),
   });
@@ -760,7 +767,9 @@ const WALLET_CARD_PUBLIC_PREFIX = "/c";
 /** Only invitation presentation is public; neighboring Location routes are not. */
 export function isInvitationPreviewRoute(pathname: string): boolean {
   const path = normalizeStaticExportPathname(pathname);
-  return path === ROUTES.CIRCLE_JOIN || /^\/one\/location\/invite\/[^/]+$/.test(path);
+  return (
+    path === ROUTES.CIRCLE_JOIN || /^\/one\/location\/invite\/[^/]+$/.test(path)
+  );
 }
 
 /** Exact, sanitized invitation destinations admitted by the Profile lock flow. */
@@ -770,7 +779,8 @@ export function normalizeInvitationReturnTo(
   const safe = normalizeInternalRouteHref(value);
   if (!safe) return null;
   const url = new URL(safe, "https://one.local");
-  const isCircleJoin = normalizeStaticExportPathname(url.pathname) === ROUTES.CONNECT &&
+  const isCircleJoin =
+    normalizeStaticExportPathname(url.pathname) === ROUTES.CONNECT &&
     url.searchParams.get("action") === "join-circle";
   return isInvitationPreviewRoute(url.pathname) || isCircleJoin ? safe : null;
 }

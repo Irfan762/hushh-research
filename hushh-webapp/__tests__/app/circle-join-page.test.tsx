@@ -111,13 +111,14 @@ describe("/circle/join landing", () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it.each(["invite=one&invite=two", "invite=one&code=two", "invite=", "invite=%2Fevil"])("rejects ambiguous or malformed invitation %s", (query) => {
+  it.each(["invite=one&invite=two", "invite=one&code=two", "invite=", "invite=%2Fevil", "code=first&code=second", "code=first&code=first"])("rejects ambiguous or malformed invitation %s", (query) => {
     searchParams = new URLSearchParams(query);
     render(<CircleJoinPage />);
     expect(screen.getByText("Invitation unavailable")).toBeInTheDocument();
     expect(screen.queryByTestId("token-invitation")).not.toBeInTheDocument();
     expect(mockPublicPreview).not.toHaveBeenCalled();
     expect(mockReplace).not.toHaveBeenCalled();
+    expect(screen.getByRole("link", { name: "Explore One" })).toHaveAttribute("href", "/?invite=one");
   });
   it("lets a guest explore three screens before signing in with the same code", async () => {
     render(<CircleJoinPage />);

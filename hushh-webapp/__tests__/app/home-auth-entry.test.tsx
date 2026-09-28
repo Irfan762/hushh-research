@@ -112,7 +112,7 @@ describe("authenticated root entry", () => {
     mocks.search = "invite=one";
     render(<Home />);
     screen.getByRole("button", { name: "Welcome" }).click();
-    expect(mocks.push).toHaveBeenCalledWith("/login");
+    expect(mocks.push).toHaveBeenCalledWith("/login?redirect=%2F%3Finvite%3Done");
     expect(mocks.replace).not.toHaveBeenCalled();
   });
 

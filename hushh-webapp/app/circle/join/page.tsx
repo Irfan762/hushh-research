@@ -27,7 +27,7 @@ import {
 } from "@/lib/one-location/circle-join-url";
 import { OneLocationService } from "@/lib/one-location/service";
 import type { OneLocationCircleInvitePreview } from "@/lib/one-location/types";
-import { ROUTES } from "@/lib/navigation/routes";
+import { INVITE_TO_ONE_PATH, ROUTES } from "@/lib/navigation/routes";
 import { PostAuthRouteService } from "@/lib/services/post-auth-route-service";
 import { ApiError } from "@/lib/services/api-client";
 
@@ -351,13 +351,15 @@ function InvitationLanding() {
   const [hydrated, setHydrated] = useState(false);
   useEffect(() => setHydrated(true), []);
   const tokens = params.getAll(ONE_INVITE_TOKEN_PARAM);
+  const codes = params.getAll(CIRCLE_JOIN_CODE_PARAM);
   const token = tokens[0] ?? "";
   // A link must identify one invitation, never silently choose between two.
   const invalid =
-    tokens.length > 0 &&
-    (tokens.length !== 1 ||
-      !/^[A-Za-z0-9_-]+$/.test(token) ||
-      params.has(CIRCLE_JOIN_CODE_PARAM));
+    codes.length > 1 ||
+    (tokens.length > 0 &&
+      (tokens.length !== 1 ||
+        !/^[A-Za-z0-9_-]+$/.test(token) ||
+        codes.length > 0));
   if (!hydrated) return <HushhLoader label="Checking your account" />;
   return (
     <>
@@ -376,7 +378,7 @@ function InvitationLanding() {
             description="Ask the sender for a new invitation link."
           />
           <Button asChild className="mt-6">
-            <Link href={ROUTES.HOME}>Explore One</Link>
+            <Link href={INVITE_TO_ONE_PATH}>Explore One</Link>
           </Button>
         </AppPageShell>
       ) : token ? (

@@ -77,6 +77,7 @@ describe("navigation routes", () => {
 
   it("returns Login to the canonical welcome parent without accepting an external redirect", () => {
     expect(buildWelcomeRoute()).toBe(ROUTES.HOME);
+    expect(buildWelcomeRoute("/?invite=one")).toBe("/?invite=one");
     expect(buildWelcomeRoute(ROUTES.ONE_SETUP)).toBe(
       "/?redirect=%2Fone%2Fsetup",
     );

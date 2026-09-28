@@ -12,8 +12,7 @@ import { HOME_FAQ } from "@/lib/seo/faq-data";
 import { useAuth } from "@/lib/firebase/auth-context";
 import { OnboardingLocalService } from "@/lib/services/onboarding-local-service";
 import { IntroStep } from "@/components/onboarding/IntroStep";
-import { ROUTES } from "@/lib/navigation/routes";
-import { INVITE_TO_ONE_PATH } from "@/lib/connect/invite-to-one";
+import { INVITE_TO_ONE_PATH, ROUTES } from "@/lib/navigation/routes";
 import { PostAuthRouteService } from "@/lib/services/post-auth-route-service";
 import { AuthService } from "@/lib/services/auth-service";
 import { VaultLockGuard } from "@/components/vault/vault-lock-guard";
@@ -29,8 +28,10 @@ function HomeContent() {
   const inviteMarkers = searchParams.getAll("invite");
   const isOneInvitation =
     inviteMarkers.length === 1 && inviteMarkers[0] === "one" && !redirectPath;
-  const loginUrl = redirectPath
-    ? `${ROUTES.LOGIN}?redirect=${encodeURIComponent(redirectPath)}`
+  const loginReturnTo =
+    redirectPath || (isOneInvitation ? INVITE_TO_ONE_PATH : "");
+  const loginUrl = loginReturnTo
+    ? `${ROUTES.LOGIN}?redirect=${encodeURIComponent(loginReturnTo)}`
     : ROUTES.LOGIN;
 
   const {

@@ -1850,7 +1850,7 @@
       "native_surface_id": null,
       "page_file": "app/circle/join/page.tsx",
       "pathname": "/circle/join",
-      "route_mode": "redirect",
+      "route_mode": "hidden",
       "semantic_routes": [],
       "voice": {
         "action_ids": [],
@@ -5789,8 +5789,8 @@
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "4d5f3976e18455d72d5f0de6b22275ae56a474e03d87288022601bd380ccd37e",
     "route_index": "a93ea81cfafed91dd93fbe0a51399a988a8ed2a7014d0b93cb8efdf777ddc35d",
-    "route_layout": "8127da5515744790140d50105afa52c56bc2200128ef02fb5a6ab0332e361e47",
-    "surface_map": "89d65ba9c14e7408055327c402b26818092a5291f29b760c1081eec5918fcd56",
+    "route_layout": "bf27cb356d362e27a3d23e74d37c41f10eea9e669c0a26ea2b6130543f43eee5",
+    "surface_map": "abe49b9d98bf2fee3b51c9c77aa2fc67ba9b280196f5c4f72fc84ea6ca3132f2",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },

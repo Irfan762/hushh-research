@@ -1,4 +1,7 @@
 import { resolveShareableAppOrigin } from "@/lib/share/app-origin";
+import { INVITE_TO_ONE_PATH } from "@/lib/navigation/routes";
+
+export { INVITE_TO_ONE_PATH } from "@/lib/navigation/routes";
 
 /**
  * Inviting somebody who is not on One yet.
@@ -20,9 +23,6 @@ import { resolveShareableAppOrigin } from "@/lib/share/app-origin";
 
 /** The share sheet's own title -- what the sender sees while choosing an app. */
 export const INVITE_TO_ONE_DIALOG_TITLE = "Invite to One";
-
-/** Presentation-only entry marker. It grants no connection or Circle access. */
-export const INVITE_TO_ONE_PATH = "/?invite=one";
 
 /**
  * The message the recipient reads.
