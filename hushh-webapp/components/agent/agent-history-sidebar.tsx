@@ -442,8 +442,12 @@ export function AgentHistorySidebar({
           // (iOS WKWebView) takes that transformed panel as the backdrop root, so
           // a translucent glass surface blurred nothing and showed the chat
           // through the drawer on iOS while Chromium's blur hid it on web.
+          // The drawer runs the full viewport height, flush to the leading edge
+          // (founder direction, 2026-09-28), so only the trailing corners round
+          // and the surface pads the safe areas itself: under the status bar and
+          // home indicator it is panel, never a gap.
           isMobileMode
-            ? "rounded-[24px] border border-black/[0.07] bg-background shadow-[0_24px_56px_-16px_rgba(0,0,0,0.22),0_2px_8px_rgba(0,0,0,0.06)] dark:border-white/[0.09] dark:shadow-[0_24px_56px_-16px_rgba(0,0,0,0.7)]"
+            ? "rounded-r-[24px] border-r border-black/[0.07] bg-background pt-[var(--app-safe-area-top-effective,0px)] pb-[var(--app-safe-area-bottom-effective,0px)] shadow-[0_24px_56px_-16px_rgba(0,0,0,0.22),0_2px_8px_rgba(0,0,0,0.06)] dark:border-white/[0.09] dark:shadow-[0_24px_56px_-16px_rgba(0,0,0,0.7)]"
             : "border-r border-black/[0.06] bg-background/90 backdrop-blur-2xl dark:border-white/[0.08]",
           collapsed && !isMobileMode ? "w-16" : "w-72",
           className
@@ -469,7 +473,8 @@ export function AgentHistorySidebar({
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 rounded-lg text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"
+                  // 32px glyph well, 44px hit area (the ::after extends it 6px each side).
+                  className="relative h-8 w-8 rounded-lg text-muted-foreground after:absolute after:-inset-1.5 hover:bg-foreground/[0.06] hover:text-foreground"
                   onClick={onClose}
                   aria-label="Close chat history"
                   title="Close chats"
@@ -719,7 +724,7 @@ export function AgentHistorySidebar({
             variant="pill"
             type="button"
             pressScale={false}
-            wrapperClassName="w-full shrink-0 border-t border-black/[0.06] px-3 py-2 pb-[max(0.5rem,calc(env(safe-area-inset-bottom,0px)-var(--app-bottom-shell-height,0px)))] dark:border-white/[0.08]"
+            wrapperClassName="w-full shrink-0 border-t border-black/[0.06] px-3 py-2 dark:border-white/[0.08]"
             className={cn(
               "h-11 min-h-11 w-full justify-start rounded-xl px-3 text-[13px] font-medium text-foreground",
               collapsed && !isMobileMode ? "justify-center px-0" : "justify-start px-3",
