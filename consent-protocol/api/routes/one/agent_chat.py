@@ -55,6 +55,12 @@ from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connecto
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
 from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
+from hushh_mcp.one_adk.feed_attention import (
+    FEED_ATTENTION_LABEL,
+    FeedAttentionError,
+    admit_feed_attention,
+    opened_feed_items,
+)
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
 from hushh_mcp.one_adk.pending_email_draft import (
@@ -325,6 +331,9 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
     consent_continuation = await _admit_consent_continuation(
         forwarded, input_data=input_data, owner_id=user_id if token else ""
     )
+    feed_attention = await _admit_feed_attention(
+        forwarded, input_data=input_data, owner_id=user_id if token else ""
+    )
     # The device sends a coarse position only when the person already granted
     # location; pre-vault turns never keep it.
     turn_location = admit_turn_location(forwarded)
@@ -368,8 +377,35 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
             gmail_information_request_context
         ),
         **consent_continuation,
+        **feed_attention,
         STATE_PENDING_EMAIL_DRAFT: pending_email_draft,
     }
+
+
+async def _admit_feed_attention(
+    forwarded: dict[str, Any], *, input_data: RunAgentInput, owner_id: str
+) -> dict[str, Any]:
+    """Admit the turn a push tap starts about one feed update, or nothing."""
+    if forwarded.get("feedAttention") is None:
+        return {}
+    from hushh_mcp.services.feed_attention_push import get_offered_feed_item
+
+    session = None
+    if owner_id and input_data.thread_id:
+        session = await _session_service.get_session(
+            app_name=ONE_APP_NAME, user_id=owner_id, session_id=input_data.thread_id
+        )
+    try:
+        return await admit_feed_attention(
+            forwarded,
+            owner_id=owner_id,
+            messages=input_data.messages,
+            session_state=dict(session.state) if session is not None else None,
+            get_item=get_offered_feed_item,
+        )
+    except FeedAttentionError as exc:
+        logger.info("one.feed_attention_refused status=%s", exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
 
 
 async def _admit_consent_continuation(
@@ -1636,6 +1672,9 @@ async def conversation_history(
     # A follow-up turn that reported an owner's answer shows as a status chip.
     consent_outcomes = continued_outcomes(session.state)
     outcome_labels = {CONSENT_OUTCOME_LABELS[outcome] for outcome in consent_outcomes.values()}
+    # A turn a push tap started about a feed update shows as the same kind of chip.
+    if opened_feed_items(session.state):
+        outcome_labels.add(FEED_ATTENTION_LABEL)
     # A turn's cards and Activity belong with its answer, as they were shown
     # live. Card-only tool events fold into the answer; a turn without an
     # answer keeps its last card message as the anchor.

@@ -115,6 +115,10 @@ from hushh_mcp.one_adk.external_read_boundary import (
     after_external_read_tool,
     before_external_read_tool,
 )
+from hushh_mcp.one_adk.feed_attention import (
+    block_tools_during_feed_attention,
+    feed_attention_instruction,
+)
 from hushh_mcp.one_adk.finance_market_tools import (
     MARKET_QUOTES_TOOL_NAME,
     TICKER_NEWS_TOOL_NAME,
@@ -957,6 +961,8 @@ def _compose_one_runtime_instruction(context: Any) -> str:
         )
     # The owner's answer to this person's information request, for one turn.
     consent_continuation_block = consent_continuation_instruction(state_getter)
+    # A push tap about one feed update: grounded only in that item, no tools.
+    consent_continuation_block += feed_attention_instruction(state_getter)
     pending_draft_instruction = pending_email_draft_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
@@ -2439,9 +2445,11 @@ def build_one_root_agent(
 
 
 def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
-    """One's tool gate: a consent answer turn runs no tools; then the read boundary."""
-    return block_tools_during_consent_answer(tool_context) or before_external_read_tool(
-        tool, args, tool_context
+    """One's tool gate: a consent answer or feed-attention turn runs no tools; then the read boundary."""
+    return (
+        block_tools_during_consent_answer(tool_context)
+        or block_tools_during_feed_attention(tool_context)
+        or before_external_read_tool(tool, args, tool_context)
     )
 
 

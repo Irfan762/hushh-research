@@ -1,6 +1,6 @@
 {
   "contract_name": "prod_core_schema",
-  "expected_migration_version": 256,
+  "expected_migration_version": 257,
   "migration_version_policy": "exact",
   "required_functions": [
     "project_calendar_mail_feed",
@@ -2175,6 +2175,14 @@
       "onboarding_callback_state",
       "onboarding_callback_attempt_id",
       "onboarding_journey_updated_at",
+      "created_at",
+      "updated_at"
+    ],
+    "one_attention_ledger": [
+      "user_id",
+      "kind",
+      "subject_ref",
+      "outcome",
       "created_at",
       "updated_at"
     ]

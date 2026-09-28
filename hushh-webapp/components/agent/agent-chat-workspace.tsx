@@ -24,6 +24,8 @@ import {
   type InformationRequestSubmissionReceipt,
 } from "@/components/agent/agent-structured-experience";
 import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
+import { FEED_ATTENTION_LABEL } from "@/lib/agent/feed-attention";
+import { useFeedAttentionTurn } from "@/lib/agent/use-feed-attention-turn";
 import {
   Check,
   ChevronDown,
@@ -56,6 +58,7 @@ import { Button } from "@/components/ui/button";
 import { AgentHistorySidebar } from "@/components/agent/agent-history-sidebar";
 import { ConnectorsPanel } from "@/components/agent/connectors-panel";
 import { McpCallReviewCard, type McpChatReview } from "@/components/agent/mcp-call-review-card";
+import { FirstConnectInsightsCard } from "@/components/agent/first-connect-insights-card";
 import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
 import {
   AgentConnectionsDrawer,
@@ -5962,7 +5965,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
    */
   const sendFollowUpTurn = async (
     message: string,
-    extra: { consentContinuation?: AgentChatConsentContinuation } = {},
+    extra: {
+      consentContinuation?: AgentChatConsentContinuation;
+      feedAttention?: { itemId: string };
+      pkmContext?: string;
+    } = {},
   ) => {
     if (!hasChatAccess || !user?.uid) return;
     const userId = user.uid;
@@ -6023,6 +6030,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         userId,
         message,
         ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
+        ...(extra.feedAttention ? { feedAttention: extra.feedAttention } : {}),
+        ...(extra.pkmContext ? { pkmContext: extra.pkmContext } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -6568,6 +6577,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
     return true;
   };
+
+  // "One has something for you": a fresh chat, the fixed status chip, then One
+  // writes its message about that one update, grounded in it and in memory.
+  useFeedAttentionTurn({
+    ownerId: user?.uid ?? null,
+    ready: hasChatAccess && Boolean(vaultKey),
+    start: (itemId) => {
+      // Same as a handoff: One is speaking, never behind the on-device Puppy
+      // header, and the first history load must not replace this chat.
+      setAgentSurface("one");
+      const shouldSkipInitialHistoryLoad = historyLoadKeyRef.current === null;
+      handleCreateNewChat();
+      skipInitialHistoryLoadRef.current = shouldSkipInitialHistoryLoad;
+      appendMessage({
+        id: `msg-${crypto.randomUUID()}-feed-attention`,
+        role: "user",
+        text: FEED_ATTENTION_LABEL,
+        timestamp: formatNow(),
+        status: "done",
+        kind: "selection",
+      });
+      enqueueWorkspaceOperation({
+        id: `feed-attention-${itemId}`,
+        run: async () => {
+          const userId = user?.uid;
+          const token = getVaultOwnerToken();
+          const key = vaultKeyRef.current;
+          const memory = userId && token && key
+            ? await loadAgentPkmContext({ userId, vaultOwnerToken: token, vaultKey: key, message: FEED_ATTENTION_LABEL })
+              .catch(() => EMPTY_PKM_CONTEXT)
+            : EMPTY_PKM_CONTEXT;
+          await sendFollowUpTurn(FEED_ATTENTION_LABEL, {
+            feedAttention: { itemId },
+            pkmContext: memory.text || undefined,
+          });
+        },
+      });
+    },
+  });
 
   const enqueueDelegateResult = (result: DelegateResult) => {
     enqueueWorkspaceOperation({
@@ -7826,6 +7874,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   />
                 ),
               )}
+
+              <FirstConnectInsightsCard
+                ownerId={user?.uid ?? null}
+                vaultKey={vaultKey ?? null}
+                vaultOwnerToken={vaultOwnerToken ?? null}
+                enabled={hasChatAccess && !isPuppySurface}
+              />
 
               {pendingMcpReviews.slice(0, 1).map((review) => (
                 <McpCallReviewCard
