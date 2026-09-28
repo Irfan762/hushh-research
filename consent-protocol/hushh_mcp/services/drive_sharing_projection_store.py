@@ -4,6 +4,7 @@ from uuid import UUID
 
 from sqlalchemy import text
 
+from hushh_mcp.services.drive_bulk_share_store import bulk_outcome_summary
 from hushh_mcp.services.drive_revocation_store import DriveRevocationStore
 from hushh_mcp.services.drive_sharing_contract import MAX_FILES, DriveSharingError
 from hushh_mcp.services.google_drive_adapter import FILE_ID
@@ -125,14 +126,17 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                 else None
             )
             bulk_shared = 0
+            bulk_summary = None
             if bulk:
-                bulk_shared = connection.execute(
-                    text("""SELECT count(*)
-                    FROM drive_bulk_share_effects WHERE share_id=:share
-                      AND recipient_user_id=:recipient
-                      AND state IN ('succeeded','preexisting')"""),
-                    {"share": bulk["share_id"], "recipient": request["recipient_user_id"]},
-                ).scalar_one()
+                bulk_summary = bulk_outcome_summary(
+                    connection,
+                    share_id=bulk["share_id"],
+                    total=bulk["file_count"],
+                    recipient_user_id=request["recipient_user_id"],
+                )
+                bulk_shared = (
+                    bulk_summary["counts"]["shared"] + bulk_summary["counts"]["alreadyShared"]
+                )
             files = []
             for row in grants:
                 removed = row["revoke_state"] in {"succeeded", "absent"}
@@ -176,6 +180,8 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                             "fileCount": bulk["file_count"],
                             "sharedCount": bulk_shared,
                             "sharingStatus": bulk["status"],
+                            "bulkStatus": bulk["status"],
+                            **bulk_summary,
                             "nextCursor": None,
                         }
                         if bulk

@@ -3,6 +3,18 @@ import { ApiService } from "@/lib/services/api-service";
 
 const PATH = "/api/connectors/google_drive/searches";
 const STATES = ["queued", "running", "completed", "stopped", "failed", "limited"] as const;
+export type DriveSearchCoverage = {
+  corpora: Array<"user" | "member_shared_drives">;
+  fileKind: string;
+  requestedPeriod: { start: string; end: string; timezone: string } | null;
+  dateBasis: "title_date_then_created_or_modified";
+  contentPeriodVerified: false;
+  providerRowsScanned: number;
+  excludedByDateCount: number;
+  deduplicatedCount: number;
+  unavailableShortcutCount: number;
+  providerPagesExhausted: boolean;
+};
 export type DriveSearchStatus = {
   jobId: string;
   status: (typeof STATES)[number];
@@ -16,6 +28,7 @@ export type DriveSearchStatus = {
   updatedAt: string;
   errorCode: string | null;
   unshareableCount?: number;
+  coverage?: DriveSearchCoverage;
 };
 export type DriveSearchFile = {
   position: number;
@@ -70,6 +83,28 @@ function date(value: unknown): string {
   if (!Number.isFinite(Date.parse(result))) throw new DriveSearchError("invalid_response");
   return result;
 }
+function coverage(value: unknown): DriveSearchCoverage {
+  const item = record(value);
+  if (!Array.isArray(item.corpora) || item.corpora.length > 2 ||
+    item.corpora.some(corpus => corpus !== "user" && corpus !== "member_shared_drives") ||
+    new Set(item.corpora).size !== item.corpora.length ||
+    item.dateBasis !== "title_date_then_created_or_modified" || item.contentPeriodVerified !== false ||
+    typeof item.providerPagesExhausted !== "boolean") throw new DriveSearchError("invalid_response");
+  let requestedPeriod: DriveSearchCoverage["requestedPeriod"] = null;
+  if (item.requestedPeriod != null) {
+    const period = record(item.requestedPeriod);
+    const start = date(period.start), end = date(period.end);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start > end)
+      throw new DriveSearchError("invalid_response");
+    requestedPeriod = { start, end, timezone: text(period.timezone, 100) };
+  }
+  return { corpora: item.corpora as DriveSearchCoverage["corpora"], fileKind: text(item.fileKind, 32), requestedPeriod,
+    dateBasis: item.dateBasis, contentPeriodVerified: false,
+    providerRowsScanned: count(item.providerRowsScanned, Number.MAX_SAFE_INTEGER),
+    excludedByDateCount: count(item.excludedByDateCount, Number.MAX_SAFE_INTEGER),
+    deduplicatedCount: count(item.deduplicatedCount, Number.MAX_SAFE_INTEGER),
+    unavailableShortcutCount: count(item.unavailableShortcutCount), providerPagesExhausted: item.providerPagesExhausted };
+}
 export function parseDriveSearchStatus(value: unknown): DriveSearchStatus {
   const item = record(value);
   if (!STATES.includes(item.status as DriveSearchStatus["status"]) ||
@@ -85,6 +120,7 @@ export function parseDriveSearchStatus(value: unknown): DriveSearchStatus {
     createdAt: date(item.createdAt), expiresAt: date(item.expiresAt), updatedAt: date(item.updatedAt),
     errorCode: item.errorCode == null ? null : text(item.errorCode, 80),
     ...(item.unshareableCount === undefined ? {} : { unshareableCount: count(item.unshareableCount) }),
+    ...(item.coverage == null ? {} : { coverage: coverage(item.coverage) }),
   };
 }
 function file(value: unknown): DriveSearchFile {

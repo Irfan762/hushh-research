@@ -13,6 +13,17 @@ const page = { jobId, revision: 1, matched: 1, nextCursor: "opaque+/=",
     modifiedTime: null, openUrl: "https://docs.google.com/document/d/file-one/edit" }] };
 beforeEach(() => { vi.resetAllMocks(); });
 describe("owner Drive search API boundary", () => {
+  it("preserves search scope and metadata-date coverage without claiming content verification", async () => {
+    const coverage = { corpora: ["user", "member_shared_drives"], fileKind: "document",
+      requestedPeriod: { start: "2026-06-28", end: "2026-09-28", timezone: "Asia/Kolkata" },
+      dateBasis: "title_date_then_created_or_modified", contentPeriodVerified: false,
+      providerRowsScanned: 540, excludedByDateCount: 450, deduplicatedCount: 18,
+      unavailableShortcutCount: 0, providerPagesExhausted: true };
+    api.fetch.mockResolvedValueOnce(Response.json({ ...status, status: "completed", coverage }));
+    expect((await DriveSearchService.get("owner", jobId, () => undefined)).coverage).toEqual(coverage);
+    api.fetch.mockResolvedValueOnce(Response.json({ ...status, coverage: { ...coverage, corpora: ["private_raw_error"] } }));
+    await expect(DriveSearchService.get("owner", jobId, () => undefined)).rejects.toMatchObject({ code: "invalid_response" });
+  });
   it("sends explicit search-only consent, preserving literal query and opaque pagination", async () => {
     api.fetch.mockResolvedValueOnce(Response.json(status));
     await DriveSearchService.create("owner", "Find L'été \\ notes", jobId, () => undefined);

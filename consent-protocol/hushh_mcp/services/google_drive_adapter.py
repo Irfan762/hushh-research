@@ -53,21 +53,24 @@ def supports_selected_policy(value: object) -> bool:
 
 
 FILE_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
+RESOURCE_KEY = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 METADATA_FIELDS = (
     "id,name,mimeType,version,modifiedTime,size,md5Checksum,trashed,isAppAuthorized,"
     "capabilities(canDownload,canAccessViaGenAi),clientEncryptionDetails(encryptionState)"
 )
 SHARE_METADATA_FIELDS = (
-    "id,name,mimeType,version,modifiedTime,createdTime,trashed,"
+    "id,name,mimeType,version,modifiedTime,createdTime,resourceKey,trashed,"
     "capabilities(canShare),clientEncryptionDetails(encryptionState)"
 )
 # Metadata-only live read for a file with no readable text (a video, an image,
 # an archive, a folder): what it is and where to open it, never its bytes.
-FACT_FIELDS = "id,name,mimeType,modifiedTime,size,webViewLink,trashed"
+FACT_FIELDS = (
+    "id,name,mimeType,modifiedTime,createdTime,driveId,resourceKey,size,webViewLink,trashed"
+)
 # Live search: one bounded files.list shape, never a caller-chosen field set.
 LIST_FIELDS = (
-    "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,createdTime,webViewLink,"
-    "shortcutDetails(targetId,targetMimeType))"
+    "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,createdTime,driveId,"
+    "resourceKey,webViewLink,shortcutDetails(targetId,targetMimeType,targetResourceKey))"
 )
 # Drive sorts each key ascending unless told "desc"; live results are newest
 # first by the file time the owner asked about. modifiedTime is the default and
@@ -171,6 +174,21 @@ def _file_path(file_id: str) -> str:
     return f"/files/{file_id}"
 
 
+def _resource_keys(value: dict[str, str] | None) -> None:
+    if value is not None and (
+        not isinstance(value, dict)
+        or len(value) != 1
+        or any(
+            not isinstance(identity, str)
+            or not FILE_ID.fullmatch(identity)
+            or not isinstance(key, str)
+            or not RESOURCE_KEY.fullmatch(key)
+            for identity, key in value.items()
+        )
+    ):
+        raise DriveReadError("invalid_argument")
+
+
 def _decode_json(payload: bytes) -> dict[str, Any]:
     try:
         result = json.loads(payload)
@@ -183,8 +201,15 @@ def _decode_json(payload: bytes) -> dict[str, Any]:
 
 class GoogleDriveAdapter:
     async def _get(
-        self, path: str, *, access_token: str, params: dict[str, str], limit: int
+        self,
+        path: str,
+        *,
+        access_token: str,
+        params: dict[str, str],
+        limit: int,
+        resource_keys: dict[str, str] | None = None,
     ) -> bytes:
+        _resource_keys(resource_keys)
         # Fixed operation names only. The path can contain a private provider ID
         # and params can contain the owner's search, so neither is logged.
         operation = (
@@ -208,7 +233,11 @@ class GoogleDriveAdapter:
         try:
             with suppress_instrumentation():
                 result = await self._get_private(
-                    path, access_token=access_token, params=params, limit=limit
+                    path,
+                    access_token=access_token,
+                    params=params,
+                    limit=limit,
+                    **({"resource_keys": resource_keys} if resource_keys else {}),
                 )
             outcome = "ok"
             return result
@@ -239,8 +268,21 @@ class GoogleDriveAdapter:
             )
 
     async def _get_private(
-        self, path: str, *, access_token: str, params: dict[str, str], limit: int
+        self,
+        path: str,
+        *,
+        access_token: str,
+        params: dict[str, str],
+        limit: int,
+        resource_keys: dict[str, str] | None = None,
     ) -> bytes:
+        _resource_keys(resource_keys)
+        if resource_keys and any(
+            path != f"/files/{identity}"
+            and not (path == "/files" and f"'{identity}' in parents" in params.get("q", ""))
+            for identity in resource_keys
+        ):
+            raise DriveReadError("operation_not_allowed")
         # This is not a general HTTP executor. Even internal callers cannot
         # supply an origin, arbitrary query, mutation, or unbounded response.
         if path == "/about":
@@ -303,6 +345,15 @@ class GoogleDriveAdapter:
                     headers={
                         "Authorization": f"Bearer {access_token}",
                         "Accept-Encoding": "identity",
+                        **(
+                            {
+                                "X-Goog-Drive-Resource-Keys": ",".join(
+                                    f"{identity}/{key}" for identity, key in resource_keys.items()
+                                )
+                            }
+                            if resource_keys
+                            else {}
+                        ),
                     },
                 ) as response,
             ):
@@ -430,14 +481,19 @@ class GoogleDriveAdapter:
             raise DriveReadError("provider_response_invalid")
         return DriveMetadata(file_id, name, mime, version, modified, size, checksum)
 
-    async def get_file_facts(self, *, file_id: str, access_token: str) -> dict[str, Any]:
+    async def get_file_facts(
+        self, *, file_id: str, access_token: str, resource_key: str | None = None
+    ) -> dict[str, Any]:
         """Name, type, time, size and opening link of one live file, without content."""
+        if resource_key is not None:
+            _resource_keys({file_id: resource_key})
         result = _decode_json(
             await self._get(
                 _file_path(file_id),
                 access_token=access_token,
                 params={"fields": FACT_FIELDS, "supportsAllDrives": "true"},
                 limit=METADATA_LIMIT,
+                **({"resource_keys": {file_id: resource_key}} if resource_key else {}),
             )
         )
         name, mime = result.get("name"), result.get("mimeType")
@@ -449,25 +505,50 @@ class GoogleDriveAdapter:
         ):
             raise DriveReadError("source_unavailable")
         size, modified, link = (result.get(key) for key in ("size", "modifiedTime", "webViewLink"))
+        if (
+            result.get("createdTime") is not None
+            and (
+                not isinstance(result["createdTime"], str)
+                or not 1 <= len(result["createdTime"]) <= 64
+            )
+            or result.get("driveId") is not None
+            and (not isinstance(result["driveId"], str) or not FILE_ID.fullmatch(result["driveId"]))
+            or result.get("resourceKey") is not None
+            and (
+                not isinstance(result["resourceKey"], str)
+                or not RESOURCE_KEY.fullmatch(result["resourceKey"])
+            )
+        ):
+            raise DriveReadError("provider_response_invalid")
         return {
             "id": file_id,
             "title": name[:1024],
             "mimeType": mime[:255],
             "modifiedTime": modified if isinstance(modified, str) and len(modified) <= 64 else None,
+            **{
+                key: result[key]
+                for key in ("createdTime", "driveId", "resourceKey")
+                if isinstance(result.get(key), str)
+            },
             "size": int(size)
             if isinstance(size, str) and re.fullmatch(r"[0-9]{1,20}", size)
             else None,
             "viewUrl": link if isinstance(link, str) and link.startswith("https://") else None,
         }
 
-    async def get_share_metadata(self, *, file_id: str, access_token: str) -> DriveMetadata:
+    async def get_share_metadata(
+        self, *, file_id: str, access_token: str, resource_key: str | None = None
+    ) -> DriveMetadata:
         """Check an exact live file for sharing without requiring content access."""
+        if resource_key is not None:
+            _resource_keys({file_id: resource_key})
         result = _decode_json(
             await self._get(
                 _file_path(file_id),
                 access_token=access_token,
                 params={"fields": SHARE_METADATA_FIELDS, "supportsAllDrives": "true"},
                 limit=METADATA_LIMIT,
+                **({"resource_keys": {file_id: resource_key}} if resource_key else {}),
             )
         )
         mime = result.get("mimeType")
@@ -516,6 +597,7 @@ class GoogleDriveAdapter:
         page_token: str | None = None,
         order_by: str | None = None,
         drive_id: str | None = None,
+        resource_keys: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """One bounded Drive REST search page (the GA API the picker lane already uses)."""
         if (
@@ -537,7 +619,11 @@ class GoogleDriveAdapter:
             params["orderBy"] = order_by
         return _decode_json(
             await self._get(
-                "/files", access_token=access_token, params=params, limit=METADATA_LIMIT
+                "/files",
+                access_token=access_token,
+                params=params,
+                limit=METADATA_LIMIT,
+                **({"resource_keys": resource_keys} if resource_keys is not None else {}),
             )
         )
 

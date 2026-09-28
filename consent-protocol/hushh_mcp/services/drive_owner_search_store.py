@@ -80,6 +80,53 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             purpose="owner-search-checkpoint",
         )
 
+    def _view(self, row):
+        result = view(row)
+        checkpoint = self._checkpoint(row)
+        manifest = checkpoint.get("coverage_manifest")
+        if isinstance(manifest, dict):
+            # Scope and aggregate exclusion evidence are owner-only. Neither
+            # the subject, folder IDs, provider cursors nor resource keys leave
+            # the encrypted checkpoint through this projection.
+            result["coverage"] = {
+                **{
+                    key: manifest[key]
+                    for key in (
+                        "corpora",
+                        "fileKind",
+                        "requestedPeriod",
+                        "dateBasis",
+                        "contentPeriodVerified",
+                        "folderDiscovery",
+                    )
+                    if key in manifest
+                },
+                **{
+                    key: checkpoint.get("coverage_counts", {}).get(key, 0)
+                    for key in (
+                        "providerRowsScanned",
+                        "providerFilePages",
+                        "excludedByDateCount",
+                        "excludedByKindCount",
+                        "excludedByNoteTypeCount",
+                        "excludedFolderTopicCount",
+                        "deduplicatedCount",
+                        "unavailableShortcutCount",
+                        "resolvedShortcutCount",
+                        "unavailableFolderCount",
+                        "invalidMetadataCount",
+                        "matchingFoldersDiscovered",
+                        "matchingFoldersExhausted",
+                    )
+                },
+                "workLimitReached": checkpoint.get("coverage_counts", {}).get(
+                    "workLimitReached", False
+                ),
+                "providerPagesExhausted": row["status"] == "completed"
+                and not row["incomplete_search"],
+            }
+        return result
+
     def _owned(self, connection, user_id, identity, *, locked=False):
         row = self._row(
             connection, _ROW + (" FOR UPDATE" if locked else ""), {"job": identity, "user": user_id}
@@ -126,7 +173,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                     raise DriveReadError("invalid_argument")
                 if existing["connection_generation"] != current["connection_generation"]:
                     raise DriveReadError("connection_changed")
-                return view(existing), False
+                return self._view(existing), False
             # A newly connected account never resumes the old account's job.
             connection.execute(
                 text("""UPDATE drive_owner_search_jobs SET status='failed',
@@ -161,7 +208,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                     ),
                 },
             )
-            return view(row), True
+            return self._view(row), True
 
         return await self._transaction(operation)
 
@@ -183,7 +230,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 raise DriveReadError("invalid_argument")
             if row["connection_generation"] != current["connection_generation"]:
                 raise DriveReadError("connection_changed")
-            return view(row)
+            return self._view(row)
 
         return await self._transaction(operation)
 
@@ -200,7 +247,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
         identity = _identity(job_id)
 
         def operation(connection):
-            return view(self._owned(connection, user_id, identity))
+            return self._view(self._owned(connection, user_id, identity))
 
         return await self._transaction(operation)
 
@@ -218,7 +265,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             current = self._access(connection, user_id, read_only=True)
             if row["connection_generation"] != current["connection_generation"]:
                 raise DriveReadError("connection_changed")
-            return view(row)
+            return self._view(row)
 
         return await self._transaction(operation)
 
@@ -275,7 +322,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 ),
                 {"user": user_id},
             ).mappings()
-            return {"jobs": [view(dict(row)) for row in rows]}
+            return {"jobs": [self._view(dict(row)) for row in rows]}
 
         return await self._transaction(operation)
 
@@ -323,12 +370,16 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             )
             files = [
                 {
-                    **self.search_cipher.open(
-                        item["metadata_envelope"],
-                        user_id=user_id,
-                        resource_id=f"{identity}:{item['position']}",
-                        purpose="owner-search-result",
-                    ),
+                    **{
+                        key: value
+                        for key, value in self.search_cipher.open(
+                            item["metadata_envelope"],
+                            user_id=user_id,
+                            resource_id=f"{identity}:{item['position']}",
+                            purpose="owner-search-result",
+                        ).items()
+                        if key != "resourceKey"
+                    },
                     "position": item["position"],
                 }
                 for item in rows[:limit]
@@ -398,7 +449,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                     WHERE job_id=:job RETURNING *""",
                     {"job": identity},
                 )
-            return view(row)
+            return self._view(row)
 
         return await self._transaction(operation)
 
@@ -535,6 +586,9 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                     "SELECT position FROM drive_owner_search_results WHERE job_id=:job AND file_digest=:digest",
                     {"job": job["job_id"], "digest": digest},
                 ):
+                    if checkpoint.get("coverage_manifest"):
+                        counts = checkpoint.setdefault("coverage_counts", {})
+                        counts["deduplicatedCount"] = counts.get("deduplicatedCount", 0) + 1
                     continue
                 if count == MAX_RESULTS:
                     limited = True
@@ -586,7 +640,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                     ),
                 },
             )
-            return view(updated)
+            return self._view(updated)
 
         return await self._transaction(operation)
 

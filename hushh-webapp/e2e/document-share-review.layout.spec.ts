@@ -514,6 +514,83 @@ const reviewBody = (status: string, revision: number) => ({
   preparationError: null,
 });
 
+test("partial sharing outcomes and safe retry fit the sheet at 390px", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 820 });
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  const jobId = "33333333-3333-4333-8333-333333333333";
+  const shareId = "55555555-5555-4555-8555-555555555555";
+  const filename = `${"StandupLongUntrustedOriginalFileName".repeat(12)}.docx`;
+  let retries = 0;
+  const counts = () => ({ total: 72, processed: retries ? 71 : 72, shared: 62, alreadyShared: 9,
+    skipped: retries ? 0 : 1, failed: 0, needsReview: 0, unknown: 0, pending: retries ? 1 : 0 });
+  const issues = () => retries ? [] : [{ reasonCode: "provider_unavailable", count: 1 }];
+  const bulk = () => ({ shareId, searchJobId: jobId, status: retries ? "queued" : "partial", revision: retries ? 3 : 2,
+    reviewDigest: "b".repeat(64), fileCount: 72, recipientCount: 1,
+    recipients: [{ name: "B", email: "long-verified-recipient@synthetic.invalid" }], excluded: [], counts: counts(), issues: issues(),
+    notifications: { settled: 0, pending: 0, unavailable: 0 }, canApprove: false, canStop: false,
+    canRetry: !retries, retryableCount: retries ? 0 : 1,
+    createdAt: "2026-09-28T00:00:00Z", updatedAt: "2026-09-28T00:01:00Z", expiresAt: "2099-10-01T00:00:00Z" });
+  await page.route("http://localhost/document-outcome-fixture", route => route.fulfill({
+    contentType: "text/html", body: fixtureHtml(),
+  }));
+  await page.route("**/api/connectors/google_drive/sharing/**", async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith(`/bulk/${shareId}/retry`)) {
+      expect(route.request().postDataJSON()).toEqual({ revision: 2, reviewDigest: "b".repeat(64), confirmed: true });
+      retries++;
+      return route.fulfill({ contentType: "application/json", body: JSON.stringify(bulk()) });
+    }
+    let result: unknown = { requestId: reviewId, direction: "incoming", status: retries ? "approved" : "partial", revision: 2 };
+    if (url.pathname.endsWith("/review")) result = { ...reviewBody(retries ? "approved" : "partial", 2),
+      durableAvailable: true, search: { jobId, status: "completed", revision: 5, matched: 108, pagesScanned: 20,
+        incompleteSearch: false, unshareableCount: 36, canStop: false, errorCode: null,
+        createdAt: "2026-09-28T00:00:00Z", updatedAt: "2026-09-28T00:01:00Z", expiresAt: "2099-10-01T00:00:00Z",
+        coverage: { corpora: ["user", "member_shared_drives"], fileKind: "document", requestedPeriod: {
+          start: "2026-06-28", end: "2026-09-28", timezone: "Asia/Kolkata" }, dateBasis: "title_date_then_created_or_modified",
+          contentPeriodVerified: false, providerRowsScanned: 540, excludedByDateCount: 450, deduplicatedCount: 18,
+          unavailableShortcutCount: 36, providerPagesExhausted: true } }, bulkShare: bulk() };
+    if (url.pathname.endsWith("/delivery")) result = { requestId: reviewId, status: retries ? "approved" : "partial",
+      files: [], bulkShareId: shareId, bulkStatus: retries ? "queued" : "partial", fileCount: 72, sharedCount: 71,
+      counts: counts(), issues: issues() };
+    if (url.pathname.endsWith(`/bulk/${shareId}/files`)) result = { shareId, files: [{ position: 1, name: filename,
+      mimeType: "application/vnd.google-apps.document", modifiedTime: null,
+      openUrl: "https://drive.google.com/file/d/original/view",
+      outcomes: [{ status: retries ? "queued" : "skipped", reasonCode: retries ? null : "provider_unavailable" }] }], nextCursor: null };
+    await route.fulfill({ contentType: "application/json", headers: { "Cache-Control": "no-store" }, body: JSON.stringify(result) });
+  });
+  await page.goto("http://localhost/document-outcome-fixture");
+  await page.addScriptTag({ content: script });
+  await awaitProductFont(page);
+  const draft = page.getByRole("textbox", { name: "Chat draft" });
+  await draft.fill("Keep this draft while sharing finishes");
+  await page.getByRole("button", { name: "Review document request" }).click();
+  const panel = page.getByRole("dialog", { name: "Document request" });
+  await expect(panel.getByRole("status")).toHaveText("Sharing finished");
+  await expect(panel.getByText("71 of 72 files available", { exact: true })).toBeVisible();
+  await expect(panel.getByText("1 not shared", { exact: true })).toBeVisible();
+  await expect(panel.getByText("36 unavailable matches were not included.", { exact: true })).toBeVisible();
+  await expect(panel.getByText(/0 failed/)).toHaveCount(0);
+  await expect(panel.getByText(filename, { exact: true })).toBeVisible();
+  for (const control of [panel.getByRole("button", { name: "Retry 1 file", exact: true }),
+    panel.getByRole("link", { name: "Open in Google Drive" })]) {
+    await control.scrollIntoViewIfNeeded();
+    const bounds = (await control.boundingBox())!;
+    expect(bounds.height).toBeGreaterThanOrEqual(44);
+    expect(bounds.x).toBeGreaterThanOrEqual(0);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(391);
+  }
+  expect(await panel.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+  await panel.getByRole("button", { name: "Retry 1 file", exact: true }).click();
+  await expect(panel.getByRole("status")).toHaveText("Sharing in progress");
+  await expect(panel.getByText("1 waiting to share", { exact: true })).toBeVisible();
+  expect(retries).toBe(1);
+  await page.keyboard.press("Escape");
+  await expect(draft).toHaveValue("Keep this draft while sharing finishes");
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  expect(errors).toEqual([]);
+});
+
 for (const colorScheme of ["light", "dark"] as const)
   test(`progressive preparation shows the request before its files (${colorScheme}, 390px)`, async ({
     page,

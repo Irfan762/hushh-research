@@ -1,15 +1,26 @@
 """Provider metadata search for a request includes date-named shortcut targets."""
 
+import json
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from hushh_mcp.services import drive_owner_search_service as search_module
+from hushh_mcp.services import google_drive_rest_transport as rest
 from hushh_mcp.services.drive_owner_search_service import (
     DriveOwnerSearchService,
     compile_request_queries,
 )
 from hushh_mcp.services.external_mcp_client import ExternalMcpToolResult
+from hushh_mcp.services.google_drive_adapter import (
+    FACT_FIELDS,
+    LIST_FIELDS,
+    LIVE_POLICY_HASH,
+    DriveReadError,
+    GoogleDriveAdapter,
+)
 
 
 def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
@@ -33,6 +44,9 @@ def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
     assert "standup" in query and "notes" in query
     assert "application/vnd.google-apps.document" in query
     assert "application/vnd.google-apps.shortcut" in query
+    assert "application/vnd.google-apps.folder" in query
+    assert "application/pdf" in query and "text/plain" in query
+    assert "video/" not in query and "audio/" not in query
     assert "modifiedTime" not in query
     assert period == {"start": start, "end": end, "timezone": "UTC"}
 
@@ -108,3 +122,312 @@ async def test_request_shortcut_uses_verified_target_and_alias_date():
     ]
     assert files[0]["shortcutName"].startswith("Hushh Team Standup")
     assert [call[0] for call in calls] == ["search_files", "get_file_metadata"]
+
+
+def _checkpoint():
+    queries, period = compile_request_queries(
+        {"mode": "find", "terms": ["standup"], "file_kind": "document"},
+        {
+            "purpose": "Standup notes from last 3 months",
+            "periodStart": "2026-06-28",
+            "periodEnd": "2026-09-28",
+        },
+        "UTC",
+    )
+    return {
+        "request_origin_id": "synthetic-request",
+        "request_file_kind": "document",
+        "request_subject_terms": ["standup"],
+        "request_notes": True,
+        "arguments": queries[0]["arguments"],
+        "queries": queries,
+        "query_index": 0,
+        "requested_period": period,
+        "phase": "user",
+        "page_token": None,
+        "drive_page_token": None,
+        "drives": [],
+        "drive_index": 0,
+        "seen_tokens": [],
+        "drive_tokens": [],
+        "folder_queue": [],
+        "folder_digests": [],
+        "coverage_counts": {},
+    }
+
+
+def _provider_file(identity, name, mime="application/vnd.google-apps.document", **changes):
+    return {
+        "id": identity,
+        "name": name,
+        "mimeType": mime,
+        "createdTime": "2026-09-26T00:00:00Z",
+        "modifiedTime": "2026-09-26T00:00:00Z",
+        "trashed": False,
+        **changes,
+    }
+
+
+def _real_rest_service(monkeypatch, respond):
+    # Exercise the production files.list -> REST compatibility projection ->
+    # worker seam. A synthetic MCP payload would miss dropped shortcutDetails.
+    class Adapter(GoogleDriveAdapter):
+        def __init__(self):
+            self.calls = []
+
+        async def _get(self, path, *, access_token, params, limit, resource_keys=None):
+            assert access_token == "synthetic-token"
+            self.calls.append((path, params, resource_keys))
+            if path == "/files":
+                assert params["fields"] == LIST_FIELDS
+            elif path.startswith("/files/"):
+                assert params["fields"] == FACT_FIELDS
+            return json.dumps(respond(path, params, resource_keys)).encode()
+
+    row = {
+        "status": "connected",
+        "validation_state": "verified",
+        "verified_policy_hash": LIVE_POLICY_HASH,
+        "connection_generation": 7,
+    }
+    oauth = SimpleNamespace(
+        current_credential=AsyncMock(return_value=(row, {"accessToken": "synthetic-token"})),
+        lifecycle=SimpleNamespace(read=AsyncMock(return_value=row)),
+    )
+    monkeypatch.setattr(rest, "connector_feature_enabled", lambda *_: True)
+    adapter = Adapter()
+    return DriveOwnerSearchService(
+        transport=rest.GoogleDriveRestTransport(oauth=oauth, adapter=adapter)
+    ), adapter
+
+
+async def test_real_rest_projection_resolves_shortcut_resource_key_and_live_facts(monkeypatch):
+    alias = _provider_file(
+        "alias",
+        "Stand Up 2026/09/26 - Notes by Gemini",
+        search_module.SHORTCUT_MIME,
+        shortcutDetails={
+            "targetId": "original",
+            # Google documents this as a possibly stale snapshot.
+            "targetMimeType": "application/vnd.google-apps.document",
+            "targetResourceKey": "target-key",
+            "snippet": "must not cross the metadata projection",
+        },
+    )
+
+    def respond(path, params, keys):
+        if path == "/files":
+            return {"files": [alias], "incompleteSearch": False}
+        assert path == "/files/original" and keys == {"original": "target-key"}
+        return _provider_file(
+            "original",
+            "Standup note.pdf",
+            "application/pdf",
+            createdTime="2026-01-01T00:00:00Z",
+            modifiedTime="2026-01-01T00:00:00Z",
+            resourceKey="target-key",
+            driveId="team-drive",
+        )
+
+    service, adapter = _real_rest_service(monkeypatch, respond)
+    checkpoint, files, incomplete, done = await service._page(
+        {"user_id": "owner", "checkpoint": _checkpoint()}
+    )
+    assert not incomplete and not done
+    assert [(item["id"], item["mimeType"]) for item in files] == [("original", "application/pdf")]
+    assert files[0]["resourceKey"] == "target-key"
+    assert files[0]["createdTime"] == "2026-01-01T00:00:00Z"
+    assert files[0]["shortcutName"] == alias["name"]
+    assert checkpoint["coverage_counts"]["resolvedShortcutCount"] == 1
+    assert "targetResourceKey" in LIST_FIELDS and "resourceKey" in FACT_FIELDS
+    assert len(adapter.calls) == 2
+
+
+async def test_matching_folder_shortcut_pages_generic_gemini_notes_and_nested_folders(monkeypatch):
+    folder_alias = _provider_file(
+        "folder-alias",
+        "Hushh Stand Up recurring",
+        search_module.SHORTCUT_MIME,
+        createdTime="2025-01-01T00:00:00Z",
+        modifiedTime="2025-01-01T00:00:00Z",
+        shortcutDetails={
+            "targetId": "notes-folder",
+            "targetMimeType": search_module.FOLDER_MIME,
+            "targetResourceKey": "folder-key",
+        },
+    )
+
+    def respond(path, params, keys):
+        if path == "/files/notes-folder":
+            assert keys == {"notes-folder": "folder-key"}
+            return _provider_file(
+                "notes-folder",
+                "Meet recordings",
+                search_module.FOLDER_MIME,
+                createdTime="2025-01-01T00:00:00Z",
+                resourceKey="folder-key",
+                driveId="team-drive",
+            )
+        if path == "/drives":
+            return {"drives": [{"id": "team-drive", "name": "Team"}]}
+        assert path == "/files"
+        q = params["q"]
+        if "in parents" not in q:
+            return {"files": [folder_alias] if params["corpora"] == "user" else []}
+        assert params["corpora"] == "drive" and params["driveId"] == "team-drive"
+        assert "fullText" not in q  # Child names need not repeat the folder's topic.
+        if "'notes-folder' in parents" in q:
+            assert keys == {"notes-folder": "folder-key"}
+            if params.get("pageToken") == "folder-next":
+                return {
+                    "files": [
+                        _provider_file("nested", "September", search_module.FOLDER_MIME),
+                        _provider_file("old", "Meeting 2026/01/01 - Notes by Gemini"),
+                        _provider_file("agenda", "Standup agenda"),
+                        _provider_file("video", "Standup recording", "video/mp4"),
+                    ]
+                }
+            return {
+                "files": [
+                    _provider_file("generic", "Meeting started 2026/09/26 - Notes by Gemini"),
+                    _provider_file("text-note", "Standup notes.txt", "text/plain"),
+                ],
+                "nextPageToken": "folder-next",
+            }
+        assert "'nested' in parents" in q and keys is None
+        return {
+            "files": [
+                _provider_file("nested-note", "Meeting started 2026/09/25 - Notes by Gemini"),
+                folder_alias,  # A shortcut cycle must not re-enqueue the original folder.
+                _provider_file("unrelated", "Welcome to the team"),
+            ]
+        }
+
+    service, adapter = _real_rest_service(monkeypatch, respond)
+    checkpoint = _checkpoint()
+    files = []
+    for _ in range(12):
+        checkpoint, page, incomplete, done = await service._page(
+            {"user_id": "owner", "checkpoint": checkpoint}
+        )
+        assert not incomplete
+        files.extend(page)
+        if done:
+            break
+    else:
+        pytest.fail("The folder traversal did not exhaust its durable queue")
+    assert {item["id"] for item in files} == {"generic", "text-note", "nested-note"}
+    counts = checkpoint["coverage_counts"]
+    assert counts["matchingFoldersDiscovered"] == counts["matchingFoldersExhausted"] == 2
+    assert counts["excludedByDateCount"] == 1
+    assert counts["excludedByKindCount"] == 1
+    assert counts["excludedByNoteTypeCount"] == 2
+    assert checkpoint["folder_queue"] == []
+    assert any(params.get("pageToken") == "folder-next" for _, params, _ in adapter.calls)
+
+
+async def test_user_shared_drive_pages_exhaust_even_when_a_file_page_is_empty(monkeypatch):
+    def respond(path, params, keys):
+        if path == "/drives":
+            if params.get("pageToken") == "more-drives":
+                return {"drives": [{"id": "drive-two", "name": "Two"}]}
+            return {"drives": [{"id": "drive-one", "name": "One"}], "nextPageToken": "more-drives"}
+        assert path == "/files" and keys is None
+        if params["corpora"] == "user":
+            if params.get("pageToken") == "user-next":
+                return {"files": [_provider_file("shared-with-me", "Shared standup notes")]}
+            return {"files": [], "nextPageToken": "user-next"}
+        assert params["corpora"] == "drive"
+        if params["driveId"] == "drive-one" and not params.get("pageToken"):
+            return {"files": [], "nextPageToken": "drive-next"}
+        return {"files": [_provider_file(params["driveId"], "Team standup notes")]}
+
+    service, adapter = _real_rest_service(monkeypatch, respond)
+    checkpoint, found = _checkpoint(), []
+    for _ in range(12):
+        checkpoint, page, incomplete, done = await service._page(
+            {"user_id": "owner", "checkpoint": checkpoint}
+        )
+        assert not incomplete
+        found.extend(page)
+        if done:
+            break
+    assert done
+    assert {item["id"] for item in found} == {"shared-with-me", "drive-one", "drive-two"}
+    assert not any("sharedWithMe = true" in params.get("q", "") for _, params, _ in adapter.calls)
+    assert any(params.get("pageToken") == "more-drives" for _, params, _ in adapter.calls)
+    assert any(params.get("pageToken") == "drive-next" for _, params, _ in adapter.calls)
+
+
+async def test_shortcut_provider_transient_is_not_a_complete_unavailable_target(monkeypatch):
+    def respond(path, params, keys):
+        if path == "/files":
+            return {
+                "files": [
+                    _provider_file(
+                        "alias",
+                        "Standup notes",
+                        search_module.SHORTCUT_MIME,
+                        shortcutDetails={
+                            "targetId": "original",
+                            "targetMimeType": "application/vnd.google-apps.document",
+                        },
+                    )
+                ]
+            }
+        raise DriveReadError("provider_unavailable", retryable=True)
+
+    service, _ = _real_rest_service(monkeypatch, respond)
+    with pytest.raises(DriveReadError, match="provider_unavailable") as error:
+        await service._page({"user_id": "owner", "checkpoint": _checkpoint()})
+    assert error.value.retryable
+
+
+async def test_unavailable_folder_and_traversal_limits_cannot_claim_completeness(monkeypatch):
+    def respond(path, params, keys):
+        if path == "/files":
+            return {
+                "files": [
+                    _provider_file(
+                        "folder-alias",
+                        "Standup",
+                        search_module.SHORTCUT_MIME,
+                        shortcutDetails={
+                            "targetId": "folder",
+                            "targetMimeType": search_module.FOLDER_MIME,
+                        },
+                    )
+                ]
+            }
+        raise DriveReadError("source_unavailable")
+
+    service, _ = _real_rest_service(monkeypatch, respond)
+    checkpoint, files, incomplete, _ = await service._page(
+        {"user_id": "owner", "checkpoint": _checkpoint()}
+    )
+    assert incomplete and files == []
+    assert checkpoint["coverage_counts"]["unavailableFolderCount"] == 1
+
+    def folders(path, params, keys):
+        return {
+            "files": [
+                _provider_file("folder-one", "Standup", search_module.FOLDER_MIME),
+                _provider_file("folder-two", "Standup", search_module.FOLDER_MIME),
+            ],
+            "nextPageToken": "more",
+        }
+
+    monkeypatch.setattr(search_module, "MAX_REQUEST_FOLDERS", 1)
+    service, _ = _real_rest_service(monkeypatch, folders)
+    checkpoint, _, incomplete, _ = await service._page(
+        {"user_id": "owner", "checkpoint": _checkpoint()}
+    )
+    assert incomplete and checkpoint["coverage_counts"]["workLimitReached"]
+    assert len(checkpoint["folder_queue"]) == 1
+
+    checkpoint = _checkpoint()
+    checkpoint["coverage_counts"]["providerFilePages"] = search_module.MAX_REQUEST_FILE_PAGES - 1
+    checkpoint, _, incomplete, done = await service._page(
+        {"user_id": "owner", "checkpoint": checkpoint}
+    )
+    assert incomplete and done and checkpoint["coverage_counts"]["workLimitReached"]

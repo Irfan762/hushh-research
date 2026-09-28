@@ -24,6 +24,7 @@ from hushh_mcp.services.google_drive_adapter import (
     DRIVE_BASE,
     FILE_ID,
     LIVE_SUPPORTED_TYPES,
+    RESOURCE_KEY,
     SUPPORTED_TYPES,
     DriveReadError,
 )
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 DEADLINE_SECONDS = 20
 RESPONSE_LIMIT = 256 * 1024
+ERROR_RESPONSE_LIMIT = 16 * 1024
+RETRYABLE_403_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 PAGE_LIMIT = 3
 PERMISSION_LIMIT = 200
 FILE_FIELDS = (
@@ -74,6 +77,35 @@ def _unknown() -> DrivePermissionError:
 
 def _invalid(mutation: bool = False) -> DrivePermissionError:
     return _unknown() if mutation else DrivePermissionError("permission_response_invalid")
+
+
+async def _retryable_403(response: httpx.Response) -> bool:
+    """Read only bounded reason codes; provider messages never leave this scope."""
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        return False
+    data = bytearray()
+    async for chunk in response.aiter_raw():
+        if len(data) + len(chunk) > ERROR_RESPONSE_LIMIT:
+            return False
+        data.extend(chunk)
+    try:
+        result = json.loads(data)
+    except (ValueError, UnicodeError, RecursionError):
+        return False
+    error = result.get("error") if isinstance(result, dict) else None
+    if not isinstance(error, dict) or type(error.get("code")) is not int or error["code"] != 403:
+        return False
+    reasons = error.get("errors")
+    return (
+        isinstance(reasons, list)
+        and 1 <= len(reasons) <= 16
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("reason"), str)
+            and item["reason"] in RETRYABLE_403_REASONS
+            for item in reasons
+        )
+    )
 
 
 def _identifier(value: object) -> str:
@@ -159,6 +191,7 @@ class GoogleDrivePermissionAdapter:
         permission_id: str | None = None,
         page_token: str | None = None,
         send_notification_email: bool = True,
+        resource_key: str | None = None,
     ) -> dict:
         started = time.perf_counter()
         outcome = "error"
@@ -175,6 +208,7 @@ class GoogleDrivePermissionAdapter:
                 permission_id=permission_id,
                 page_token=page_token,
                 send_notification_email=send_notification_email,
+                resource_key=resource_key,
             )
             outcome = "ok"
             return result
@@ -218,6 +252,7 @@ class GoogleDrivePermissionAdapter:
         permission_id: str | None = None,
         page_token: str | None = None,
         send_notification_email: bool = True,
+        resource_key: str | None = None,
     ) -> dict:
         path = f"/files/{_identifier(file_id)}"
         body, method = None, "GET"
@@ -254,6 +289,10 @@ class GoogleDrivePermissionAdapter:
             path += f"/permissions/{_identifier(permission_id)}"
         else:
             raise DrivePermissionError("operation_not_allowed")
+        if resource_key is not None and (
+            not isinstance(resource_key, str) or not RESOURCE_KEY.fullmatch(resource_key)
+        ):
+            raise DrivePermissionError("operation_not_allowed")
         if (
             not isinstance(access_token, str)
             or not 1 <= len(access_token) <= 16384
@@ -277,10 +316,22 @@ class GoogleDrivePermissionAdapter:
                         }
                         if body is not None:
                             kwargs["json"] = body
+                        if resource_key is not None:
+                            kwargs["headers"]["X-Goog-Drive-Resource-Keys"] = (
+                                f"{file_id}/{resource_key}"
+                            )
                         async with client.stream(method, DRIVE_BASE + path, **kwargs) as response:
                             status = response.status_code
                             if status == 401:
                                 raise DrivePermissionError("reconnect_required")
+                            if status == 403 and await _retryable_403(response):
+                                # Reads can back off safely. A dispatched write
+                                # still requires reconciliation, never a blind POST retry.
+                                if mutation:
+                                    raise _unknown()
+                                raise DrivePermissionError(
+                                    "permission_provider_unavailable", retryable=True
+                                )
                             if status in (403, 404, 410):
                                 # A hidden file is not verified permission absence.
                                 raise DrivePermissionError("permission_target_unavailable")
@@ -338,11 +389,16 @@ class GoogleDrivePermissionAdapter:
         time_field: str | None = None,
         start_time: str | None = None,
         end_time: str | None = None,
+        resource_key: str | None = None,
     ) -> None:
         if not isinstance(expected_version, str) or not VERSION.fullmatch(expected_version):
             raise DrivePermissionError("operation_not_allowed")
         result = await self._exchange(
-            "inspect", file_id=file_id, access_token=access_token, require_current=require_current
+            "inspect",
+            file_id=file_id,
+            access_token=access_token,
+            require_current=require_current,
+            resource_key=resource_key,
         )
         capabilities, encryption = result.get("capabilities"), result.get("clientEncryptionDetails")
         mime = result.get("mimeType")
@@ -404,7 +460,12 @@ class GoogleDrivePermissionAdapter:
         await require_current()
 
     async def list_permissions(
-        self, *, file_id: str, access_token: str, require_current: Fence
+        self,
+        *,
+        file_id: str,
+        access_token: str,
+        require_current: Fence,
+        resource_key: str | None = None,
     ) -> PermissionSnapshot:
         permissions, seen_ids, seen_tokens = [], set(), set()
         page_token = None
@@ -417,6 +478,7 @@ class GoogleDrivePermissionAdapter:
                         access_token=access_token,
                         require_current=require_current,
                         page_token=page_token,
+                        resource_key=resource_key,
                     )
                     rows = result.get("permissions", [])
                     if not isinstance(rows, list) or len(rows) > 100:
@@ -474,6 +536,7 @@ class GoogleDrivePermissionAdapter:
         access_token: str,
         require_current: Fence,
         send_notification_email: bool = True,
+        resource_key: str | None = None,
     ) -> CreatedReader:
         result = await self._exchange(
             "create",
@@ -482,6 +545,7 @@ class GoogleDrivePermissionAdapter:
             access_token=access_token,
             require_current=require_current,
             send_notification_email=send_notification_email,
+            resource_key=resource_key,
         )
         try:
             permission = _permission(result)
