@@ -138,12 +138,6 @@ describe("layer ladder", () => {
       // (the chat list sat under the bar in narrow layouts).
       expect(drawer.match(/bottom-\[var\(--app-bottom-shell-height,0px\)\]/g)).toHaveLength(2);
       expect(drawer).not.toMatch(/absolute (inset-x-0 )?bottom-0/);
-      // The tap-to-close layer is untinted: a dim clipped between the header and
-      // the bottom bar left both bright, a white strip above and a patch below.
-      const scrim = drawer.slice(drawer.indexOf("data-agent-history-scrim"));
-      const scrimClasses = scrim.slice(0, scrim.indexOf("onClick"));
-      expect(scrimClasses).toContain("bg-transparent");
-      expect(scrimClasses).not.toMatch(/bg-black\/|backdrop-blur/);
       expect(read("components/agent/agent-chat-workspace.tsx")).toContain(
         "h-[var(--agent-chat-header-height)]",
       );
@@ -151,6 +145,34 @@ describe("layer ladder", () => {
       for (const rule of css.matchAll(/html\.native-ios[^{]*\{([^}]*)\}/g)) {
         expect(rule[1]).not.toMatch(/--agent-chat-header-height\s*:/);
       }
+    });
+
+    it("dims and blurs the chat behind the drawer with the canonical sheet scrim", () => {
+      // Founder ask (2026-09-27): the history sidebar recedes the chat exactly as a
+      // sheet, dialog or modal popover does. The scrim tokens are read from
+      // SheetOverlay itself, so a change to the canonical scrim moves both together
+      // and a surface-specific blur or tint here fails.
+      const sheet = read("components/ui/sheet.tsx");
+      const overlay = sheet.slice(sheet.indexOf('data-slot="sheet-overlay"'));
+      const canonical =
+        overlay
+          .slice(0, overlay.indexOf("/>"))
+          .match(/bg-\[color:var\(--app-scrim-color\)\]|\[(?:-webkit-)?backdrop-filter:var\(--app-scrim-filter\)\]/g) ??
+        [];
+      expect(canonical).toHaveLength(3);
+
+      const drawer = read("components/agent/agent-connections-drawer.tsx");
+      const scrim = drawer.slice(drawer.indexOf("data-agent-history-scrim"));
+      const scrimClasses = scrim.slice(0, scrim.indexOf("onClick"));
+      for (const token of canonical) expect(scrimClasses).toContain(token);
+      expect(scrimClasses).toContain("z-(--z-sheet-overlay)");
+      expect(scrimClasses).not.toMatch(/bg-transparent|bg-black\/|backdrop-blur-|blur\(\d/);
+      // Charter: fade opacity only (never the blur radius or `all`), honour reduced
+      // motion, and hide the layer when closed so no backdrop filter stays live.
+      expect(scrimClasses).toContain("transition-[opacity,visibility]");
+      expect(scrimClasses).not.toMatch(/transition-(all|\[[^\]]*filter)/);
+      expect(scrimClasses).toContain("motion-reduce:transition-none");
+      expect(scrimClasses).toMatch(/pointer-events-none invisible opacity-0/);
     });
 
     it("keeps the drawer surface opaque inside its transformed sheet layer", () => {
