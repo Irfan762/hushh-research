@@ -315,9 +315,7 @@ class DriveBulkShareStore(DriveLivePreferences):
         Matching the current search digest prevents a stale position from
         silently referring to another Drive file after a search refresh.
         """
-        rows = connection.execute(
-            text(
-                """SELECT f.share_id,f.position,f.source_position,r.metadata_envelope
+        query = """SELECT f.share_id,f.position,f.source_position,r.metadata_envelope
                 FROM drive_bulk_share_files f
                 JOIN drive_bulk_shares b ON b.share_id=f.share_id
                 JOIN drive_bulk_share_effects e ON e.share_id=f.share_id
@@ -341,8 +339,10 @@ class DriveBulkShareStore(DriveLivePreferences):
                     OR f.source_position=ANY(CAST(:selected AS integer[])))
                 ORDER BY f.source_position
                 """
-                + (" FOR UPDATE OF f,e" if lock else "")
-            ),
+        if lock:
+            query += " FOR UPDATE OF f,e"
+        rows = connection.execute(
+            text(query),
             {
                 "job": search_job_id,
                 "user": user_id,
