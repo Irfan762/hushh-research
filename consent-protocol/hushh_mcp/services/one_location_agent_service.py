@@ -1831,9 +1831,8 @@ class OneLocationAgentService:
         """Who One may email for this Save my Soul alert.
 
         Resolution and authorization only — the message is rendered and sent by
-        One through `hushh-mail-api`, the same service every other product mail
-        uses. A second sender identity is a deliverability risk, and an
-        emergency mail is the worst place to find that out.
+        One through `hushh-mail-api`. Account and support notices use the
+        backend's separate delegated `one@hushh.ai` sender.
 
         Returns the owner's display label plus one entry per reachable contact.
         Addresses are returned to One's server route, never to a browser: a

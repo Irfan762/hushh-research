@@ -255,6 +255,14 @@ Live head keeps an explicit pin.
   mailbox credential is never stored in the repo or Secret Manager; sending rides
   the delegated service identity. Forwarding from `one@hushh.ai` to a person is a
   Google Workspace admin setting, not a repo concern.
+- Automatic account mail is limited to the first-account welcome and confirmed
+  passkey-add, passkey-remove, and existing-vault passphrase-change notices.
+  Routine welcome-back, sign-out, phone-conflict, and client-inferred connector
+  emails are retired. The separate `hushh-mail-api` frontend binding remains
+  only for user-requested Save my Soul email; it must not send account notices.
+  A green branch check or local commit does not publish this policy: verify the
+  landed source SHA, serving web/backend revisions, sender secrets, and live
+  event behavior at each authorized release gate.
 
 ### Deploy-step env plumbing and the Cloud Build arg cap (2026-09-02)
 
@@ -403,7 +411,7 @@ Used by:
 | `BACKEND_URL` | Server-side api routes | Hosted runtime required | Canonical runtime backend origin for Next.js route handlers |
 | `SESSION_SECRET` | `lib/auth/session.ts` | If session API | Server-only |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | `lib/firebase/admin.ts` | Server-side Firebase | Server-only |
-| `MAIL_API_ENDPOINT` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For lifecycle mail | `hushh-mail-api` origin. Plain env var, set from `_MAIL_API_ENDPOINT` in `deploy/frontend.cloudbuild.yaml` |
+| `MAIL_API_ENDPOINT` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For user-requested SOS mail | `hushh-mail-api` origin. Plain env var, set from `_MAIL_API_ENDPOINT` in `deploy/frontend.cloudbuild.yaml`; not used for account notices. |
 | `MAIL_API_KEY` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For user-requested SOS mail | Server-only. This is not used for One support or account notices. |
 
 ---

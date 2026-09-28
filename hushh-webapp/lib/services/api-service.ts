@@ -56,7 +56,7 @@ import type {
 } from "@/lib/observability/events";
 import { resolveRouteId } from "@/lib/observability/route-map";
 import { resolveRuntimeBackendUrl } from "@/lib/runtime/settings";
-import { shouldSkipAuthMailForAutomation } from "@/lib/testing/native-test";
+import { shouldSkipFirstWelcomeForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
 import {
   AUTH_ACCOUNT_NOT_FOUND_BACKEND_CODE,
@@ -1740,7 +1740,7 @@ export class ApiService {
 
   /** Ask the account authority for the first-account welcome; routine sign-ins skip. */
   static async notifyFirstWelcome(options?: { idToken?: string }): Promise<boolean> {
-    if (shouldSkipAuthMailForAutomation()) return false;
+    if (shouldSkipFirstWelcomeForAutomation()) return false;
 
     try {
       const idToken = options?.idToken || (await this.getFirebaseToken());
