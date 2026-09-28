@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
-import { CalendarDays, CheckCircle2, Loader2 } from "@/components/icons";
+import { CheckCircle2, Loader2 } from "@/components/icons";
 import { toast } from "sonner";
 
 import { AskOneButton } from "@/components/agent/ask-one-button";
@@ -61,6 +61,46 @@ import {
 import { waitForOAuthPopup } from "@/lib/profile/drive-oauth-popup";
 
 const CALENDAR_OAUTH_POPUP_TIMEOUT_MS = 120_000;
+
+function CalendarConnectIcon() {
+  return (
+    <svg
+      viewBox="0 0 48 48"
+      fill="none"
+      aria-hidden="true"
+      className="size-12"
+    >
+      <rect
+        x="8.5"
+        y="11.5"
+        width="31"
+        height="29"
+        rx="4.5"
+        stroke="currentColor"
+        strokeWidth="3"
+      />
+      <path
+        d="M9.5 20.5h29M16 7.5v8M32 7.5v8"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+      />
+      {[16, 24, 32].flatMap((x) =>
+        [27, 35].map((y) => (
+          <rect
+            key={`${x}-${y}`}
+            x={x - 2}
+            y={y - 2}
+            width="4"
+            height="4"
+            rx="1"
+            fill="currentColor"
+          />
+        )),
+      )}
+    </svg>
+  );
+}
 
 type CalendarAgentPageProps = {
   journeyVariant?: "workspace" | "onboarding";
@@ -454,7 +494,7 @@ export function CalendarAgentPage({
         <SurfaceCard className="overflow-hidden w-full shadow-md text-center">
           <SurfaceCardHeader className="pb-3 pt-5 flex flex-col items-center text-center space-y-0.5">
             <div className="mb-2 flex size-24 items-center justify-center rounded-[22px] bg-destructive/10 text-destructive">
-              <CalendarDays className="size-12" aria-hidden />
+              <CalendarConnectIcon />
             </div>
             <SurfaceCardTitle className="text-lg font-semibold tracking-tight">
               {connected ? "Google Calendar" : "Connect Google Calendar"}
@@ -489,6 +529,7 @@ export function CalendarAgentPage({
                 <div className="flex flex-col items-center gap-2.5 w-full pt-1">
                   <AskOneButton
                     disabled={busy}
+                    showIcon={false}
                     onClick={() => {
                       if (needsSchedulingReconnect) {
                         void connect("manage");

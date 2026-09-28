@@ -3864,70 +3864,6 @@ function circleFlowErrorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
-function CircleIdentityStack({
-  circles,
-}: {
-  circles: readonly OneLocationCircleSummary[];
-}) {
-  // Only two circle identities overlap; the remainder is a separate counter.
-  const MAX_VISIBLE_CIRCLE_IDENTITIES = 2;
-  const visible = circles.slice(0, MAX_VISIBLE_CIRCLE_IDENTITIES);
-  const overflowCount = Math.max(
-    0,
-    circles.length - MAX_VISIBLE_CIRCLE_IDENTITIES,
-  );
-  const fallback = visible.length
-    ? visible
-    : [
-        {
-          id: "circle-summary-fallback",
-          name: "Circles",
-          memberCount: 0,
-        } as OneLocationCircleSummary,
-      ];
-  return (
-    <span aria-hidden="true" className="inline-flex h-11 shrink-0 items-center">
-      <span className="inline-flex items-center" data-circle-identity-stack>
-        {fallback.map((circle, index) => {
-          const isSmsCircle = circle.systemKind === "sms";
-          const isTrustedCircle = circle.systemKind === "trusted";
-          const initials = circleInitials(circle.name);
-          return (
-            <span
-              key={`${circle.id}-${index}`}
-              className={cn(
-                "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border-2 border-[color:var(--app-primary-surface)] text-[13px] font-semibold shadow-sm",
-                index > 0 && "-ml-6",
-                isSmsCircle
-                  ? "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]"
-                  : "bg-[#E5E5EA] text-[#6E6E73] dark:bg-[rgba(142,142,147,0.28)] dark:text-[#F2F2F7]",
-              )}
-            >
-              {isSmsCircle ? (
-                <SmsTextIcon className="text-[10px] font-bold tracking-[-0.2px]" />
-              ) : isTrustedCircle ? (
-                <ShieldCheck className="h-[17px] w-[17px]" />
-              ) : initials ? (
-                initials
-              ) : (
-                <UsersRound className="h-[17px] w-[17px]" />
-              )}
-            </span>
-          );
-        })}
-      </span>
-      {overflowCount > 0 ? (
-        <span
-          data-circle-overflow-count
-          className="ml-2 inline-flex shrink-0 items-center text-[13px] font-semibold leading-none text-[color:var(--app-accent)]"
-        >
-          +{overflowCount}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 export function CircleSummaryGroup({
   circles,
   invitationCount,
@@ -3939,7 +3875,7 @@ export function CircleSummaryGroup({
   onOpenCircles: () => void;
   onOpenInvitations: () => void;
 }) {
-  const { personal, created, joined } = personalCircleSummary(circles);
+  const { created, joined } = personalCircleSummary(circles);
   const summary = personalCircleCountLabel({ created, joined });
   const invitationTitle =
     invitationCount === 1 ? "Circle invitation" : "Circle invitations";
@@ -3953,12 +3889,11 @@ export function CircleSummaryGroup({
         onClick={onOpenCircles}
         aria-label={`Circles, ${summary.replace(" · ", " and ")}`}
         className={cn(
-          "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
+          "grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
           "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
           "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
         )}
       >
-        <CircleIdentityStack circles={personal.length ? personal : circles} />
         <span className="min-w-0">
           <span className="block text-[17px] font-semibold leading-[22px] tracking-[-0.3px] text-foreground">
             Circles
