@@ -142,6 +142,74 @@ describe("OneVoicePanel", () => {
     expect(screen.getByText("Renamed Family to Home.")).toBeInTheDocument();
   });
 
+  it("shows the mail answer and the messages it came from, on the panel", () => {
+    // The payload a real read produces: `items` are the owner's rows, `sources`
+    // are the refs the interpreter cited, `coverage` is the server's own count.
+    // Ten were returned and three cited -- the count the person hears and reads
+    // must be ten, because three is a fact about the interpreter.
+    const state = replay([
+      ready,
+      { type: "tool.started", call_id: "m1", tool: "read_mail", args_public: {} },
+      {
+        type: "tool.result",
+        call_id: "m1",
+        tool: "read_mail",
+        status: "ok",
+        ok: true,
+        result_public: {
+          status: "ok",
+          spoken_facts: ["I found 10 messages."],
+          ui_refresh: ["mail"],
+          answer: "Priya asked about the Q3 deck and needs it by Friday.",
+          sources: [
+            { source_ref: "mail:1", label: "Mail", kind: "metadata" },
+            { source_ref: "mail:2", label: "Mail", kind: "metadata" },
+            { source_ref: "mail:3", label: "Mail", kind: "metadata" },
+          ],
+          items: Array.from({ length: 10 }, (_, index) => ({
+            source_ref: `mail:${index + 1}`,
+            subject: `Subject ${index + 1}`,
+            sender: "Priya Nair",
+            received_at: "2026-09-15T08:00:00.000Z",
+            unread: index === 0,
+          })),
+          coverage: {
+            operation: "search_inbox",
+            mailbox: "inbox",
+            unit: "messages",
+            assessed: 10,
+            returned: 10,
+            cited: 3,
+            matches_beyond_page: false,
+            items_omitted: false,
+            content_shortened: false,
+            content_depth: "metadata",
+            one_page_only: true,
+          },
+          truncated: false,
+          metadata_only: true,
+        },
+      },
+    ]);
+    render(<OneVoicePanel state={state} controller={controller()} />);
+
+    const card = screen.getByTestId("one-voice-tool-result");
+    expect(card).toHaveAttribute("data-tool", "read_mail");
+    expect(
+      screen.getByText(
+        "Priya asked about the Q3 deck and needs it by Friday.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Subject 1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mail").children.length).toBeGreaterThan(0);
+    expect(screen.getByTestId("one-voice-mail-coverage")).toHaveTextContent(
+      "10 messages",
+    );
+    expect(card.textContent).not.toContain("3 messages");
+    // A read is not a thing that got "Done".
+    expect(screen.queryByTestId("one-voice-tool-result-headline")).toBeNull();
+  });
+
   it("hides a confirmation_required result behind the pending card and confirms through the controller", async () => {
     const control = controller();
     const state = replay([

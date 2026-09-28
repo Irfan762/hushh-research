@@ -469,32 +469,42 @@ class GmailMetadataReader:
         # the newest matches, so older mail beyond the page is not an omission.
         # Search and needs-reply still report a next page as truncation because
         # matches were left out.
-        truncated = operation in {"list_needs_reply", "search_inbox"} and bool(
+        matches_beyond_page = operation in {"list_needs_reply", "search_inbox"} and bool(
             listing.get("nextPageToken")
         )
+        # Three different facts, not one. "More matches exist beyond this page",
+        # "results were dropped to fit", and "text was shortened" lead the person
+        # to do different things, and a single `truncated` bool made One say
+        # "there may be more than I checked" when only a body had been clipped.
+        items_omitted = False
+        content_shortened = False
+        assessed: int | None = len(ids)
         if operation == "list_needs_reply":
-            raw_items, truncated = await self._needs_reply_items(payloads, limit, truncated)
+            raw_items, matches_beyond_page, assessed = await self._needs_reply_items(
+                payloads, limit, matches_beyond_page
+            )
         elif reads_bodies:
             messages = (
                 [m for payload in payloads for m in payload["messages"]] if is_threads else payloads
             )
+            assessed = len(messages)
             if len(messages) > _MAX_THREAD_MESSAGES:
                 messages = messages[-_MAX_THREAD_MESSAGES:]
-                truncated = True
+                items_omitted = True
             raw_items = [self._message_item(m, mailbox, with_body=True) for m in messages]
             # Every message shares one readable-text allowance.
             allowance = max(800, min(12000, _BODY_TEXT_BUDGET // max(1, len(raw_items))))
             for item in raw_items:
                 item["body"], cut_body = cap_utf8(item["body"], allowance)
                 item["body_truncated"] = cut_body
-                truncated = truncated or cut_body
+                content_shortened = content_shortened or cut_body
         else:
             raw_items = [self._message_item(payload, mailbox) for payload in payloads]
         items = []
         for ordinal, item in enumerate(raw_items, 1):
             subject, cut_subject = _label(item["subject"], 320)
             sender, cut_sender = _label(item["sender"], 160)
-            truncated = truncated or cut_subject or cut_sender
+            content_shortened = content_shortened or cut_subject or cut_sender
             projected: dict[str, Any] = {
                 "source_ref": f"mail:{ordinal}",
                 "subject": subject,
@@ -505,31 +515,52 @@ class GmailMetadataReader:
                 projected["unread"] = item["unread"]
             if "recipient" in item:
                 recipient, cut_recipient = _label(item["recipient"], 160)
-                truncated = truncated or cut_recipient
+                content_shortened = content_shortened or cut_recipient
                 projected["recipient"] = recipient
             if "body" in item:
                 projected["body"] = item["body"]
                 projected["body_truncated"] = item["body_truncated"]
             items.append(projected)
-        result = {
+        result: dict[str, Any] = {
             "status": "ok",
             "operation": operation,
             "mailbox": mailbox,
             "untrusted_external_content": items,
-            "truncated": truncated,
+            "truncated": matches_beyond_page or items_omitted or content_shortened,
             "metadata_only": not reads_bodies,
             "one_page_only": True,
         }
         # Leave space inside the 32-KB specialist envelope for status and the
         # interpreted answer. Count escaped JSON too, not only Python chars.
+        #
+        # This pops from the END, so the surviving items keep their original
+        # `mail:1..N` refs as a contiguous prefix. An ordinal the person was
+        # offered therefore still means the message it meant when offered.
         while len(json.dumps(result).encode("utf-8")) > 24000 and items:
             items.pop()
+            items_omitted = True
             result["truncated"] = True
+        # Described after the trim, so `returned` is what the person can
+        # actually be shown rather than what was fetched. Coverage is not part
+        # of the interpreter's evidence; the caller reads it separately.
+        result["coverage"] = {
+            "operation": operation,
+            "mailbox": mailbox,
+            # One row per thread for needs-reply, one per message everywhere else.
+            "unit": "threads" if operation == "list_needs_reply" else "messages",
+            "assessed": assessed,
+            "returned": len(items),
+            "matches_beyond_page": matches_beyond_page,
+            "items_omitted": items_omitted,
+            "content_shortened": content_shortened,
+            "content_depth": "message" if reads_bodies else "metadata",
+            "one_page_only": True,
+        }
         return result
 
     async def _needs_reply_items(
         self, payloads: list[dict[str, Any]], limit: int, truncated: bool
-    ) -> tuple[list[dict[str, Any]], bool]:
+    ) -> tuple[list[dict[str, Any]], bool, int]:
         row = await asyncio.to_thread(self._gmail._fetch_connection_row, user_id=self._user_id)
         account_email = str((row or {}).get("google_email") or "")
         if not account_email:
@@ -549,7 +580,9 @@ class GmailMetadataReader:
             }
             for n in nudges[:limit]
         ]
-        return items, truncated or len(nudges) > limit
+        # The assessed count is every thread the nudge rule evaluated, which is
+        # what makes "three need a reply out of twelve I checked" sayable.
+        return items, truncated or len(nudges) > limit, len(nudges)
 
     def _message_item(
         self, payload: dict[str, Any], mailbox: str, *, with_body: bool = False

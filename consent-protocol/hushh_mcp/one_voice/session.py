@@ -143,6 +143,8 @@ class VoiceSession:
         self._ctx: ToolContext | None = None
         self._live: LiveSessionPort | None = None
         self.turn = TurnState()
+        # Set from the auth frame before any tool runs; UTC until then.
+        self._client_timezone = "UTC"
         self.started_at = clock()
         self.last_activity = clock()
         self.audio_in_bytes = 0
@@ -264,6 +266,9 @@ class VoiceSession:
             await self._fail(protocol.CLOSE_AUTH, "auth_invalid", str(exc) or "Not authorized.")
         if auth.user_id != self.claims.user_id:
             await self._fail(protocol.CLOSE_AUTH, "auth_mismatch", "Ticket and auth do not match.")
+        # A hint for resolving relative dates, not authority. AuthResult is the
+        # route's authority object and stays untouched.
+        self._client_timezone = frame.timezone or "UTC"
         return auth
 
     async def _open_conversation(self, auth: AuthResult) -> None:
@@ -289,6 +294,7 @@ class VoiceSession:
             screen=screen,
             vault_owner_token=auth.vault_owner_token,
             firebase_id_token=auth.firebase_id_token,
+            timezone=self._client_timezone,
         )
         self._display_name = auth.display_name
         open_rows = await self.pending.list_open(

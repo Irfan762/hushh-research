@@ -75,7 +75,9 @@ _DATE_OPERATOR = {"after": "after", "newer": "after", "before": "before", "older
 def _owner_zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name or "UTC")
-    except (ValueError, ZoneInfoNotFoundError):
+    except (ValueError, ZoneInfoNotFoundError, OSError):
+        # OSError is what ZoneInfo raises for an over-long or unusable name.
+        # A bad zone degrades to UTC; it never breaks the read.
         return ZoneInfo("UTC")
 
 
@@ -101,7 +103,24 @@ def _result(
     sources=(),
     truncated=False,
     metadata_only=True,
+    items=(),
+    coverage=None,
 ) -> dict[str, Any]:
+    """The specialist turn, plus what a surface needs to show the person.
+
+    ``structured`` is the shared ``specialist_read.v1`` receipt. It is validated
+    by ``SpecialistReadResult`` with ``extra="forbid"`` and parsed on the web by
+    ``parseConnectorReadReceipt``, which rejects the whole receipt if it carries
+    a key it does not know. So nothing new goes in there.
+
+    ``items`` and ``coverage`` are siblings for that reason. Typed chat ignores
+    them -- it renders the answer as the assistant's message and needs only the
+    receipt's provenance. One Live Voice has no message body to render into, so
+    it needs the rows themselves.
+
+    ``coverage`` is absent, never zeroed, when no read happened. A count of
+    nothing and a count nobody took are different facts.
+    """
     return {
         "conversationId": conversation_id,
         "response": text,
@@ -115,6 +134,8 @@ def _result(
             "truncated": truncated,
             "metadata_only": metadata_only,
         },
+        "items": list(items),
+        "coverage": dict(coverage) if coverage else None,
     }
 
 
@@ -184,11 +205,17 @@ async def run_delegated_mail_read(
             reader = reader_factory(gmail=gmail, user_id=user_id, require_access=require_access)
             metadata = await reader.read(operation, arguments)
             await reader.require_current()
+            # Coverage is server bookkeeping, not evidence. Handing counts to the
+            # interpreter would invite it to author its own totals in prose, and
+            # the whole point of computing them here is that prose cannot be
+            # trusted with a number. Its prompt stays exactly what it was.
+            coverage = dict(metadata.get("coverage") or {})
+            evidence = {k: v for k, v in metadata.items() if k != "coverage"}
             answer = MailReadAnswer.model_validate(
                 await gene_runner(
                     gene_id="agent_email_read_interpreter",
                     prompt=json.dumps(
-                        {"user_request": message, "retrieved_metadata": metadata, **time_context},
+                        {"user_request": message, "retrieved_metadata": evidence, **time_context},
                         ensure_ascii=False,
                     ),
                     user_id=user_id,
@@ -208,13 +235,24 @@ async def run_delegated_mail_read(
                 {"source_ref": ref, "label": "Mail", "kind": kind}
                 for ref in dict.fromkeys(answer.source_refs)
             ]
+            # How many the interpreter chose to cite is a fact about the
+            # interpreter. It is never how many messages were found.
+            coverage["cited"] = len(sources)
             text = answer.answer
-            if metadata["truncated"] and metadata["metadata_only"]:
-                text += "\n\nThis is a bounded inbox result; some matches or metadata were omitted."
-            elif metadata["truncated"]:
+            matches_cut = bool(coverage.get("matches_beyond_page") or coverage.get("items_omitted"))
+            text_cut = bool(coverage.get("content_shortened"))
+            if not coverage.get("operation") and metadata["truncated"]:
+                # A reader that reported truncation without saying which kind
+                # still reported a limitation. Degrade to the general statement
+                # rather than dropping it, which would read as a complete result.
+                matches_cut = bool(metadata["metadata_only"])
+                text_cut = not metadata["metadata_only"]
+            if matches_cut:
+                text += "\n\nThis is a bounded inbox result; some matches were left out."
+            if text_cut:
                 text += (
-                    "\n\nLong or older messages were shortened to fit; open the email in "
-                    "Gmail for the full text."
+                    "\n\nSome text was shortened to fit; open the email in Gmail for the "
+                    "full version."
                 )
             return _result(
                 conversation_id,
@@ -223,6 +261,8 @@ async def run_delegated_mail_read(
                 sources=sources,
                 truncated=metadata["truncated"],
                 metadata_only=metadata["metadata_only"],
+                items=metadata["untrusted_external_content"],
+                coverage=coverage,
             )
     except GmailMetadataError as exc:
         return _result(

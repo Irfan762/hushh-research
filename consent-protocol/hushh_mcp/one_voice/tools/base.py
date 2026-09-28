@@ -305,6 +305,10 @@ class ToolContext:
     screen: ScreenContext
     vault_owner_token: str
     firebase_id_token: str | None = None
+    # The owner's IANA zone as the client reported it, already bounded by the
+    # auth frame. Handlers that resolve relative dates must pass it on; UTC is
+    # the honest fallback, not a correct answer.
+    timezone: str = "UTC"
     # Services may be injected for tests; handlers fall back to real ones.
     services: dict[str, Any] = field(default_factory=dict)
     # The prepared-effect snapshot a ``ToolSpec.prepare`` hook computed when

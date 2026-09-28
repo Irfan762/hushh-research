@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ToolResultCard,
   locationStatusRows,
+  mailCoverageLine,
   sosHeadline,
   sosReasonLine,
   toneForResult,
@@ -275,6 +276,51 @@ describe("ToolResultCard", () => {
     expect(toolResultFamily("stop_save_my_soul")).toBe("sos");
     // A report that replaced the trigger's timeline entry keeps the family.
     expect(toolResultFamily("", "sos_partial")).toBe("sos");
+    expect(toolResultFamily("read_mail")).toBe("mail");
+    // read_mail shares ok/empty/rejected with every family, so unlike SOS the
+    // mail family must not be inferred from a status.
+    expect(toolResultFamily("", "ok")).toBe("generic");
+  });
+
+  it("never writes a sender or subject the result did not carry", () => {
+    const result: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["I found 2 messages."],
+      answer: "Two invoices are waiting.",
+      sources: [{ source_ref: "mail:1", label: "Mail", kind: "metadata" }],
+      items: [
+        { source_ref: "mail:1", subject: "March invoice", sender: "Acme" },
+        // A row the reader could not label. It is shown as unlabelled, not
+        // filled in, and not silently dropped along with its ordinal.
+        { source_ref: "mail:2", sender: "Bookkeeping" },
+        // Nothing to show at all: no row rather than an empty one.
+        { source_ref: "mail:3" },
+      ],
+      coverage: { unit: "messages", returned: 2, assessed: 9 },
+    };
+    const { container } = render(
+      <ToolResultCard result={result} tool="read_mail" ok />,
+    );
+    expect(screen.getByText("March invoice")).toBeInTheDocument();
+    expect(screen.getByText("No subject")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mail").children).toHaveLength(2);
+    // Coverage distinguishes what was checked from what came back.
+    expect(container.textContent).toContain("2 of 9 checked");
+  });
+
+  it("omits a count the server did not establish rather than printing zero", () => {
+    expect(mailCoverageLine({ unit: "messages", content_depth: "metadata" })).toBe(
+      "headers only",
+    );
+    expect(mailCoverageLine({ returned: 0, unit: "messages" })).toBe(
+      "0 messages",
+    );
+    expect(mailCoverageLine(null)).toBeNull();
+    expect(mailCoverageLine({})).toBeNull();
+    // A needs-reply row is a conversation, not a message.
+    expect(mailCoverageLine({ returned: 3, unit: "threads" })).toBe(
+      "3 conversations",
+    );
   });
 });
 

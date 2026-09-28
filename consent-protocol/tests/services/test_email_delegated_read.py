@@ -28,6 +28,18 @@ class _Reader:
             ],
             "metadata_only": True,
             "truncated": True,
+            "coverage": {
+                "operation": "search_inbox",
+                "mailbox": "inbox",
+                "unit": "messages",
+                "assessed": 10,
+                "returned": 1,
+                "matches_beyond_page": True,
+                "items_omitted": False,
+                "content_shortened": False,
+                "content_depth": "metadata",
+                "one_page_only": True,
+            },
         }
 
     async def read(self, operation, args):
@@ -81,8 +93,23 @@ async def test_planner_never_sees_external_content_and_interpreter_has_no_second
         {"source_ref": "mail:1", "kind": "metadata", "label": "Mail"}
     ]
     assert result["structured"]["truncated"] is True
-    assert "omitted" in result["response"]
-    assert "evil.invalid" not in json.dumps(result)
+    assert "left out" in result["response"]
+    # External content now has exactly two legitimate destinations: the
+    # interpreted answer, and `items`, which is the owner's own mail on the
+    # owner's own screen. The shared `specialist_read` receipt is persisted in
+    # conversation snapshots and projected to other surfaces, so it must stay
+    # free of anything a sender wrote -- refs and counts only.
+    assert "evil.invalid" not in json.dumps(result["structured"])
+    assert "evil.invalid" not in result["response"]
+    assert "evil.invalid" in json.dumps(result["items"]), (
+        "the owner cannot read mail that never reaches the surface"
+    )
+    # Coverage is counted by the server, so a citation count cannot become a
+    # message count, and nothing a sender wrote can ride along in it.
+    assert result["coverage"]["returned"] == 1
+    assert result["coverage"]["assessed"] == 10
+    assert result["coverage"]["cited"] == 1
+    assert "evil" not in json.dumps(result["coverage"])
 
 
 @pytest.mark.parametrize(

@@ -63,6 +63,10 @@ class AuthFrame(_Frame):
     firebase_id_token: str | None = Field(default=None, max_length=8_000)
     conversation_id: str = Field(min_length=36, max_length=36)
     client: dict[str, Any] = Field(default_factory=dict)
+    # The owner's IANA zone, for resolving "today" and "this week" on their
+    # clock rather than the server's. A hint, never authority: it is validated
+    # downstream and falls back to UTC. Bounded because it reaches ZoneInfo.
+    timezone: str | None = Field(default=None, max_length=64)
     resume: bool = False
 
 

@@ -19,6 +19,8 @@ export type AuthFrame = {
   firebase_id_token?: string | null;
   conversation_id: string;
   client?: Record<string, unknown>;
+  /** The owner's IANA zone, so "today" resolves on their clock, not the server's. */
+  timezone?: string | null;
   resume?: boolean;
 };
 export type AudioFrame = { type: "audio"; data: string; mime_type?: string; seq?: number };

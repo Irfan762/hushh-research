@@ -17,6 +17,7 @@
 import type { ReactNode } from "react";
 import { AlertCircle, Check, Info, Loader2 } from "@/components/icons";
 
+import { formatRelativeTime } from "@/lib/format/relative-time";
 import { AvatarBubble } from "@/lib/morphy-ux/ui/surface-primitives";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import {
@@ -51,6 +52,7 @@ export type ToolResultFamily =
   | "links"
   | "status"
   | "sos"
+  | "mail"
   | "generic";
 
 const PEOPLE_TOOLS = new Set([
@@ -104,6 +106,11 @@ const STATUS_TOOLS = new Set([
   "set_precision",
   "get_location_setup_state",
 ]);
+/**
+ * Mail reads. The answer and the message rows arrive on the result and render
+ * here; nothing about them reaches the Live model, which gets counts only.
+ */
+const MAIL_TOOLS = new Set(["read_mail"]);
 const SOS_TOOLS = new Set<string>([
   SOS_TRIGGER_TOOL,
   SOS_REPORT_TOOL,
@@ -137,6 +144,9 @@ export function toolResultFamily(
   if (SHARE_TOOLS.has(name)) return "shares";
   if (LINK_TOOLS.has(name)) return "links";
   if (STATUS_TOOLS.has(name)) return "status";
+  // Keyed on the tool name alone. read_mail's statuses are ok/empty/rejected,
+  // which every family shares, so a status fallback would mis-family others.
+  if (MAIL_TOOLS.has(name)) return "mail";
   return "generic";
 }
 
@@ -759,6 +769,154 @@ function SosDetail({ result }: { result: ToolResultPublic }) {
   );
 }
 
+/** A whole number, or null. Absent is unknown, which is not zero. */
+function count(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function unitNoun(unit: unknown, n: number): string {
+  const plural = text(unit) === "threads" ? "conversations" : "messages";
+  if (n !== 1) return plural;
+  return plural === "conversations" ? "conversation" : "message";
+}
+
+/** When a message arrived, on the owner's clock. Empty when unparseable. */
+export function mailReceivedLabel(value: unknown, now = Date.now()): string {
+  const iso = text(value);
+  if (!iso) return "";
+  const at = Date.parse(iso);
+  return Number.isFinite(at) ? formatRelativeTime(at, now) : "";
+}
+
+/**
+ * What the read actually covered, in the person's words.
+ *
+ * Every number here was counted by the server. None of it is derived from how
+ * many sources the answer happened to cite, and an absent count is omitted
+ * rather than printed as zero.
+ */
+export function mailCoverageLine(coverage: unknown): string | null {
+  const row = coverage && typeof coverage === "object" ? (coverage as Row) : null;
+  if (!row) return null;
+  const parts: string[] = [];
+  const returned = count(row.returned);
+  const assessed = count(row.assessed);
+  if (returned !== null) {
+    parts.push(
+      assessed !== null && assessed > returned
+        ? `${returned} of ${assessed} checked`
+        : `${returned} ${unitNoun(row.unit, returned)}`,
+    );
+  }
+  if (text(row.content_depth) === "message") parts.push("full text");
+  else if (text(row.content_depth) === "metadata") parts.push("headers only");
+  if (row.matches_beyond_page === true) parts.push("more beyond this page");
+  if (row.items_omitted === true) parts.push("some left out to fit");
+  if (row.content_shortened === true) parts.push("some text shortened");
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/**
+ * The mail itself: the answer, then the messages it came from.
+ *
+ * Rendered as text nodes, never as markup. A subject or body is written by
+ * somebody else, so it is displayed and never interpreted -- no raw HTML, no
+ * remote images, no followed links.
+ *
+ * Nothing is invented. A row appears only when the result carried a sender or a
+ * subject for it, and a missing subject is named as missing.
+ */
+function MailDetail({ result }: { result: ToolResultPublic }) {
+  const items = rows(result.items);
+  const cited = new Set(
+    rows(result.sources)
+      .map((row) => text(row.source_ref))
+      .filter((ref): ref is string => Boolean(ref)),
+  );
+  const answer = text(result.answer);
+  const paragraphs = answer
+    ? answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)
+    : [];
+  const coverage = mailCoverageLine(result.coverage);
+  const visible = items.filter(
+    (row) => text(row.subject) || text(row.sender),
+  );
+  if (paragraphs.length === 0 && visible.length === 0 && !coverage) return null;
+  return (
+    <div
+      className="mt-2 flex flex-col gap-2"
+      data-testid="one-voice-mail-detail"
+    >
+      {paragraphs.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          {paragraphs.map((part, index) => (
+            <p
+              key={`answer:${index}`}
+              className="text-[15px] leading-5 text-[color:var(--app-label)]"
+            >
+              {part}
+            </p>
+          ))}
+        </div>
+      ) : null}
+      {visible.length > 0 ? (
+        <ul className="flex flex-col gap-0.5" aria-label="Mail">
+          {visible.slice(0, 8).map((row, index) => {
+            const subject = text(row.subject);
+            const sender = text(row.sender);
+            const ref = text(row.source_ref);
+            const when = mailReceivedLabel(row.received_at);
+            return (
+              <li
+                key={`${ref ?? index}`}
+                data-source-ref={ref ?? undefined}
+                data-cited={ref && cited.has(ref) ? "true" : undefined}
+                className="flex min-h-9 flex-col gap-0.5 py-1"
+              >
+                <div className="flex items-baseline gap-2">
+                  {row.unread === true ? (
+                    <span
+                      className={cn(
+                        "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+                        roleClasses("action").glyph,
+                        "bg-current",
+                      )}
+                      aria-label="Unread"
+                    />
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[color:var(--app-label)]">
+                    {subject ?? "No subject"}
+                  </span>
+                  {when ? (
+                    <span className="shrink-0 text-[12px] text-[color:var(--app-secondary-label)]">
+                      {when}
+                    </span>
+                  ) : null}
+                </div>
+                {sender ? (
+                  <span className="truncate text-[12px] text-[color:var(--app-secondary-label)]">
+                    {sender}
+                  </span>
+                ) : null}
+              </li>
+            );
+          })}
+        </ul>
+      ) : null}
+      {coverage ? (
+        <p
+          data-testid="one-voice-mail-coverage"
+          className="text-[12px] text-[color:var(--app-secondary-label)]"
+        >
+          {coverage}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function Detail({
   family,
   result,
@@ -779,6 +937,8 @@ function Detail({
       return <LinksDetail result={result} />;
     case "status":
       return <StatusDetail result={result} />;
+    case "mail":
+      return <MailDetail result={result} />;
     default:
       return null;
   }
@@ -827,7 +987,10 @@ export function ToolResultCard({
   const headline =
     family === "sos"
       ? (sosHeadline(result.status, tone) ?? genericHeadline)
-      : genericHeadline;
+      : family === "mail" && tone !== "failure"
+        // A read is not a thing that got "Done". The count line is the headline.
+        ? null
+        : genericHeadline;
 
   return (
     <div
