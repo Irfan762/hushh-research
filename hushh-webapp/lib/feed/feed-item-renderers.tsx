@@ -161,27 +161,29 @@ function driveFeedLine(
 ): string {
   switch (eventType) {
     case "document_share_request":
-      return "Asked for files from your Drive";
+      return "Document request received";
     case "document_share_review_ready":
-      return "Files are ready for you to review";
+      return "Files ready for your review";
     case "document_share_decided":
       if (sharedWithMe) {
         return status === "declined"
           ? "Declined your file request"
-          : "Is sharing Drive files with you";
+          : status === "pending"
+            ? "Files are available; more may arrive"
+            : "Is sharing Drive files with you";
       }
       return status === "cancelled"
         ? "Withdrew their file request"
-        : "Getting your shared files";
+        : status === "pending" ? "Some shared files are available" : "Getting your shared files";
     case "document_share_outcome":
       if (sharedWithMe) {
         return status === "partial"
-          ? "Drive request incomplete"
-          : "Shared Drive files with you";
+          ? "Sharing finished with some files unavailable"
+          : "Drive sharing finished; check file results";
       }
       return status === "partial"
         ? "Could not share all selected files"
-        : "Now has your shared files";
+        : "Drive sharing finished; check file results";
     case "document_share_revoked":
       return sharedWithMe
         ? "Removed your access to shared files"

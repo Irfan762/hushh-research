@@ -609,7 +609,8 @@ class DriveOwnerSearchStore(DriveLivePreferences):
         if origin is not None:
             request = self._row(
                 connection,
-                """SELECT status,revision,expires_at,bulk_search_started_at
+                """SELECT status,revision,expires_at,bulk_search_started_at,
+                  preparation_error_code
                 FROM drive_share_requests WHERE request_id=:request AND user_id=:user""",
                 {"request": origin, "user": job["user_id"]},
             )
@@ -618,6 +619,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 or request["status"] != "pending"
                 or request["revision"] != job["checkpoint"].get("request_revision")
                 or request["bulk_search_started_at"] is None
+                or request["preparation_error_code"] == "trusted_relationship_changed"
                 or request["expires_at"]
                 <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
             ):
@@ -709,7 +711,17 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             )
             return self._view(updated)
 
-        return await self._transaction(operation)
+        result = await self._transaction(operation)
+        if result["status"] == "completed" and checkpoint.get("request_origin_id"):
+            # The final page may arrive after the last approved batch settled.
+            # Reconcile the request in a separate transaction so the search job
+            # lock and request lock never form a cycle with batch approval.
+            from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
+
+            await DriveBulkShareStore(db=self.db, cipher=self.search_cipher).refresh_request(
+                user_id=job["user_id"], request_id=checkpoint["request_origin_id"]
+            )
+        return result
 
     async def release(self, job, *, error=None, retryable=False):
         # Error/Stop cleanup must remain possible after OAuth revocation. It

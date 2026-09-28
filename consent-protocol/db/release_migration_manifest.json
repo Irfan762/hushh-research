@@ -229,7 +229,8 @@
     "255_account_legal_acceptances.sql",
     "256_drive_request_bulk_search.sql",
     "257_one_chat_onboarding_state.sql",
-    "258_one_attention_ledger.sql"
+    "258_one_attention_ledger.sql",
+    "259_drive_progressive_request_batches.sql"
   ],
   "environment_overlays": {
     "uat": [
@@ -477,6 +478,7 @@
     "251_drive_owner_search_jobs.sql": "rollback/251_drive_owner_search_jobs.rollback.sql",
     "254_drive_bulk_shares.sql": "rollback/254_drive_bulk_shares.rollback.sql",
     "257_one_chat_onboarding_state.sql": "rollback/257_one_chat_onboarding_state.rollback.sql",
-    "258_one_attention_ledger.sql": "rollback/258_one_attention_ledger.rollback.sql"
+    "258_one_attention_ledger.sql": "rollback/258_one_attention_ledger.rollback.sql",
+    "259_drive_progressive_request_batches.sql": "rollback/259_drive_progressive_request_batches.rollback.sql"
   }
 }

@@ -25,6 +25,8 @@ const state = vi.hoisted(() => ({
   startRequestSearch: vi.fn(),
   requestSearchFiles: vi.fn(),
   prepareRequestBulk: vi.fn(),
+  prepareRequestBatch: vi.fn(),
+  setLiveBackground: vi.fn(),
   bulkShareFiles: vi.fn(),
   approveBulkShare: vi.fn(),
   retryBulkShare: vi.fn(),
@@ -52,6 +54,9 @@ vi.mock("@/lib/perf/use-periodic-task", () => ({
 vi.mock("@/lib/services/drive-sharing-service", async (original) => ({
   ...(await original<typeof import("@/lib/services/drive-sharing-service")>()),
   DriveSharingService: state,
+}));
+vi.mock("@/lib/services/external-connector-service", () => ({
+  ExternalConnectorService: { setLiveBackground: state.setLiveBackground },
 }));
 import { DocumentShareReview } from "@/components/consent/document-share-review";
 import {
@@ -195,6 +200,8 @@ describe("exact-file document review", () => {
     state.requestSearchFiles.mockResolvedValue({ jobId: searchJobId, revision: 4, matched: 500,
       files: [{ position: 1, id: "drive-1", name: "Standup 1", mimeType: "application/vnd.google-apps.document", modifiedTime: null, openUrl: null }], nextCursor: null });
     state.prepareRequestBulk.mockResolvedValue(durableBulk());
+    state.prepareRequestBatch.mockResolvedValue(durableBulk());
+    state.setLiveBackground.mockResolvedValue(undefined);
     state.bulkShareFiles.mockResolvedValue({ shareId: bulkShareId,
       files: [{ position: 1, name: "Standup 1", mimeType: "application/vnd.google-apps.document", modifiedTime: null, openUrl: null }], nextCursor: null });
     state.approveBulkShare.mockResolvedValue(durableBulk({ status: "queued", canApprove: false }));
@@ -783,6 +790,112 @@ describe("exact-file document review", () => {
   });
 
   describe("durable request search and bulk sharing", () => {
+    it("offers one-time background Drive setup for an automatic Trusted-circle request without manual approval", async () => {
+      state.status.mockResolvedValue(pending());
+      state.review.mockResolvedValue(partial({ durableAvailable: true, trustedAuto: true,
+        search: null, bulkShare: null, preparationError: "background_preparation_required" }));
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      const enable = await screen.findByRole("button", { name: "Enable background Drive access" });
+      expect(screen.getByText(/read relevant files and send excerpts to Gemini while you're away/)).toBeVisible();
+      expect(state.startRequestSearch).not.toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: /Review \d+ files/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Share \d+ files/ })).toBeNull();
+      fireEvent.click(enable);
+      await waitFor(() => expect(state.setLiveBackground).toHaveBeenCalledExactlyOnceWith("owner-a", true));
+      expect(screen.getByRole("status")).toHaveTextContent("Preparing automatic sharing");
+    });
+
+    it("shows all confirmed automatic sharing outcomes instead of only the latest batch", async () => {
+      state.status.mockResolvedValue(pending());
+      state.review.mockResolvedValue(partial({ durableAvailable: true, trustedAuto: true,
+        search: durableSearch({ status: "running", matched: 60 }),
+        bulkShare: durableBulk({ status: "queued", fileCount: 10,
+          counts: { total: 10, processed: 0, shared: 0, alreadyShared: 0,
+            skipped: 0, failed: 0, needsReview: 0, unknown: 0, pending: 10 } }),
+        aggregateCounts: { total: 50, processed: 40, shared: 40, alreadyShared: 0,
+          skipped: 0, failed: 0, needsReview: 0, unknown: 0, pending: 10 },
+      }));
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      expect(await screen.findByText("40 of 50 files available")).toBeVisible();
+      expect(screen.getByRole("status")).toHaveTextContent("Sharing matching files");
+      expect(screen.queryByRole("button", { name: /Review \d+ files|Share \d+ files/ })).toBeNull();
+      expect(state.startRequestSearch).not.toHaveBeenCalled();
+    });
+
+    it("returns to manual review when Trusted-circle eligibility changes", async () => {
+      state.status.mockResolvedValue(pending());
+      state.review.mockResolvedValue(partial({ durableAvailable: true, trustedAuto: true,
+        preparationError: "trusted_relationship_changed", progressiveAllowed: true,
+        search: durableSearch({ status: "running", matched: 1,
+          coverage: { ...durableSearch({ status: "completed" }).coverage!, providerPagesExhausted: false } }),
+        bulkShare: null, batches: [], batchCount: 0, claimedPositions: [],
+      }));
+      state.requestSearchFiles.mockResolvedValue({ jobId: searchJobId, revision: 1, matched: 1,
+        files: [{ ...searchFile(1), shareable: true }], nextCursor: null });
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      expect(await screen.findByText("Trusted Circle changed. Review this request manually before sharing.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Review 1 file" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Enable background Drive access" })).toBeNull();
+    });
+
+    it("reviews the first 25 while Drive keeps searching, then offers the next unclaimed page", async () => {
+      let phase: "searching" | "first_review" | "first_queued" | "second_review" = "searching";
+      const secondId = "55555555-5555-4555-8555-555555555555";
+      const firstPositions = Array.from({ length: 25 }, (_, index) => index + 1);
+      const secondPositions = Array.from({ length: 25 }, (_, index) => index + 26);
+      const search = durableSearch({ status: "running", matched: 50,
+        coverage: { ...durableSearch({ status: "completed" }).coverage!, providerPagesExhausted: false } });
+      const first = durableBulk({ fileCount: 25, positions: firstPositions,
+        counts: { ...durableBulk().counts, total: 25, pending: 25 } });
+      const second = durableBulk({ ...first, shareId: secondId, positions: secondPositions });
+      state.status.mockResolvedValue(pending());
+      state.review.mockImplementation(async () => partial({ durableAvailable: true, progressiveAllowed: true, search,
+        bulkShare: phase === "searching" ? null : phase === "second_review" ? second :
+          phase === "first_queued" ? { ...first, status: "queued", canApprove: false } : first,
+        batches: phase === "searching" ? [] : phase === "second_review" ? [second, { ...first, status: "queued", canApprove: false }] :
+          [phase === "first_queued" ? { ...first, status: "queued", canApprove: false } : first],
+        batchCount: phase === "searching" ? 0 : phase === "second_review" ? 2 : 1,
+        claimedPositions: phase === "searching" ? [] : phase === "second_review" ? [...firstPositions, ...secondPositions] : firstPositions,
+      }));
+      state.requestSearchFiles.mockImplementation(async (_token, _id, _job, _guard, cursor) => ({
+        jobId: searchJobId, revision: 3, matched: 50,
+        files: (cursor ? secondPositions : firstPositions).map(position => ({
+          ...searchFile(position), shareable: true,
+        })),
+        nextCursor: cursor ? null : "page-2",
+      }));
+      state.prepareRequestBatch.mockImplementation(async () => {
+        phase = phase === "searching" ? "first_review" : "second_review";
+        return phase === "first_review" ? first : second;
+      });
+      state.approveBulkShare.mockImplementation(async () => {
+        phase = "first_queued";
+        return { ...first, status: "queued", canApprove: false };
+      });
+      state.bulkShareFiles.mockImplementation(async (_token, shareId) => ({ shareId,
+        files: [{ position: shareId === secondId ? 26 : 1, name: "Original",
+          mimeType: "application/vnd.google-apps.document", modifiedTime: null, openUrl: null }], nextCursor: null }));
+
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      expect(await screen.findByRole("button", { name: "Review 25 files" })).toBeEnabled();
+      expect(screen.getByRole("status")).toHaveTextContent("Searching Drive · 50 found");
+      fireEvent.click(screen.getByRole("button", { name: "Review 25 files" }));
+      await waitFor(() => expect(state.prepareRequestBatch).toHaveBeenCalledWith(
+        "owner-a", requestId, expect.objectContaining({ status: "running" }), firstPositions, expect.any(Function),
+      ));
+      const share = await screen.findByRole("button", { name: "Share 25 files" });
+      expect(screen.getByRole("checkbox", { name: "Standup 1" })).toBeDisabled();
+      fireEvent.click(share);
+      await waitFor(() => expect(state.approveBulkShare).toHaveBeenCalledTimes(1));
+      expect(screen.getAllByText("Already in a sharing batch")).toHaveLength(25);
+      fireEvent.click(screen.getByRole("button", { name: "Next 25" }));
+      expect(await screen.findByRole("checkbox", { name: "Standup 26" })).toBeEnabled();
+      fireEvent.click(screen.getByRole("button", { name: "Review 25 files" }));
+      await waitFor(() => expect(state.prepareRequestBatch).toHaveBeenCalledWith(
+        "owner-a", requestId, expect.objectContaining({ status: "running" }), secondPositions, expect.any(Function),
+      ));
+      expect(screen.getByRole("status")).toHaveTextContent("2 batches started");
+    });
     const searchFile = (position: number) => ({
       position, id: `drive-${position}`, name: `Standup ${position}`,
       mimeType: "application/vnd.google-apps.document", modifiedTime: null, openUrl: null,
@@ -1050,7 +1163,7 @@ describe("exact-file document review", () => {
       expect(await screen.findByText("Confirmed original")).toBeVisible();
       expect(screen.queryByText("Unshared original")).toBeNull();
       expect(screen.queryByText(/0 failed/)).toBeNull();
-      if (bulkStatus === "running") expect(screen.getByRole("status")).toHaveTextContent("Sharing in progress");
+      if (bulkStatus === "running") expect(screen.getByRole("status")).toHaveTextContent("71 files available; more may arrive");
     });
 
     it.each(["pending", "unknown"])("keeps a stopped owner share current until its %s receipt settles", async outcome => {

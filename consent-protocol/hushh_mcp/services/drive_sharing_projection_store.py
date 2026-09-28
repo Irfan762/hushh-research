@@ -1,5 +1,6 @@
 """Bounded participant projections; private suggestions never cross to B."""
 
+from collections import Counter
 from uuid import UUID
 
 from sqlalchemy import text
@@ -113,27 +114,41 @@ class DriveSharingProjectionStore(DriveRevocationStore):
             )
             if len(grants) > MAX_FILES:
                 raise DriveSharingError("sharing_storage_unavailable")
-            bulk = (
-                self._row(
-                    connection,
-                    """SELECT share_id,status,file_count
+            bulks = (
+                connection.execute(
+                    text("""SELECT share_id,status,file_count,progressive_batch
                 FROM drive_bulk_shares WHERE origin_request_id=:request
                   AND user_id=:owner AND approved_at IS NOT NULL
-                  AND expires_at>clock_timestamp()""",
+                  AND expires_at>clock_timestamp()
+                ORDER BY created_at,share_id"""),
                     {"request": request_id, "owner": request["user_id"]},
                 )
+                .mappings()
+                .all()
                 if request.get("user_id")
-                else None
+                else []
             )
             bulk_shared = 0
             bulk_summary = None
-            if bulk:
-                bulk_summary = bulk_outcome_summary(
-                    connection,
-                    share_id=bulk["share_id"],
-                    total=bulk["file_count"],
-                    recipient_user_id=request["recipient_user_id"],
-                )
+            if bulks:
+                counts = Counter()
+                issues = Counter()
+                for bulk in bulks:
+                    summary = bulk_outcome_summary(
+                        connection,
+                        share_id=bulk["share_id"],
+                        total=bulk["file_count"],
+                        recipient_user_id=request["recipient_user_id"],
+                    )
+                    counts.update(summary["counts"])
+                    issues.update({item["reasonCode"]: item["count"] for item in summary["issues"]})
+                bulk_summary = {
+                    "counts": dict(counts),
+                    "issues": [
+                        {"reasonCode": reason, "count": count}
+                        for reason, count in sorted(issues.items())
+                    ],
+                }
                 bulk_shared = (
                     bulk_summary["counts"]["shared"] + bulk_summary["counts"]["alreadyShared"]
                 )
@@ -173,18 +188,32 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                 "recipient": private["recipient"] if recipient and private else None,
                 "result": {
                     **self._summary(request, recipient=recipient),
-                    "files": [] if bulk else files,
+                    "files": [] if bulks else files,
                     **(
                         {
-                            "bulkShareId": str(bulk["share_id"]),
-                            "fileCount": bulk["file_count"],
+                            "bulkShareId": str(bulks[-1]["share_id"]),
+                            "progressiveBatch": any(bulk["progressive_batch"] for bulk in bulks),
+                            "batchCount": len(bulks),
+                            "fileCount": sum(bulk["file_count"] for bulk in bulks),
                             "sharedCount": bulk_shared,
-                            "sharingStatus": bulk["status"],
-                            "bulkStatus": bulk["status"],
+                            "sharingStatus": "running"
+                            if request["status"] == "pending"
+                            else "completed"
+                            if request["status"] == "completed"
+                            else "partial"
+                            if request["status"] == "partial"
+                            else bulks[-1]["status"],
+                            "bulkStatus": "running"
+                            if request["status"] == "pending"
+                            else "completed"
+                            if request["status"] == "completed"
+                            else "partial"
+                            if request["status"] == "partial"
+                            else bulks[-1]["status"],
                             **bulk_summary,
                             "nextCursor": None,
                         }
-                        if bulk
+                        if bulks
                         else {}
                     ),
                     "recordedOutcomeOnly": True,
