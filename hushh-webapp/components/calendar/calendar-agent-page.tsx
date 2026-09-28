@@ -558,7 +558,7 @@ export function CalendarAgentPage({
                   <Button
                     disabled={busy}
                     onClick={() => void connect("read")}
-                    className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066CC] text-white shadow-sm transition-colors"
+                    className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[var(--app-accent)] hover:opacity-90 text-white shadow-sm transition-opacity"
                     data-voice-control-id="open_calendar_connector"
                     data-voice-action-id={
                       journeyVariant === "onboarding"
@@ -580,7 +580,7 @@ export function CalendarAgentPage({
                 <Button
                   disabled={busy}
                   onClick={() => void connect("read")}
-                  className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066CC] text-white shadow-sm transition-colors"
+                  className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[var(--app-accent)] hover:opacity-90 text-white shadow-sm transition-opacity"
                   data-voice-control-id="open_calendar_connector"
                   data-voice-action-id={
                     journeyVariant === "onboarding"
