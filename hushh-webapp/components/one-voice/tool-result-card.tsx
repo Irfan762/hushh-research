@@ -868,6 +868,12 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
             const sender = text(row.sender);
             const ref = text(row.source_ref);
             const when = mailReceivedLabel(row.received_at);
+            // What the message is about, when its text was actually read. The
+            // backend refuses a gist for a row it only has headers for, so an
+            // absent one here means there was nothing to summarise, not that
+            // summarising failed.
+            const gist = text(row.gist);
+            const byline = [sender, when].filter(Boolean).join(" · ") || null;
             return (
               <li
                 key={`${ref ?? index}`}
@@ -889,15 +895,15 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[color:var(--app-label)]">
                     {subject ?? "No subject"}
                   </span>
-                  {when ? (
-                    <span className="shrink-0 text-[12px] text-[color:var(--app-secondary-label)]">
-                      {when}
-                    </span>
-                  ) : null}
                 </div>
-                {sender ? (
+                {byline ? (
                   <span className="truncate text-[12px] text-[color:var(--app-secondary-label)]">
-                    {sender}
+                    {byline}
+                  </span>
+                ) : null}
+                {gist ? (
+                  <span className="text-[13px] leading-[1.35] text-[color:var(--app-label)]">
+                    {gist}
                   </span>
                 ) : null}
               </li>

@@ -308,6 +308,35 @@ describe("ToolResultCard", () => {
     expect(container.textContent).toContain("2 of 9 checked");
   });
 
+  it("shows what each message is about when its text was read", () => {
+    const result: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["I have those 2 messages."],
+      answer: "Priya needs the deck; the invoice is overdue.",
+      sources: [{ source_ref: "mail:1", label: "Mail", kind: "message" }],
+      items: [
+        {
+          source_ref: "mail:1",
+          subject: "Q3 deck",
+          sender: "Priya Nair",
+          received_at: "2026-09-28T09:00:00.000Z",
+          gist: "Priya wants the Q3 deck by Friday.",
+        },
+        // No text was supplied for this one, so the backend refused a gist.
+        // The row still appears; it just says less.
+        { source_ref: "mail:2", subject: "Invoice", sender: "Accounts" },
+      ],
+      coverage: { unit: "messages", returned: 2, content_depth: "message" },
+    };
+    render(<ToolResultCard result={result} tool="read_mail" ok />);
+
+    expect(
+      screen.getByText("Priya wants the Q3 deck by Friday."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Invoice")).toBeInTheDocument();
+    expect(screen.getByLabelText("Mail").children).toHaveLength(2);
+  });
+
   it("omits a count the server did not establish rather than printing zero", () => {
     expect(mailCoverageLine({ unit: "messages", content_depth: "metadata" })).toBe(
       "headers only",

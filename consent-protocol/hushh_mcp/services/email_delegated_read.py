@@ -41,10 +41,28 @@ class MailReadPlan(BaseModel):
     clarification: str = Field(default="", max_length=500)
 
 
+class MailItemGist(BaseModel):
+    """What one message is about, for the row that shows it.
+
+    Scalars only. A nested bounded array inside a bounded array is what made
+    Vertex answer 400 INVALID_ARGUMENT for the Drive suggestions schema
+    (measured 2026-09-25, see ``drive_suggestion_service``), so this object
+    stays flat and its bound lives on the list that holds it.
+    """
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    source_ref: str = Field(pattern=r"^mail:(?:[1-9]|1[0-9]|2[0-5])$")
+    gist: str = Field(min_length=1, max_length=280)
+
+
 class MailReadAnswer(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     answer: str = Field(min_length=1, max_length=4000)
     source_refs: list[str] = Field(default_factory=list, max_length=25)
+    # One line per message the person can see, so a row says what it is about
+    # instead of only who sent it. Only rows whose text was actually supplied
+    # may carry one; see the validation in ``run_delegated_mail_read``.
+    item_summaries: list[MailItemGist] = Field(default_factory=list, max_length=25)
 
 
 _ERRORS = {
@@ -254,8 +272,22 @@ async def run_delegated_mail_read(
             # A disconnected/superseded grant cannot release an answer prepared
             # while interpretation was running, even when no further tool ran.
             await reader.require_current()
-            known_refs = {item["source_ref"] for item in metadata["untrusted_external_content"]}
+            rows = metadata["untrusted_external_content"]
+            known_refs = {item["source_ref"] for item in rows}
             if set(answer.source_refs) - known_refs or (known_refs and not answer.source_refs):
+                raise ValueError("invalid_mail_sources")
+            # A gist is a claim about what a message says, so it may exist only
+            # where the message's text was supplied. Without this a metadata row
+            # -- subject and sender and nothing else -- could acquire a summary
+            # the model wrote from the subject alone, which reads exactly like a
+            # grounded one and is not.
+            text_refs = {item["source_ref"] for item in rows if str(item.get("body") or "").strip()}
+            gist_refs = [item.source_ref for item in answer.item_summaries]
+            if (
+                len(gist_refs) != len(set(gist_refs))
+                or len(gist_refs) > len(rows)
+                or set(gist_refs) - text_refs
+            ):
                 raise ValueError("invalid_mail_sources")
             kind = "metadata" if metadata["metadata_only"] else "message"
             sources = [
@@ -266,7 +298,17 @@ async def run_delegated_mail_read(
             # interpreter. It is never how many messages were found.
             coverage["cited"] = len(sources)
             coverage["plan_source"] = "offer" if message_ids else "planner"
+            coverage["summarized"] = len(gist_refs)
             offered_ids = reader.offered_message_ids()
+            # Merged onto the rows the surface already renders, rather than sent
+            # as a parallel list the caller would have to join by hand.
+            gist_by_ref = {item.source_ref: item.gist for item in answer.item_summaries}
+            items = [
+                {**row, "gist": gist_by_ref[row["source_ref"]]}
+                if row["source_ref"] in gist_by_ref
+                else row
+                for row in rows
+            ]
             text = answer.answer
             matches_cut = bool(coverage.get("matches_beyond_page") or coverage.get("items_omitted"))
             text_cut = bool(coverage.get("content_shortened"))
@@ -290,7 +332,7 @@ async def run_delegated_mail_read(
                 sources=sources,
                 truncated=metadata["truncated"],
                 metadata_only=metadata["metadata_only"],
-                items=metadata["untrusted_external_content"],
+                items=items,
                 coverage=coverage,
                 offer=(
                     {
