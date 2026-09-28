@@ -465,8 +465,8 @@ export function CalendarAgentPage({
       <AppPageContentRegion className={CALENDAR_SETUP_REGION_CLASSNAME}>
         <SurfaceCard className="overflow-hidden w-full shadow-md text-center">
           <SurfaceCardHeader className="pb-3 pt-5 flex flex-col items-center text-center space-y-0.5">
-            <div className="flex size-11 items-center justify-center rounded-[12px] bg-primary/10 text-primary mb-2">
-              <CalendarDays className="size-5" aria-hidden />
+            <div className="mb-2 flex size-24 items-center justify-center rounded-[22px] bg-destructive/10 text-destructive">
+              <CalendarDays className="size-12" aria-hidden />
             </div>
             <SurfaceCardTitle className="text-lg font-semibold tracking-tight">
               {connected ? "Google Calendar" : "Connect Google Calendar"}
