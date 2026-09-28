@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from api.routes.one import location
+from api.routes.one import router as one_router
 from hushh_mcp.services.one_location_circle_service import OneLocationCircleService
 
 CIRCLE_ID = "550e8400-e29b-41d4-a716-446655440000"
@@ -479,7 +480,7 @@ def _bootstrap_client(monkeypatch, *, authenticated: bool = True):
 
     service = FakeNamedCircleService()
     app = FastAPI()
-    app.include_router(location.router)
+    app.include_router(one_router)
     if authenticated:
         app.dependency_overrides[location.require_firebase_auth] = lambda: "owner-user"
     monkeypatch.setattr(location, "_circle_service", lambda: service)
@@ -697,6 +698,16 @@ def test_circle_code_preview_rejects_an_unauthenticated_caller(monkeypatch) -> N
 
 
 def test_public_circle_preview_has_an_exact_anonymous_allowlist(monkeypatch) -> None:
+    from hushh_mcp.services.app_intelligence_runtime import (
+        _discover_service_api_endpoints_from_router,
+    )
+
+    # Exercise the canonical One mount, but keep guest presentation outside
+    # the protected workflow catalog so existing setup runs stay compatible.
+    assert not any(
+        endpoint["path"] == "/api/one/location/circle-codes/public-preview"
+        for endpoint in _discover_service_api_endpoints_from_router("location", location.router)
+    )
     client, service = _bootstrap_client(monkeypatch, authenticated=False)
     response = client.post(
         "/api/one/location/circle-codes/public-preview", json={"code": "2345-6789-ABCD"}

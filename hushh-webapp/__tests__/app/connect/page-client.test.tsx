@@ -2692,17 +2692,17 @@ describe("Connect — inviting someone who is not on One yet", () => {
     expect(factRow?.querySelector("button")).toBeNull();
   });
 
-  it("shares the app itself, with nothing attached to it", async () => {
+  it("shares only the guest introduction marker, without relationship authority", async () => {
     await searchForNobody();
     fireEvent.click(await screen.findByText("Invite them to One"));
 
     await waitFor(() => expect(mocks.shareLink).toHaveBeenCalledTimes(1));
     const sent = mocks.shareLink.mock.calls[0][0];
-    // Option B: no token, no code, no pending connection. Nobody is added to
+    // Presentation only: no token, no code, no pending connection. Nobody is added to
     // anything by receiving this, and consent is still asked for later through
     // the normal request flow.
-    expect(sent.url).toBe("https://one.hushh.ai/");
-    expect(new URL(sent.url).search).toBe("");
+    expect(sent.url).toBe("https://one.hushh.ai/?invite=one");
+    expect([...new URL(sent.url).searchParams.entries()]).toEqual([["invite", "one"]]);
     // The link lives in `url` only -- WhatsApp and Messages append it to
     // `text`, and a link in both is delivered twice.
     expect(sent.text).not.toContain("http");

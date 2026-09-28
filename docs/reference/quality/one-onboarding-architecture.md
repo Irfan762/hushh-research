@@ -49,6 +49,9 @@ Named Circle previews use the anonymous, rate-limited
 name and owner display name only). Invalid, expired, disabled, exhausted, and
 system-Circle codes remain unavailable. Authenticated previews and joining keep
 their existing Firebase and vault-owner boundaries.
+The One API mounts this presentation endpoint on Location's separate public
+router, outside the protected workflow catalog; existing setup semantics and
+in-progress workflow revision compatibility remain unchanged.
 Public metadata is optional presentation, not admission: a slow response, 429,
 or temporary outage never blocks the final sign-in action. Definite invalid or
 expired responses disable the invitation CTA and offer recovery. This matters

@@ -67,6 +67,9 @@ from hushh_mcp.services.one_location_place_rating_service import (
 )
 
 router = APIRouter(prefix="/api/one", tags=["One Location Agent"])
+# Invitation presentation is not a protected Location workflow capability.
+# Mount it separately in the One API, like the existing public People router.
+public_router = APIRouter(prefix="/api/one", tags=["One Location Invitations"])
 
 logger = logging.getLogger(__name__)
 
@@ -1190,7 +1193,7 @@ def create_named_location_circle_code(
         raise _handle_error(exc) from exc
 
 
-@router.post(
+@public_router.post(
     "/location/circle-codes/public-preview", response_model=PublicNamedCirclePreviewResponse
 )
 @limiter.limit(RateLimits.ONE_LOCATION_CIRCLE_JOIN)
