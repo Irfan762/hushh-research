@@ -1,4 +1,5 @@
 import type { PersonScopeCatalog } from "@/lib/services/person-profile-service";
+import { parseScopeProposal, type ScopeProposal } from "./scope-proposal";
 import {
   parseConnectorReadReceipt,
   parseWorkspaceConnectorSetup,
@@ -80,6 +81,8 @@ export type ScopeDiscoveryExperience = {
   scopes: ScopeDiscoveryItem[];
   scopeCatalog?: PersonScopeCatalog;
   catalogIncomplete?: boolean;
+  /** One's preselected ask (contract C4); absent means show the catalog. */
+  proposal?: ScopeProposal;
 };
 
 type ReviewField = {
@@ -567,6 +570,7 @@ function parseScopeDiscovery(
     && revision && /^[a-f0-9]{64}$/.test(revision)
     && typeof catalog.hasMore === "boolean"
     && (catalog.hasMore ? nextPage === page + 1 : nextPage === null);
+  const proposal = parseScopeProposal(record);
 
   return {
     type: SCOPE_DISCOVERY_EXPERIENCE_TYPE,
@@ -592,6 +596,7 @@ function parseScopeDiscovery(
     } } : {}),
     ...(record.catalogIncomplete === true || (Array.isArray(record.requestableScopes) && record.requestableScopes.length > MAX_SCOPES)
       ? { catalogIncomplete: true } : {}),
+    ...(proposal ? { proposal } : {}),
   };
 }
 
@@ -678,6 +683,12 @@ export function parseAgentToolResultExperience(
       : null;
   }
   if (toolName === "propose_information_request") {
+    // C4: a proposal names the person and One's pick; it renders as the ask
+    // card over the catalog. Older servers still return a draft review.
+    if (Array.isArray(result?.proposed) || Array.isArray(asRecord(result?.proposal)?.proposed)) {
+      const discovery = parseScopeDiscovery({ ...result, status: "ok" });
+      if (discovery?.proposal) return discovery;
+    }
     return parseInformationRequestProposal(content);
   }
   if (toolName === "propose_document_request") {
