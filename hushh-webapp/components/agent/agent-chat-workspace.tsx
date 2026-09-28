@@ -123,6 +123,7 @@ import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import { SelectionChip } from "@/components/agent/selection-chip";
+import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
 import {
   AgentTurnStreamPanel,
@@ -384,6 +385,8 @@ type AgentMessage = {
   errorNotice?: string;
   /** The stream was lost, not the turn: Retry checks history before resending. */
   lostTurn?: AgentLostTurn;
+  /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
+  followUps?: string[];
 };
 
 type AgentLostTurn = { conversationId: string; startedAtMs: number };
@@ -5730,6 +5733,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             setPendingSpecialistDirective(directive);
           },
+          onFollowUpSuggestions: (followUps) => {
+            if (streamAbortController.signal.aborted) return;
+            updateMessage(assistantMessageId, (message) => ({ ...message, followUps }));
+          },
           onInterrupt: ({ conversationId: nextConversationId }) => {
             if (streamAbortController.signal.aborted) return;
             // AG-UI interrupts are the normal boundary for a visible action
@@ -7696,6 +7703,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       onRetry={retryEmailDelivery}
                     />
                   ))}
+                  <AgentFollowUpSuggestions
+                    suggestions={visibleFollowUps(
+                      message, visibleMessages.at(-1)?.id, isChatLoading || isStreaming,
+                    )}
+                    onSelect={handleWelcomePromptSelect}
+                  />
                   {message.id === emailDraftAnchorMessageId
                     ? renderEmailDraftCard()
                     : null}

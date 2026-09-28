@@ -244,6 +244,10 @@ tools:
     description: Prepare a reviewed move of one Drive file to the trash; nothing is trashed until the owner confirms the exact card.
     py_func: hushh_mcp.one_adk.drive_write_tools.propose_drive_file_trash
     required_scope: vault.owner
+  - name: suggest_follow_ups
+    description: Offer two or three short next questions after a substantive typed-chat answer, in the same response; the app shows them as tappable chips that fill the composer and reads or changes nothing.
+    py_func: hushh_mcp.one_adk.follow_up_suggestions.suggest_follow_ups
+    required_scope: cap.one.invoke
 runtime:
   kind: adk
   factory: hushh_mcp.one_adk.agent_tree.build_one_text_agent
