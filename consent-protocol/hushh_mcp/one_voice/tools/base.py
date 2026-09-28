@@ -109,6 +109,21 @@ class ToolResult(BaseModel):
     def public(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
+    def model_public(self) -> dict[str, Any]:
+        """What the Live model may see, which is not always what the screen sees.
+
+        Identical to :meth:`public` for every ordinary tool. A tool whose result
+        carries content the owner did not write -- mail, documents, anything a
+        third party authored -- overrides this to return a receipt instead.
+
+        The distinction is not cosmetic. The Live session runs with provider
+        side context compression and a resumption handle persisted for hours,
+        so whatever lands in the model's context outlives the turn and cannot
+        be evicted from here. A sender's text placed there is an instruction
+        the operational model keeps reading.
+        """
+        return self.public()
+
 
 class Rejected(ToolResult):
     status: Literal["rejected"] = "rejected"

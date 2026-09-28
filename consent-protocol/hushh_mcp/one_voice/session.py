@@ -612,7 +612,9 @@ class VoiceSession:
                 "tool": outcome.spec.name if outcome.spec else None,
                 "pending_action_id": pending_id,
                 "confirmation_source": source,
-                "result": public,
+                # Injected into the model's own context, so it takes the model
+                # projection for the same reason as the handback above.
+                "result": outcome.result.model_public(),
             }
         )
         # An awaiting step settles the card but not the turn: "complete" only
@@ -999,7 +1001,12 @@ class VoiceSession:
             )
         )
         await self._persist_entities()
-        await self.live.send_tool_response(call_id=call_id, name=name, response=public)
+        # The client frame above carries the full result. The model gets its own
+        # projection, which for an external-content read is a receipt rather
+        # than the mail itself.
+        await self.live.send_tool_response(
+            call_id=call_id, name=name, response=outcome.result.model_public()
+        )
 
     async def _emit_side_effects(
         self, outcome: ToolCallOutcome, *, call_id: str | None = None
