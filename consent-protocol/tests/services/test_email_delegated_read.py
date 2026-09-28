@@ -14,10 +14,13 @@ from hushh_mcp.services.gmail_metadata_reader import GmailMetadataError
 
 
 class _Reader:
-    def __init__(self, *, metadata=None, late_error=False):
+    ACCOUNT = "synthetic-account"
+
+    def __init__(self, *, metadata=None, late_error=False, offered_ids=("mail-id-1",)):
         self.calls = []
         self.validations = 0
         self.late_error = late_error
+        self.offered_ids = tuple(offered_ids)
         self.metadata = metadata or {
             "status": "ok",
             "untrusted_external_content": [
@@ -50,6 +53,13 @@ class _Reader:
         self.validations += 1
         if self.late_error and self.validations > 1:
             raise GmailMetadataError("connection_changed")
+
+    @property
+    def account(self):
+        return self.ACCOUNT
+
+    def offered_message_ids(self):
+        return self.offered_ids
 
 
 _NOW = datetime(2026, 9, 26, 20, 0, tzinfo=timezone.utc)
@@ -328,3 +338,79 @@ async def test_body_read_is_planned_from_the_request_and_bounded_before_the_read
     assert result["structured"]["sources"] == [
         {"source_ref": "mail:1", "kind": "message", "label": "Mail"}
     ]
+
+
+async def test_an_offered_position_reads_that_message_and_never_searches_again():
+    """ "Read the second one" must reach the message that was second.
+
+    The planner has no history -- it is given the request and a clock, nothing
+    else -- so asked to plan this it produces a body read with no criteria, which
+    is the newest message. That is a confident wrong answer with nothing on the
+    result to show it was wrong. With the id in hand there is nothing to plan, so
+    the planner is skipped and the read is a direct fetch: no listing means no
+    chance of different mail having taken that position in the meantime.
+    """
+    reader = _Reader(offered_ids=("mail-id-2",))
+    calls = []
+
+    async def gene(**kwargs):
+        calls.append(kwargs)
+        return {"answer": "Priya asked for the deck.", "source_refs": ["mail:1"]}
+
+    result = await run_delegated_mail_read(
+        gmail=object(),
+        user_id="owner",
+        consent_token="synthetic",  # noqa: S106 - synthetic test authority
+        conversation_id="original-one-thread",
+        message="read the second one",
+        require_access=AsyncMock(),
+        message_ids=("mail-id-2",),
+        expect_account=_Reader.ACCOUNT,
+        gene_runner=gene,
+        reader_factory=lambda **_: reader,
+        clock=lambda: _NOW,
+    )
+
+    assert [call["gene_id"] for call in calls] == ["agent_email_read_interpreter"], (
+        "the planner has nothing to plan and must not be asked"
+    )
+    assert reader.calls == [
+        ("read_message_by_id", {"mailbox": "inbox", "message_ids": ["mail-id-2"]})
+    ]
+    assert result["structured"]["status"] == "ok"
+    assert result["coverage"]["plan_source"] == "offer"
+    assert result["offer"]["message_ids"] == ["mail-id-2"]
+    assert result["offer"]["account"] == _Reader.ACCOUNT
+
+
+async def test_a_read_hands_back_the_messages_behind_its_rows():
+    """Without this the next turn has nothing to resolve a position against."""
+    reader = _Reader(offered_ids=("mail-id-7",))
+
+    async def gene(**kwargs):
+        if kwargs["gene_id"] == "agent_email_read_planner":
+            return {"operation": "list_recent", "limit": 1}
+        return {"answer": "One message.", "source_refs": ["mail:1"]}
+
+    result = await _run(reader, gene)
+
+    assert result["offer"] == {
+        "message_ids": ["mail-id-7"],
+        "account": _Reader.ACCOUNT,
+        "mailbox": "inbox",
+    }
+    assert result["coverage"]["plan_source"] == "planner"
+
+
+async def test_no_offer_is_handed_back_when_the_rows_cannot_be_named():
+    """A row list with no usable ids yields no offer at all, so a later position
+    is refused rather than resolved against a guess."""
+    reader = _Reader(offered_ids=())
+
+    async def gene(**kwargs):
+        if kwargs["gene_id"] == "agent_email_read_planner":
+            return {"operation": "list_recent", "limit": 1}
+        return {"answer": "One message.", "source_refs": ["mail:1"]}
+
+    result = await _run(reader, gene)
+    assert result["offer"] is None

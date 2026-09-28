@@ -1493,14 +1493,29 @@
     },
     {
       "circle_args": [],
-      "description": "Answer a question about the person's own mailbox: recent or unread mail, mail from someone, what needs a reply, or what a specific message says. Shows the matching messages and says how many were found. Reading never marks mail read and never archives, sends or deletes anything.",
+      "description": "Answer a question about the person's own mailbox: recent or unread mail, mail from someone, what needs a reply, or what a specific message says. Shows the matching messages and says how many were found. When they refer to mail by its position in the list you last showed them, pass that position as `ordinal` instead of describing it. Reading never marks mail read and never archives, sends or deletes anything.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "read_mail",
       "parameters": {
         "additionalProperties": false,
-        "description": "The person's own question, forwarded to the planner unchanged.\n\nNot a command phrase and not parsed here: the planner owns turning it into\nexactly one bounded operation.",
+        "description": "The person's own question, forwarded to the planner unchanged.\n\nNot a command phrase and not parsed here: the planner owns turning it into\nexactly one bounded operation.\n\n``ordinal`` is the exception, and only because there is nothing to plan: a\nposition refers to a list this server minted, so the message is already\nchosen and the planner is skipped rather than asked and overruled.",
         "properties": {
+          "ordinal": {
+            "anyOf": [
+              {
+                "maximum": 25,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The position the person named in the list of mail you last showed them ('read the second one' is 2). Set this whenever they refer to mail by position instead of describing it. The server resolves the position to the message it showed; you do not know which message that is, so never guess one or turn a position into a search.",
+            "title": "Ordinal"
+          },
           "request": {
             "maxLength": 8000,
             "minLength": 1,

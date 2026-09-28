@@ -85,9 +85,25 @@ class ReadMailInput(ToolInput):
 
     Not a command phrase and not parsed here: the planner owns turning it into
     exactly one bounded operation.
+
+    ``ordinal`` is the exception, and only because there is nothing to plan: a
+    position refers to a list this server minted, so the message is already
+    chosen and the planner is skipped rather than asked and overruled.
     """
 
     request: str = Field(min_length=1, max_length=MAX_REQUEST_BYTES)
+    ordinal: int | None = Field(
+        default=None,
+        ge=1,
+        le=25,
+        description=(
+            "The position the person named in the list of mail you last showed them "
+            "('read the second one' is 2). Set this whenever they refer to mail by "
+            "position instead of describing it. The server resolves the position to "
+            "the message it showed; you do not know which message that is, so never "
+            "guess one or turn a position into a search."
+        ),
+    )
 
 
 # Every key the model may see. An allowlist, so a field added to coverage
@@ -185,6 +201,33 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
     if not connector_feature_enabled("gmail_chat_reads", ctx.user_id):
         return _unavailable("mail_reads_unavailable")
 
+    # A position is resolved here, against the list this server actually showed.
+    # The model is given counts and never learns which message was second, so it
+    # could not name one; a planner asked to interpret "the second one" plans a
+    # body read with no criteria and returns the newest message instead, which is
+    # a wrong answer that looks exactly like a right one.
+    message_ids: tuple[str, ...] = ()
+    offer_mailbox = "inbox"
+    expect_account = ""
+    if args.ordinal is not None:
+        offer = ctx.entities.offered_mail
+        if offer is None or not ctx.entities.offered_mail_is_fresh():
+            return Rejected(
+                reason_code="mail_offer_expired",
+                spoken_facts=["That list is a while old. Ask me again and I'll take a fresh look."],
+            )
+        message_id = ctx.entities.offered_mail_message_id(args.ordinal)
+        if message_id is None:
+            shown = len(offer.message_ids)
+            noun = "message" if shown == 1 else "messages"
+            return Rejected(
+                reason_code="mail_ordinal_not_offered",
+                spoken_facts=[f"I only showed you {shown} {noun}. Which one did you mean?"],
+            )
+        message_ids = (message_id,)
+        offer_mailbox = offer.mailbox
+        expect_account = offer.account
+
     gmail = ctx.services.get("gmail") or get_gmail_receipts_service()
 
     async def require_access() -> None:
@@ -211,6 +254,9 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
             require_access=require_access,
             # "Today" and "this week" are the owner's, not the server's.
             timezone=ctx.timezone,
+            message_ids=message_ids,
+            offer_mailbox=offer_mailbox,
+            expect_account=expect_account,
         )
     except PermissionError:
         # Admission was withdrawn mid-read. Nothing fetched is released.
@@ -253,6 +299,22 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
 
     coverage = dict(outcome.get("coverage") or {})
     items = list(outcome.get("items") or [])
+    # Replace the offer with what this read actually put in front of the person.
+    # Replaced, never merged: they are looking at the newest list, so that is the
+    # only list a position can mean. A read that cannot name its rows clears the
+    # offer rather than leaving positions pointing at a list that is gone.
+    handback = outcome.get("offer") or {}
+    offered_ids = [
+        value for value in (handback.get("message_ids") or []) if isinstance(value, str) and value
+    ]
+    if offered_ids:
+        ctx.entities.offer_mail(
+            offered_ids,
+            account=str(handback.get("account") or ""),
+            mailbox=str(handback.get("mailbox") or "inbox"),
+        )
+    else:
+        ctx.entities.offered_mail = None
     returned = coverage.get("returned")
     # A successful read with nothing in it is "empty". Anything else is "ok",
     # including a read whose count the server could not establish, because a
@@ -281,6 +343,8 @@ TOOLS: tuple[ToolSpec, ...] = (
             "Answer a question about the person's own mailbox: recent or unread mail, "
             "mail from someone, what needs a reply, or what a specific message says. "
             "Shows the matching messages and says how many were found. "
+            "When they refer to mail by its position in the list you last showed "
+            "them, pass that position as `ordinal` instead of describing it. "
             "Reading never marks mail read and never archives, sends or deletes anything."
         ),
         handler=_read_mail,

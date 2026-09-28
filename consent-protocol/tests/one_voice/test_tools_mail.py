@@ -8,6 +8,7 @@ and what it withholds from the model -- without touching Gmail.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -108,6 +109,7 @@ def _delegated(
     truncated: bool = False,
     items: list[dict[str, Any]] | None = None,
     coverage: dict[str, Any] | None = None,
+    offer: dict[str, Any] | None = None,
 ):
     """Stand in for run_delegated_mail_read with its real return shape.
 
@@ -136,6 +138,7 @@ def _delegated(
             },
             "items": rows if status == "ok" else [],
             "coverage": counts if status == "ok" else None,
+            "offer": offer if status == "ok" else None,
         }
 
     _run.calls = []  # type: ignore[attr-defined]
@@ -559,3 +562,152 @@ def test_the_switch_is_on_unless_it_is_explicitly_set_otherwise(monkeypatch, raw
     else:
         monkeypatch.setenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raw)
     assert voice_mail_reads_enabled() is enabled
+
+
+# -- binding a spoken position to a real message -----------------------------
+
+ACCOUNT = "google-sub-owner"
+
+
+def _offered(ctx: ToolContext, *ids: str, account: str = ACCOUNT) -> None:
+    ctx.entities.offer_mail(list(ids), account=account, mailbox="inbox")
+
+
+async def test_the_second_one_reads_the_message_that_was_second(monkeypatch):
+    """The position resolves server-side, to the id this server showed.
+
+    The Live model is handed counts and never learns which message was second,
+    so it cannot name one. Left to the planner -- which sees the request and a
+    clock, and no history -- "read the second one" becomes a body read with no
+    criteria, which is the newest message. The person is then read the wrong mail
+    with nothing on the result to say so.
+    """
+    runner = _delegated("ok", [{"source_ref": "mail:1"}])
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-first", "id-second", "id-third")
+    spec = _spec()
+
+    result = await spec.handler(ctx, spec.input_model(request="read the second one", ordinal=2))
+
+    assert result.status == "ok"
+    assert runner.calls[0]["message_ids"] == ("id-second",)
+    # The account the ids were resolved in travels with them, so a reconnect to
+    # another Google account refuses instead of reading a different mailbox.
+    assert runner.calls[0]["expect_account"] == ACCOUNT
+
+
+async def test_an_offer_from_another_account_is_not_read_in_this_one(monkeypatch):
+    """Negative control for the account plumbing.
+
+    Drop `expect_account` and this test fails while everything else still passes:
+    the read would succeed against whatever mailbox is connected now, and the ids
+    would name different mail or nothing at all.
+    """
+    runner = _delegated("ok", [{"source_ref": "mail:1"}])
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-first", "id-second", account="google-sub-other-account")
+    spec = _spec()
+
+    await spec.handler(ctx, spec.input_model(request="read the second one", ordinal=2))
+
+    assert runner.calls[0]["expect_account"] == "google-sub-other-account", (
+        "the read must be fenced to the account the ids came from"
+    )
+
+
+async def test_a_position_with_no_live_offer_asks_rather_than_guesses(monkeypatch):
+    runner = _delegated("ok", [{"source_ref": "mail:1"}])
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    spec = _spec()
+
+    result = await spec.handler(_ctx(), spec.input_model(request="read the second one", ordinal=2))
+
+    assert result.status == "rejected"
+    assert result.reason_code == "mail_offer_expired"
+    assert runner.calls == [], "a position with nothing behind it must not search"
+
+
+async def test_a_position_past_the_end_of_the_offer_says_how_many_there_were(monkeypatch):
+    runner = _delegated("ok", [{"source_ref": "mail:1"}])
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-first", "id-second")
+    spec = _spec()
+
+    result = await spec.handler(ctx, spec.input_model(request="read the fifth", ordinal=5))
+
+    assert result.status == "rejected"
+    assert result.reason_code == "mail_ordinal_not_offered"
+    assert "only showed you 2 messages" in " ".join(result.spoken_facts)
+    assert runner.calls == []
+
+
+async def test_a_stale_offer_is_refused_rather_than_resolved(monkeypatch):
+    """Ten minutes is the window for every offer in this runtime: a position has
+    to mean a list the person can still see."""
+    from hushh_mcp.one_voice.tools.base import OFFER_TTL_SECONDS
+
+    runner = _delegated("ok", [{"source_ref": "mail:1"}])
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-first", "id-second")
+    stale = datetime.now(timezone.utc) - timedelta(seconds=OFFER_TTL_SECONDS + 1)
+    assert ctx.entities.offered_mail is not None
+    ctx.entities.offered_mail.offered_at = stale.isoformat()
+    spec = _spec()
+
+    result = await spec.handler(ctx, spec.input_model(request="read the second one", ordinal=2))
+
+    assert result.status == "rejected"
+    assert result.reason_code == "mail_offer_expired"
+    assert runner.calls == []
+
+
+async def test_each_read_replaces_the_offer_with_what_it_showed(monkeypatch):
+    runner = _delegated(
+        "ok",
+        [{"source_ref": "mail:1"}],
+        offer={"message_ids": ["id-new"], "account": ACCOUNT, "mailbox": "inbox"},
+    )
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-old-first", "id-old-second")
+    spec = _spec()
+
+    await spec.handler(ctx, spec.input_model(request="any mail?"))
+
+    assert ctx.entities.offered_mail is not None
+    assert ctx.entities.offered_mail.message_ids == ["id-new"]
+    assert ctx.entities.offered_mail_message_id(1) == "id-new"
+    assert ctx.entities.offered_mail_message_id(2) is None
+
+
+async def test_a_read_that_cannot_name_its_rows_clears_the_old_offer(monkeypatch):
+    """Otherwise "the second one" would point into a list that is no longer the
+    one on screen."""
+    runner = _delegated("ok", [{"source_ref": "mail:1"}], offer=None)
+    monkeypatch.setattr(mail, "run_delegated_mail_read", runner)
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx()
+    _offered(ctx, "id-old-first", "id-old-second")
+    spec = _spec()
+
+    await spec.handler(ctx, spec.input_model(request="any mail?"))
+
+    assert ctx.entities.offered_mail is None
+
+
+def test_an_ordinal_outside_the_offerable_range_is_refused_by_the_schema():
+    from pydantic import ValidationError
+
+    for bad in (0, 26, -1):
+        with pytest.raises(ValidationError):
+            _spec().input_model(request="read one", ordinal=bad)

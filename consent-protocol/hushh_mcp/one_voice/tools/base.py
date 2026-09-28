@@ -187,6 +187,31 @@ class OfferedRequest(BaseModel):
     direction: Literal["incoming", "outgoing"]
 
 
+class OfferedMail(BaseModel):
+    """The messages One last put in front of the person, in that order.
+
+    Ordinal 1 is ``message_ids[0]``: the order the renderer drew and the order
+    One counted. "Read the second one" is resolved here, by the server, because
+    the Live model is given counts and never learns which message was second --
+    it could not name it if it tried, and a model that guessed would produce a
+    confident wrong answer with nothing to show it had.
+
+    Ids and the account they were resolved in, and nothing else. No subject,
+    sender or body: this row is persisted, and it is a pointer into the mailbox
+    rather than a copy of it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    message_ids: list[str] = Field(default_factory=list, max_length=25)
+    # The ``google_sub`` these ids belong to. Ids resolved in one mailbox must
+    # never be applied to another, so reconnecting to a different Google account
+    # invalidates the offer instead of reading the wrong inbox.
+    account: str = ""
+    mailbox: str = "inbox"
+    offered_at: str | None = None
+    revision: int = 0
+
+
 class EntityContext(BaseModel):
     """Per-conversation confirmed entities, keyed by canonical id.
 
@@ -218,6 +243,9 @@ class EntityContext(BaseModel):
     # Connection requests the server listed, by request id. Replaced on every
     # list_people; a request id the model did not receive here is refused.
     offered_requests: dict[str, OfferedRequest] = Field(default_factory=dict)
+    # The messages the last mail read showed, so a spoken position resolves to
+    # the message it named rather than to whatever a fresh search returns now.
+    offered_mail: OfferedMail | None = None
 
     @staticmethod
     def _now() -> datetime:
@@ -246,10 +274,50 @@ class EntityContext(BaseModel):
         if self.offered_person_ids and not self.offer_is_fresh():
             self.offered_person_ids = []
             self.offered_person_circle_id = None
+        if self.offered_mail is not None and not self.offered_mail_is_fresh():
+            self.offered_mail = None
 
     def remember_person(self, person: ConfirmedPerson) -> None:
         self.people[person.user_id] = person
         self.last_person_user_id = person.user_id
+
+    def offer_mail(self, message_ids: list[str], *, account: str, mailbox: str) -> int:
+        """Replace the offered messages, and say when they were offered.
+
+        Replaced on every read, like ``offer_requests``: the person is looking at
+        the newest list, so that is the only one a position can mean.
+        """
+        self.offer_revision += 1
+        self.offered_mail = OfferedMail(
+            message_ids=list(message_ids)[:25],
+            account=account,
+            mailbox=mailbox,
+            offered_at=self._now().isoformat(),
+            revision=self.offer_revision,
+        )
+        return self.offer_revision
+
+    def offered_mail_is_fresh(self) -> bool:
+        """An offer with no timestamp is not trusted.
+
+        Unlike ``offer_is_fresh``, there is no pre-revision record to be lenient
+        about: every mail offer was written by code that stamps it.
+        """
+        offer = self.offered_mail
+        if offer is None or not offer.message_ids or not offer.offered_at:
+            return False
+        age = self._now().timestamp() - datetime.fromisoformat(offer.offered_at).timestamp()
+        return age <= OFFER_TTL_SECONDS
+
+    def offered_mail_message_id(self, ordinal: int) -> str | None:
+        """The message at a spoken position, or None when it cannot be trusted.
+
+        None is a refusal to guess, not an invitation to search again.
+        """
+        if not self.offered_mail_is_fresh() or self.offered_mail is None:
+            return None
+        ids = self.offered_mail.message_ids
+        return ids[ordinal - 1] if 1 <= ordinal <= len(ids) else None
 
     def offer_requests(self, requests: list[OfferedRequest]) -> None:
         self.offered_requests = {item.request_id: item for item in requests}

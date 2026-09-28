@@ -39,6 +39,27 @@ from hushh_mcp.one_voice.tools.session import OPENABLE_SCREENS
 
 logger = logging.getLogger(__name__)
 
+
+def _restored(model: type[Any], stored: Any) -> Any:
+    """Rebuild a persisted context, keeping what this version understands.
+
+    Both context models forbid unknown keys, which is the right contract for the
+    model itself and the wrong behaviour for a stored row. A field written by a
+    newer server would fail validation for the whole row, and the fallback is an
+    empty context -- so a rollback would silently drop every confirmed person and
+    circle in every live conversation, along with the one field it did not
+    recognise. Unknown keys are dropped instead; the rest is kept.
+
+    A genuinely corrupt value still falls back to empty, and is never trusted.
+    """
+    raw = stored if isinstance(stored, dict) else {}
+    known = {key: value for key, value in raw.items() if key in model.model_fields}
+    try:
+        return model.model_validate(known)
+    except Exception:  # noqa: BLE001 - a corrupt context is dropped, never trusted
+        return model()
+
+
 AUTH_TIMEOUT_SECONDS = 5.0
 CLIENT_STEP_TIMEOUT_SECONDS = 25
 # Slack past the advertised timeout before a device report is treated as stale.
@@ -278,15 +299,9 @@ class VoiceSession:
             model_id=self.config.model_id,
             model_location=self.config.location,
         )
-        try:
-            entities = EntityContext.model_validate(self.conversation.entity_context or {})
-        except Exception:  # noqa: BLE001 - a corrupt context is dropped, never trusted
-            entities = EntityContext()
+        entities = _restored(EntityContext, self.conversation.entity_context)
         entities.prune()
-        try:
-            screen = ScreenContext.model_validate(self.conversation.screen_context or {})
-        except Exception:  # noqa: BLE001
-            screen = ScreenContext()
+        screen = _restored(ScreenContext, self.conversation.screen_context)
         self.ctx = ToolContext(
             user_id=auth.user_id,
             conversation_id=self.claims.conversation_id,

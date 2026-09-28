@@ -105,6 +105,7 @@ def _result(
     metadata_only=True,
     items=(),
     coverage=None,
+    offer=None,
 ) -> dict[str, Any]:
     """The specialist turn, plus what a surface needs to show the person.
 
@@ -136,6 +137,10 @@ def _result(
         },
         "items": list(items),
         "coverage": dict(coverage) if coverage else None,
+        # Which messages the rows are, so a caller can bind "the second one" to
+        # the message it named. Absent when the operation cannot name one per
+        # row, which makes a later positional request refuse instead of guess.
+        "offer": dict(offer) if offer else None,
     }
 
 
@@ -148,6 +153,9 @@ async def run_delegated_mail_read(
     message: str,
     require_access: RequireAccess,
     timezone: str = "UTC",
+    message_ids: tuple[str, ...] = (),
+    offer_mailbox: str = "inbox",
+    expect_account: str = "",
     gene_runner: Callable[..., Awaitable[dict[str, Any]]] = run_email_gene,
     reader_factory: Callable[..., GmailMetadataReader] = GmailMetadataReader,
     clock: Callable[[], datetime] = lambda: datetime.now(datetime_timezone.utc),
@@ -165,18 +173,26 @@ async def run_delegated_mail_read(
     }
     try:
         async with asyncio.timeout(65):
-            plan = MailReadPlan.model_validate(
-                await gene_runner(
-                    gene_id="agent_email_read_planner",
-                    prompt=json.dumps(
-                        {"user_request": message, **time_context}, ensure_ascii=False
-                    ),
-                    user_id=user_id,
-                    consent_token=consent_token,
-                    output_schema=MailReadPlan,
-                    timeout_seconds=20,
+            if message_ids:
+                # The person named a position in a list this server minted, so
+                # there is nothing to plan: the operation and its target are both
+                # already decided. The planner is skipped rather than asked and
+                # overruled, and `plan_source` records that it was skipped -- an
+                # unrecorded skip is indistinguishable from a planned read.
+                plan = MailReadPlan(operation="read_message", mailbox=offer_mailbox)
+            else:
+                plan = MailReadPlan.model_validate(
+                    await gene_runner(
+                        gene_id="agent_email_read_planner",
+                        prompt=json.dumps(
+                            {"user_request": message, **time_context}, ensure_ascii=False
+                        ),
+                        user_id=user_id,
+                        consent_token=consent_token,
+                        output_schema=MailReadPlan,
+                        timeout_seconds=20,
+                    )
                 )
-            )
             await require_access()
             if plan.operation == "clarify":
                 return _result(
@@ -194,7 +210,10 @@ async def run_delegated_mail_read(
             elif operation in {"list_recent", "list_needs_reply"} and plan.query:
                 raise GmailMetadataError("invalid_argument")
             arguments: dict[str, Any] = {"mailbox": plan.mailbox}
-            if operation == "read_message":
+            if message_ids:
+                operation = "read_message_by_id"
+                arguments["message_ids"] = list(message_ids)
+            elif operation == "read_message":
                 # Reading bodies is bounded tighter than listing; a larger plan
                 # limit is normalized to that bound, never widened.
                 arguments["limit"] = min(plan.limit or 1, MAX_BODY_MESSAGES)
@@ -202,7 +221,15 @@ async def run_delegated_mail_read(
                 arguments["limit"] = plan.limit or 10
             if operation in {"search_inbox", "read_message", "read_thread"} and plan.query:
                 arguments["query"] = _epoch_date_terms(plan.query, zone)
-            reader = reader_factory(gmail=gmail, user_id=user_id, require_access=require_access)
+            reader = reader_factory(
+                gmail=gmail,
+                user_id=user_id,
+                require_access=require_access,
+                # Ids resolved in one mailbox are meaningless in another, so a
+                # reconnect to a different Google account refuses the read
+                # rather than reading whatever now holds that position.
+                expect_account=expect_account,
+            )
             metadata = await reader.read(operation, arguments)
             await reader.require_current()
             # Coverage is server bookkeeping, not evidence. Handing counts to the
@@ -238,6 +265,8 @@ async def run_delegated_mail_read(
             # How many the interpreter chose to cite is a fact about the
             # interpreter. It is never how many messages were found.
             coverage["cited"] = len(sources)
+            coverage["plan_source"] = "offer" if message_ids else "planner"
+            offered_ids = reader.offered_message_ids()
             text = answer.answer
             matches_cut = bool(coverage.get("matches_beyond_page") or coverage.get("items_omitted"))
             text_cut = bool(coverage.get("content_shortened"))
@@ -263,6 +292,15 @@ async def run_delegated_mail_read(
                 metadata_only=metadata["metadata_only"],
                 items=metadata["untrusted_external_content"],
                 coverage=coverage,
+                offer=(
+                    {
+                        "message_ids": list(offered_ids),
+                        "account": reader.account,
+                        "mailbox": plan.mailbox,
+                    }
+                    if offered_ids
+                    else None
+                ),
             )
     except GmailMetadataError as exc:
         return _result(
