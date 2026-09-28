@@ -209,12 +209,18 @@ export function AgentConnectionsDrawer({
           // layer never covers the header controls (agent toggle, close) above it. It
           // also ends at the top of the fixed bottom bar: that bar lives in a different
           // stacking context, so no z-index here can lift the drawer above it on narrow
-          // screens. It is deliberately untinted: a dim clipped to that band left the
-          // header and the bottom bar bright, which read as a white strip above the
-          // panel and a white patch below it. The floating panel's shadow separates it.
-          "absolute inset-x-0 bottom-[var(--app-bottom-shell-height,0px)] top-[var(--agent-chat-header-height)] bg-transparent",
-          "z-(--z-sheet-overlay)",
-          historyOpen ? "pointer-events-auto" : "pointer-events-none",
+          // screens.
+          "absolute inset-x-0 bottom-[var(--app-bottom-shell-height,0px)] top-[var(--agent-chat-header-height)]",
+          // The shared modal scrim, token for token with SheetOverlay, so the chat
+          // recedes exactly as it does behind a sheet or dialog (the coarse-pointer
+          // and native Android downgrades in globals.css apply here too). Only
+          // opacity animates; the blur radius is fixed. Closed, it is invisible, so
+          // no backdrop filter stays composited while the drawer is shut.
+          "z-(--z-sheet-overlay) touch-none bg-[color:var(--app-scrim-color)] [backdrop-filter:var(--app-scrim-filter)] [-webkit-backdrop-filter:var(--app-scrim-filter)]",
+          "transition-[opacity,visibility] motion-reduce:transition-none",
+          historyOpen
+            ? "pointer-events-auto visible opacity-100 duration-140 ease-[cubic-bezier(0.16,1,0.3,1)]"
+            : "pointer-events-none invisible opacity-0 duration-100 ease-[cubic-bezier(0.4,0,1,1)]",
         )}
         onClick={() => {
           if (!externalModalOpen) onOpenChange(false);

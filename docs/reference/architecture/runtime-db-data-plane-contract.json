@@ -1242,6 +1242,21 @@
       "expected_row_growth": "two rows per person per legal document version they accept"
     },
     {
+      "id": "one_attention_ledger",
+      "owner": "backend-runtime-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "one_attention_ledger"
+      ],
+      "primary_access_path": "POST /api/one/first-connect-insights claims one row per connected source before generating the picked-up card; the feed attention sweep claims one row per notable feed_events id and counts sent rows for the daily push cap; agent-chat admission of a feedAttention turn reads the sent row.",
+      "retention_policy": "Retain while the account exists; one row per (person, kind, subject). Feed attention rows are pruned after 30 days by the sweep.",
+      "deletion_behavior": "Cascade-delete with the actor profile on account deletion and reset.",
+      "trust_boundary": "Kind, subject identifier (a source name or a feed_events id), outcome word and timestamps only. Never inference text, feed item words or One's message: the card lives on the owner's screen and Keep saves through the encrypted PKM writer; One's message is sealed with the owner's chat key.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "at most three card rows per person plus one row per notable feed event"
+    },
+    {
       "id": "one_agent_model_preference",
       "owner": "backend-runtime-governance",
       "data_class": "workflow_state",

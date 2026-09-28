@@ -219,6 +219,29 @@ message as a `selection` chip.
 conversation that recorded the submission, or `404`. It exists because the
 answer push carries only the bundle id; the conversation lives in sealed history.
 
+#### One's own attention moments
+
+`POST /api/one/first-connect-insights` (VAULT_OWNER + chat key, the same gate as
+a chat turn) offers the "Here's what I picked up" card for one Gmail, Calendar
+or Drive source first connected within the last seven days and not yet offered.
+It returns `{status: "none"|"empty"|"unavailable"}` or `{status: "offered",
+source, sourceLabel, items: [{id, kind, label, memory_text, evidence}]}` (at most
+five). The items come from the manifest gene `one_first_connect_insights` over
+that source's metadata only, and are not stored: `one_attention_ledger`
+(migration 257) records only that the source was offered. Keep saves one item
+through the client's owner-confirmed encrypted PKM writer; nothing else writes
+memory.
+
+A `one_feed_attention` push (see `consent-protocol/docs/reference/fcm-notifications.md`)
+opens `/?feedAttention=<feed row id>`. After unlock the app starts a fresh chat
+whose first turn is the fixed message `Opened an update from your feed` with
+`forwardedProps.feedAttention = {itemId}`. `POST /api/one/agent-chat` admits it
+only for the VAULT_OWNER's own feed row that the server actually pushed
+(`404` otherwise), only once per row per conversation (`409`), and only with
+that exact message and payload shape (`400`). The row's Feed projection is held
+as a 10-minute in-memory request secret for the turn; no tool runs in it; the
+history restores the message as a `selection` chip.
+
 `GET /api/one/information-requests/shared-with-me` (VAULT_OWNER) lists the
 current approvals other people gave this person: display names, item labels,
 bundle and request ids, purpose and expiry. It never returns values; those stay
@@ -259,6 +282,16 @@ managed Gemini or `byok_pending_vault`; a Gemini key is never accepted by this
 pre-vault contract. A selected setup credential is process-memory-only: it may
 be request-validated before the vault but is encrypted through the existing
 vault-owner PKM mutation path only at Finish setup.
+
+The same two routes carry `oneChatOnboarding`, the durable progress of One's
+conversational onboarding (migration 257, `vault_keys.one_chat_onboarding`):
+`{version: 1, status: in_progress|completed, answered, skipped, completedOn,
+tipDismissedOn}`, where `answered` and `skipped` hold only the question ids
+`name`, `focus` and `tone`, and the two dates are `YYYY-MM-DD`. The backend
+re-normalizes it (`normalize_one_chat_onboarding`) and drops any other key, so
+the plaintext row can never hold an answer. A person's preferred name and
+reply style are written only to encrypted memory, client-side, after they
+confirm. Omitting the field leaves the stored record unchanged.
 
 ### One Model Preference
 

@@ -16,11 +16,42 @@ WEB_DIR="$REPO_ROOT/hushh-webapp"
 # shellcheck source=scripts/ci/web-common.sh
 source "$REPO_ROOT/scripts/ci/web-common.sh"
 
+# WEB_FULL_SUITE_SHARD=<index>/<count> runs one Vitest shard (`vitest --shard`,
+# which splits the test files so every file lands in exactly one shard). PR
+# Validation runs the lane as a matrix of shards because the whole suite took
+# 7-13 minutes on one runner. The contract verifiers below are not Vitest files,
+# so shard 1 runs them once. Unset, the script runs the whole suite and every
+# verifier, exactly as before, which is what a local run does.
+# Guarded by scripts/ci/test_web_ci_lane_partition.py.
+SHARD="${WEB_FULL_SUITE_SHARD:-}"
+RUN_VERIFIERS=1
+if [ -n "$SHARD" ]; then
+  if ! [[ "$SHARD" =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] \
+    || [ "${BASH_REMATCH[1]}" -gt "${BASH_REMATCH[2]}" ]; then
+    echo "WEB_FULL_SUITE_SHARD must be <index>/<count> with 1 <= index <= count, got '$SHARD'." >&2
+    exit 2
+  fi
+  if [ "${BASH_REMATCH[1]}" != "1" ]; then
+    RUN_VERIFIERS=0
+  fi
+fi
+
 web_ci_preflight
 web_ci_install
 
 cd "$WEB_DIR"
-npm run test:ci
+if [ -n "$SHARD" ]; then
+  echo "== Vitest shard $SHARD =="
+  npm run test:ci -- --shard="$SHARD"
+else
+  npm run test:ci
+fi
+
+if [ "$RUN_VERIFIERS" -ne 1 ]; then
+  echo "Contract verifiers run in shard 1 of $SHARD's matrix."
+  exit 0
+fi
+
 npm run verify:voice-gateway
 npm run verify:one-voice
 npm run verify:surface-map

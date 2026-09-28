@@ -24,6 +24,8 @@ import {
   type InformationRequestSubmissionReceipt,
 } from "@/components/agent/agent-structured-experience";
 import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
+import { FEED_ATTENTION_LABEL } from "@/lib/agent/feed-attention";
+import { useFeedAttentionTurn } from "@/lib/agent/use-feed-attention-turn";
 import {
   Check,
   ChevronDown,
@@ -56,6 +58,7 @@ import { Button } from "@/components/ui/button";
 import { AgentHistorySidebar } from "@/components/agent/agent-history-sidebar";
 import { ConnectorsPanel } from "@/components/agent/connectors-panel";
 import { McpCallReviewCard, type McpChatReview } from "@/components/agent/mcp-call-review-card";
+import { FirstConnectInsightsCard } from "@/components/agent/first-connect-insights-card";
 import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
 import {
   AgentConnectionsDrawer,
@@ -123,6 +126,7 @@ import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import { SelectionChip } from "@/components/agent/selection-chip";
+import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
 import {
   AgentTurnStreamPanel,
@@ -137,8 +141,13 @@ import {
 import { describeSelection } from "@/lib/agent/describe-selection";
 import type { DriveBatchProgress, DriveCompilationUiState } from "@/lib/agent/drive-batch-progress";
 import { driveOwnerCompileKey, type DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
-import { useEntryWelcome, type EntryWelcome } from "@/lib/agent/use-entry-welcome";
-import { AgentFirstRunActions } from "@/components/agent/agent-first-run-actions";
+import { useEntryWelcome } from "@/lib/agent/use-entry-welcome";
+import { useChatOnboarding } from "@/lib/agent/chat-onboarding/use-chat-onboarding";
+import {
+  ChatOnboardingDailyTip,
+  ChatOnboardingTurns,
+  type ChatOnboardingBubbleMessage,
+} from "@/components/agent/chat-onboarding/chat-onboarding-transcript";
 import {
   parseAgentActivityExperience,
   personSelectionPrompt,
@@ -379,6 +388,8 @@ type AgentMessage = {
   errorNotice?: string;
   /** The stream was lost, not the turn: Retry checks history before resending. */
   lostTurn?: AgentLostTurn;
+  /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
+  followUps?: string[];
 };
 
 type AgentLostTurn = { conversationId: string; startedAtMs: number };
@@ -1407,78 +1418,6 @@ function AgentWelcomePanel({
     </section>
   );
 }
-
-/**
- * The one-time note shown right after setup. It is deliberately an ordinary
- * assistant message: same width cap, typography and spacing as AgentBubble's
- * assistant branch, with no card chrome. It used to be a 28px-radius hero card
- * with a 3xl heading and a "What's ready so far" summary, which read as a
- * different surface and told a brand-new person about setup they had not done.
- * It now offers the first actions instead: connect accounts, set up agents,
- * or ask one of the curated starters.
- */
-function PostSetupWelcomeCard({
-  name,
-  context,
-  prompts,
-  vaultOwnerToken,
-  hasPortfolioData,
-  disabled,
-  onPromptSelect,
-  onOpenConnector,
-  onNavigate,
-}: {
-  name: string;
-  context: EntryWelcome;
-  prompts: readonly string[];
-  vaultOwnerToken: string | null;
-  hasPortfolioData: boolean;
-  disabled: boolean;
-  onPromptSelect: (prompt: string) => void;
-  onOpenConnector: (
-    provider: "gmail" | "drive" | "calendar" | undefined,
-    trigger: HTMLButtonElement,
-  ) => void;
-  onNavigate: (href: string) => void;
-}) {
-  return (
-    <section
-      data-testid="post-setup-welcome-card"
-      aria-label="Welcome"
-      className="motion-step-enter flex w-full items-start justify-start"
-    >
-      <div className="min-w-0 max-w-[90%] sm:max-w-[min(82%,48rem)]">
-        <div className="px-1 py-2 text-sm leading-6 text-foreground">
-          <p className="font-semibold">Welcome, {name}.</p>
-          <p className="mt-2">
-            I’m One, your private agent. Connect what you want me to work with,
-            or set up an agent. You decide what I see and who it’s shared with.
-          </p>
-        </div>
-        <AgentFirstRunActions
-          vaultOwnerToken={vaultOwnerToken}
-          hasPortfolioData={hasPortfolioData}
-          memoryHasItems={context.status === "ready" && context.totalAttributes > 0}
-          disabled={disabled}
-          onOpenConnector={onOpenConnector}
-          onNavigate={onNavigate}
-        />
-        <div role="group" aria-label="Try asking" className="mt-4">
-          <p className="px-1 text-xs font-medium text-muted-foreground">Try asking</p>
-          <div className="mt-2">
-            <AgentPromptSuggestions
-              prompts={prompts}
-              disabled={disabled}
-              onPromptSelect={onPromptSelect}
-              align="start"
-            />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 
 function useAnimatedAssistantText(targetText: string, active: boolean) {
   const [displayedText, setDisplayedText] = useState(active ? "" : targetText);
@@ -3407,6 +3346,19 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     () => getWelcomePrompts(welcomePromptSetIndex),
     [welcomePromptSetIndex],
   );
+  // One's conversational onboarding replaces the old post-setup tile card.
+  const chatOnboarding = useChatOnboarding({
+    userId: user?.uid,
+    displayName: formatAgentDisplayName(user?.displayName, user?.email),
+    vaultKey,
+    vaultOwnerToken,
+    isVaultUnlocked,
+    startSignal: Boolean(postSetupWelcomeContext),
+    messages,
+    conversationId,
+    onFocusComposer: () => composerTextareaRef.current?.focus(),
+    visiblePrompts: welcomePrompts,
+  });
 
   useEffect(() => {
     if (welcomePromptSetInitializedRef.current) return;
@@ -5784,6 +5736,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             setPendingSpecialistDirective(directive);
           },
+          onFollowUpSuggestions: (followUps) => {
+            if (streamAbortController.signal.aborted) return;
+            updateMessage(assistantMessageId, (message) => ({ ...message, followUps }));
+          },
           onInterrupt: ({ conversationId: nextConversationId }) => {
             if (streamAbortController.signal.aborted) return;
             // AG-UI interrupts are the normal boundary for a visible action
@@ -5962,7 +5918,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
    */
   const sendFollowUpTurn = async (
     message: string,
-    extra: { consentContinuation?: AgentChatConsentContinuation } = {},
+    extra: {
+      consentContinuation?: AgentChatConsentContinuation;
+      feedAttention?: { itemId: string };
+      pkmContext?: string;
+    } = {},
   ) => {
     if (!hasChatAccess || !user?.uid) return;
     const userId = user.uid;
@@ -6023,6 +5983,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         userId,
         message,
         ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
+        ...(extra.feedAttention ? { feedAttention: extra.feedAttention } : {}),
+        ...(extra.pkmContext ? { pkmContext: extra.pkmContext } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -6569,6 +6531,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     return true;
   };
 
+  // "One has something for you": a fresh chat, the fixed status chip, then One
+  // writes its message about that one update, grounded in it and in memory.
+  useFeedAttentionTurn({
+    ownerId: user?.uid ?? null,
+    ready: hasChatAccess && Boolean(vaultKey),
+    start: (itemId) => {
+      // Same as a handoff: One is speaking, never behind the on-device Puppy
+      // header, and the first history load must not replace this chat.
+      setAgentSurface("one");
+      const shouldSkipInitialHistoryLoad = historyLoadKeyRef.current === null;
+      handleCreateNewChat();
+      skipInitialHistoryLoadRef.current = shouldSkipInitialHistoryLoad;
+      appendMessage({
+        id: `msg-${crypto.randomUUID()}-feed-attention`,
+        role: "user",
+        text: FEED_ATTENTION_LABEL,
+        timestamp: formatNow(),
+        status: "done",
+        kind: "selection",
+      });
+      enqueueWorkspaceOperation({
+        id: `feed-attention-${itemId}`,
+        run: async () => {
+          const userId = user?.uid;
+          const token = getVaultOwnerToken();
+          const key = vaultKeyRef.current;
+          const memory = userId && token && key
+            ? await loadAgentPkmContext({ userId, vaultOwnerToken: token, vaultKey: key, message: FEED_ATTENTION_LABEL })
+              .catch(() => EMPTY_PKM_CONTEXT)
+            : EMPTY_PKM_CONTEXT;
+          await sendFollowUpTurn(FEED_ATTENTION_LABEL, {
+            feedAttention: { itemId },
+            pkmContext: memory.text || undefined,
+          });
+        },
+      });
+    },
+  });
+
   const enqueueDelegateResult = (result: DelegateResult) => {
     enqueueWorkspaceOperation({
       id: `delegate-${crypto.randomUUID()}`,
@@ -6586,6 +6587,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const attachmentText = attachment?.isExpanded ? draftText : attachment?.text ?? null;
     const typedText = attachment?.isExpanded ? "" : draftText;
     if ((!typedText.trim() && !attachmentText?.trim()) || isVoiceConnecting || voiceActive) {
+      return;
+    }
+    // Only after the person chose "Something else" for their name, and only
+    // when it is name-shaped; anything else is an ordinary turn to One.
+    if (!attachment && chatOnboarding.captureComposerText(typedText)) {
+      setInput("");
       return;
     }
     // Enter (form submit) and the Send button both land here, so both bring
@@ -6788,6 +6795,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       }
       return true;
     }),
+  );
+  const visibleMessageIds = visibleMessages.map((message) => message.id);
+  const renderChatOnboarding = (slot: Parameters<typeof ChatOnboardingTurns>[0]["slot"]) => (
+    <ChatOnboardingTurns
+      controller={chatOnboarding}
+      slot={slot}
+      renderBubble={(message: ChatOnboardingBubbleMessage) => (
+        <AgentBubble message={message} userAvatarUrl={userAvatarUrl} userInitials={userInitials} />
+      )}
+      onConnect={(action, trigger) =>
+        action.kind === "connector"
+          ? openConnectorSurface(action.provider, trigger)
+          : router.push(action.href)
+      }
+    />
   );
   const trailingSpecialistLoadingMessages = pendingSpecialistDirective
     ? messages.filter(
@@ -7473,29 +7495,29 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : null}
 
-              {postSetupWelcomeContext ? (
-                <PostSetupWelcomeCard
-                  name={displayName}
-                  context={postSetupWelcomeContext}
-                  prompts={welcomePrompts}
-                  vaultOwnerToken={vaultOwnerToken}
-                  hasPortfolioData={hasPortfolioData}
-                  disabled={isChatLoading || isStreaming}
-                  onPromptSelect={handleWelcomePromptSelect}
-                  onOpenConnector={openConnectorSurface}
-                  onNavigate={(href) => router.push(href)}
-                />
+              {chatOnboarding.turns.length ? (
+                renderChatOnboarding({ kind: "top" })
               ) : !hasStartedConversation ? (
-                <AgentWelcomePanel
-                  name={displayName}
-                  prompts={welcomePrompts}
-                  disabled={isChatLoading || isStreaming}
-                  onPromptSelect={handleWelcomePromptSelect}
-                />
+                <>
+                  <AgentWelcomePanel
+                    name={displayName}
+                    prompts={welcomePrompts}
+                    disabled={isChatLoading || isStreaming}
+                    onPromptSelect={handleWelcomePromptSelect}
+                  />
+                  {chatOnboarding.dailyTip ? (
+                    <ChatOnboardingDailyTip
+                      tip={chatOnboarding.dailyTip}
+                      onUse={handleWelcomePromptSelect}
+                      onDismiss={chatOnboarding.dismissDailyTip}
+                    />
+                  ) : null}
+                </>
               ) : null}
 
               {visibleMessages.map((message) => (
                 <Fragment key={message.id}>
+                  {renderChatOnboarding({ kind: "before", messageId: message.id, visibleMessageIds })}
                   {message.kind === "selection" ? (
                     <SelectionChip label={message.text} />
                   ) : (
@@ -7729,11 +7751,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       onRetry={retryEmailDelivery}
                     />
                   ))}
+                  <AgentFollowUpSuggestions
+                    suggestions={visibleFollowUps(
+                      message, visibleMessages.at(-1)?.id, isChatLoading || isStreaming,
+                    )}
+                    onSelect={handleWelcomePromptSelect}
+                  />
                   {message.id === emailDraftAnchorMessageId
                     ? renderEmailDraftCard()
                     : null}
                 </Fragment>
               ))}
+              {renderChatOnboarding({ kind: "end", visibleMessageIds })}
 
               {walletWidgets.map((widget) =>
                 widget.kind === "list" ? (
@@ -7826,6 +7855,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   />
                 ),
               )}
+
+              <FirstConnectInsightsCard
+                ownerId={user?.uid ?? null}
+                vaultKey={vaultKey ?? null}
+                vaultOwnerToken={vaultOwnerToken ?? null}
+                enabled={hasChatAccess && !isPuppySurface}
+              />
 
               {pendingMcpReviews.slice(0, 1).map((review) => (
                 <McpCallReviewCard
@@ -8848,9 +8884,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           isVoiceConnecting
                         }
                         placeholder={
-                          composerExpanded
+                          chatOnboarding.composerPlaceholder ??
+                          (composerExpanded
                             ? "Write a longer message..."
-                            : "Message One..."
+                            : "Message One...")
                         }
                         rows={1}
                         className={

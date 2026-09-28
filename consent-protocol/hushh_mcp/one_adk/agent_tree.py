@@ -115,12 +115,17 @@ from hushh_mcp.one_adk.external_read_boundary import (
     after_external_read_tool,
     before_external_read_tool,
 )
+from hushh_mcp.one_adk.feed_attention import (
+    block_tools_during_feed_attention,
+    feed_attention_instruction,
+)
 from hushh_mcp.one_adk.finance_market_tools import (
     MARKET_QUOTES_TOOL_NAME,
     TICKER_NEWS_TOOL_NAME,
     get_market_quotes,
     get_ticker_news,
 )
+from hushh_mcp.one_adk.follow_up_suggestions import follow_up_instruction, suggest_follow_ups
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
 from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instruction
 from hushh_mcp.one_adk.registered_mcp_toolset import (
@@ -809,7 +814,8 @@ def _one_runtime_instruction(context: Any) -> str:
     """
     started_at = time.perf_counter()
     try:
-        return _compose_one_runtime_instruction(context)
+        state_getter = getattr(getattr(context, "state", None), "get", None)
+        return _compose_one_runtime_instruction(context) + follow_up_instruction(state_getter)
     finally:
         record_instruction_build((time.perf_counter() - started_at) * 1000)
 
@@ -957,6 +963,8 @@ def _compose_one_runtime_instruction(context: Any) -> str:
         )
     # The owner's answer to this person's information request, for one turn.
     consent_continuation_block = consent_continuation_instruction(state_getter)
+    # A push tap about one feed update: grounded only in that item, no tools.
+    consent_continuation_block += feed_attention_instruction(state_getter)
     pending_draft_instruction = pending_email_draft_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
@@ -2405,6 +2413,7 @@ def _one_roster_tools(
         propose_calendar_reschedule,
         propose_calendar_cancellation,
         propose_gmail_mailbox_change,
+        suggest_follow_ups,
     ]
     if _CRM_PRODUCT_AVAILABLE:
         tools.insert(tools.index(ask_consent_agent), ask_connected_systems_agent)
@@ -2439,10 +2448,18 @@ def build_one_root_agent(
 
 
 def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
-    """One's tool gate: a consent answer turn runs no tools; then the read boundary."""
-    return block_tools_during_consent_answer(tool_context) or before_external_read_tool(
-        tool, args, tool_context
+    """One's tool gate: a consent answer or feed-attention turn runs no tools; then the read boundary.
+
+    Follow-up suggestions read and act on nothing, so the post-read barrier does
+    not apply to them; identity is the application-owned function, never a name.
+    They stay blocked in consent-answer and feed-attention turns like every tool.
+    """
+    blocked = block_tools_during_consent_answer(tool_context) or block_tools_during_feed_attention(
+        tool_context
     )
+    if blocked or getattr(tool, "func", None) is suggest_follow_ups:
+        return blocked
+    return before_external_read_tool(tool, args, tool_context)
 
 
 def build_one_text_agent(

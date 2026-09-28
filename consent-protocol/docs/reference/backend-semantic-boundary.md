@@ -181,3 +181,16 @@ Any new semantic backend feature must declare:
 - phase of live eval required before promotion
 
 If a feature cannot provide that declaration, it is not agent-only compliant.
+
+### Declared: first-connect insights
+
+- Owning agent: `agent_one`, gene `one_first_connect_insights`.
+- Manifest path: `consent-protocol/hushh_mcp/agents/one/agent.yaml`.
+- Structured output: `FIRST_CONNECT_INSIGHTS_SCHEMA` in
+  `consent-protocol/hushh_mcp/services/first_connect_insights_service.py` (`items[]` of `kind`,
+  `label`, `memory_text`, `evidence`).
+- Validator: `validate_insights` rejects an item whole (unknown kind, empty or
+  over-long text, an email address) and caps at five; it never rewrites a field.
+  A model failure is recorded as `failed` and retried after an hour.
+- Live eval before promotion: none yet. Mocked contract tests only; extraction
+  quality on real mailboxes and calendars is unmeasured.
