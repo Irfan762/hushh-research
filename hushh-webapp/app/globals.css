@@ -2290,10 +2290,14 @@ body:has(.profile-account-content)
 }
 
 /* A compact 36px control keeps an uncluttered silhouette and a 44px hit area. */
-.agent-chat-workspace [data-chat-new-button] {
+/* The history drawer is portalled to <body> (it spans the full viewport above
+ * the bottom bar), so its New chat button is reached through the drawer too. */
+.agent-chat-workspace [data-chat-new-button],
+[data-agent-history-drawer] [data-chat-new-button] {
   position: relative;
 }
-.agent-chat-workspace [data-chat-new-button]::after {
+.agent-chat-workspace [data-chat-new-button]::after,
+[data-agent-history-drawer] [data-chat-new-button]::after {
   content: "";
   position: absolute;
   inset: -4px 0;

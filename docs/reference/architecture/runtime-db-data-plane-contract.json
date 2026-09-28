@@ -1234,7 +1234,7 @@
       "exact_tables": [
         "account_legal_acceptances"
       ],
-      "primary_access_path": "GET/POST /api/account/legal-acceptance (Firebase-authenticated, not vault-gated). The web and native app records acceptance at sign-in and after the Terms of Use or Privacy Policy version changes; reads return the latest acceptance of each document.",
+      "primary_access_path": "GET/POST /api/account/legal-acceptance (Firebase-authenticated, not vault-gated). The web and native app records acceptance of the served Terms of Use and Privacy Policy versions silently at each successful sign-in (the sign-in screen links both documents); there is no in-app re-acceptance prompt. Reads return the latest acceptance of each document.",
       "retention_policy": "Append-only history: one row per person, document, version and effective date. Re-accepting a recorded version keeps the original accepted_at. Kept across account reset.",
       "deletion_behavior": "Delete rows where the deleting account is user_id on full account deletion (explicit DELETE; no foreign key, because acceptance precedes the actor profile).",
       "trust_boundary": "Document id, version and effective-date labels, surface (web or native) and a server timestamp, keyed by the Firebase UID from the verified token. Carries no user information and grants no access.",

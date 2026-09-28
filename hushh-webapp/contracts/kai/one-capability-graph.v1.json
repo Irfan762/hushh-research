@@ -880,7 +880,7 @@
         "requires_trusted_tap": false,
         "surface": null
       },
-      "description": "Opens the inline Terms document on the Login screen without leaving sign-in.",
+      "description": "Opens the full Terms of Use page. Back returns to sign-in.",
       "execution": {
         "binding_ref": "semantic_action:auth.open_terms",
         "executor": {
@@ -1018,7 +1018,7 @@
         "requires_trusted_tap": false,
         "surface": null
       },
-      "description": "Opens the inline Privacy Policy document on the Login screen without leaving sign-in.",
+      "description": "Opens the full Privacy Policy page. Back returns to sign-in.",
       "execution": {
         "binding_ref": "semantic_action:auth.open_privacy",
         "executor": {
@@ -1108,145 +1108,6 @@
       "search_keywords": [
         "privacy",
         "policy",
-        "legal"
-      ],
-      "settlement_proof": "directive_ledger_settlement",
-      "side_effect": {
-        "classification": "client_semantic_action"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Close legal document",
-        "close terms",
-        "close privacy policy",
-        "close legal document"
-      ],
-      "authorization": {
-        "guard_ids": [],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "auth.close_legal",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Closes the inline legal document and returns to the Login screen.",
-      "execution": {
-        "binding_ref": "semantic_action:auth.close_legal",
-        "executor": {
-          "kind": "existing_ui_semantic_action",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "EXECUTE",
-        "target": {
-          "path": "local_handler",
-          "status": "wired",
-          "target": "auth.close_legal"
-        }
-      },
-      "goal_id": "goal.auth.close_legal",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Close legal document",
-      "navigation": {
-        "fallback": "auth.close_legal",
-        "routes": [
-          "/login"
-        ],
-        "screens": [
-          "login"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": null,
-      "required_entities": [],
-      "search_keywords": [
-        "close",
-        "terms",
-        "privacy",
         "legal"
       ],
       "settlement_proof": "directive_ledger_settlement",
@@ -38242,7 +38103,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "c7270848742323ecdba2ecfbc6b52d6e7b9b239b3948923e7391ba9c67769f31",
+      "projection_digest": "663b999a4d890eef1cfb546fa88c48371016ed1a0efd63697a06e32f124ce139",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -38252,7 +38113,7 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+        "capability_graph_evolution": "cf351241d87eee4484eb9ee0d55d1e2542d06ef23fd4820095550a8c51e966ee",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
         "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
@@ -38261,7 +38122,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "9efa111de2343b9f",
+      "source_revision": "cccecbbc8438b3aa",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -39779,7 +39640,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "9efa111de2343b9f",
+    "source_revision": "cccecbbc8438b3aa",
     "web": {
       "actions": [
         {
@@ -39822,7 +39683,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "a19fbd03f6f38b13b643082a0fecbff2e10655c9d707e77e613a32afb7f99985",
+      "projection_digest": "f763167475ff8b0576acbbf3b3c35d1ce9ee297e9a38aed2ac1e489794e67268",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -39832,7 +39693,7 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+        "capability_graph_evolution": "cf351241d87eee4484eb9ee0d55d1e2542d06ef23fd4820095550a8c51e966ee",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
         "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
@@ -39841,7 +39702,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "9efa111de2343b9f",
+      "source_revision": "cccecbbc8438b3aa",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -41398,7 +41259,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "9efa111de2343b9f",
+  "revision": "cccecbbc8438b3aa",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -41629,7 +41490,6 @@
     },
     {
       "action_ids": [
-        "auth.close_legal",
         "auth.open_privacy",
         "auth.open_terms",
         "auth.sign_in_apple",
@@ -43110,7 +42970,7 @@
     "changed": [],
     "compatible": [],
     "deprecated": [],
-    "from_revision": "6a2a7c280f69e9e0",
+    "from_revision": "9e0e176fc7891c1d",
     "migrated": [],
     "removed": []
   },
@@ -45584,21 +45444,21 @@
     }
   ],
   "source_digests": {
-    "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+    "capability_graph_evolution": "cf351241d87eee4484eb9ee0d55d1e2542d06ef23fd4820095550a8c51e966ee",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
+    "kai_action_gateway": "0586a94b7bd31a1f0838849ee28bdc0108515c57bd8e6204fe1c9c86261c38dc",
     "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "054141b4aaf04ef13ce9bd139a1044287be8703c1e65015cc338a970d4fa51ed",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
     "product_agent_registry": "9de364492a371c7b7e7b70de84ad95a67e0fed6603e1375d173a6fa91ee2976e",
-    "route_orchestration_index": "32541d80681e09bedaa416fa22b8dbcc3e690c228153bc7d5ff2c37e2ea33d0a",
+    "route_orchestration_index": "1eec184384671a0a1ad75b760ddae45996d04563ce31b1b9c7568937d6c7957a",
     "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
   },
-  "source_revision": "9efa111de2343b9f",
+  "source_revision": "cccecbbc8438b3aa",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "9efa111de2343b9f",
+    "current_graph_revision": "cccecbbc8438b3aa",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
@@ -45633,6 +45493,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45693,6 +45554,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45753,6 +45615,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45813,6 +45676,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45873,6 +45737,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45933,6 +45798,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
@@ -45993,6 +45859,7 @@
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",

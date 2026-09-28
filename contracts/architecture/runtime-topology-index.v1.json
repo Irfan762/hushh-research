@@ -671,7 +671,7 @@
       "id": "account_legal_acceptance",
       "lifecycle_status": "current",
       "owner": "iam-consent-governance",
-      "primary_access_path": "GET/POST /api/account/legal-acceptance (Firebase-authenticated, not vault-gated). The web and native app records acceptance at sign-in and after the Terms of Use or Privacy Policy version changes; reads return the latest acceptance of each document."
+      "primary_access_path": "GET/POST /api/account/legal-acceptance (Firebase-authenticated, not vault-gated). The web and native app records acceptance of the served Terms of Use and Privacy Policy versions silently at each successful sign-in (the sign-in screen links both documents); there is no in-app re-acceptance prompt. Reads return the latest acceptance of each document."
     },
     {
       "data_class": "personal_metadata",
@@ -2347,7 +2347,6 @@
       "semantic_routes": [],
       "voice": {
         "action_ids": [
-          "auth.close_legal",
           "auth.open_privacy",
           "auth.open_terms",
           "auth.sign_in_apple",
@@ -5782,21 +5781,21 @@
   "schema_version": "hushh.runtime_topology_index.v1",
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
-    "action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
+    "action_gateway": "0586a94b7bd31a1f0838849ee28bdc0108515c57bd8e6204fe1c9c86261c38dc",
     "agent_registry": "9de364492a371c7b7e7b70de84ad95a67e0fed6603e1375d173a6fa91ee2976e",
     "cache_manifest": "7ed4a0cf2f8504a940b59e874ccde800cf3feead6c5fab7e8f00daa26c629e3c",
-    "data_plane": "e1e1bc9d5ca90a9cba5fa6653fac4e37031d21babd251dcacc002b8ac8592c82",
+    "data_plane": "de7c4f9c35a07c682654a159b7efe0a667cbd25c71ad9172895edc6039148ed8",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "4d5f3976e18455d72d5f0de6b22275ae56a474e03d87288022601bd380ccd37e",
-    "route_index": "32541d80681e09bedaa416fa22b8dbcc3e690c228153bc7d5ff2c37e2ea33d0a",
-    "route_layout": "bf27cb356d362e27a3d23e74d37c41f10eea9e669c0a26ea2b6130543f43eee5",
-    "surface_map": "abe49b9d98bf2fee3b51c9c77aa2fc67ba9b280196f5c4f72fc84ea6ca3132f2",
+    "route_index": "1eec184384671a0a1ad75b760ddae45996d04563ce31b1b9c7568937d6c7957a",
+    "route_layout": "56e7a5a178110f385eefa31a83f1a08a88faadf9c7ada48ce113be39ea7c9905",
+    "surface_map": "200b28d1ec2e52df0233d778c9f95cc97b0517fc890f36218dd6cc3ffa88443c",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
   "summary": {
     "a2a_scope_gated_agents": 5,
-    "actions": 231,
+    "actions": 230,
     "agents": 19,
     "aliases": 4,
     "decision_required": 2,

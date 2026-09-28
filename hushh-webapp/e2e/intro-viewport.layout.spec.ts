@@ -75,3 +75,35 @@ for (const theme of ["light", "dark"]) {
     });
   }
 }
+
+// Terms and Privacy on sign-in are plain links to the full pages, in the same
+// tab, never an in-app popup. Back returns to sign-in.
+test("sign-in Terms and Privacy open their full pages, not a popup", async ({ page }) => {
+  await page.setViewportSize({ width: 402, height: 874 });
+  await page.goto("/login");
+  const footer = page.getByTestId("auth-step-primary").locator("[data-auth-supporting-content]");
+
+  const terms = footer.getByRole("link", { name: "Terms", exact: true });
+  const privacy = footer.getByRole("link", { name: "Privacy Policy", exact: true });
+  await expect(terms).toHaveAttribute("href", "/terms");
+  await expect(privacy).toHaveAttribute("href", "/privacy");
+  await expect(terms).not.toHaveAttribute("target", /.+/);
+  await expect(terms).toHaveCSS("font-size", "13px");
+  await expect(footer.getByRole("button")).toHaveCount(0);
+
+  await terms.click();
+  await expect(page).toHaveURL(/\/terms\/?$/);
+  await expect(page.getByTestId("legal-terms-page")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+
+  await page.goBack();
+  await expect(page).toHaveURL(/\/login\/?$/);
+  await page
+    .getByTestId("auth-step-primary")
+    .locator("[data-auth-supporting-content]")
+    .getByRole("link", { name: "Privacy Policy", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/privacy\/?$/);
+  await expect(page.getByTestId("legal-privacy-page")).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
