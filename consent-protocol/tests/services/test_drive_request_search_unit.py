@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from hushh_mcp.services import drive_owner_search_service as search_module
@@ -381,6 +382,55 @@ async def test_shortcut_provider_transient_is_not_a_complete_unavailable_target(
     with pytest.raises(DriveReadError, match="provider_unavailable") as error:
         await service._page({"user_id": "owner", "checkpoint": _checkpoint()})
     assert error.value.retryable
+
+
+@pytest.mark.parametrize("reason", ["rateLimitExceeded", "userRateLimitExceeded"])
+async def test_http_rate_limited_shortcut_lookup_retries_page_without_publishing_exclusion(
+    monkeypatch, reason
+):
+    service, _ = _real_rest_service(monkeypatch, lambda *_: None)
+    service.transport.adapter = GoogleDriveAdapter()
+    original = httpx.AsyncClient
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        if request.url.path.endswith("/files"):
+            payload = {
+                "files": [
+                    _provider_file(
+                        "alias",
+                        "Standup 2026/09/26 - Notes",
+                        search_module.SHORTCUT_MIME,
+                        shortcutDetails={
+                            "targetId": "original",
+                            "targetMimeType": "application/vnd.google-apps.document",
+                        },
+                    )
+                ]
+            }
+            return httpx.Response(200, stream=httpx.ByteStream(json.dumps(payload).encode()))
+        payload = {"error": {"code": 403, "errors": [{"reason": reason}]}}
+        return httpx.Response(403, stream=httpx.ByteStream(json.dumps(payload).encode()))
+
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: original(**kw, transport=httpx.MockTransport(handler))
+    )
+    checkpoint = _checkpoint()
+    job = {"job_id": "synthetic-job", "user_id": "owner", "checkpoint": checkpoint}
+    store = SimpleNamespace(
+        claim=AsyncMock(return_value=job),
+        require_current=AsyncMock(),
+        commit_page=AsyncMock(),
+        release=AsyncMock(return_value="queued"),
+    )
+    service.store = store
+    assert await service.run_one(user_id="owner", job_id="synthetic-job") == "queued"
+    store.commit_page.assert_not_awaited()
+    store.release.assert_awaited_once_with(job, error="provider_unavailable", retryable=True)
+    assert checkpoint["coverage_counts"] == {}
+    assert checkpoint["phase"] == "user" and checkpoint["page_token"] is None
+    assert len(requests) == 2 and all(request.method == "GET" for request in requests)
 
 
 async def test_unavailable_folder_and_traversal_limits_cannot_claim_completeness(monkeypatch):

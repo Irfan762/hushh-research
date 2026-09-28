@@ -27,14 +27,16 @@ from hushh_mcp.services.google_drive_adapter import (
     RESOURCE_KEY,
     SUPPORTED_TYPES,
     DriveReadError,
+    retryable_403_response,
+)
+from hushh_mcp.services.google_drive_adapter import (
+    ERROR_RESPONSE_LIMIT as ERROR_RESPONSE_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
 
 DEADLINE_SECONDS = 20
 RESPONSE_LIMIT = 256 * 1024
-ERROR_RESPONSE_LIMIT = 16 * 1024
-RETRYABLE_403_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 PAGE_LIMIT = 3
 PERMISSION_LIMIT = 200
 FILE_FIELDS = (
@@ -77,35 +79,6 @@ def _unknown() -> DrivePermissionError:
 
 def _invalid(mutation: bool = False) -> DrivePermissionError:
     return _unknown() if mutation else DrivePermissionError("permission_response_invalid")
-
-
-async def _retryable_403(response: httpx.Response) -> bool:
-    """Read only bounded reason codes; provider messages never leave this scope."""
-    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
-        return False
-    data = bytearray()
-    async for chunk in response.aiter_raw():
-        if len(data) + len(chunk) > ERROR_RESPONSE_LIMIT:
-            return False
-        data.extend(chunk)
-    try:
-        result = json.loads(data)
-    except (ValueError, UnicodeError, RecursionError):
-        return False
-    error = result.get("error") if isinstance(result, dict) else None
-    if not isinstance(error, dict) or type(error.get("code")) is not int or error["code"] != 403:
-        return False
-    reasons = error.get("errors")
-    return (
-        isinstance(reasons, list)
-        and 1 <= len(reasons) <= 16
-        and all(
-            isinstance(item, dict)
-            and isinstance(item.get("reason"), str)
-            and item["reason"] in RETRYABLE_403_REASONS
-            for item in reasons
-        )
-    )
 
 
 def _identifier(value: object) -> str:
@@ -324,7 +297,7 @@ class GoogleDrivePermissionAdapter:
                             status = response.status_code
                             if status == 401:
                                 raise DrivePermissionError("reconnect_required")
-                            if status == 403 and await _retryable_403(response):
+                            if status == 403 and await retryable_403_response(response):
                                 # Reads can back off safely. A dispatched write
                                 # still requires reconciliation, never a blind POST retry.
                                 if mutation:

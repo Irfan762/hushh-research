@@ -26,6 +26,8 @@ logger = drive_logger(__name__)
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 DRIVE_BASE = "https://www.googleapis.com/drive/v3"
 METADATA_LIMIT = 256 * 1024
+ERROR_RESPONSE_LIMIT = 16 * 1024
+RETRYABLE_403_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 CONTENT_LIMIT = 4 * 1024 * 1024
 DEADLINE_SECONDS = 20
 MAX_SELECTION = 25
@@ -172,6 +174,35 @@ def _file_path(file_id: str) -> str:
     if not isinstance(file_id, str) or not FILE_ID.fullmatch(file_id):
         raise DriveReadError("invalid_selection")
     return f"/files/{file_id}"
+
+
+async def retryable_403_response(response: httpx.Response) -> bool:
+    """Read bounded reason codes without releasing provider messages or content."""
+    if response.headers.get("Content-Encoding", "identity").lower() != "identity":
+        return False
+    data = bytearray()
+    async for chunk in response.aiter_raw():
+        if len(data) + len(chunk) > ERROR_RESPONSE_LIMIT:
+            return False
+        data.extend(chunk)
+    try:
+        result = json.loads(data)
+    except (ValueError, UnicodeError, RecursionError):
+        return False
+    error = result.get("error") if isinstance(result, dict) else None
+    if not isinstance(error, dict) or type(error.get("code")) is not int or error["code"] != 403:
+        return False
+    reasons = error.get("errors")
+    return (
+        isinstance(reasons, list)
+        and 1 <= len(reasons) <= 16
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("reason"), str)
+            and item["reason"] in RETRYABLE_403_REASONS
+            for item in reasons
+        )
+    )
 
 
 def _resource_keys(value: dict[str, str] | None) -> None:
@@ -359,6 +390,10 @@ class GoogleDriveAdapter:
             ):
                 if response.status_code == 401:
                     raise DriveReadError("reconnect_required")
+                if response.status_code == 403 and await retryable_403_response(response):
+                    # A rate-limited metadata read is not evidence that a
+                    # shortcut target is unavailable. Retry the same durable page.
+                    raise DriveReadError("provider_unavailable", retryable=True)
                 if response.status_code in {403, 404, 410}:
                     raise DriveReadError("source_unavailable")
                 if response.status_code == 429 or response.status_code >= 500:
