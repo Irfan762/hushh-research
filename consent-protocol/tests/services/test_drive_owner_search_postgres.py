@@ -113,6 +113,46 @@ def sql(store, statement, params=None):
         return connection.execute(text(statement), params or {})
 
 
+async def test_owner_coverage_dedup_and_resource_key_stay_encrypted(store):
+    state = checkpoint()
+    state.update(
+        coverage_manifest={
+            "corpora": ["user", "member_shared_drives"],
+            "fileKind": "document",
+            "requestedPeriod": {"start": "2026-06-28", "end": "2026-09-28", "timezone": "UTC"},
+            "dateBasis": "title_date_then_created_or_modified",
+            "contentPeriodVerified": False,
+        },
+        coverage_counts={"providerRowsScanned": 2, "excludedByDateCount": 3},
+        folder_queue=[{"id": "private-folder", "resourceKey": "private-folder-key"}],
+    )
+    job_state, _ = await store.create(
+        user_id="owner",
+        client_request_id=str(uuid4()),
+        request={"query": "Synthetic"},
+        checkpoint=state,
+        confirmed=True,
+    )
+    job = await store.claim(user_id="owner", job_id=job_state["jobId"])
+    item = {**result(1), "resourceKey": "private-file-key"}
+    await store.commit_page(job, checkpoint=state, files=[item])
+    completed = await store.commit_page(job, checkpoint=state, files=[item], done=True)
+    assert completed["matched"] == 1 and completed["coverage"]["deduplicatedCount"] == 1
+    assert completed["coverage"]["providerPagesExhausted"] is True
+    assert completed["coverage"]["excludedByDateCount"] == 3
+    assert "private-folder" not in json.dumps(completed)
+    page = await store.results(user_id="owner", job_id=job_state["jobId"])
+    assert "resourceKey" not in page["files"][0]
+    saved = await store.reference(user_id="owner", job_id=job_state["jobId"], position=1)
+    assert saved["resourceKey"] == "private-file-key"
+    encoded = sql(
+        store,
+        "SELECT checkpoint_envelope::text FROM drive_owner_search_jobs WHERE job_id=:job",
+        {"job": job_state["jobId"]},
+    ).scalar_one()
+    assert "private-folder" not in encoded and "private-folder-key" not in encoded
+
+
 async def test_thousand_results_checkpoint_every_page_and_resume_new_worker_instances(store):
     state, _ = await create(store)
     calls, concurrency = [], {"active": 0, "peak": 0}

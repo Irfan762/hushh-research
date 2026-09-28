@@ -126,7 +126,7 @@ import {
   revokeVaultBanksBeforeErasure,
 } from "@/lib/flows/delete-account";
 import { buildLoginRouteWithAuthSessionNotice } from "@/lib/auth/session-invalidation";
-import { ROUTES } from "@/lib/navigation/routes";
+import { normalizeInvitationReturnTo, ROUTES } from "@/lib/navigation/routes";
 import { WALLET_CARD_COPY } from "@/components/wallet-card/wallet-card-copy";
 import { isWalletCardEntryEnabled } from "@/components/wallet-card/wallet-card-entry";
 import {
@@ -405,12 +405,7 @@ function normalizeSupportKind(value: string | null): SupportMessageKind | null {
 }
 
 function normalizeProfileVaultReturnTo(value: string | null): string | null {
-  const normalized = String(value ?? "").trim();
-  if (!normalized) return null;
-  if (normalized.startsWith(`${ROUTES.ONE_LOCATION}/invite/`)) {
-    return normalized;
-  }
-  return null;
+  return normalizeInvitationReturnTo(value);
 }
 
 function _formatProfileInventoryBadge(

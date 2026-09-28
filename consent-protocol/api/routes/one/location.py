@@ -67,6 +67,9 @@ from hushh_mcp.services.one_location_place_rating_service import (
 )
 
 router = APIRouter(prefix="/api/one", tags=["One Location Agent"])
+# Invitation presentation is not a protected Location workflow capability.
+# Mount it separately in the One API, like the existing public People router.
+public_router = APIRouter(prefix="/api/one", tags=["One Location Invitations"])
 
 logger = logging.getLogger(__name__)
 
@@ -371,6 +374,15 @@ def _circle_command_kwargs(
 
 class NamedCircleCodeRequest(_CamelModel):
     code: str = Field(min_length=12, max_length=32)
+
+
+class PublicNamedCirclePreview(_CamelModel):
+    name: str
+    owner_display_name: str = Field(alias="ownerDisplayName")
+
+
+class PublicNamedCirclePreviewResponse(_CamelModel):
+    circle: PublicNamedCirclePreview
 
 
 class CircleMemberPageItem(_CamelModel):
@@ -1177,6 +1189,24 @@ def create_named_location_circle_code(
                 rotate=rotate,
             )
         }
+    except Exception as exc:
+        raise _handle_error(exc) from exc
+
+
+@public_router.post(
+    "/location/circle-codes/public-preview", response_model=PublicNamedCirclePreviewResponse
+)
+@limiter.limit(RateLimits.ONE_LOCATION_CIRCLE_JOIN)
+def public_preview_named_location_circle_code(
+    request: Request,
+    payload: NamedCircleCodeRequest,
+    response: Response,
+):
+    """Bounded anonymous link preview. Resolve and join remain authenticated."""
+    del request
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return {"circle": _circle_service().preview_public_invite_code(code=payload.code)}
     except Exception as exc:
         raise _handle_error(exc) from exc
 

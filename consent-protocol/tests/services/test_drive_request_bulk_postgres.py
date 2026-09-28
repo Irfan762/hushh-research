@@ -294,6 +294,154 @@ def _recipient(user_id, email):
     }
 
 
+async def _approved_request(bulk, sharing, count):
+    request = await _request(sharing)
+    review = await bulk.create_review(
+        user_id="owner",
+        search_job_id=_search(bulk, request_id=request["requestId"], count=count),
+        client_request_id=str(uuid4()),
+        recipients=[_recipient("recipient", "b@example.invalid")],
+        excluded=[],
+        origin_request_id=request["requestId"],
+    )
+    await bulk.approve(
+        user_id="owner",
+        share_id=review["shareId"],
+        revision=review["revision"],
+        review_digest=review["reviewDigest"],
+    )
+    delivery = DriveSharingService(
+        oauth=SimpleNamespace(lifecycle=SimpleNamespace(db=sharing.db)),
+        store=DriveSuggestionStore(db=sharing.db),
+        verify_recipient=AsyncMock(),
+    )
+    return request, review, delivery
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "state,reason,can_retry",
+    [
+        ("skipped", "provider_unavailable", True),
+        ("skipped", "source_not_shareable", False),
+        ("present_unattributed", "permission_outcome_unknown", False),
+    ],
+)
+async def test_72_selected_files_account_for_the_missing_one_without_leaking_it(
+    request_bulk, sharing, state, reason, can_retry
+):
+    request, review, delivery = await _approved_request(request_bulk, sharing, 72)
+    share = review["shareId"]
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_bulk_share_effects
+        SET state=CASE WHEN position<=62 THEN 'succeeded' WHEN position<=71 THEN 'preexisting' ELSE :state END,
+            safe_error_code=CASE WHEN position=72 THEN :reason ELSE NULL END
+        WHERE share_id=:share"""),
+            {"share": share, "state": state, "reason": reason},
+        )
+        request_bulk._finalize(connection, share)
+    owner = await request_bulk.review(user_id="owner", share_id=share)
+    assert owner["status"] == "partial"
+    assert owner["counts"]["shared"] == 62 and owner["counts"]["alreadyShared"] == 9
+    assert owner["counts"]["total"] == 72 and owner["counts"]["failed"] == 0
+    assert (
+        sum(
+            owner["counts"][key]
+            for key in (
+                "shared",
+                "alreadyShared",
+                "skipped",
+                "failed",
+                "needsReview",
+                "unknown",
+                "pending",
+            )
+        )
+        == 72
+    )
+    assert owner["issues"] == [{"reasonCode": reason, "count": 1}]
+    assert owner["canRetry"] is can_retry
+    # A sees the unavailable original and its exact outcome; B sees only the
+    # aggregate explanation and 71 confirmed originals, never its private name.
+    owner_page = await request_bulk.files(
+        user_id="owner", share_id=share, cursor=request_bulk._cursor("owner", share, 50)
+    )
+    missing = owner_page["files"][-1]
+    assert missing["position"] == 72
+    assert missing["outcomes"] == [{"status": state, "reasonCode": reason}]
+    received = await delivery.delivery(user_id="recipient", request_id=request["requestId"])
+    assert received["bulkStatus"] == "partial"
+    assert received["counts"] == owner["counts"]
+    assert received["sharedCount"] == 71 and received["issues"] == owner["issues"]
+    page = await delivery.delivery_files(
+        user_id="recipient",
+        request_id=request["requestId"],
+        cursor=request_bulk._cursor("recipient", share, 50),
+    )
+    assert len(page["files"]) == 21 and missing["name"] not in {
+        item["name"] for item in page["files"]
+    }
+    with pytest.raises(DriveSharingError, match="request_unavailable"):
+        await delivery.delivery(user_id="trusted-member", request_id=request["requestId"])
+    with pytest.raises(DriveSharingError, match="bulk_changed"):
+        await request_bulk.retry(
+            user_id="owner",
+            share_id=share,
+            revision=owner["revision"] - 1,
+            review_digest=owner["reviewDigest"],
+        )
+    if not can_retry:
+        with pytest.raises(DriveSharingError, match="bulk_changed"):
+            await request_bulk.retry(
+                user_id="owner",
+                share_id=share,
+                revision=owner["revision"],
+                review_digest=owner["reviewDigest"],
+            )
+        return
+    retried = await request_bulk.retry(
+        user_id="owner",
+        share_id=share,
+        revision=owner["revision"],
+        review_digest=owner["reviewDigest"],
+    )
+    assert retried["reviewDigest"] == owner["reviewDigest"]
+    assert retried["counts"]["shared"] == 62 and retried["counts"]["alreadyShared"] == 9
+    assert retried["counts"]["pending"] == 1 and retried["counts"]["processed"] == 71
+    pending = await delivery.delivery(user_id="recipient", request_id=request["requestId"])
+    assert pending["bulkStatus"] == "queued" and pending["counts"]["pending"] == 1
+    job = await request_bulk.claim(
+        user_id="owner", share_id=share, position=72, recipient_user_id="recipient"
+    )
+    assert job is not None and job["file"]["name"] == missing["name"]
+    await request_bulk.mark_dispatching(job)
+    await request_bulk.settle(job, state="succeeded", receipt={"managed": True})
+    final = await delivery.delivery(user_id="recipient", request_id=request["requestId"])
+    assert final["bulkStatus"] == final["status"] == "completed"
+    assert final["sharedCount"] == 72 and final["issues"] == []
+
+
+@pytest.mark.asyncio
+async def test_stop_keeps_inflight_result_and_finishes_origin_request(request_bulk, sharing):
+    request, review, delivery = await _approved_request(request_bulk, sharing, 2)
+    job = await request_bulk.claim(
+        user_id="owner", share_id=review["shareId"], position=1, recipient_user_id="recipient"
+    )
+    await request_bulk.mark_dispatching(job)
+    stopped = await request_bulk.stop(user_id="owner", share_id=review["shareId"])
+    assert stopped["counts"]["skipped"] == stopped["counts"]["pending"] == 1
+    assert (await sharing.request_status(user_id="owner", request_id=request["requestId"]))[
+        "status"
+    ] == "approved"
+    await request_bulk.settle(job, state="succeeded", receipt={"managed": True})
+    final = await delivery.delivery(user_id="recipient", request_id=request["requestId"])
+    assert final["status"] == "partial" and final["bulkStatus"] == "stopped"
+    assert final["counts"]["shared"] == final["counts"]["skipped"] == 1
+    assert final["counts"]["pending"] == 0
+    assert final["issues"] == [{"reasonCode": "stopped", "count": 1}]
+
+
 @pytest.mark.asyncio
 async def test_request_freezes_all_525_matches_for_only_b(request_bulk, sharing):
     request = await _request(sharing)

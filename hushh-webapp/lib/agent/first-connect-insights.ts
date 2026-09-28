@@ -9,11 +9,7 @@
  * drops it from the screen. Nothing reaches memory any other way.
  */
 
-import { addToPKM, clearAgentPkmContext, isReservedPkmCard } from "@/lib/agent/agent-pkm-memory";
-import { AgentPkmContextStore } from "@/lib/agent/agent-pkm-context-store";
-import { prepareNaturalLanguagePkm } from "@/lib/pkm/pkm-natural-language-ingestion";
-import { loadPkmAgentLabContext } from "@/lib/profile/pkm-agent-lab-capture";
-import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
+import { connectorMemorySharingImpact, prepareConnectorMemoryReview, saveConnectorMemoryReview } from "@/lib/agent/connector-memory-review";
 import { ApiService } from "@/lib/services/api-service";
 import { oneChatKeyHeaders } from "@/lib/vault/one-chat-key";
 
@@ -128,55 +124,23 @@ export async function keepFirstConnectInsight(input: {
   const message = input.memoryText.trim();
   if (!message) return { status: "nothing_to_save" };
   try {
-    const labContext = await loadPkmAgentLabContext({
-      userId: input.userId,
-      vaultOwnerToken: input.vaultOwnerToken,
-    });
-    await input.assertCurrent();
-    const prepared = await prepareNaturalLanguagePkm({
-      userId: input.userId,
+    const { cards, incomplete } = await prepareConnectorMemoryReview({
+      ...input,
       message,
-      currentDomains: (labContext.metadata?.domains || []).map((domain) => domain.key),
-      currentManifests: Object.values(labContext.manifests || {}).filter(Boolean),
-      vaultOwnerToken: input.vaultOwnerToken,
       source: FIRST_CONNECT_INSIGHTS_SOURCE,
-      allowEmpty: true,
-      findDuplicate: (candidate) =>
-        AgentPkmContextStore.findLocalDuplicate({ userId: input.userId, candidate }),
-      beforeEffect: input.assertCurrent,
-      isEffectCurrent: input.isCurrent,
     });
-    await input.assertCurrent();
-    const cards = prepared.cards.filter(
-      (card) =>
-        card.write_mode !== "do_not_save" && !isReservedPkmCard(card) && !isDegradedPreviewCard(card),
-    );
-    if (cards.length === 0) return { status: "nothing_to_save" };
-    const recipientCount = Math.max(
-      0,
-      ...cards.map((card) => card.sharing_impact?.active_recipient_count || 0),
-    );
+    if (cards.length === 0) return { status: incomplete ? "failed" : "nothing_to_save" };
+    const recipientCount = connectorMemorySharingImpact(cards);
     if (recipientCount > 0 && !input.sharingImpactAcknowledged) {
       return { status: "needs_sharing_ack", recipientCount };
     }
-    const result = await addToPKM({
-      userId: input.userId,
+    const result = await saveConnectorMemoryReview({
+      ...input,
       cards,
-      sourceMessage: message,
-      vaultKey: input.vaultKey,
-      vaultOwnerToken: input.vaultOwnerToken,
+      message,
       source: FIRST_CONNECT_INSIGHTS_SOURCE,
-      beforeEffect: input.assertCurrent,
-      mayPublish: input.isCurrent,
-      confirmation: {
-        confirmedByUser: true,
-        surface: "chat",
-        source: FIRST_CONNECT_INSIGHTS_SOURCE,
-        sharingImpactAcknowledged: recipientCount > 0 ? input.sharingImpactAcknowledged === true : false,
-      },
     });
-    if (result.saved > 0) {
-      clearAgentPkmContext(input.userId);
+    if (result && result.saved > 0 && result.failed === 0 && !incomplete) {
       return { status: "saved" };
     }
     return { status: "failed" };

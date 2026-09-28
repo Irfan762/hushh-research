@@ -22,6 +22,7 @@ from .google import router as google_router
 from .information_chat import router as information_chat_router
 from .information_requests import router as information_requests_router
 from .insurance_agents import router as insurance_agents_router
+from .location import public_router as public_location_router
 from .location import router as location_router
 from .location_chat import router as location_chat_router
 from .location_settings import router as location_settings_router
@@ -58,6 +59,7 @@ router.include_router(first_connect_insights_router)
 router.include_router(models_router)
 router.include_router(agent_feedback_router)
 router.include_router(location_router)
+router.include_router(public_location_router)
 router.include_router(location_chat_router)
 router.include_router(location_settings_router)
 router.include_router(information_chat_router)
