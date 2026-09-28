@@ -4,6 +4,10 @@
 export const OAUTH_POPUP_FEATURES =
   "popup=yes,width=520,height=720,resizable=yes,scrollbars=yes";
 
+/** Shown when both popup and tab are refused. Nothing navigates. */
+export const OAUTH_WINDOW_BLOCKED_COPY =
+  "Allow pop-ups for One, then try again. Your chat and draft stay here.";
+
 export type OAuthWindowMode = "popup" | "tab";
 export type OpenedOAuthWindow = { target: Window; mode: OAuthWindowMode };
 

@@ -21,6 +21,10 @@ export type SpecialistCardProps = {
   onConfirm: () => void;
   onCancel: () => void;
   busy?: boolean;
+  /** Replaces "Working…" while busy, e.g. while a Google sign-in window is open. */
+  busyLabel?: string;
+  /** Keeps Cancel available while busy, so an open sign-in can be abandoned. */
+  cancelWhileBusy?: boolean;
 };
 
 export function SpecialistDirectiveCard({
@@ -31,6 +35,8 @@ export function SpecialistDirectiveCard({
   onConfirm,
   onCancel,
   busy,
+  busyLabel,
+  cancelWhileBusy = false,
 }: SpecialistCardProps) {
   return (
     <div
@@ -70,12 +76,12 @@ export function SpecialistDirectiveCard({
           className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
           data-testid="specialist-directive-confirm"
         >
-          {busy ? "Working…" : confirmLabel}
+          {busy ? busyLabel ?? "Working…" : confirmLabel}
         </button>
         <button
           type="button"
           onClick={onCancel}
-          disabled={busy}
+          disabled={busy && !cancelWhileBusy}
           className="rounded-full bg-black/5 px-4 py-1.5 text-sm dark:bg-white/10"
           data-testid="specialist-directive-cancel"
         >

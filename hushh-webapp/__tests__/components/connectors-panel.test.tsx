@@ -485,7 +485,7 @@ describe("supported connector catalog", () => {
       await openCalendar();
       await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
       await post(settlement(attemptOf(popup)!.attemptId), popup);
-      expect(await screen.findByText("Calendar not connected. You can try again.")).toBeInTheDocument();
+      expect(await screen.findByText("Calendar not connected.")).toBeInTheDocument();
       expect(screen.queryByText("Calendar connected.")).not.toBeInTheDocument();
     });
 

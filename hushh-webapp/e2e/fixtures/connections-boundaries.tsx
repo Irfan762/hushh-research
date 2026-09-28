@@ -73,6 +73,13 @@ export const GmailReceiptsService = {
     authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?fixture=mail",
     expires_at: new Date(Date.now() + 60_000).toISOString(),
   }),
+  // Owner status read, routed by the browser harness like the real endpoint.
+  getStatus: async () => {
+    // eslint-disable-next-line no-restricted-syntax -- Synthetic status read intercepted by the browser harness; never a product component.
+    const response = await fetch("/api/gmail/status/fixture-owner");
+    return response.json();
+  },
+  recordConsentFailure: () => undefined,
 };
 export function useGmailConnectorStatus() {
   const [connected, setConnected] = useState(true);

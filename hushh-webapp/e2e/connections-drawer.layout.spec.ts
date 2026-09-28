@@ -934,3 +934,179 @@ test("closing Calendar consent without finishing ends quietly as not connected",
   expect(calendar.statusReads).toBe(0);
   await expectChatStateIntact(page, navigations);
 });
+
+// In-chat connect cards: Gmail send upgrade and the Calendar card One shows.
+// Real cards, real connector and hook; only Google's pages are synthetic.
+async function armChatConnect(page: import("@playwright/test").Page) {
+  const server = { gmailSend: false, calendarManage: false, calendarStarts: 0, gmailReads: 0, calendarReads: 0 };
+  await page.route("**/api/gmail/status/**", (route) => {
+    server.gmailReads++;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ connected: true, send_permission_granted: server.gmailSend }),
+    });
+  });
+  await page.route("**/api/one/calendar/connect/start", (route) => {
+    server.calendarStarts++;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?synthetic=calendar",
+        redirect_uri: "http://localhost/one/profile/google/oauth/return",
+        expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+      }),
+    });
+  });
+  await page.route("**/api/one/calendar/status/**", (route) => {
+    server.calendarReads++;
+    return route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        configured: true,
+        connected: true,
+        status: "connected",
+        access_level: server.calendarManage ? "manage" : "read",
+      }),
+    });
+  });
+  for (const consent of ["fixture=mail", "synthetic=calendar"])
+    await page.context().route(`https://accounts.google.com/o/oauth2/v2/auth?${consent}`, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Synthetic consent</title><p>External consent fixture, not live Google proof</p>",
+      }),
+    );
+  for (const callback of ["gmail", "google"])
+    await page.context().route(`http://localhost/one/profile/${callback}/oauth/return**`, (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: "<!doctype html><title>Finishing Google connection</title><div id=\"root\"></div>",
+      }),
+    );
+  await page.evaluate(() => {
+    (window as Window & { __vaultKeySentinel?: string }).__vaultKeySentinel = "in-memory-only";
+  });
+  let navigations = 0;
+  page.on("framenavigated", (frame) => {
+    if (frame === page.mainFrame()) navigations++;
+  });
+  await page.getByRole("textbox", { name: "Chat draft" }).fill("Unsent draft");
+  return { server, navigations: () => navigations };
+}
+
+async function returnFromGoogle(
+  consent: import("@playwright/test").Page,
+  callbackPath: "gmail" | "google",
+  settle: "__settleGmailOAuthCallback" | "__settleGoogleOAuthCallback",
+) {
+  await consent.waitForURL(/accounts\.google\.com/);
+  const callback = `http://localhost/one/profile/${callbackPath}/oauth/return?code=synthetic&state=synthetic`;
+  // Content-initiated, as Google's redirect is; a harness goto severs the opener in WebKit.
+  await consent.evaluate((url) => location.replace(url), callback);
+  await consent.waitForURL(callback);
+  await consent.addScriptTag({ content: script });
+  return consent.evaluate(
+    (name) => (window as unknown as Record<string, (outcome: "succeeded") => boolean>)[name]("succeeded"),
+    settle,
+  );
+}
+
+async function expectChatIntact(
+  page: import("@playwright/test").Page,
+  navigations: () => number,
+) {
+  expect(navigations()).toBe(0);
+  expect(page.url()).toBe("http://localhost/connections-fixture");
+  expect(
+    await page.evaluate(() => (window as Window & { __vaultKeySentinel?: string }).__vaultKeySentinel),
+  ).toBe("in-memory-only");
+  await expect(page.getByRole("textbox", { name: "Chat draft" })).toHaveValue("Unsent draft");
+}
+
+test("Gmail send upgrade connects in place and reopens the reviewed draft", async ({ page }) => {
+  const { server, navigations } = await armChatConnect(page);
+  const history = page.getByTestId("one-email-history-failed");
+  await history.getByText("Mail activity").click();
+  const popupEvent = page.waitForEvent("popup");
+  await history.getByRole("button", { name: "Enable sending" }).click();
+  const consent = await popupEvent;
+  await expect(history.getByRole("button", { name: "Waiting for Google…" })).toBeDisabled();
+  await expect(page.getByText("Draft reopened for review")).toHaveCount(0);
+  server.gmailSend = true;
+  expect(await returnFromGoogle(consent, "gmail", "__settleGmailOAuthCallback")).toBe(true);
+  await expect(page.getByText("Draft reopened for review: The plan")).toBeVisible();
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText(
+    "Gmail sending enabled. Review your message, then send.",
+  );
+  expect(server.gmailReads).toBe(1);
+  await expectChatIntact(page, navigations);
+});
+
+test("Calendar card connects in place, clears, and a forged settlement is ignored", async ({ page }) => {
+  const { server, navigations } = await armChatConnect(page);
+  const popupEvent = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Allow Calendar scheduling" }).click();
+  const consent = await popupEvent;
+  await expect(page.getByRole("button", { name: "Waiting for Google…" })).toBeDisabled();
+  await page.evaluate(() =>
+    window.dispatchEvent(new MessageEvent("message", {
+      origin: location.origin,
+      source: window,
+      data: { schemaVersion: 1, type: "google_oauth_settlement", attemptId: "forged-attempt-id", service: "calendar", outcome: "succeeded" },
+    })),
+  );
+  expect(server.calendarReads).toBe(0);
+  server.calendarManage = true;
+  expect(await returnFromGoogle(consent, "google", "__settleGoogleOAuthCallback")).toBe(true);
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText(
+    "Google Calendar connected. Ask One again to continue.",
+  );
+  await expect(page.getByTestId("specialist-directive-card")).toHaveCount(0);
+  expect(server.calendarStarts).toBe(1);
+  await expectChatIntact(page, navigations);
+});
+
+test("Calendar card keeps a read-only grant as not connected for scheduling", async ({ page }) => {
+  const { navigations } = await armChatConnect(page);
+  const popupEvent = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Allow Calendar scheduling" }).click();
+  const consent = await popupEvent;
+  expect(await returnFromGoogle(consent, "google", "__settleGoogleOAuthCallback")).toBe(true);
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText("Google Calendar was not connected.");
+  await expect(page.getByTestId("specialist-directive-card")).toBeVisible();
+  await expectChatIntact(page, navigations);
+});
+
+test("cancelling the Calendar card while Google is open ends quietly and ignores the late callback", async ({ page }) => {
+  const { server, navigations } = await armChatConnect(page);
+  const popupEvent = page.waitForEvent("popup");
+  await page.getByRole("button", { name: "Allow Calendar scheduling" }).click();
+  const consent = await popupEvent;
+  await consent.waitForURL(/accounts\.google\.com/);
+  await page.getByTestId("specialist-directive-cancel").click();
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText(
+    "Calendar change cancelled. Nothing was changed.",
+  );
+  await expect(page.getByTestId("specialist-directive-card")).toHaveCount(0);
+  expect(server.calendarReads).toBe(0);
+  await expectChatIntact(page, navigations);
+});
+
+test("in-chat connects stay in place when pop-ups and tabs are refused", async ({ page }) => {
+  const { server, navigations } = await armChatConnect(page);
+  await page.evaluate(() => {
+    window.open = () => null;
+  });
+  await page.getByRole("button", { name: "Allow Calendar scheduling" }).click();
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText(
+    "Allow pop-ups for One, then try again. Your chat and draft stay here.",
+  );
+  const history = page.getByTestId("one-email-history-failed");
+  await history.getByText("Mail activity").click();
+  await history.getByRole("button", { name: "Enable sending" }).click();
+  await expect(page.getByTestId("chat-connect-notice")).toHaveText(
+    "Allow pop-ups for One, then try again. Your chat and draft stay here.",
+  );
+  expect(server.calendarStarts).toBe(0);
+  await expectChatIntact(page, navigations);
+});
