@@ -125,7 +125,7 @@ if has_match '^hushh-webapp/(components/(consent/|profile/)|lib/(consent/|pkm/|p
   ran=1
 fi
 
-if has_match '^hushh-webapp/(components/consent/|lib/(consent/document-share-consent|services/drive-sharing-service|feed/use-feed-actionables)\.ts|e2e/(document-share-review\.layout\.spec\.ts|fixtures/document-share-)|__tests__/.*(document-share|drive-sharing|consent-center-page-deeplink))'; then
+if has_match '^hushh-webapp/(components/consent/|components/agent/(drive-background-search|drive-read-memory-action|first-connect-insights-card)\.tsx|lib/agent/(connector-memory-review|drive-sharing-card-preferences|first-connect-insights)\.ts|lib/(consent/document-share-consent|services/drive-sharing-service|feed/use-feed-actionables)\.ts|e2e/(document-share-review\.layout\.spec\.ts|drive-sharing-card\.layout\.spec\.ts|fixtures/(document-share-|drive-sharing-card|drive-memory-boundaries))|__tests__/.*(document-share|drive-sharing|consent-center-page-deeplink))'; then
   run_check "Drive exact-file review boundary" npm run test:drive-sharing-web
   run_check "Drive mounted review layout" npm run test:drive-sharing-layout
   ran=1

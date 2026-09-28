@@ -283,6 +283,7 @@ import {
 } from "@/lib/consent/use-consent-actions";
 import { useOneLocationConsentActions } from "@/lib/consent/use-one-location-consent-actions";
 import { DriveRecentSharing, type SelectedDriveSearchFile } from "@/components/agent/drive-background-search";
+import { canReviewDriveMemory, DriveReadMemoryAction } from "@/components/agent/drive-read-memory-action";
 import { clearGeneratedDriveSearchDraft } from "@/lib/agent/drive-search-draft";
 import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 import { useVault } from "@/lib/vault/vault-context";
@@ -1662,6 +1663,7 @@ export function AgentBubble({
   reported = false,
   onReport,
   gmailInformationRequestAttachment,
+  driveMemoryReview,
 }: {
   message: AgentMessage;
   onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
@@ -1688,6 +1690,7 @@ export function AgentBubble({
   reported?: boolean;
   onReport?: (reason: AgentResponseReportReason) => Promise<void>;
   gmailInformationRequestAttachment?: ReactNode;
+  driveMemoryReview?: ReactNode;
 }) {
   const [copied, setCopied] = useState(false);
   // The rating is owned by the workspace so it survives a reload; the bubble
@@ -1846,6 +1849,7 @@ export function AgentBubble({
           ) : null}
         </div>
         {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} /> : null}
+        {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
         <div
           className={cn(
             "mt-1 flex items-center gap-2 text-[11px] text-[rgba(0,0,0,0.46)] dark:text-zinc-500",
@@ -7134,6 +7138,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     </>
   );
 
+  const renderDriveMemoryReview = (message: AgentMessage) => {
+    const experiences = [...(message.structuredExperiences || []).map(item => item.experience),
+      ...(message.structuredExperience ? [message.structuredExperience] : [])];
+    if (!hasChatAccess || !user?.uid || !vaultKey || !vaultOwnerToken || message.role !== "assistant" ||
+      !canReviewDriveMemory(message.status, message.text, experiences)) return undefined;
+    const ownerId = user.uid;
+    const threadId = conversationId;
+    return <DriveReadMemoryAction key={`${ownerId}:${message.id}:${vaultSessionEpoch}:${threadId || "draft"}`}
+      ownerId={ownerId} vaultKey={vaultKey} vaultOwnerToken={vaultOwnerToken} answer={message.text}
+      scopeId={`${threadId || "draft"}:${message.id}`} getCurrentToken={getVaultOwnerToken}
+      isScopeCurrent={() => workspaceOwnerIdRef.current === ownerId && conversationIdRef.current === threadId &&
+        vaultKeyRef.current === vaultKey && isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, vaultOwnerToken)} />;
+  };
+
   return (
     <div
       className={cn(
@@ -7586,6 +7604,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   ) : (
                     <AgentBubble
                       message={message}
+                      driveMemoryReview={renderDriveMemoryReview(message)}
                       onInformationRequestSubmitted={async (activityId, receipt) => {
                         const ownerUid = user?.uid;
                         const threadId = conversationIdRef.current;

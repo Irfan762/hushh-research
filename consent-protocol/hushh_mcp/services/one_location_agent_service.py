@@ -4652,8 +4652,9 @@ class OneLocationAgentService:
         # list_verified_recipients, which is intentionally scoped to the
         # connections graph for LOCATION sharing.
         #
-        # Named active accounts are searchable, whether their phone is
-        # verified or their identity cache has been hydrated. Explicit directory
+        # Named active accounts are searchable, whether their phone is verified
+        # or their identity cache has been hydrated. Strangers must also hold an
+        # active vault; people the viewer already has a relationship with do not. Explicit directory
         # visibility opt-outs still hide strangers; a trusted connection stays
         # visible to the person who already knows them.
         return cast(
@@ -4689,10 +4690,24 @@ class OneLocationAgentService:
         pre-existing caller gets) keeps both. It is applied HERE, in the same
         statement, for the same reason the matching is -- see below.
 
-        Named, active profiles with a current enabled auth account are eligible
-        unless their owner explicitly hid them from strangers. Auth eligibility
-        is applied before the logical page is cut, so stale cached accounts
-        cannot create empty pages or misleading ``hasMore`` values.
+        A named, active profile with a current enabled auth account is eligible
+        when EITHER it holds a ``vault_keys`` row whose ``vault_status`` is
+        ``'active'`` (the person finished signing up in THIS environment) OR the
+        viewer already has a relationship with it: an active ``connections``
+        edge, a ``'pending'`` ``connection_requests`` row, or an active
+        ``trusted_connections`` edge, each in either direction. So the vault
+        rule gates discovery of strangers only. The directory is otherwise
+        opt-out, and a database restored from another environment would
+        otherwise make every half-registered account searchable, while people
+        someone already knows stay reachable exactly as before.
+
+        Explicit opt-outs are unchanged: a person who set
+        ``marketplace_public_profiles.is_discoverable = FALSE`` or the
+        contact-sync opt-out is hidden unless the viewer holds a trusted edge
+        to them. Vault, relationship and auth eligibility are all applied
+        before the logical page is cut, so ineligible rows cannot create empty
+        pages or misleading ``hasMore`` values. ``candidate_user_id`` lookups
+        use this same statement, so they answer the same way.
 
         Matching, ranking and ordering all happen HERE, before the logical
         page is selected. SQL matches and recovered provider names use the
@@ -4826,6 +4841,45 @@ class OneLocationAgentService:
               LEFT JOIN ria_profiles ria ON ria.user_id = profile.user_id
               WHERE profile.user_id <> :owner_user_id
                 AND profile.public_profile_status = 'active'
+                AND (
+                  EXISTS (
+                    SELECT 1
+                    FROM vault_keys vault
+                    WHERE vault.user_id = profile.user_id
+                      AND vault.vault_status = 'active'
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM connections related
+                    WHERE related.status = 'active'
+                      AND (
+                        (related.user_a_id = :owner_user_id AND related.user_b_id = profile.user_id)
+                        OR (related.user_b_id = :owner_user_id AND related.user_a_id = profile.user_id)
+                      )
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM connection_requests pending
+                    WHERE pending.status = 'pending'
+                      AND (
+                        (pending.requester_user_id = :owner_user_id
+                          AND pending.addressee_user_id = profile.user_id)
+                        OR (pending.addressee_user_id = :owner_user_id
+                          AND pending.requester_user_id = profile.user_id)
+                      )
+                  )
+                  OR EXISTS (
+                    SELECT 1
+                    FROM trusted_connections edge
+                    WHERE edge.status = 'active'
+                      AND (
+                        (edge.owner_user_id = :owner_user_id
+                          AND edge.trusted_user_id = profile.user_id)
+                        OR (edge.trusted_user_id = :owner_user_id
+                          AND edge.owner_user_id = profile.user_id)
+                      )
+                  )
+                )
                 AND (:candidate_user_id IS NULL OR profile.user_id = :candidate_user_id)
                 AND (
                   EXISTS (
