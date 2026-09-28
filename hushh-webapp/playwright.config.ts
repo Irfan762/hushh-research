@@ -4,6 +4,25 @@ const baseURL = process.env.BASE_URL || "http://localhost:3000";
 const basePort = new URL(baseURL).port || "3000";
 
 /**
+ * Worker count under CI. One worker unless PLAYWRIGHT_WORKERS names a positive
+ * integer; the browser leg of Web Targeted Contracts sets it, because the
+ * layout packs spent ~11 minutes of a ~13-minute lane running one test at a
+ * time on a 4-vCPU runner. Every layout spec builds its fixture in its own
+ * mkdtemp directory and any server it starts binds port 0, so workers share
+ * nothing. A script that passes `--workers=1` (the Next dev-server pack) still
+ * wins, since the CLI overrides this. A malformed value fails loudly rather
+ * than silently falling back.
+ */
+function ciWorkers(): number {
+  const raw = process.env.PLAYWRIGHT_WORKERS?.trim();
+  if (!raw) return 1;
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error(`PLAYWRIGHT_WORKERS must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return Number(raw);
+}
+
+/**
  * Playwright E2E Configuration for Hushh Webapp (Kai)
  *
  * Run with:
@@ -20,7 +39,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
-  workers: process.env.CI ? 1 : undefined,
+  workers: process.env.CI ? ciWorkers() : undefined,
   reporter: process.env.CI ? "github" : "html",
 
   use: {
