@@ -1084,9 +1084,7 @@
         "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
       },
       "interaction_layer_policy": {
-        "allowed_families": [
-          "legal_document"
-        ]
+        "allowed_families": []
       },
       "canonical_screen": "login",
       "voice_contract_file": "app/login/page.voice-action-contract.json",
