@@ -9,6 +9,10 @@ import { AgentHistorySidebar } from "../../components/agent/agent-history-sideba
 import { ConnectorsPanel } from "../../components/agent/connectors-panel";
 import { ConnectorReadReceipt } from "../../components/agent/connector-read-receipt";
 import ExternalConnectorsPage from "../../app/one/profile/connectors/page";
+import {
+  readGoogleOAuthPopupAttempt,
+  settleGoogleOAuthPopup,
+} from "../../lib/google/google-oauth-popup";
 
 type RecoveryFixtureWindow = Window & {
   __driveRecoveryReadiness?: "busy" | "unavailable";
@@ -185,4 +189,14 @@ root.render(<Fixture />);
 // The shipped Profile > Connectors route, mounted in place of the chat fixture.
 Object.assign(window, {
   __renderConnectorsSettingsPage: () => root.render(<ExternalConnectorsPage />),
+});
+// The production callback-side settlement, so a synthetic Google return page
+// settles through the exact code the real /one/profile/google/oauth/return uses.
+Object.assign(window, {
+  __settleGoogleOAuthCallback: (outcome: "succeeded" | "cancelled" | "failed") => {
+    const attempt = readGoogleOAuthPopupAttempt();
+    if (!attempt) return false;
+    settleGoogleOAuthPopup(attempt, outcome);
+    return true;
+  },
 });

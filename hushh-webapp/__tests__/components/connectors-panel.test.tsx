@@ -18,12 +18,25 @@ const state = vi.hoisted(() => ({
   connectGmail: vi.fn(),
   startNativeConnect: vi.fn(),
   completeNativeConnect: vi.fn(),
+  calendarStartConnect: vi.fn(),
+  calendarStatus: vi.fn(),
+  calendarStartNativeConnect: vi.fn(),
+  calendarCompleteNativeConnect: vi.fn(),
+  connectCalendar: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: state.user }) }));
 vi.mock("@/lib/vault/vault-context", () => ({ useVault: () => ({ vaultOwnerToken: state.token, vaultKey: state.token ? "synthetic-key" : null }) }));
 vi.mock("@/lib/calendar/use-calendar-connection-status", () => ({ useCalendarConnectionStatus: () => ({ ...state.calendar, refresh: state.calendarRefresh }) }));
-vi.mock("@/lib/services/google-calendar-service", () => ({ GoogleCalendarService: { disconnect: state.calendarDisconnect } }));
+vi.mock("@/lib/services/google-calendar-service", () => ({
+  GoogleCalendarService: {
+    disconnect: state.calendarDisconnect,
+    startConnect: state.calendarStartConnect,
+    status: state.calendarStatus,
+    startNativeConnect: state.calendarStartNativeConnect,
+    completeNativeConnect: state.calendarCompleteNativeConnect,
+  },
+}));
 vi.mock("@/lib/pkm/pkm-domain-resource", () => ({ usePkmDomainResource: () => state.financial }));
 vi.mock("@/lib/profile/gmail-connector-store", () => ({
   useGmailConnectorStatus: () => ({
@@ -52,7 +65,9 @@ vi.mock("@/lib/services/gmail-receipts-service", () => ({
     recordConsentFailure: vi.fn(),
   },
 }));
-vi.mock("@/lib/capacitor", () => ({ HushhAuth: { connectGmail: state.connectGmail } }));
+vi.mock("@/lib/capacitor", () => ({
+  HushhAuth: { connectGmail: state.connectGmail, connectCalendar: state.connectCalendar },
+}));
 vi.mock("@/components/icons", () => ({
   ArrowLeftIcon: () => null,
   ChevronRightIcon: () => null,
@@ -94,6 +109,15 @@ describe("supported connector catalog", () => {
     state.push.mockReset();
     state.calendarRefresh.mockReset();
     state.calendarDisconnect.mockReset().mockResolvedValue({ connected: false, status: "disconnected" });
+    state.calendarStartConnect.mockReset().mockResolvedValue({
+      authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?synthetic=calendar",
+      redirect_uri: "http://localhost:3000/one/profile/google/oauth/return",
+      expires_at: new Date(Date.now() + 5 * 60_000).toISOString(),
+    });
+    state.calendarStatus.mockReset().mockResolvedValue({ configured: true, connected: false, status: "disconnected" });
+    state.calendarStartNativeConnect.mockReset();
+    state.calendarCompleteNativeConnect.mockReset();
+    state.connectCalendar.mockReset();
     state.user.getIdToken.mockResolvedValue("synthetic-firebase-token");
     state.calendar = { connected: false, loaded: true, error: null, status: { status: "disconnected" } };
     state.financial = { data: null, loading: false, error: null };
@@ -290,10 +314,13 @@ describe("supported connector catalog", () => {
   });
 
   it("offers Calendar connection when disconnected and a reviewed disconnect when connected", async () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
     const view = render(panel());
     fireEvent.click(await screen.findByRole("button", { name: "Connect Calendar" }));
-    expect(callbacks.onBack).toHaveBeenCalledOnce();
-    expect(state.push).toHaveBeenCalledExactlyOnceWith("/one/calendar");
+    // Connecting stays inside the drawer: no route change, no drawer exit.
+    expect(callbacks.onBack).not.toHaveBeenCalled();
+    expect(state.push).not.toHaveBeenCalled();
+    vi.mocked(window.open).mockRestore();
     state.calendar = { connected: true, loaded: true, error: null, status: { status: "connected" } };
     view.rerender(panel());
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Calendar" }));
@@ -358,6 +385,200 @@ describe("supported connector catalog", () => {
     view.rerender(panel());
     expect(screen.queryByText("Example Docs")).not.toBeInTheDocument();
     expect(screen.getByText("Unlock your vault to manage connectors.")).toBeInTheDocument();
+  });
+
+  describe("Calendar connects in place", () => {
+    const ATTEMPT_KEY = "one_google_oauth_popup_attempt_v1";
+    const SETTLEMENT_KEY = "one_google_oauth_popup_settlement_v1";
+    type FakeWindow = Window & { close: ReturnType<typeof vi.fn>; location: { replace: ReturnType<typeof vi.fn> } };
+    const fakeWindow = () => {
+      const store = new Map<string, string>();
+      return {
+        closed: false,
+        close: vi.fn(),
+        focus: vi.fn(),
+        document: { title: "" },
+        location: { replace: vi.fn() },
+        sessionStorage: {
+          setItem: (key: string, value: string) => void store.set(key, value),
+          getItem: (key: string) => store.get(key) ?? null,
+          removeItem: (key: string) => void store.delete(key),
+        },
+      } as unknown as FakeWindow;
+    };
+    const attemptOf = (target: Window) =>
+      JSON.parse(target.sessionStorage.getItem(ATTEMPT_KEY) || "null") as { attemptId: string; service: string } | null;
+    const settlement = (attemptId: string, outcome = "succeeded") => ({
+      schemaVersion: 1,
+      type: "google_oauth_settlement",
+      attemptId,
+      service: "calendar",
+      outcome,
+    });
+    const post = (data: unknown, source: unknown, origin = window.location.origin) =>
+      act(async () => {
+        window.dispatchEvent(new MessageEvent("message", { data, origin, source: source as Window }));
+      });
+    const openCalendar = async () => {
+      render(<ConnectorsPanel open initialConnector={null} {...callbacks} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Connect Calendar" }));
+    };
+    afterEach(() => {
+      vi.restoreAllMocks();
+      window.localStorage.clear();
+    });
+
+    it("opens a sized popup synchronously and settles only the exact popup attempt", async () => {
+      const popup = fakeWindow();
+      const open = vi.spyOn(window, "open").mockReturnValue(popup);
+      await openCalendar();
+      // Opened inside the click, before any awaited work.
+      expect(open).toHaveBeenCalledExactlyOnceWith(
+        "about:blank",
+        "hushh-google-oauth",
+        expect.stringContaining("popup=yes"),
+      );
+      await waitFor(() =>
+        expect(popup.location.replace).toHaveBeenCalledExactlyOnceWith(
+          "https://accounts.google.com/o/oauth2/v2/auth?synthetic=calendar",
+        ),
+      );
+      expect(state.calendarStartConnect).toHaveBeenCalledExactlyOnceWith({
+        idToken: "synthetic-firebase-token",
+        userId: "owner-a",
+        accessLevel: "read",
+      });
+      expect(await screen.findByText("Finish signing in with Google in the window that opened.")).toBeInTheDocument();
+      const attempt = attemptOf(popup);
+      expect(attempt?.service).toBe("calendar");
+      // The attempt marker in the popup carries no OAuth state or credentials.
+      expect(popup.sessionStorage.getItem(ATTEMPT_KEY)).not.toContain("synthetic=calendar");
+
+      // Negative controls: none of these may settle the attempt.
+      await post(settlement(attempt!.attemptId), popup, "https://attacker.invalid");
+      await post(settlement(attempt!.attemptId), window);
+      await post(settlement("another-valid-attempt"), popup);
+      await post({ ...settlement(attempt!.attemptId), service: "gmail_send" }, popup);
+      await post({ ...settlement(attempt!.attemptId), type: "drive_oauth_settlement" }, popup);
+      expect(state.calendarStatus).not.toHaveBeenCalled();
+      expect(popup.close).not.toHaveBeenCalled();
+
+      state.calendarStatus.mockResolvedValue({ configured: true, connected: true, status: "connected", access_level: "read" });
+      await post(settlement(attempt!.attemptId), popup);
+      expect(await screen.findByText("Calendar connected.")).toBeInTheDocument();
+      expect(state.calendarStatus).toHaveBeenCalledOnce();
+      expect(state.calendarRefresh).toHaveBeenCalledOnce();
+      expect(popup.close).toHaveBeenCalled();
+      // The drawer never left: no route change, no back navigation.
+      expect(state.push).not.toHaveBeenCalled();
+      expect(callbacks.onBack).not.toHaveBeenCalled();
+      expect(screen.getByRole("region", { name: "Calendar details" })).toBeInTheDocument();
+
+      // A late duplicate after settlement is ignored.
+      await post(settlement(attempt!.attemptId), popup);
+      expect(state.calendarStatus).toHaveBeenCalledOnce();
+    });
+
+    it("reports server truth, not the settlement, when the callback claims success", async () => {
+      const popup = fakeWindow();
+      vi.spyOn(window, "open").mockReturnValue(popup);
+      await openCalendar();
+      await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+      await post(settlement(attemptOf(popup)!.attemptId), popup);
+      expect(await screen.findByText("Calendar not connected. You can try again.")).toBeInTheDocument();
+      expect(screen.queryByText("Calendar connected.")).not.toBeInTheDocument();
+    });
+
+    it("falls back to a new tab and settles through the storage event when the opener is severed", async () => {
+      const tab = fakeWindow();
+      const open = vi.spyOn(window, "open").mockImplementation(
+        (_url?: string | URL, _target?: string, features?: string) => (features ? null : tab),
+      );
+      await openCalendar();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(open).toHaveBeenLastCalledWith("about:blank", "_blank", undefined);
+      await waitFor(() => expect(tab.location.replace).toHaveBeenCalled());
+      const attempt = attemptOf(tab)!;
+      state.calendarStatus.mockResolvedValue({ configured: true, connected: true, status: "connected", access_level: "read" });
+      // Google's opener policy can null window.opener; the callback's
+      // same-origin storage write is then the only signal.
+      await act(async () => {
+        window.dispatchEvent(new StorageEvent("storage", {
+          key: SETTLEMENT_KEY,
+          newValue: JSON.stringify({ ...settlement(attempt.attemptId), sentAt: Date.now() }),
+          storageArea: window.localStorage,
+        }));
+      });
+      expect(await screen.findByText("Calendar connected.")).toBeInTheDocument();
+      expect(state.push).not.toHaveBeenCalled();
+    });
+
+    it("stays in place without navigating when both popup and tab are refused", async () => {
+      const open = vi.spyOn(window, "open").mockReturnValue(null);
+      const before = window.location.href;
+      await openCalendar();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(await screen.findByText("Allow pop-ups for One, then try again. Your chat and draft stay here.")).toBeInTheDocument();
+      expect(state.calendarStartConnect).not.toHaveBeenCalled();
+      expect(state.push).not.toHaveBeenCalled();
+      expect(window.location.href).toBe(before);
+    });
+
+    it("cancelling sign-in shows a quiet not-connected state and ignores the late callback", async () => {
+      const popup = fakeWindow();
+      vi.spyOn(window, "open").mockReturnValue(popup);
+      await openCalendar();
+      await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+      const attempt = attemptOf(popup)!;
+      fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+      expect(await screen.findByText("Calendar not connected.")).toBeInTheDocument();
+      expect(popup.close).toHaveBeenCalled();
+      expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
+      await post(settlement(attempt.attemptId), popup);
+      expect(state.calendarStatus).not.toHaveBeenCalled();
+      expect(screen.queryByText(/could not/i)).not.toBeInTheDocument();
+    });
+
+    it("keeps Mail in place with the same guidance when popup and tab are refused", async () => {
+      const open = vi.spyOn(window, "open").mockReturnValue(null);
+      const before = window.location.href;
+      render(<ConnectorsPanel open initialConnector={null} {...callbacks} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Connect Gmail" }));
+      expect(await screen.findByText("Allow pop-ups for One, then try again. Your chat and draft stay here.")).toBeInTheDocument();
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(state.push).not.toHaveBeenCalled();
+      expect(window.location.href).toBe(before);
+    });
+
+    it("uses the native Google sheet on device without opening a window", async () => {
+      vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+      const open = vi.spyOn(window, "open");
+      state.calendarStartNativeConnect.mockResolvedValue({ configured: true, server_client_id: "native-client", service: "calendar", access_level: "read", state: "signed-state" });
+      state.connectCalendar.mockResolvedValue({ serverAuthCode: "synthetic-auth-code" });
+      state.calendarCompleteNativeConnect.mockResolvedValue({ connected: true, status: "connected" });
+      state.calendarStatus.mockResolvedValue({ configured: true, connected: true, status: "connected", access_level: "read" });
+      await openCalendar();
+      expect(await screen.findByText("Calendar connected.")).toBeInTheDocument();
+      expect(open).not.toHaveBeenCalled();
+      expect(state.connectCalendar).toHaveBeenCalledExactlyOnceWith({ serverClientId: "native-client", accessLevel: "read" });
+      expect(state.calendarCompleteNativeConnect).toHaveBeenCalledExactlyOnceWith({
+        idToken: "synthetic-firebase-token",
+        userId: "owner-a",
+        accessLevel: "read",
+        serverAuthCode: "synthetic-auth-code",
+        state: "signed-state",
+      });
+      expect(state.push).not.toHaveBeenCalled();
+    });
+
+    it("treats a dismissed native sheet as quietly not connected", async () => {
+      vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+      state.calendarStartNativeConnect.mockResolvedValue({ configured: true, server_client_id: "native-client", service: "calendar", access_level: "read", state: "signed-state" });
+      state.connectCalendar.mockRejectedValue(Object.assign(new Error("cancelled"), { code: "USER_CANCELLED" }));
+      await openCalendar();
+      expect(await screen.findByText("Calendar not connected.")).toBeInTheDocument();
+      expect(state.calendarCompleteNativeConnect).not.toHaveBeenCalled();
+    });
   });
 
   describe("live Drive background preparation", () => {

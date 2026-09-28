@@ -1411,6 +1411,20 @@ server completion. Other management routes retain their vault gates. The officia
 receives an in-memory short-lived token only, and selection needs a separate explicit owner
 confirmation. Blocked popups remain in chat; no unencrypted full-page recovery is used.
 
+Connecting Mail, Drive or Calendar from the chat drawer never navigates the chat window, so
+the memory-only vault key, the chat and the open drawer survive. All three open their consent
+window through one opener (`lib/connections/oauth-window.ts`): a sized popup, or a new tab
+when the popup is refused, synchronously inside the click. Both settle through the same
+contract: the existing callback page posts a redacted outcome to its exact same-origin opener,
+and writes a same-origin storage hint for when Google's opener policy severs the opener. The
+drawer accepts only the exact origin, the exact window and the exact attempt, before the
+attempt expires, and then re-reads owner status; the settlement itself is never proof. When
+both popup and tab are refused, Mail and Calendar stay in place and ask the person to allow
+pop-ups. Drive may use its encrypted one-use recovery capsule for a full-page return, and fails
+closed if the capsule cannot be saved. Native uses the platform Google sign-in sheet (Mail,
+Calendar) or the system authentication browser with an app-link return (Drive); the WebView
+does not reload. Callback URIs and scopes are unchanged.
+
 Native Drive authorization and native file selection use separate fixed registered backend HTTPS
 callbacks. The One Picker path requests **only** `drive.file`; Google does not return OIDC identity
 in that flow, so it never claims to identify the callback account. Its callback credential is
