@@ -610,7 +610,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             request = self._row(
                 connection,
                 """SELECT status,revision,expires_at,bulk_search_started_at,
-                  preparation_error_code
+                  preparation_error_code,recipient_user_id,request_envelope
                 FROM drive_share_requests WHERE request_id=:request AND user_id=:user""",
                 {"request": origin, "user": job["user_id"]},
             )
@@ -624,6 +624,30 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
             ):
                 raise DriveReadError("search_superseded")
+            private = self.search_cipher.open(
+                request["request_envelope"],
+                user_id=job["user_id"],
+                resource_id=str(origin),
+                purpose="request",
+            )
+            if private.get("trusted_auto") is True:
+                # A queued automatic request is not an enduring read grant.
+                # Recheck on every page and in the commit transaction, even
+                # if the worker omitted its callback after a future refactor.
+                try:
+                    self.background_current(
+                        connection, user_id=job["user_id"], generation=job["generation"]
+                    )
+                except DriveReadError as error:
+                    if str(error) == "background_preparation_required":
+                        raise
+                    raise DriveReadError("search_superseded") from error
+                from hushh_mcp.services.drive_sharing_store import DriveSharingStore
+
+                if not DriveSharingStore._trusted_recipient_current(
+                    connection, job["user_id"], request["recipient_user_id"]
+                ):
+                    raise DriveReadError("search_superseded")
         now = connection.execute(text("SELECT clock_timestamp()")).scalar_one()
         if (
             row["status"] != "running"
@@ -761,5 +785,24 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 },
             )
             return state
+
+        return await self._transaction(operation)
+
+    async def pause_for_background(self, job):
+        """Keep a trusted search checkpoint dormant until owner setup resumes it."""
+
+        def operation(connection):
+            self._lock(connection, {"user_id": job["user_id"], "connector_id": "google_drive"})
+            row = self._owned(connection, job["user_id"], job["job_id"], locked=True)
+            if row["status"] != "running" or str(row["lease_id"]) != job["lease_id"]:
+                return row["status"]
+            connection.execute(
+                text("""UPDATE drive_owner_search_jobs
+                  SET status='queued',error_code=NULL,lease_id=NULL,lease_expires_at=NULL,
+                    next_at=expires_at,updated_at=clock_timestamp()
+                  WHERE job_id=:job"""),
+                {"job": job["job_id"]},
+            )
+            return "queued"
 
         return await self._transaction(operation)

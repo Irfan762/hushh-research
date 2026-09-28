@@ -1107,6 +1107,15 @@ class DriveOwnerSearchService:
                 await self.store.release(job, error="provider_unavailable", retryable=True)
             )
         except DriveReadError as error:
+            if str(error) == "background_preparation_required":
+                # The owner can re-enable background Drive access without
+                # losing an already committed search checkpoint or batches.
+                if require_current:
+                    try:
+                        await require_current()
+                    except DriveReadError:
+                        pass
+                return finish(await self.store.pause_for_background(job))
             if str(error) == "search_superseded":
                 await self.store.release(job, error="connection_changed")
                 return finish("superseded")

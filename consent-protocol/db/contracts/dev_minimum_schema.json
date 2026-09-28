@@ -427,6 +427,7 @@
       "user_id",
       "search_job_id",
       "progressive_batch",
+      "approval_source",
       "client_request_id",
       "request_digest",
       "connection_generation",

@@ -46,10 +46,18 @@ class DriveOwnerSearchWorker:
                 counts["deadline"] += 1
                 break
             try:
+                authority = (
+                    await self.trusted_auto.search_authority_for_job(
+                        user_id=job["user_id"], job_id=str(job["job_id"])
+                    )
+                    if self.trusted_auto
+                    else None
+                )
                 outcome = await self.service.run_one(
                     user_id=job["user_id"],
                     job_id=str(job["job_id"]),
                     deadline_seconds=min(90, remaining),
+                    **({"require_current": authority} if authority is not None else {}),
                 )
                 if outcome == "queued":
                     # The slice has released its lease before waking another

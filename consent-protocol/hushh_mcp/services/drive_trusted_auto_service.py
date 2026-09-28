@@ -38,6 +38,24 @@ class DriveTrustedAutoService:
 
         return require_current
 
+    async def search_authority_for_job(self, *, user_id: str, job_id: str):
+        """Bind a queued search slice to its current Trusted/background policy."""
+        request_id = await self.sharing.trusted_request_for_job(user_id=user_id, job_id=job_id)
+        if request_id is None:
+            return None
+        require_current = self._authority(user_id, request_id)
+
+        async def guarded():
+            try:
+                await require_current()
+            except (DriveReadError, TimeoutError) as error:
+                await self.sharing.defer_trusted_search(
+                    user_id=user_id, request_id=request_id, code=_defer_code(error)
+                )
+                raise
+
+        return guarded
+
     async def start_pending(
         self, *, max_jobs: int = 1, deadline_at: float | None = None
     ) -> dict[str, int]:
@@ -104,6 +122,7 @@ class DriveTrustedAutoService:
                 share_id=review["shareId"],
                 revision=review["revision"],
                 review_digest=review["reviewDigest"],
+                approval_source="trusted_auto",
             )
             queued += 1
         for _ in range(max_batches - queued):
@@ -122,6 +141,7 @@ class DriveTrustedAutoService:
                 share_id=review["shareId"],
                 revision=review["revision"],
                 review_digest=review["reviewDigest"],
+                approval_source="trusted_auto",
             )
             queued += 1
         if queued == max_batches:

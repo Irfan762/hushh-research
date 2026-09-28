@@ -11,13 +11,17 @@ import pytest
 from sqlalchemy import text
 
 from hushh_mcp.services.drive_live_preferences import DriveLivePreferences
+from hushh_mcp.services.drive_owner_search_service import DriveOwnerSearchService
+from hushh_mcp.services.drive_owner_search_store import DriveOwnerSearchStore
+from hushh_mcp.services.drive_owner_search_worker import DriveOwnerSearchWorker
 from hushh_mcp.services.drive_sharing_contract import (
     DriveSharingError,
     ShareRequestPurpose,
     VerifiedGoogleRecipient,
 )
 from hushh_mcp.services.drive_trusted_auto_service import DriveTrustedAutoService
-from tests.services.test_drive_request_bulk_postgres import request_bulk
+from hushh_mcp.services.google_drive_adapter import DriveReadError
+from tests.services.test_drive_request_bulk_postgres import _search, request_bulk
 from tests.services.test_drive_sharing_store import (
     connector_postgres_url,
     documents,
@@ -132,6 +136,7 @@ async def test_removed_trust_stops_search_and_grant_authority(request_bulk, shar
         "origin_request_id": request_id,
         "origin_request_revision": item["revision"],
         "progressive_batch": True,
+        "approval_source": "trusted_auto",
         "approved_at": datetime.now(UTC),
         "connection_generation": authority["generation"],
     }
@@ -158,6 +163,63 @@ async def test_removed_trust_stops_search_and_grant_authority(request_bulk, shar
     review = await sharing.owner_review(user_id="owner", request_id=request_id)
     assert review["preparationError"] == "trusted_relationship_changed"
     assert rows(sharing, "drive_share_permission_operations") == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ["background", "trusted"])
+async def test_revoked_auto_search_makes_no_provider_get_or_new_page(
+    request_bulk, sharing, revocation
+):
+    _membership(sharing, "active")
+    preferences = DriveLivePreferences(db=sharing.db)
+    await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
+    item = await _request(sharing)
+    request_id = item["requestId"]
+    job_id = _search(request_bulk, request_id=request_id, count=1)
+    with sharing.db.engine.begin() as connection:
+        before = connection.execute(
+            text("""SELECT matched,pages_scanned FROM
+            drive_owner_search_jobs WHERE job_id=:job"""),
+            {"job": job_id},
+        ).one()
+        connection.execute(
+            text("""UPDATE drive_owner_search_jobs SET status='queued',
+            next_at=clock_timestamp() WHERE job_id=:job"""),
+            {"job": job_id},
+        )
+    if revocation == "background":
+        await preferences.set_background(user_id="owner", enabled=False, confirmed=True)
+    else:
+        _membership(sharing, "removed")
+    transport = SimpleNamespace(read_tool=AsyncMock())
+    worker = DriveOwnerSearchWorker(
+        DriveOwnerSearchService(store=DriveOwnerSearchStore(db=sharing.db), transport=transport),
+        trusted_auto=DriveTrustedAutoService(sharing=sharing, bulk=request_bulk, wake=AsyncMock()),
+    )
+    await worker.run(max_jobs=1)
+    transport.read_tool.assert_not_awaited()
+    with sharing.db.engine.begin() as connection:
+        after = connection.execute(
+            text("""SELECT status,matched,pages_scanned,
+            next_at,expires_at FROM drive_owner_search_jobs WHERE job_id=:job"""),
+            {"job": job_id},
+        ).one()
+    assert (after.matched, after.pages_scanned) == (before.matched, before.pages_scanned)
+    review = await sharing.owner_review(user_id="owner", request_id=request_id)
+    if revocation == "background":
+        assert review["preparationError"] == "background_preparation_required"
+        assert after.status == "queued" and after.next_at == after.expires_at
+        await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
+        with sharing.db.engine.begin() as connection:
+            resumed = connection.execute(
+                text("""SELECT next_at<expires_at FROM
+                drive_owner_search_jobs WHERE job_id=:job"""),
+                {"job": job_id},
+            ).scalar_one()
+        assert resumed
+    else:
+        assert review["preparationError"] == "trusted_relationship_changed"
+        assert after.status == "failed"
 
 
 @pytest.mark.asyncio
@@ -249,3 +311,39 @@ async def test_old_progressive_bulk_notice_cannot_duplicate_request_event():
     send.assert_not_awaited()
     store.settle_notification.assert_awaited_once()
     assert store.settle_notification.await_args.kwargs["delivered"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("revocation", "expected"),
+    [
+        ("background_preparation_required", "queued"),
+        ("trusted_request_unavailable", "failed"),
+    ],
+)
+async def test_search_service_fences_revocation_before_provider_page(revocation, expected):
+    job = {
+        "user_id": "owner",
+        "job_id": str(uuid4()),
+        "checkpoint": {"phase": "user"},
+        "lease_id": str(uuid4()),
+    }
+    store = SimpleNamespace(
+        claim=AsyncMock(return_value=job),
+        require_current=AsyncMock(),
+        commit_page=AsyncMock(),
+        pause_for_background=AsyncMock(return_value="queued"),
+        release=AsyncMock(return_value="failed"),
+    )
+    service = DriveOwnerSearchService(store=store, transport=SimpleNamespace())
+    service._page = AsyncMock()
+    current = AsyncMock(side_effect=DriveReadError(revocation))
+    result = await service.run_one(user_id="owner", job_id=job["job_id"], require_current=current)
+    assert result == expected
+    service._page.assert_not_awaited()
+    store.require_current.assert_not_awaited()
+    store.commit_page.assert_not_awaited()
+    if revocation == "background_preparation_required":
+        store.pause_for_background.assert_awaited_once_with(job)
+    else:
+        store.release.assert_awaited_once()

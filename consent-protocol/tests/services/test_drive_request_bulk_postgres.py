@@ -312,6 +312,42 @@ def _recipient(user_id, email):
     }
 
 
+async def _trusted_request(sharing):
+    return await sharing.create_request(
+        recipient=VerifiedGoogleRecipient(
+            "trusted-member",
+            "subject-trusted-member",
+            "trusted@example.invalid",
+            datetime.now(UTC),
+            "verified_email",
+        ),
+        owner_user_id="owner",
+        client_request_id=str(uuid4()),
+        purpose=ShareRequestPurpose(purpose="Standup notes from last 3 months"),
+    )
+
+
+async def _trusted_review(bulk, sharing):
+    request = await _trusted_request(sharing)
+    review = await bulk.create_review(
+        user_id="owner",
+        search_job_id=_search(bulk, request_id=request["requestId"], count=1),
+        client_request_id=str(uuid4()),
+        recipients=[_recipient("trusted-member", "trusted@example.invalid")],
+        excluded=[],
+        origin_request_id=request["requestId"],
+        selected_positions=[1],
+    )
+    with bulk.db.engine.begin() as connection:
+        origin = bulk._row(
+            connection,
+            "SELECT * FROM drive_share_requests WHERE request_id=:request",
+            {"request": request["requestId"]},
+        )
+        assert sharing._open_request(origin)["trusted_auto"] is True
+    return review
+
+
 async def _approved_request(bulk, sharing, count):
     request = await _request(sharing)
     review = await bulk.create_review(
@@ -987,6 +1023,108 @@ async def test_progressive_failed_batch_never_claims_files_available(request_bul
     assert (await sharing.request_status(user_id="owner", request_id=request_id))[
         "status"
     ] == "partial"
+
+
+@pytest.mark.asyncio
+async def test_manual_approval_after_trusted_membership_removed_can_grant(request_bulk, sharing):
+    review = await _trusted_review(request_bulk, sharing)
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_live_preferences(
+              user_id,connection_generation,background_enabled)
+              VALUES('owner',1,TRUE)
+              ON CONFLICT(user_id) DO UPDATE SET background_enabled=TRUE""")
+        )
+        connection.execute(
+            text("""UPDATE one_location_circle_memberships SET status='removed'
+            WHERE user_id='trusted-member'""")
+        )
+    with pytest.raises(DriveSharingError, match="trusted_request_unavailable"):
+        await request_bulk.approve(
+            user_id="owner",
+            share_id=review["shareId"],
+            revision=review["revision"],
+            review_digest=review["reviewDigest"],
+            approval_source="trusted_auto",
+        )
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=review["shareId"],
+        revision=review["revision"],
+        review_digest=review["reviewDigest"],
+    )
+    with request_bulk.db.engine.begin() as connection:
+        row = request_bulk._row(
+            connection,
+            "SELECT * FROM drive_bulk_shares WHERE share_id=:share",
+            {"share": review["shareId"]},
+        )
+        assert row["approval_source"] == "owner"
+        assert request_bulk._share_recipient_current(connection, row, "owner", "trusted-member")
+    # The actual effect claim uses the same gate immediately before a Google POST.
+    assert (
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revocation", ["membership", "background"])
+async def test_auto_approved_batch_stops_after_authority_revoked(request_bulk, sharing, revocation):
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_live_preferences(
+              user_id,connection_generation,background_enabled)
+              VALUES('owner',1,TRUE)
+              ON CONFLICT(user_id) DO UPDATE SET background_enabled=TRUE""")
+        )
+    review = await _trusted_review(request_bulk, sharing)
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=review["shareId"],
+        revision=review["revision"],
+        review_digest=review["reviewDigest"],
+        approval_source="trusted_auto",
+    )
+    with request_bulk.db.engine.begin() as connection:
+        row = request_bulk._row(
+            connection,
+            "SELECT * FROM drive_bulk_shares WHERE share_id=:share",
+            {"share": review["shareId"]},
+        )
+        assert row["approval_source"] == "trusted_auto"
+        assert request_bulk._share_recipient_current(connection, row, "owner", "trusted-member")
+        if revocation == "membership":
+            connection.execute(
+                text("""UPDATE one_location_circle_memberships SET status='removed'
+                WHERE user_id='trusted-member'""")
+            )
+        else:
+            connection.execute(
+                text("""UPDATE drive_live_preferences SET background_enabled=FALSE
+                WHERE user_id='owner'""")
+            )
+    assert (
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        is None
+    )
+    with request_bulk.db.engine.begin() as connection:
+        state = connection.execute(
+            text("""SELECT state FROM drive_bulk_share_effects
+            WHERE share_id=:share AND position=1"""),
+            {"share": review["shareId"]},
+        ).scalar_one()
+        assert state == "skipped"
 
 
 @pytest.mark.asyncio

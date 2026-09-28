@@ -35,6 +35,8 @@ ALTER TABLE drive_bulk_share_files
   DROP CONSTRAINT IF EXISTS drive_bulk_file_origin_request_fk,
   DROP COLUMN IF EXISTS origin_request_id;
 ALTER TABLE drive_bulk_shares
+  DROP CONSTRAINT IF EXISTS drive_bulk_approval_source_check,
+  DROP COLUMN IF EXISTS approval_source,
   DROP COLUMN IF EXISTS progressive_batch;
 
 COMMIT;

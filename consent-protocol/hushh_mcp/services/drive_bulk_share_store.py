@@ -247,9 +247,13 @@ class DriveBulkShareStore(DriveLivePreferences):
             resource_id=str(share["origin_request_id"]),
             purpose="request",
         )
-        if private.get("trusted_auto") is True:
-            # A Trusted-circle decision can be revoked between queuing and
-            # the provider POST. Recheck the active accepted origin and roster.
+        approval_source = share["approval_source"]
+        if approval_source == "trusted_auto":
+            # The request marker only records eligibility at creation. The
+            # immutable batch approval is the grant authority; an owner may
+            # explicitly approve another batch after Trusted access changes.
+            if private.get("trusted_auto") is not True or not share["progressive_batch"]:
+                return False
             from hushh_mcp.services.drive_sharing_store import DriveSharingStore
 
             try:
@@ -261,8 +265,10 @@ class DriveBulkShareStore(DriveLivePreferences):
             recipient_current = DriveSharingStore._trusted_recipient_current(
                 connection, owner, recipient
             )
-        else:
+        elif approval_source == "owner":
             recipient_current = self._request_recipient_current(connection, owner, recipient)
+        else:
+            return False
         return bool(
             request["revision"] == share["origin_request_revision"]
             and request["expires_at"]
@@ -1105,9 +1111,15 @@ class DriveBulkShareStore(DriveLivePreferences):
         if overlapping:
             raise DriveSharingError("drive_share_in_progress")
 
-    async def approve(self, *, user_id, share_id, revision, review_digest):
+    async def approve(self, *, user_id, share_id, revision, review_digest, approval_source="owner"):
         share = _uuid(share_id)
-        if type(revision) is not int or revision < 1 or not isinstance(review_digest, str):
+        if (
+            type(revision) is not int
+            or revision < 1
+            or not isinstance(review_digest, str)
+            or not isinstance(approval_source, str)
+            or approval_source not in {"owner", "trusted_auto"}
+        ):
             raise DriveSharingError("invalid_argument")
 
         def operation(connection):
@@ -1191,6 +1203,29 @@ class DriveBulkShareStore(DriveLivePreferences):
                 len(recipients) != 1 or recipients[0]["user_id"] != origin["recipient_user_id"]
             ):
                 raise DriveSharingError("recipient_changed")
+            if approval_source == "trusted_auto":
+                if origin is None or row["progressive_batch"] is not True:
+                    raise DriveSharingError("trusted_request_unavailable")
+                private = self._open(
+                    origin["request_envelope"],
+                    user_id=user_id,
+                    resource_id=str(origin["request_id"]),
+                    purpose="request",
+                )
+                if private.get("trusted_auto") is not True:
+                    raise DriveSharingError("trusted_request_unavailable")
+                from hushh_mcp.services.drive_sharing_store import DriveSharingStore
+
+                try:
+                    self.background_current(
+                        connection, user_id=user_id, generation=row["connection_generation"]
+                    )
+                except DriveReadError as error:
+                    raise DriveSharingError("trusted_request_unavailable") from error
+                if not DriveSharingStore._trusted_recipient_current(
+                    connection, user_id, recipients[0]["user_id"]
+                ):
+                    raise DriveSharingError("trusted_request_unavailable")
             self._assert_no_overlapping_share(
                 connection,
                 user_id=user_id,
@@ -1213,9 +1248,10 @@ class DriveBulkShareStore(DriveLivePreferences):
             updated = self._row(
                 connection,
                 """UPDATE drive_bulk_shares SET status='queued',approved_at=clock_timestamp(),
+                approval_source=:approval_source,
                 expires_at=GREATEST(expires_at,clock_timestamp()+INTERVAL '7 days'),revision=revision+1,
                 updated_at=clock_timestamp() WHERE share_id=:share RETURNING *""",
-                {"share": share},
+                {"share": share, "approval_source": approval_source},
             )
             if origin is not None and not row["progressive_batch"]:
                 request = origin

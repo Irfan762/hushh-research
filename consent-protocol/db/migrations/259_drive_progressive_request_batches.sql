@@ -5,6 +5,27 @@ BEGIN;
 ALTER TABLE drive_bulk_shares
   ADD COLUMN IF NOT EXISTS progressive_batch BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Approval authority belongs to each immutable batch. An old request's
+-- encrypted trusted marker is not authority over a later owner-approved batch.
+ALTER TABLE drive_bulk_shares
+  ADD COLUMN IF NOT EXISTS approval_source TEXT;
+
+UPDATE drive_bulk_shares
+SET approval_source='owner'
+WHERE approved_at IS NOT NULL AND approval_source IS NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+                 WHERE conname='drive_bulk_approval_source_check'
+                   AND conrelid='drive_bulk_shares'::regclass) THEN
+    ALTER TABLE drive_bulk_shares
+      ADD CONSTRAINT drive_bulk_approval_source_check
+      CHECK ((approved_at IS NULL AND approval_source IS NULL)
+        OR (approved_at IS NOT NULL AND approval_source IN ('owner','trusted_auto')));
+  END IF;
+END $$;
+
 ALTER TABLE drive_bulk_share_files
   ADD COLUMN IF NOT EXISTS origin_request_id UUID;
 
