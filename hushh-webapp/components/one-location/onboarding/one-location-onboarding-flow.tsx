@@ -619,11 +619,11 @@ const SHARE_LOCATION_AVATARS = [
   },
 ] as const;
 
-function TwoLineFeatureTitle({
+function FeatureTitle({
   lines,
   className,
 }: {
-  lines: readonly [string, string];
+  lines: readonly string[];
   className?: string;
 }) {
   return (
@@ -668,7 +668,7 @@ function ShareLocationFeatureCard() {
         >
           Share location
         </span>
-        <TwoLineFeatureTitle
+        <FeatureTitle
           lines={["Can’t explain", "where you are?"]}
           className="font-[family-name:var(--font-app-display)] text-[21px]"
         />
@@ -744,8 +744,8 @@ function CheckInFeatureCard() {
         >
           Check in
         </span>
-        <TwoLineFeatureTitle
-          lines={["Stuck waiting", "in line?"]}
+        <FeatureTitle
+          lines={["At the venue,", "but can't find", "each other?"]}
           className="text-[19px]"
         />
         <p
@@ -807,7 +807,7 @@ function SaveMySoulFeatureCard() {
         >
           SMS · Save My Soul
         </span>
-        <TwoLineFeatureTitle
+        <FeatureTitle
           lines={["Need help but", "can’t talk?"]}
           className="text-[19px]"
         />
