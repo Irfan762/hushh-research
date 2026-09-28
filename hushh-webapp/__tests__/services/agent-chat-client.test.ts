@@ -623,6 +623,34 @@ describe("AG-UI Agent One client", () => {
   });
 
   it.each([
+    [{ status: "shown", suggestions: ["Find a free hour after 2pm", "Move standup to 9:30"] },
+      ["Find a free hour after 2pm", "Move standup to 9:30"]],
+    // Negative controls: only a valid server-shown result becomes chips.
+    [{ status: "ignored", reason: "call_alone_after_your_answer" }, null],
+    [{ status: "shown", suggestions: ["Only one"] }, null],
+    [{ status: "shown", suggestions: ["Fine", "x".repeat(81)] }, null],
+  ])("renders follow-ups only from a shown result, never as an Activity step", async (result, expected) => {
+    const onFollowUpSuggestions = vi.fn();
+    const onToolStart = vi.fn();
+    const onToolWaiting = vi.fn();
+    const onToolResult = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "follow-ups", toolCallName: "suggest_follow_ups" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "follow-ups" }, toolCallName: "suggest_follow_ups",
+        toolCallArgs: { suggestions: ["Find a free hour after 2pm"] } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "follow-ups", content: JSON.stringify(result) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "What is on tomorrow?",
+      vaultOwnerToken: "fixture", handlers: { onFollowUpSuggestions, onToolStart, onToolWaiting, onToolResult } });
+    if (expected) expect(onFollowUpSuggestions).toHaveBeenCalledExactlyOnceWith(expected);
+    else expect(onFollowUpSuggestions).not.toHaveBeenCalled();
+    expect([onToolStart, onToolWaiting, onToolResult].map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0]);
+    expect(parseRestoredTurnActivity({ activityType: "one.turn_activity.v1", content: { steps: [
+      { id: "follow-ups", tool: "suggest_follow_ups", status: "done" },
+    ] } })).toEqual([]);
+  });
+
+  it.each([
     { toolName: "ask_email_agent", connector: "mail", sourceRef: "mail:1", kind: "metadata", label: "Mail" },
     { toolName: "ask_documents_agent", connector: "drive", sourceRef: `document:${"a".repeat(32)}`, kind: "document", label: "Document" },
   ])("forwards safe $connector provenance without dispatching a smuggled action or storing tool text", async ({ toolName, connector, sourceRef, kind, label }) => {

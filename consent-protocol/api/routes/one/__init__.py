@@ -15,6 +15,7 @@ from .drive_actions import router as drive_actions_router
 from .email import router as email_router
 from .email_chat import router as email_chat_router
 from .feed import router as feed_router
+from .first_connect_insights import router as first_connect_insights_router
 from .gmail_delivery import router as gmail_delivery_router
 from .gmail_information_requests import router as gmail_information_requests_router
 from .google import router as google_router
@@ -53,6 +54,7 @@ router.include_router(gmail_delivery_router)
 router.include_router(gmail_information_requests_router)
 router.include_router(google_router)
 router.include_router(feed_router)
+router.include_router(first_connect_insights_router)
 router.include_router(models_router)
 router.include_router(agent_feedback_router)
 router.include_router(location_router)

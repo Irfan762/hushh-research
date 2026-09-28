@@ -12,6 +12,7 @@ import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
+import { FOLLOW_UP_TOOL_NAME, parseFollowUpSuggestions } from "@/lib/agent/follow-up-suggestions";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
 import { resolveTurnLocation } from "@/lib/agent/turn-location";
@@ -168,6 +169,8 @@ export type AgentChatStreamHandlers = {
   onSources?: (sources: AgentSource[]) => void;
   /** The optional id is the AG-UI activity/tool identity for transport dedupe. */
   onStructuredExperience?: (experience: AgentStructuredExperience, eventId?: string) => void;
+  /** 2-3 next questions One wrote with this answer; only for the latest answer, never stored. */
+  onFollowUpSuggestions?: (suggestions: string[]) => void;
   /** Owner-only count progress from a server AG-UI activity; never inferred from time. */
   onDriveBatchProgress?: (progress: DriveBatchProgress, eventId?: string) => void;
   onSpecialistDirective?: (directive: SpecialistDirectiveEvent) => void;
@@ -783,6 +786,13 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Using your approximate location for this answer.",
     activity: "Checking your location",
   },
+  // Rendered as chips under the answer, never as an Activity row; named here so
+  // the roster label guard holds and no surface falls back to "Agent step".
+  suggest_follow_ups: {
+    label: "Follow-up ideas",
+    message: "Suggesting what you could ask next.",
+    activity: "Suggesting next questions",
+  },
   // ADK's own confirmation step for a reviewed connector call. Live only:
   // history restores the reviewed call's row, never this envelope.
   adk_request_confirmation: {
@@ -851,7 +861,7 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     const id = typeof step?.id === "string" ? step.id.trim().slice(0, 128) : "";
     const toolName = typeof step?.tool === "string" ? step.tool : "";
     const rawStatus = step?.status;
-    if (!step || !id || !toolName) return [];
+    if (!step || !id || !toolName || toolName === FOLLOW_UP_TOOL_NAME) return [];
     const mcp = /^mcp_[0-9a-f]{40}$/.test(toolName);
     const presentation = workspaceToolPresentation(toolName, step.provider) ??
       SERVER_TOOL_PRESENTATION[toolName];
@@ -1040,6 +1050,11 @@ export async function streamAgentChat(input: {
    * the server admits it only for an approved grant and keeps it for this turn.
    */
   consentContinuation?: AgentChatConsentContinuation;
+  /**
+   * The turn a "One has something for you" tap starts. Only the opaque feed
+   * row id is sent; the server admits it only for an item it actually pushed.
+   */
+  feedAttention?: { itemId: string };
   /** One saved Drive result, checked against the current owner and live Drive before use. */
   driveSearchSelection?: { jobId: string; position: number };
   pendingEmailDraft?: PendingEmailDraftContext | null;
@@ -1311,6 +1326,8 @@ export async function streamAgentChat(input: {
     },
     onToolCallStartEvent: ({ event }) => {
       toolNames.set(event.toolCallId, event.toolCallName);
+      // Follow-ups are chips under the answer, not a step the person waits on.
+      if (event.toolCallName === FOLLOW_UP_TOOL_NAME) return;
       if (event.toolCallName === "adk_request_confirmation") confirmationArgs.set(event.toolCallId, "");
       handlers.onToolStart?.(toolPayload(event.toolCallId, event.toolCallName));
     },
@@ -1323,6 +1340,7 @@ export async function streamAgentChat(input: {
       else confirmationArgs.set(event.toolCallId, next);
     },
     onToolCallEndEvent: ({ event, toolCallName, toolCallArgs }) => {
+      if (toolCallName === FOLLOW_UP_TOOL_NAME) return;
       if (toolCallName === "adk_request_confirmation") {
         const streamed = confirmationArgs.get(event.toolCallId);
         confirmationArgs.delete(event.toolCallId);
@@ -1362,6 +1380,13 @@ export async function streamAgentChat(input: {
     },
     onToolCallResultEvent: ({ event }) => {
       const toolName = toolNames.get(event.toolCallId) || "";
+      if (toolName === FOLLOW_UP_TOOL_NAME) {
+        // Only the server's `shown` result renders; its text never enters
+        // generic tool payloads, diagnostics, or logs.
+        const suggestions = parseFollowUpSuggestions(event.content);
+        if (suggestions) handlers.onFollowUpSuggestions?.(suggestions);
+        return;
+      }
       if (/^mcp_[0-9a-f]{40}$/.test(toolName)) {
         // Connector content belongs to owner presentation/history, never the
         // generic debug payload or model-authored app-action parser. Approval
@@ -1764,6 +1789,7 @@ export async function streamAgentChat(input: {
         ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
         ...(input.consentContinuation ? { consentContinuation: input.consentContinuation } : {}),
+        ...(input.feedAttention ? { feedAttention: { itemId: input.feedAttention.itemId } } : {}),
         // Only the native app asks the server for a "One replied" push when it
         // stops reading; a web tab's closed stream must not wake a phone.
         notifyOnDetach: Capacitor.isNativePlatform(),

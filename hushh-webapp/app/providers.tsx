@@ -104,6 +104,7 @@ import { NativeTestRouteStatus } from "@/components/app-ui/native-test-route-sta
 import { InteractionRuntime } from "@/components/app-ui/interaction-runtime";
 import { AgentChatTurnNotifier } from "@/components/agent/agent-chat-turn-notifier";
 import { AgentConsentContinuationNotifier } from "@/components/agent/agent-consent-continuation-notifier";
+import { AgentFeedAttentionNotifier } from "@/components/agent/agent-feed-attention-notifier";
 import { RenderPerfProbe } from "@/components/app-ui/render-perf-probe";
 import { RenderPerfProfiler } from "@/components/app-ui/render-perf-profiler";
 import {
@@ -633,6 +634,7 @@ function AppShellFrame({ children }: ProvidersProps) {
                   <AgentChatTurnNotifier />
                   {/* A request sent from chat continues once it is answered. */}
                   <AgentConsentContinuationNotifier />
+                  <AgentFeedAttentionNotifier />
                   <RenderPerfProbe />
                   <FoundationPublicAmbient />
                   {!hidesPersistentChrome ? (
