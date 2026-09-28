@@ -725,9 +725,9 @@ def list_location_sos_email_recipients(
 
     The push notification is the first channel and reaches nobody when a
     contact has notifications off or the app uninstalled; email is the second.
-    One renders and sends that mail through `hushh-mail-api` — the same
-    service as every other product mail — so this endpoint only answers who is
-    reachable, and does so under the caller's own grants.
+    One renders and sends that mail through `hushh-mail-api`; account and
+    support notices use the separate delegated `one@hushh.ai` sender. This
+    endpoint only answers who is reachable under the caller's own grants.
 
     Never fails the caller: the alert has already gone out by the time this is
     called, so a resolution problem is an empty list, not an error. An
