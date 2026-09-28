@@ -93,29 +93,33 @@ export function FirstConnectInsightsCard({
       isEnabled: () => credentialsRef.current.enabled && credentialsRef.current.ownerId === userId &&
         credentialsRef.current.vaultKey === key && credentialsRef.current.vaultOwnerToken === token,
     });
-    saves.current.delete(controller);
-    if (controller.signal.aborted || !guard.isCurrent()) return;
-    const result = await keepFirstConnectInsight({
-      userId,
-      vaultKey: key,
-      vaultOwnerToken: token,
-      memoryText: item.memoryText,
-      sharingImpactAcknowledged,
-      isCurrent: guard.isCurrent,
-      assertCurrent: guard.assertCurrent,
-    });
-    if (result.status === "needs_sharing_ack") {
-      setRecipients((current) => ({ ...current, [item.id]: result.recipientCount }));
+    try {
+      if (!guard.isCurrent()) return;
+      const result = await keepFirstConnectInsight({
+        userId,
+        vaultKey: key,
+        vaultOwnerToken: token,
+        memoryText: item.memoryText,
+        sharingImpactAcknowledged,
+        isCurrent: guard.isCurrent,
+        assertCurrent: guard.assertCurrent,
+      });
+      if (!guard.isCurrent()) return;
+      if (result.status === "needs_sharing_ack") {
+        setRecipients((current) => ({ ...current, [item.id]: result.recipientCount }));
+      }
+      setStates((current) => ({
+        ...current,
+        [item.id]:
+          result.status === "saved"
+            ? "kept"
+            : result.status === "needs_sharing_ack"
+              ? "confirm_sharing"
+              : "error",
+      }));
+    } finally {
+      saves.current.delete(controller);
     }
-    setStates((current) => ({
-      ...current,
-      [item.id]:
-        result.status === "saved"
-          ? "kept"
-          : result.status === "needs_sharing_ack"
-            ? "confirm_sharing"
-            : "error",
-    }));
   };
 
   const forget = (item: FirstConnectInsight) => {

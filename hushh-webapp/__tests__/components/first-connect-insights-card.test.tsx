@@ -161,10 +161,22 @@ describe("FirstConnectInsightsCard", () => {
     fireEvent.click(screen.getAllByTestId("first-connect-insight-keep")[0]);
     await waitFor(() => expect(mocks.addToPKM).toHaveBeenCalledTimes(1));
     const write = mocks.addToPKM.mock.calls[0][0];
-    root.unmount(); publishValidatedAuthSessionOwner("other-owner");
+    root.unmount();
     await act(async () => { resolve({ saved: 1 }); });
     expect(write.mayPublish()).toBe(false);
     expect(mocks.clearAgentPkmContext).not.toHaveBeenCalled();
     expect(screen.queryByTestId("first-connect-insights-receipt")).toBeNull();
+  });
+
+  it("does not save late prepared notes after unmount while the same owner stays signed in", async () => {
+    let resolve!: (value: ReturnType<typeof preparedCard>) => void;
+    mocks.prepare.mockReturnValue(new Promise(done => { resolve = done; }));
+    const root = renderCard(); await screen.findByTestId("first-connect-insights-card");
+    fireEvent.click(screen.getAllByTestId("first-connect-insight-keep")[0]);
+    await waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(1));
+    root.unmount();
+    await act(async () => { resolve(preparedCard(MEETING)); });
+    expect(mocks.addToPKM).not.toHaveBeenCalled();
+    expect(mocks.clearAgentPkmContext).not.toHaveBeenCalled();
   });
 });
