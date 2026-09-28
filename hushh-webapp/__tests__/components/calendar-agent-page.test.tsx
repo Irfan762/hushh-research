@@ -120,6 +120,7 @@ describe("CalendarAgentPage", () => {
       name: "Try Calendar Agent with One",
     });
     expect(chat).toBeTruthy();
+    expect(chat.querySelector("svg")).toBeNull();
     expect(screen.getByRole("button", { name: "Disconnect Calendar" })).toBeTruthy();
 
     expect(screen.queryByRole("button", { name: "Reconnect Calendar" })).toBeNull();
