@@ -42,12 +42,14 @@ const nav = vi.hoisted(() => {
 
 const setup = vi.hoisted(() => ({
   onSetupSourceSettled: vi.fn(async () => true),
+  syncOnboardingJourney: vi.fn(),
 }));
 
 vi.mock("@/lib/services/pre-vault-user-state-service", () => ({
   PreVaultUserStateService: {
     bootstrapState: vi.fn(async () => ({ setupCompleted: true })),
     isSetupResolved: (state: { setupCompleted?: boolean }) => state.setupCompleted === true,
+    syncOnboardingJourney: setup.syncOnboardingJourney,
   },
 }));
 
@@ -287,6 +289,7 @@ describe.each<Platform>(["web", "native"])(
       window.localStorage.clear();
       setPlatform(platform);
       setup.onSetupSourceSettled.mockClear();
+      setup.syncOnboardingJourney.mockClear();
     });
 
     afterEach(() => {
@@ -311,6 +314,7 @@ describe.each<Platform>(["web", "native"])(
           await waitFor(() => expect(nav.hrefs).toContain(ROUTES.KAI_DASHBOARD));
           expect(setup.onSetupSourceSettled).not.toHaveBeenCalled();
         }
+        expect(setup.syncOnboardingJourney).not.toHaveBeenCalled();
       },
     );
 
