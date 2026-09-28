@@ -177,6 +177,21 @@
       "expected_row_growth": "medium_append_only"
     },
     {
+      "id": "consent_event_deliveries",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "consent_event_deliveries"
+      ],
+      "primary_access_path": "The consent NOTIFY listener claims one key per consent_audit id (and per request notification sequence and TIMEOUT emission) with INSERT ... ON CONFLICT DO NOTHING RETURNING before sending a push, writing a delivery record, or ringing the requester's information_request_updated doorbell; the claim that returns a row owns the side effect across every worker and instance.",
+      "retention_policy": "Pruned after 14 days by the consent timeout job.",
+      "deletion_behavior": "Holds no user identifier (keys are consent_audit ids, request ids, or a SHA-256 digest), so account deletion has nothing to remove; rows age out with retention.",
+      "trust_boundary": "Delivery key and claim time only. Grants no access and carries no scope, label, value, or person identifier.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "one to three rows per consent event, bounded by the 14-day prune"
+    },
+    {
       "id": "consent_export_workflows",
       "owner": "iam-consent-governance",
       "data_class": "workflow_state",
