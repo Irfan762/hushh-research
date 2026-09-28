@@ -38,6 +38,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from google.adk.tools.tool_context import ToolContext
 
 from hushh_mcp.consent.pii_sanitizer import mask_email
+from hushh_mcp.consent.scope_matcher import fallback_scopes, match_scopes
 from hushh_mcp.consent.token import validate_token_with_db
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.one_adk import action_retrieval
@@ -2110,8 +2111,14 @@ async def list_information_shared_with_me(
             requester_user_id=user_id,
             person_ref=selected_person_ref,
         )
+        # Model-facing guidance, not a line to repeat. Measured on UAT
+        # 2026-09-28: the old sentence was read out verbatim next to an offer to
+        # "prepare a card" while a card was already on screen.
         empty_message = (
-            f"{selected_person_name} has not shared any information with you yet."
+            f"Nothing from {selected_person_name} yet. If they asked about something of "
+            f"{selected_person_name}'s, call propose_information_request now with their "
+            "words and question instead of replying; do not tell them nothing was shared "
+            "or offer to prepare a card."
             if selected_person_name
             else "No connections have shared information with you yet."
         )
@@ -2462,6 +2469,91 @@ def _pending_scope_labels(scopes: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("label") or "Information") for item in scopes]
 
 
+def _propose_scopes(
+    requestable: list[dict[str, Any]],
+    fields: str,
+    question: str,
+    *,
+    ignore_words: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+    """Resolve what was asked about to catalog rows: the model's words first.
+
+    1. The model's own words, verbatim, by label or domain (unchanged rule).
+    2. Words that named nothing, through label-and-synonym catalog search
+       ("favorite restaurant" reaches Food preferences), best row each.
+    3. Only if still nothing: the person's question, the same way.
+    Returns (matched rows, words that still matched nothing, scopeRef -> why).
+    """
+    matched, unmatched = _match_requested_fields(requestable, fields)
+    reasons = {str(item.get("scopeRef")): "Matches what you asked for" for item in matched}
+
+    def _add(item: dict[str, Any], why: str) -> None:
+        ref = str(item.get("scopeRef"))
+        if ref not in reasons:
+            matched.append(item)
+            reasons[ref] = why
+
+    still_unmatched: list[str] = []
+    for spoken in unmatched:
+        best = match_scopes(requestable, spoken, limit=1, ignore_words=ignore_words)
+        if best:
+            _add(dict(best[0].entry), best[0].why)
+        else:
+            still_unmatched.append(spoken)
+    if not matched and str(question or "").strip():
+        best = match_scopes(requestable, question, limit=1, ignore_words=ignore_words)
+        if best:
+            _add(dict(best[0].entry), best[0].why)
+    return matched, still_unmatched, reasons
+
+
+def _proposed_item(item: Any, why: str) -> dict[str, str]:
+    return {
+        "scope": str(item.get("scopeRef") or ""),
+        "label": str(item.get("label") or "Information"),
+        "why": why or "Matches what you asked for",
+    }
+
+
+def _proposal_alternatives(
+    requestable: list[dict[str, Any]],
+    matched: list[dict[str, Any]],
+    words: str,
+    ignore_words: tuple[str, ...],
+    limit: int = 3,
+) -> list[dict[str, str]]:
+    """The next-best rows, so Change can offer a near miss without a round trip."""
+    chosen = {str(item.get("scopeRef")) for item in matched}
+    alternatives: list[dict[str, str]] = []
+    for match in match_scopes(requestable, words, limit=None, ignore_words=ignore_words):
+        if str(match.entry.get("scopeRef")) in chosen:
+            continue
+        alternatives.append(_proposed_item(match.entry, match.why))
+        if len(alternatives) >= limit:
+            break
+    return alternatives
+
+
+def _duration_default(hours: int) -> str:
+    """ "7d" for whole days, else a label ("5 hours"); the card accepts both forms."""
+    if hours % 24 == 0:
+        return f"{hours // 24}d"
+    return f"{hours} {'hour' if hours == 1 else 'hours'}"
+
+
+def _reason_suggestion(matched: list[dict[str, Any]]) -> str:
+    """A plain reason the person can keep or edit: "I'd like to know your food preferences."."""
+    labels = []
+    for label in _pending_scope_labels(matched)[:3]:
+        first = label.split(" ", 1)[0]
+        keep_case = len(first) > 1 and first.isupper()
+        labels.append(label if keep_case else label[:1].lower() + label[1:])
+    if len(matched) > 3:
+        labels.append("a few related things")
+    joined = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
+    return f"I'd like to know your {joined}."[:500]
+
+
 async def list_pending_information_requests(tool_context: ToolContext) -> dict[str, Any]:
     """List the information requests waiting on the owner's decision: who asks, for what, until when.
 
@@ -2629,18 +2721,21 @@ async def propose_information_request(
     tool_context: ToolContext,
     duration_hours: int = _INFORMATION_REQUEST_DEFAULT_HOURS,
     selection_handle: str = "",
+    question: str = "",
 ) -> dict[str, Any]:
-    """Prepare an information request to one named person for the fields they said, ready to confirm.
+    """Prepare a request to one named person for what was asked about, ready to confirm.
 
-    Resolves the person (connections, then the directory), matches the spoken
-    fields to that person's requestable catalog by label or domain, checks the
-    purpose and duration, and parks a proposal. Nothing is sent: read the
-    proposal back so they know what is about to be asked. When the owner's
-    connector is ready, the tool stages the app's one confirmation card; the
-    visible tap is the authorization, so do not ask for a spoken yes or call
-    another consent action. If connectorReady is false the owner's secure key
-    is not ready and nothing can be asked for yet; tell them to unlock their
-    private agent and try again.
+    Call it directly when someone asks about another person's information
+    ("What is Kushal's favorite restaurant?") or asks you to request it. Pass
+    the person, the things in the person's own words as ``fields``, their
+    question as they said it as ``question``, and ``purpose`` only if they gave
+    a reason (leave it empty and a reason is suggested). The server picks the
+    closest thing that person makes requestable, from labels only, and parks a
+    proposal; the card shows it with Send and Change. Nothing is sent: the
+    person's tap on that card is the authorization, so do not ask for a spoken
+    yes or call another consent action. If connectorReady is false the owner's
+    secure key is not ready and nothing can be asked for yet; tell them to
+    unlock their private agent and try again.
     """
     user_id, blocked = await _read_tool_user_id(tool_context)
     if blocked is not None:
@@ -2657,7 +2752,7 @@ async def propose_information_request(
             tool_context,
             selection_handle,
         )
-        profile = await PersonProfileService().get_viewer_profile(
+        profile = await PersonProfileService().get_requestable_catalog(
             viewer_user_id=user_id, public_person_ref=person_ref
         )
         if profile.get("personRef") != person_ref:
@@ -2679,7 +2774,9 @@ async def propose_information_request(
                 },
                 "message": f"{display_name} has not made any information requestable yet.",
             }
-        matched, unmatched = _match_requested_fields(requestable, fields)
+        matched, unmatched, reasons = _propose_scopes(
+            requestable, fields, question, ignore_words=(display_name, person)
+        )
         if not matched:
             by_domain: dict[str, list[str]] = {}
             for item in requestable[:40]:
@@ -2695,9 +2792,14 @@ async def propose_information_request(
                 },
                 "unmatchedFields": unmatched,
                 "availableFields": by_domain,
+                "proposed": [],
+                "alternatives": [
+                    _proposed_item(match.entry, match.why)
+                    for match in fallback_scopes(requestable, limit=3)
+                ],
                 "message": (
-                    f"None of those fields match what {display_name} makes requestable. "
-                    "Offer the available fields grouped by domain and ask which they want."
+                    f"Nothing {display_name} makes available matches that. Name the "
+                    "alternatives in plain words and ask which one they mean. Nothing was sent."
                 ),
             }
         if len(matched) > 50:
@@ -2717,7 +2819,11 @@ async def propose_information_request(
                     "domain or name the exact fields you want. Nothing has been sent."
                 ),
             }
-        cleaned_purpose = str(purpose or "").strip()
+        reason_suggestion = _reason_suggestion(matched)
+        # An empty purpose is the normal case now (Contract C4: One suggests the
+        # reason and the person confirms it on the card). A purpose the person
+        # did give is still theirs, so one that is too short is asked back.
+        cleaned_purpose = str(purpose or "").strip() or reason_suggestion
         if not 8 <= len(cleaned_purpose) <= 500:
             return {
                 "status": "needs_clarification",
@@ -2794,13 +2900,24 @@ async def propose_information_request(
             "unmatchedFields": unmatched,
             "purpose": cleaned_purpose,
             "durationHours": hours,
+            # Contract C4 shape. ``scope`` is the opaque per-person reference
+            # (the same one the catalog search returns), never a raw scope.
+            "proposed": [
+                _proposed_item(item, reasons.get(str(item.get("scopeRef")), "")) for item in matched
+            ],
+            "alternatives": _proposal_alternatives(
+                requestable, matched, f"{fields} {question}", (display_name, person)
+            ),
+            "duration_default": _duration_default(hours),
+            "reason_suggestion": reason_suggestion,
             "connectorReady": connector_ready,
             "nextStep": (
-                "Read back who you are asking, what you are asking for, why, and for how long, "
-                "in plain words. Name the things themselves, never a path or an id. The app "
-                "will show one confirmation card for this proposal; do not ask for a spoken "
-                "yes or call another consent action yourself. Their tap is what authorizes it. "
-                "Say nothing was sent until the action result confirms it."
+                f"Say one short line, for example \"I'll ask {display_name}. Here's what "
+                "I'd request:\" The card already shows what, why and for how long, with "
+                "Send and Change, so do not repeat it, do not offer to prepare a card, and do "
+                "not say they have not shared anything with you. Never say grant, scope, "
+                "domain or PKM. Do not ask for a spoken yes or call another consent action: "
+                "their tap on Send is what authorizes it, and nothing is sent until then."
                 if connector_ready
                 else "The owner's secure key is not ready yet, so nothing can be asked for. "
                 "Say exactly that in plain words, tell them to unlock their private agent and try "

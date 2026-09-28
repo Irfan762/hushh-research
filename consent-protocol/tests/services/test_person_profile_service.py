@@ -3,7 +3,10 @@ from unittest.mock import patch
 
 import pytest
 
-from hushh_mcp.services.person_profile_service import PersonProfileService
+from hushh_mcp.services.person_profile_service import (
+    PersonProfileNotFoundError,
+    PersonProfileService,
+)
 
 
 class _Connections:
@@ -390,3 +393,76 @@ async def test_viewer_request_history_reports_a_withdrawn_request_as_cancelled()
         "req-denied": "denied",
         "req-pending": "pending",
     }
+
+
+@pytest.mark.asyncio
+async def test_scope_catalog_search_finds_food_for_restaurant_and_pages_the_rest(monkeypatch):
+    """Contract C4: the Change picker searches on the server, with synonyms.
+
+    UAT 2026-09-28: "restaurant" matched nothing because search covered only the
+    100 loaded rows, and rows read "Preferences Entities Entities Summary".
+    """
+    from hushh_mcp.services.person_profile_service import _scope_ref
+
+    person_ref = "11111111-1111-4111-8111-111111111111"
+    entries = [
+        {
+            "scope": "attr.food.preferences.entities.entities.summary",
+            "domain": "food",
+            "label": "Preferences Entities Entities Summary",
+        },
+        {"scope": "attr.health.fitness_goals.*", "domain": "health", "label": "Fitness Goals"},
+        {"scope": "attr.food.*", "domain": "food", "label": "Food Domain", "wildcard": True},
+    ] + [
+        {
+            "scope": f"attr.professional.field_{index:02d}",
+            "domain": "professional",
+            "label": f"Project {index:02d}",
+        }
+        for index in range(25)
+    ]
+    service = PersonProfileService(
+        connections=SimpleNamespace(get_exact_requestable_scope_entries=lambda *_args: entries),
+        consent_db=_Consent(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_profile_row",
+        lambda _ref: {"user_id": "subject", "public_person_ref": person_ref, "display_name": "K"},
+    )
+
+    found = await service.search_scope_catalog(
+        viewer_user_id="viewer", public_person_ref=person_ref, query="favorite restaurant"
+    )
+    assert [item["label"] for item in found["items"]] == [
+        "Food preferences",
+        "Food & dining information",
+    ]
+    assert found["items"][0]["why"] == '"restaurant" relates to food & dining'
+    assert found["items"][0]["scopeRef"] == _scope_ref(
+        person_ref, "attr.food.preferences.entities.entities.summary"
+    )
+    # ``scope`` is the same opaque ref; the raw scope never leaves the server.
+    assert found["items"][0]["scope"] == found["items"][0]["scopeRef"]
+    assert "attr." not in str(found)
+    assert found["totalCount"] == 2
+
+    pages, page, revision = [], 1, ""
+    while page:
+        result = await service.search_scope_catalog(
+            viewer_user_id="viewer",
+            public_person_ref=person_ref,
+            page=page,
+            limit=10,
+            catalog_revision=revision,
+        )
+        pages.append(result)
+        revision, page = result["catalogRevision"], result["nextPage"]
+    assert [len(result["items"]) for result in pages] == [10, 10, 8]
+    assert [result["hasMore"] for result in pages] == [True, True, False]
+    assert len({item["scopeRef"] for result in pages for item in result["items"]}) == 28
+    assert {"domain": "food", "count": 2, "label": "Food & dining"} in pages[0]["domains"]
+
+    # A person cannot open their own catalog as a viewer.
+    with pytest.raises(PersonProfileNotFoundError):
+        await service.search_scope_catalog(viewer_user_id="subject", public_person_ref=person_ref)

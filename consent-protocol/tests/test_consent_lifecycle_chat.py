@@ -31,6 +31,7 @@ from __future__ import annotations
 import inspect
 import json
 import re
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -122,11 +123,21 @@ def _directory(*people: dict):
     )
 
 
+@contextmanager
 def _profile(profile: dict = PROFILE):
-    return patch(
-        "hushh_mcp.one_adk.action_tools.PersonProfileService.get_viewer_profile",
-        new=AsyncMock(return_value=profile),
-    )
+    # propose_information_request reads the lean catalog; discovery reads the
+    # full viewer profile. Both are the same authority, so one fixture serves.
+    with (
+        patch(
+            "hushh_mcp.one_adk.action_tools.PersonProfileService.get_viewer_profile",
+            new=AsyncMock(return_value=profile),
+        ),
+        patch(
+            "hushh_mcp.one_adk.action_tools.PersonProfileService.get_requestable_catalog",
+            new=AsyncMock(return_value=profile),
+        ),
+    ):
+        yield
 
 
 def _connector(configured: bool = True):
@@ -629,6 +640,64 @@ class TestPropose:
             "professional": ["Employment status"],
             "food": ["Favorite cuisine"],
         }
+        # A miss is offered as alternatives to choose from, never staged as a pick.
+        assert result["proposed"] == []
+        assert {item["label"] for item in result["alternatives"]} == {
+            "Employment status",
+            "Favorite cuisine",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_question_goes_straight_to_one_proposal_card(self):
+        """Contract C4, "One picks, the person confirms"; UAT baseline 2026-09-28.
+
+        "What is Sarah Chen's favorite restaurant?" names no stored label. The
+        server resolves it to the food row from labels alone, suggests a reason,
+        and stages the card in this one call, reading only the lean catalog.
+        """
+        state = _state()
+        catalog = AsyncMock(return_value=PROFILE)
+        full_profile = AsyncMock(return_value=PROFILE)
+        with (
+            _auth(),
+            _connections({"displayName": "Sarah Chen", "publicPersonRef": PERSON_REF}),
+            patch(
+                "hushh_mcp.one_adk.action_tools.PersonProfileService.get_requestable_catalog",
+                new=catalog,
+            ),
+            patch(
+                "hushh_mcp.one_adk.action_tools.PersonProfileService.get_viewer_profile",
+                new=full_profile,
+            ),
+            _connector(True),
+        ):
+            result = await propose_information_request(
+                "Sarah Chen",
+                "favorite restaurant",
+                "",
+                _ctx(state),
+                question="What is Sarah Chen's favorite restaurant?",
+            )
+        assert result["status"] == "proposal_ready"
+        assert result["proposed"] == [
+            {
+                "scope": "psr_cuisine",
+                "label": "Favorite cuisine",
+                "why": '"restaurant" relates to food & dining',
+            }
+        ]
+        assert result["duration_default"] == "7d"
+        assert result["person"] == {
+            "displayName": "Sarah Chen",
+            "personRef": PERSON_REF,
+            "profilePath": f"/people/{PERSON_REF}",
+        }
+        assert result["reason_suggestion"] == "I'd like to know your favorite cuisine."
+        assert result["purpose"] == result["reason_suggestion"]
+        assert result["directive"]["slots"]["scopeRefs"] == ["psr_cuisine"]
+        assert "I'll ask Sarah Chen" in result["nextStep"]
+        catalog.assert_awaited_once()
+        full_profile.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_ambiguous_names_refuse_to_guess(self):
@@ -1021,7 +1090,12 @@ class TestPropose:
         ):
             result = await list_information_shared_with_me(context)
 
-        assert result["nextStep"] == "Sarah Chen has not shared any information with you yet."
+        # Guidance for the model, not a sentence to read out: UAT 2026-09-28 showed
+        # "has not shared any information with you" beside an offer to "prepare a
+        # card" while the card was already on screen.
+        assert "Sarah Chen" in result["nextStep"]
+        assert "propose_information_request" in result["nextStep"]
+        assert "has not shared any information" not in result["nextStep"]
 
     @pytest.mark.asyncio
     async def test_short_purpose_and_bad_duration_are_asked_back(self):
