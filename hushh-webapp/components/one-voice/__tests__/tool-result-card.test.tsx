@@ -282,7 +282,7 @@ describe("ToolResultCard", () => {
     expect(toolResultFamily("", "ok")).toBe("generic");
   });
 
-  it("never writes a sender or subject the result did not carry", () => {
+  it("keeps every returned row, in the position the server gave it", () => {
     const result: ToolResultPublic = {
       status: "ok",
       spoken_facts: ["I found 2 messages."],
@@ -290,22 +290,27 @@ describe("ToolResultCard", () => {
       sources: [{ source_ref: "mail:1", label: "Mail", kind: "metadata" }],
       items: [
         { source_ref: "mail:1", subject: "March invoice", sender: "Acme" },
-        // A row the reader could not label. It is shown as unlabelled, not
-        // filled in, and not silently dropped along with its ordinal.
-        { source_ref: "mail:2", sender: "Bookkeeping" },
-        // Nothing to show at all: no row rather than an empty one.
-        { source_ref: "mail:3" },
+        // A row the reader could not name. Dropping it renumbered everything
+        // below it, so "the second one" pointed at the third message while the
+        // person was looking at the second. It is shown unlabelled instead, and
+        // nothing is invented to fill it.
+        { source_ref: "mail:2" },
+        { source_ref: "mail:3", subject: "Statement", sender: "Bookkeeping" },
       ],
-      coverage: { unit: "messages", returned: 2, assessed: 9 },
+      coverage: { unit: "messages", returned: 3, assessed: 9 },
     };
     const { container } = render(
       <ToolResultCard result={result} tool="read_mail" ok />,
     );
     expect(screen.getByText("March invoice")).toBeInTheDocument();
     expect(screen.getByText("No subject")).toBeInTheDocument();
-    expect(screen.getByLabelText("Mail").children).toHaveLength(2);
-    // Coverage distinguishes what was checked from what came back.
-    expect(container.textContent).toContain("2 of 9 checked");
+    const list = screen.getByLabelText("Mail");
+    expect(list.children).toHaveLength(3);
+    // The position the person reads is the ordinal the server resolves, so the
+    // unnamed row still occupies two and "Statement" is still three.
+    expect(list.children[1]).toHaveAttribute("data-source-ref", "mail:2");
+    expect(list.children[2]).toHaveAttribute("data-source-ref", "mail:3");
+    expect(container.textContent).toContain("3 of 9 checked");
   });
 
   it("shows what each message is about when its text was read", () => {

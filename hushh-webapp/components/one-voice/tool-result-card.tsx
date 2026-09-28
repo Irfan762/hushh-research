@@ -840,10 +840,15 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
     ? answer.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean)
     : [];
   const coverage = mailCoverageLine(result.coverage);
-  const visible = items.filter(
-    (row) => text(row.subject) || text(row.sender),
-  );
-  if (paragraphs.length === 0 && visible.length === 0 && !coverage) return null;
+  // Every returned row is shown, in the order the server returned it.
+  //
+  // Dropping the ones with no subject or sender renumbered the list: the person
+  // says "the second one" about what they can see, the server resolves position
+  // two against the list it actually returned, and a hidden row between them
+  // makes those two different messages. Truncating to the first eight was the
+  // same untruth from the other end -- One saying "I found 10 messages" over a
+  // list of eight. The panel already scrolls, and a read returns at most 25.
+  if (paragraphs.length === 0 && items.length === 0 && !coverage) return null;
   return (
     <div
       className="mt-2 flex flex-col gap-2"
@@ -861,9 +866,9 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
           ))}
         </div>
       ) : null}
-      {visible.length > 0 ? (
+      {items.length > 0 ? (
         <ul className="flex flex-col gap-0.5" aria-label="Mail">
-          {visible.slice(0, 8).map((row, index) => {
+          {items.map((row, index) => {
             const subject = text(row.subject);
             const sender = text(row.sender);
             const ref = text(row.source_ref);
@@ -874,12 +879,16 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
             // summarising failed.
             const gist = text(row.gist);
             const byline = [sender, when].filter(Boolean).join(" · ") || null;
+            // The server's own ordinal, read off the ref rather than counted
+            // here, so the number the person sees is the number "the second
+            // one" resolves to even if a row above it has nothing to show.
+            const position = ref?.startsWith("mail:") ? ref.slice(5) : null;
             return (
               <li
                 key={`${ref ?? index}`}
                 data-source-ref={ref ?? undefined}
                 data-cited={ref && cited.has(ref) ? "true" : undefined}
-                className="flex min-h-9 flex-col gap-0.5 py-1"
+                className="flex min-h-11 flex-col justify-center gap-0.5 py-1"
               >
                 <div className="flex items-baseline gap-2">
                   {row.unread === true ? (
@@ -891,6 +900,14 @@ function MailDetail({ result }: { result: ToolResultPublic }) {
                       )}
                       aria-label="Unread"
                     />
+                  ) : null}
+                  {position ? (
+                    <span
+                      className="shrink-0 text-[12px] tabular-nums text-[color:var(--app-secondary-label)]"
+                      aria-hidden
+                    >
+                      {position}.
+                    </span>
                   ) : null}
                   <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-[color:var(--app-label)]">
                     {subject ?? "No subject"}

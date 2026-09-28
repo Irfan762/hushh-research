@@ -201,7 +201,9 @@ describe("OneVoicePanel", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText("Subject 1")).toBeInTheDocument();
-    expect(screen.getByLabelText("Mail").children.length).toBeGreaterThan(0);
+    // All ten are reachable. Showing eight while saying ten is the same untruth
+    // as counting citations instead of messages.
+    expect(screen.getByLabelText("Mail").children).toHaveLength(10);
     expect(screen.getByTestId("one-voice-mail-coverage")).toHaveTextContent(
       "10 messages",
     );
