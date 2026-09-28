@@ -39,10 +39,15 @@ export function FirstConnectInsightsCard({
   const [forgotten, setForgotten] = useState<ReadonlySet<string>>(new Set());
   const [recipients, setRecipients] = useState<Record<string, number>>({});
   const askedForOwnerRef = useRef<string | null>(null);
-  const credentialsRef = useRef({ ownerId, vaultKey, vaultOwnerToken });
+  const [offerOwner, setOfferOwner] = useState<{ ownerId: string; vaultKey: string; vaultOwnerToken: string } | null>(null);
+  const credentialsRef = useRef({ ownerId, vaultKey, vaultOwnerToken, enabled });
+  useEffect(() => { credentialsRef.current = { ownerId, vaultKey, vaultOwnerToken, enabled }; },
+    [ownerId, vaultKey, vaultOwnerToken, enabled]);
+  const saves = useRef(new Set<AbortController>());
   useEffect(() => {
-    credentialsRef.current = { ownerId, vaultKey, vaultOwnerToken };
-  }, [ownerId, vaultKey, vaultOwnerToken]);
+    const controllers = saves.current;
+    return () => { for (const controller of controllers) controller.abort(); controllers.clear(); };
+  }, [enabled, ownerId, vaultKey, vaultOwnerToken]);
 
   // Ask once per owner per mount. The server offers each source at most once.
   useEffect(() => {
@@ -52,7 +57,10 @@ export function FirstConnectInsightsCard({
     const controller = new AbortController();
     void fetchFirstConnectInsights({ vaultOwnerToken, vaultKey, signal: controller.signal }).then(
       (next) => {
-        if (controller.signal.aborted || credentialsRef.current.ownerId !== ownerId) return;
+        const current = credentialsRef.current;
+        if (controller.signal.aborted || !current.enabled || current.ownerId !== ownerId ||
+          current.vaultKey !== vaultKey || current.vaultOwnerToken !== vaultOwnerToken) return;
+        setOfferOwner({ ownerId, vaultKey, vaultOwnerToken });
         setOffer(next);
         setStates({});
         setForgotten(new Set());
@@ -63,10 +71,12 @@ export function FirstConnectInsightsCard({
 
   // A different person, or a locked vault, never sees the previous card.
   useEffect(() => {
-    if (!ownerId || !vaultKey) setOffer(null);
-  }, [ownerId, vaultKey]);
+    setOffer(null);
+  }, [enabled, ownerId, vaultKey, vaultOwnerToken]);
 
-  if (!offer || !ownerId) return null;
+  if (!offer || !ownerId || !enabled || !vaultKey || !vaultOwnerToken ||
+    offerOwner?.ownerId !== ownerId || offerOwner.vaultKey !== vaultKey ||
+    offerOwner.vaultOwnerToken !== vaultOwnerToken) return null;
   const visible = offer.items.filter((item) => !forgotten.has(item.id));
   const kept = visible.filter((item) => states[item.id] === "kept").length;
   const open = visible.filter((item) => states[item.id] !== "kept");
@@ -75,11 +85,16 @@ export function FirstConnectInsightsCard({
     const { ownerId: userId, vaultKey: key, vaultOwnerToken: token } = credentialsRef.current;
     if (!userId || !key || !token) return;
     setStates((current) => ({ ...current, [item.id]: "saving" }));
+    const controller = new AbortController();
+    saves.current.add(controller);
     const guard = createAgentPkmCaptureGuard({
       userId,
-      signal: new AbortController().signal,
-      isEnabled: () => credentialsRef.current.ownerId === userId && Boolean(credentialsRef.current.vaultKey),
+      signal: controller.signal,
+      isEnabled: () => credentialsRef.current.enabled && credentialsRef.current.ownerId === userId &&
+        credentialsRef.current.vaultKey === key && credentialsRef.current.vaultOwnerToken === token,
     });
+    saves.current.delete(controller);
+    if (controller.signal.aborted || !guard.isCurrent()) return;
     const result = await keepFirstConnectInsight({
       userId,
       vaultKey: key,
@@ -169,7 +184,7 @@ export function FirstConnectInsightsCard({
                   ) : null}
                   {state === "error" ? (
                     <p className="mt-2 text-xs text-destructive" role="alert">
-                      That couldn&apos;t be saved. Nothing was changed.
+                      Saving couldn&apos;t finish. Check Memory before trying again.
                     </p>
                   ) : null}
                   <div className="mt-2 flex flex-wrap gap-2">

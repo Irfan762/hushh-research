@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { publishValidatedAuthSessionOwner } from "@/lib/auth/session-owner";
 
 // Only the lower layers are mocked: the card, its fetch parser and the Keep
 // path (`keepFirstConnectInsight`) run for real, so "nothing is saved until
@@ -24,10 +25,7 @@ vi.mock("@/lib/profile/pkm-agent-lab-capture", () => ({
 }));
 vi.mock("@/lib/profile/pkm-agent-lab-preview", () => ({ isDegradedPreviewCard: () => false }));
 vi.mock("@/lib/agent/agent-pkm-context-store", () => ({
-  AgentPkmContextStore: { findLocalDuplicate: () => ({ kind: "none" }) },
-}));
-vi.mock("@/lib/agent/agent-pkm-capture-runtime", () => ({
-  createAgentPkmCaptureGuard: () => ({ isCurrent: () => true, assertCurrent: async () => undefined }),
+  AgentPkmContextStore: { findLocalDuplicate: () => ({ kind: "none" }), load: async () => null },
 }));
 
 import { FirstConnectInsightsCard } from "@/components/agent/first-connect-insights-card";
@@ -68,11 +66,13 @@ function renderCard() {
 
 describe("FirstConnectInsightsCard", () => {
   beforeEach(() => {
+    publishValidatedAuthSessionOwner("owner");
     mocks.apiFetch.mockReset().mockResolvedValue(new Response(JSON.stringify(offer()), { status: 200 }));
     mocks.prepare.mockReset().mockImplementation(async ({ message }: { message: string }) => preparedCard(message));
     mocks.addToPKM.mockReset().mockResolvedValue({ attempted: 1, saved: 1, failed: 0, domains: ["professional"], results: [] });
     mocks.clearAgentPkmContext.mockReset();
   });
+  afterEach(() => { cleanup(); publishValidatedAuthSessionOwner(null); });
 
   it("shows an approval card and saves nothing until Keep; Forget discards", async () => {
     renderCard();
@@ -138,5 +138,33 @@ describe("FirstConnectInsightsCard", () => {
     mocks.apiFetch.mockClear();
     rerender(<FirstConnectInsightsCard ownerId="owner" vaultKey={null} vaultOwnerToken="t" enabled />);
     expect(mocks.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a former owner's late preparation and clears the old offer immediately", async () => {
+    let resolve!: (value: ReturnType<typeof preparedCard>) => void;
+    mocks.prepare.mockReturnValue(new Promise(done => { resolve = done; }));
+    const root = renderCard(); await screen.findByTestId("first-connect-insights-card");
+    fireEvent.click(screen.getAllByTestId("first-connect-insight-keep")[0]);
+    await waitFor(() => expect(mocks.prepare).toHaveBeenCalledTimes(1));
+    publishValidatedAuthSessionOwner("other-owner");
+    mocks.apiFetch.mockResolvedValue(new Response(JSON.stringify({ status: "none" }), { status: 200 }));
+    root.rerender(<FirstConnectInsightsCard ownerId="other-owner" vaultKey="other-key" vaultOwnerToken="other-token" enabled />);
+    expect(screen.queryByText("You have a weekly 1:1 with Alex on Mondays")).toBeNull();
+    await act(async () => { resolve(preparedCard(MEETING)); });
+    expect(mocks.addToPKM).not.toHaveBeenCalled();
+  });
+
+  it("keeps an accepted save private when the component unmounts before its receipt", async () => {
+    let resolve!: (value: { saved: number }) => void;
+    mocks.addToPKM.mockReturnValue(new Promise(done => { resolve = done; }));
+    const root = renderCard(); await screen.findByTestId("first-connect-insights-card");
+    fireEvent.click(screen.getAllByTestId("first-connect-insight-keep")[0]);
+    await waitFor(() => expect(mocks.addToPKM).toHaveBeenCalledTimes(1));
+    const write = mocks.addToPKM.mock.calls[0][0];
+    root.unmount(); publishValidatedAuthSessionOwner("other-owner");
+    await act(async () => { resolve({ saved: 1 }); });
+    expect(write.mayPublish()).toBe(false);
+    expect(mocks.clearAgentPkmContext).not.toHaveBeenCalled();
+    expect(screen.queryByTestId("first-connect-insights-receipt")).toBeNull();
   });
 });
