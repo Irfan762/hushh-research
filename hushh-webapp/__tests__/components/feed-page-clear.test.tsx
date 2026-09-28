@@ -110,6 +110,12 @@ vi.mock("@/lib/feed/use-feed-actionables", () => ({
     retry: mocks.retryActionables,
     hasClearableSmsEmergencies: true,
     clearSmsEmergencies: mocks.clearSmsEmergencies,
+    consentUnlockPrompt: {
+      open: false,
+      title: "",
+      description: "",
+      cancel: () => undefined,
+    },
   }),
 }));
 

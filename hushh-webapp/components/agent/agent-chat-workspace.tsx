@@ -7996,14 +7996,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             return;
                           }
                           // Quiet so the outcome lands in the transcript, not
-                          // a toast over it. Quiet rethrows a failed request,
-                          // so the card is only marked approved when every
-                          // request in it was.
-                          for (const target of targets) {
-                            await consentActions.handleApprove(target, {
-                              quiet: true,
-                            });
-                          }
+                          // a toast over it. The shared bundle path decides
+                          // every item (a few at a time) and rejects unless
+                          // every one went through, so the card is only marked
+                          // approved when every request in it was.
+                          await consentActions.handleApproveBundle(targets, {
+                            quiet: true,
+                            bundleId: item.bundleId || item.id,
+                          });
                           updateMessage(message.id, (current) => ({
                             ...current,
                             specialistDirective:
@@ -8047,11 +8047,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             );
                             return;
                           }
-                          for (const target of targets) {
-                            await consentActions.handleDeny(target.id, {
-                              quiet: true,
-                            });
-                          }
+                          await consentActions.handleDenyBundle(
+                            targets.map((target) => target.id),
+                            { quiet: true, bundleId: item.bundleId || item.id },
+                          );
                           updateMessage(message.id, (current) => ({
                             ...current,
                             specialistDirective:

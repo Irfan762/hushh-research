@@ -10,6 +10,7 @@ import {
   useFeedLiveRefresh,
 } from "@/lib/feed/use-feed-live-refresh";
 import { resetIdleSchedulerForTests } from "@/lib/perf/idle-scheduler";
+import { dispatchConsentStateChanged } from "@/lib/consent/consent-events";
 
 /**
  * The Feed was reported as "neither real time, not accurate and not precise".
@@ -91,6 +92,28 @@ describe("useFeedLiveRefresh", () => {
 
     dispatchFeedStateChanged("arrived");
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  // Measured on UAT 2026-09-28: a consent request reached the owner's phone
+  // and the Feed kept showing its old list until the 45s timer, so the
+  // "Needs you" row with Allow appeared up to 45 seconds late. A consent
+  // push or a decision made on another surface now re-checks at once; the
+  // provider's replays of what the device already holds do not.
+  it("re-checks at once on a consent push or decision, but not on a cached replay", () => {
+    const refresh = vi.fn();
+    renderHook(() => useFeedLiveRefresh(refresh));
+    refresh.mockClear();
+
+    for (const source of ["cached_pending", "queued_pending", "hydrated_pending", "fcm_opened"]) {
+      dispatchConsentStateChanged({ source });
+    }
+    expect(refresh).not.toHaveBeenCalled();
+
+    dispatchConsentStateChanged({ source: "fcm_live", requestId: "req-1" });
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    dispatchConsentStateChanged({ action: "approve", requestId: "req-1", source: "consent_actions" });
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("stops polling while the tab is hidden and catches up on return", () => {

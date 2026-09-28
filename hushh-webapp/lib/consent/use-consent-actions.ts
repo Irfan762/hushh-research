@@ -23,6 +23,7 @@ import {
 import { ROUTES } from "@/lib/navigation/routes";
 import { oneLocationErrorMessage } from "@/lib/one-location/error-message";
 import { requestInternalAppNavigation } from "@/lib/utils/browser-navigation";
+import { settleWithConcurrency } from "@/lib/consent/bounded-concurrency";
 
 // ============================================================================
 // Types
@@ -51,6 +52,26 @@ export interface PendingConsent {
 }
 
 type RequestStatus = "pending" | "handling" | "handled";
+
+/** At most this many item decisions of one grouped request run at once. */
+export const BUNDLE_DECISION_CONCURRENCY = 3;
+
+export interface BundleDecisionOptions {
+  bundleId?: string;
+  bundleLabel?: string;
+  /** The caller owns reporting; failures reject with an owner sentence. */
+  quiet?: boolean;
+  /** Replaces the generic success toast, e.g. "Kushal can now see ...". */
+  successMessage?: string;
+}
+
+/** One progress state for a whole grouped decision. */
+export interface BundleDecisionProgress {
+  key: string;
+  kind: "approve" | "deny";
+  done: number;
+  total: number;
+}
 export type ConsentActionKind = "approve" | "deny" | "revoke";
 
 export interface ConsentActionState {
@@ -194,6 +215,8 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
   const { vaultKey, getVaultOwnerToken } = useVault();
   const { userId, onActionComplete } = options;
   const [activeActions, setActiveActions] = useState<ConsentActionState[]>([]);
+  const [bundleProgress, setBundleProgress] =
+    useState<BundleDecisionProgress | null>(null);
   const inflightActionPromises = useRef<Map<string, Promise<void>>>(new Map());
 
   // Track request status: ID -> "pending" | "handling" | "handled"
@@ -710,58 +733,119 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
     ]
   );
 
+  /**
+   * Decide every item of one grouped request.
+   *
+   * Each item is still its own server call, because each is its own decision
+   * (there is no bulk decision endpoint). They used to run strictly one after
+   * another; now at most BUNDLE_DECISION_CONCURRENCY run at once and the
+   * caller sees one progress state for the whole request. Every item settles,
+   * so a partial failure says how many went through instead of stopping at
+   * the first failure and leaving the rest undecided without a word.
+   */
+  const settleBundle = useCallback(
+    async (
+      kind: "approve" | "deny",
+      requestIds: string[],
+      runOne: (index: number) => Promise<void>,
+      options: BundleDecisionOptions,
+    ): Promise<void> => {
+      const total = requestIds.length;
+      const progressKey =
+        options.bundleId || `bundle-${requestIds[0] || kind}`;
+      const failed = kind === "approve" ? APPROVE_FAILED : DENY_FAILED;
+      const verb = kind === "approve" ? "Allowing" : "Declining";
+      const report = (done: number) => {
+        setBundleProgress({ key: progressKey, kind, done, total });
+        if (!options.quiet && total > 1) {
+          toast.loading(`${verb} ${Math.min(done + 1, total)} of ${total}...`, {
+            id: progressKey,
+          });
+        }
+      };
+      report(0);
+      if (!options.quiet && total <= 1) {
+        toast.loading(`${verb}...`, { id: progressKey });
+      }
+      try {
+        const indexes = requestIds.map((_, index) => index);
+        const results = await settleWithConcurrency(
+          indexes,
+          BUNDLE_DECISION_CONCURRENCY,
+          runOne,
+          (done) => report(done),
+        );
+        const failures = results.filter((result) => !result.ok);
+        if (failures.length === 0) {
+          if (!options.quiet) {
+            toast.success(
+              options.successMessage ||
+                (kind === "approve"
+                  ? "Allowed. They can open it now."
+                  : "Declined. Nothing was shared."),
+              { id: progressKey, duration: 3000 },
+            );
+          }
+          return;
+        }
+        const first = failures[0]!;
+        const firstError = first.ok ? null : first.error;
+        const succeeded = total - failures.length;
+        const message =
+          succeeded > 0
+            ? kind === "approve"
+              ? `Shared ${succeeded} of ${total}. Try the rest again.`
+              : `Declined ${succeeded} of ${total}. Try the rest again.`
+            : ownerFacingConsentError(firstError, failed);
+        if (!options.quiet) {
+          toast.error(message, { id: progressKey, duration: 5000 });
+        }
+        throw new Error(message, { cause: firstError });
+      } finally {
+        setBundleProgress((current) =>
+          current?.key === progressKey ? null : current,
+        );
+      }
+    },
+    []
+  );
+
   const handleApproveBundle = useCallback(
     async (
       consents: PendingConsent[],
-      options?: { bundleId?: string; bundleLabel?: string }
+      options: BundleDecisionOptions = {}
     ): Promise<void> => {
       if (!userId || consents.length === 0) return;
-      const toastId = options?.bundleId || `bundle-${consents[0]?.id || "approve"}`;
-      const promise = (async () => {
-        for (const consent of consents) {
-          await handleApprove(consent, { quiet: true });
-        }
-        return "Allowed. They can open it now.";
-      })();
-
-      toast.promise(promise, {
-        id: toastId,
-        loading: "Allowing...",
-        success: (data) => data,
-        error: (err) => ownerFacingConsentError(err, APPROVE_FAILED),
-        duration: 3000,
-      });
-
-      await promise;
+      if (!vaultKey) {
+        // handleApprove answers a locked vault with a toast and no error,
+        // which a grouped caller would read as success. Refuse up front;
+        // callers prompt the unlock before they get here.
+        throw new Error("Unlock your vault first.");
+      }
+      await settleBundle(
+        "approve",
+        consents.map((consent) => consent.id),
+        (index) => handleApprove(consents[index]!, { quiet: true }),
+        options
+      );
     },
-    [handleApprove, userId]
+    [handleApprove, settleBundle, userId, vaultKey]
   );
 
   const handleDenyBundle = useCallback(
     async (
       requestIds: string[],
-      options?: { bundleId?: string; bundleLabel?: string }
+      options: BundleDecisionOptions = {}
     ): Promise<void> => {
       if (!userId || requestIds.length === 0) return;
-      const toastId = options?.bundleId || `bundle-${requestIds[0] || "deny"}`;
-      const promise = (async () => {
-        for (const requestId of requestIds) {
-          await handleDeny(requestId, { quiet: true });
-        }
-        return "Declined. Nothing was shared.";
-      })();
-
-      toast.promise(promise, {
-        id: toastId,
-        loading: "Declining...",
-        success: (data) => data,
-        error: (err) => ownerFacingConsentError(err, DENY_FAILED),
-        duration: 3000,
-      });
-
-      await promise;
+      await settleBundle(
+        "deny",
+        requestIds,
+        (index) => handleDeny(requestIds[index]!, { quiet: true }),
+        options
+      );
     },
-    [handleDeny, userId]
+    [handleDeny, settleBundle, userId]
   );
 
   /**
@@ -856,6 +940,7 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
     handleRevoke,
     activeAction,
     activeActions,
+    bundleProgress,
     isRequestBusy,
     isScopeBusy,
 

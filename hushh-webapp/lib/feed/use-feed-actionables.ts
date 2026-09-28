@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { LucideIcon } from "@/components/icons";
 import {
+  Info,
   MapPin,
   ShieldCheck,
   Siren,
@@ -51,6 +52,16 @@ import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
 import { driveSharingSelectionId, isDriveSharingEntry } from "@/lib/consent/drive-query-consent";
 import { resolveConsentRequesterLabel } from "@/lib/consent/consent-display";
+import { parseConsentInstant } from "@/lib/consent/consent-owner-copy";
+import {
+  groupPendingConsentRequests,
+  isOwnerConsentQueueEntry,
+  type OwnerConsentRequest,
+} from "@/lib/consent/owner-consent-request";
+import {
+  useOwnerConsentDecision,
+  type OwnerConsentUnlockPrompt,
+} from "@/lib/consent/use-owner-consent-decision";
 import {
   isLocationConsent,
   locationConsentSummary,
@@ -84,6 +95,12 @@ export interface FeedActionButton {
   disabled?: boolean;
   /** Irreversible action — the row requires a second confirming tap. */
   confirm?: boolean;
+  /**
+   * Show only this icon on a phone (the label stays the accessible name and
+   * returns from `sm` up). Used for a row's quiet Details action, so the two
+   * decision buttons keep one line at 375px and up.
+   */
+  phoneIcon?: LucideIcon;
 }
 
 /**
@@ -140,6 +157,76 @@ export interface UseFeedActionablesResult {
   /** Dismisses every revoked/expired SOS card currently shown. Wired into the
    * Feed page's existing Clear button so it clears SOS notifications too. */
   clearSmsEmergencies: () => void;
+  /** Open while an inline Allow or Don't allow waits for the vault. */
+  consentUnlockPrompt: OwnerConsentUnlockPrompt;
+}
+
+/**
+ * The Feed row for one owner request: the headline, the reason, and the three
+ * things a person can do about it. Exported so the row's wording and its
+ * actions are testable without mounting the whole hook.
+ */
+export function ownerConsentRequestActionable(
+  request: OwnerConsentRequest,
+  handlers: {
+    allow: (request: OwnerConsentRequest) => Promise<boolean>;
+    deny: (request: OwnerConsentRequest) => Promise<boolean>;
+    openDetails: () => void;
+    onDecided: (key: string) => void;
+    sortAt: number;
+  },
+): FeedActionable {
+  // The reason stands alone on its own line here, so it keeps its capital.
+  const reason = String(request.reason || "").trim();
+  const decisionActions: FeedActionButton[] = request.complete
+    ? [
+        {
+          key: "deny",
+          label: "Don't allow",
+          tone: "ghost",
+          confirm: true,
+          run: async () => {
+            if (await handlers.deny(request)) handlers.onDecided(request.key);
+          },
+        },
+        {
+          key: "allow",
+          label: "Allow",
+          tone: "primary",
+          run: async () => {
+            if (await handlers.allow(request)) handlers.onDecided(request.key);
+          },
+        },
+      ]
+    : [];
+  return {
+    id: `consent:${request.key}`,
+    icon: ShieldCheck,
+    iconTone: "accent",
+    person: request.isPerson
+      ? {
+          displayName: request.requesterLabel,
+          photoUrl: request.requesterPhotoUrl,
+        }
+      : null,
+    title: request.headline,
+    description: request.complete
+      ? reason || "Waiting for your answer"
+      : "Still arriving. Open Details to review it.",
+    onSelect: handlers.openDetails,
+    actions: [
+      {
+        key: "details",
+        label: "Details",
+        tone: "ghost",
+        phoneIcon: Info,
+        run: handlers.openDetails,
+      },
+      ...decisionActions,
+    ],
+    sortAt: handlers.sortAt,
+    displayTimestamp: request.requestedAt,
+  };
 }
 
 function toTimestamp(value?: string | number | null): number {
@@ -287,6 +374,23 @@ export function useFeedActionables(): UseFeedActionablesResult {
     Set<string>
   >(() => new Set());
   const cache = useMemo(() => CacheService.getInstance(), []);
+  const consentDecision = useOwnerConsentDecision({ userId });
+  // Requests answered from this row disappear the moment the answer lands,
+  // before the refetch that confirms it; the refetch then simply agrees.
+  const [settledConsentKeys, setSettledConsentKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const markConsentSettled = useCallback((key: string) => {
+    setSettledConsentKeys((current) => {
+      if (current.has(key)) return current;
+      const next = new Set(current);
+      next.add(key);
+      return next;
+    });
+  }, []);
+  useEffect(() => {
+    setSettledConsentKeys(new Set());
+  }, [userId]);
 
   // Revoked/expired SOS cards stay in the feed as a historical alert until the
   // recipient explicitly clears them (see the Clear action below); the
@@ -533,10 +637,16 @@ export function useFeedActionables(): UseFeedActionablesResult {
     if (!userId) return [];
     const items: FeedActionable[] = [];
 
-    // Consent — Review deep-link (approve needs the BYOK export ceremony that
-    // lives in the consent manager, so the feed routes there rather than
-    // one-tap approving; mirrors the prior consent inbox).
+    // Consent. A request someone sent the owner is ONE row however many
+    // items it names ("Kushal wants your Food preferences · dinner"), with
+    // Allow and Don't allow inline. Both go through the shared approve and
+    // deny path (`useOwnerConsentDecision` -> `useConsentActions`), which
+    // builds the encrypted export on this device; a locked vault opens the
+    // unlock prompt first and the same decision runs once it is open.
+    // Requests with their own ceremony (location, Mail, marketplace, Drive,
+    // invitations) keep routing to it.
     if ((pendingConsentCount ?? 0) > 0) {
+      const queueEntries: ConsentCenterEntry[] = [];
       for (const entry of consentItems ?? []) {
         // Incoming connection requests reach this lane too — the Consent
         // Center folds them into its `pending` surface from the very same
@@ -546,6 +656,10 @@ export function useFeedActionables(): UseFeedActionablesResult {
         // Confirm/Decline and the scoped Review route.
         if (entry.kind === "connection_request") continue;
         if (entry.kind === "outgoing_request" || (isDriveSharingEntry(entry) && entry.metadata?.direction !== "incoming")) continue;
+        if (isOwnerConsentQueueEntry(entry)) {
+          queueEntries.push(entry);
+          continue;
+        }
         const requesterLabel = resolveConsentRequesterLabel({
           counterpartLabel: entry.counterpart_label,
           counterpartEmail: entry.counterpart_email,
@@ -576,11 +690,26 @@ export function useFeedActionables(): UseFeedActionablesResult {
           // is in the future and would sort this above everything. Otherwise
           // when it was first seen, so it holds its place across refreshes.
           sortAt:
-            toTimestamp(entry.issued_at) || firstSeenAt(`consent:${entry.id}`),
+            (parseConsentInstant(entry.issued_at) ?? 0) ||
+            firstSeenAt(`consent:${entry.id}`),
           // Real only when the backend happened to populate issued_at — never
           // fabricate a "just now" time label for this type.
-          displayTimestamp: toDisplayTimestamp(entry.issued_at),
+          displayTimestamp: parseConsentInstant(entry.issued_at),
         });
+      }
+
+      for (const request of groupPendingConsentRequests(queueEntries)) {
+        if (settledConsentKeys.has(request.key)) continue;
+        items.push(
+          ownerConsentRequestActionable(request, {
+            allow: consentDecision.allow,
+            deny: consentDecision.deny,
+            openDetails: () => router.push(request.detailsHref),
+            onDecided: markConsentSettled,
+            sortAt:
+              request.requestedAt ?? firstSeenAt(`consent:${request.key}`),
+          }),
+        );
       }
 
       // The Feed intentionally loads only the first Consent Center page. When
@@ -1071,6 +1200,10 @@ export function useFeedActionables(): UseFeedActionablesResult {
     // streaming debate's frequent ticks would rebuild every row each render.
   }, [
     appTaskState.tasks,
+    consentDecision.allow,
+    consentDecision.deny,
+    markConsentSettled,
+    settledConsentKeys,
     connectionRequests,
     connectionsRefresh,
     consentItems,
@@ -1111,5 +1244,6 @@ export function useFeedActionables(): UseFeedActionablesResult {
     retry: refreshActionables,
     hasClearableSmsEmergencies: clearableSmsEmergencyIds.length > 0,
     clearSmsEmergencies,
+    consentUnlockPrompt: consentDecision.unlockPrompt,
   };
 }
