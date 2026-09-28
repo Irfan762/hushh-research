@@ -1026,7 +1026,10 @@ async def test_progressive_failed_batch_never_claims_files_available(request_bul
 
 
 @pytest.mark.asyncio
-async def test_manual_approval_after_trusted_membership_removed_can_grant(request_bulk, sharing):
+@pytest.mark.parametrize("blocker", ["membership", "manual_takeover"])
+async def test_manual_approval_after_trusted_authority_changes_can_grant(
+    request_bulk, sharing, blocker
+):
     review = await _trusted_review(request_bulk, sharing)
     with request_bulk.db.engine.begin() as connection:
         connection.execute(
@@ -1035,10 +1038,19 @@ async def test_manual_approval_after_trusted_membership_removed_can_grant(reques
               VALUES('owner',1,TRUE)
               ON CONFLICT(user_id) DO UPDATE SET background_enabled=TRUE""")
         )
-        connection.execute(
-            text("""UPDATE one_location_circle_memberships SET status='removed'
-            WHERE user_id='trusted-member'""")
-        )
+        if blocker == "membership":
+            connection.execute(
+                text("""UPDATE one_location_circle_memberships SET status='removed'
+                WHERE user_id='trusted-member'""")
+            )
+        else:
+            connection.execute(
+                text("""UPDATE drive_share_requests SET
+                preparation_error_code='manual_search_active'
+                WHERE request_id=(SELECT origin_request_id FROM drive_bulk_shares
+                  WHERE share_id=:share)"""),
+                {"share": review["shareId"]},
+            )
     with pytest.raises(DriveSharingError, match="trusted_request_unavailable"):
         await request_bulk.approve(
             user_id="owner",
@@ -1074,7 +1086,7 @@ async def test_manual_approval_after_trusted_membership_removed_can_grant(reques
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("revocation", ["membership", "background"])
+@pytest.mark.parametrize("revocation", ["membership", "background", "manual_takeover"])
 async def test_auto_approved_batch_stops_after_authority_revoked(request_bulk, sharing, revocation):
     with request_bulk.db.engine.begin() as connection:
         connection.execute(
@@ -1104,10 +1116,18 @@ async def test_auto_approved_batch_stops_after_authority_revoked(request_bulk, s
                 text("""UPDATE one_location_circle_memberships SET status='removed'
                 WHERE user_id='trusted-member'""")
             )
-        else:
+        elif revocation == "background":
             connection.execute(
                 text("""UPDATE drive_live_preferences SET background_enabled=FALSE
                 WHERE user_id='owner'""")
+            )
+        else:
+            connection.execute(
+                text("""UPDATE drive_share_requests SET
+                preparation_error_code='manual_search_active'
+                WHERE request_id=(SELECT origin_request_id FROM drive_bulk_shares
+                  WHERE share_id=:share)"""),
+                {"share": review["shareId"]},
             )
     assert (
         await request_bulk.claim(

@@ -228,7 +228,8 @@ class DriveBulkShareStore(DriveLivePreferences):
             return self._recipient_current(connection, owner, recipient)
         request = self._row(
             connection,
-            """SELECT recipient_user_id,status,revision,expires_at,request_envelope
+            """SELECT recipient_user_id,status,revision,expires_at,request_envelope,
+            preparation_error_code
             FROM drive_share_requests WHERE request_id=:request AND user_id=:owner""",
             {"request": share["origin_request_id"], "owner": owner},
         )
@@ -252,7 +253,11 @@ class DriveBulkShareStore(DriveLivePreferences):
             # The request marker only records eligibility at creation. The
             # immutable batch approval is the grant authority; an owner may
             # explicitly approve another batch after Trusted access changes.
-            if private.get("trusted_auto") is not True or not share["progressive_batch"]:
+            if (
+                private.get("trusted_auto") is not True
+                or not share["progressive_batch"]
+                or request["preparation_error_code"] == "manual_search_active"
+            ):
                 return False
             from hushh_mcp.services.drive_sharing_store import DriveSharingStore
 
@@ -1204,7 +1209,11 @@ class DriveBulkShareStore(DriveLivePreferences):
             ):
                 raise DriveSharingError("recipient_changed")
             if approval_source == "trusted_auto":
-                if origin is None or row["progressive_batch"] is not True:
+                if (
+                    origin is None
+                    or row["progressive_batch"] is not True
+                    or origin["preparation_error_code"] == "manual_search_active"
+                ):
                     raise DriveSharingError("trusted_request_unavailable")
                 private = self._open(
                     origin["request_envelope"],
