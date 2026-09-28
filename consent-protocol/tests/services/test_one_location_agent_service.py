@@ -1679,6 +1679,10 @@ class FourUserMemoryService(OneLocationAgentService):
         self.consent_audit_rows: list[dict] = []
         self.marketplace_profiles: dict[str, dict] = {}
         self.profile_user_ids: set[str] = set(self.identities)
+        # vault_keys.vault_status by user. Every seeded person finished sign-up;
+        # a test removes an entry (no row) or sets "placeholder" to model one
+        # who did not. The Connect directory lists only "active".
+        self.vault_statuses: dict[str, str] = {uid: "active" for uid in self.identities}
         self.contact_preferences: dict[str, dict] = {}
         self.persona_states: dict[str, dict] = {}
         self.auto_approve_preferences: dict[str, dict] = {}
@@ -2224,6 +2228,25 @@ class FourUserMemoryService(OneLocationAgentService):
                         )
                     )
                     if named == bool(params.get("missing_names_only")):
+                        continue
+                    # Mirrors the statement's vault rule: a stranger needs an
+                    # active vault; an existing relationship (either direction)
+                    # keeps a person reachable without one.
+                    related = (
+                        user_id in connected_ids
+                        or any(
+                            conn.get("status") == "active"
+                            and {conn.get("user_a_id"), conn.get("user_b_id")} == {owner, user_id}
+                            for conn in self.connections.values()
+                        )
+                        or any(
+                            tc.get("status") == "active"
+                            and tc.get("owner_user_id") == user_id
+                            and tc.get("trusted_user_id") == owner
+                            for tc in self.trusted_connections.values()
+                        )
+                    )
+                    if self.vault_statuses.get(user_id) != "active" and not related:
                         continue
                 network_connected = user_id in connected_ids
                 if not network_connected:
@@ -3918,6 +3941,9 @@ def test_directory_candidates_include_existing_profiles_without_verified_phone_o
     service = FourUserMemoryService()
     service.identities["user_c"]["phone_verified"] = False
     service.profile_user_ids.add("user_without_cache")
+    # A missing identity cache is not a missing sign-up: this person holds an
+    # active vault, so the cache gap alone must not hide them.
+    service.vault_statuses["user_without_cache"] = "active"
     service.marketplace_profiles["user_without_cache"] = {
         "user_id": "user_without_cache",
         "display_name": "Cache Missing Member",
@@ -3960,6 +3986,32 @@ def test_directory_candidates_exclude_explicit_contact_opt_out_for_strangers() -
     assert "user_c" in candidate_ids
 
 
+def test_directory_lists_strangers_only_with_an_active_vault() -> None:
+    """Founder ruling 2026-09-28: strangers must have finished sign-up.
+
+    Production was restored from UAT and the directory is otherwise opt-out, so
+    accounts that never created a vault became searchable. A placeholder vault
+    row or no row at all hides a stranger. Someone the viewer already has a
+    relationship with stays reachable, vault or not, so nothing that resolves
+    an existing person today stops working.
+    """
+    service = FourUserMemoryService()
+    service.vault_statuses["user_c"] = "placeholder"
+    del service.vault_statuses["user_d"]
+
+    candidate_ids = {c["userId"] for c in service.list_directory_candidates(owner_user_id="user_a")}
+    assert candidate_ids == {"user_b"}
+
+    # Only the reverse edge exists: user_d trusts the viewer.
+    service.trusted_connections["edge"] = {
+        "owner_user_id": "user_d",
+        "trusted_user_id": "user_a",
+        "status": "active",
+    }
+    candidate_ids = {c["userId"] for c in service.list_directory_candidates(owner_user_id="user_a")}
+    assert candidate_ids == {"user_b", "user_d"}
+
+
 def test_directory_candidates_query_targets_actor_identity_cache() -> None:
     service = RecipientDirectoryProbe()
     assert service.list_directory_candidates(owner_user_id="owner") == []
@@ -3968,6 +4020,21 @@ def test_directory_candidates_query_targets_actor_identity_cache() -> None:
     assert "a.phone_verified = TRUE" not in service.sql
     assert "profile.user_id <> :owner_user_id" in service.sql
     assert "marketplace.is_discoverable IS DISTINCT FROM FALSE" in service.sql
+    # The vault-or-relationship rule sits in the eligibility subquery, ahead of
+    # the opt-out block and of LIMIT, so it can never subtract from a page that
+    # was already cut.
+    sql = " ".join(service.sql.split())
+    vault_rule = "vault.user_id = profile.user_id AND vault.vault_status = 'active'"
+    assert sql.count(vault_rule) == 1
+    vault_at = sql.index(vault_rule)
+    assert vault_at < sql.index("FROM trusted_connections tc")
+    assert vault_at < sql.index("LIMIT :fetch_limit OFFSET :offset")
+    for relationship in (
+        "FROM connections related WHERE related.status = 'active'",
+        "FROM connection_requests pending WHERE pending.status = 'pending'",
+        "FROM trusted_connections edge WHERE edge.status = 'active'",
+    ):
+        assert vault_at < sql.index(relationship) < sql.index("FROM trusted_connections tc")
     assert "profile.contact_sync_consent_rule_version" in service.sql
     assert service.params["contact_sync_contract_version"] == CONTACT_SYNC_CONSENT_CONTRACT_VERSION
 
