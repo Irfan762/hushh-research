@@ -12,38 +12,41 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   WarningIcon as AlertTriangle,
   BriefcaseIcon as BriefcaseBusiness,
-  AddressBookIcon as ContactRound,
-  FingerprintIcon as Fingerprint,
-  KeyIcon as KeyRound,
   SpinnerGapIcon as Loader2,
-  LogOutIcon as LogOut,
-  MailIcon as Mail,
-  MicrophoneIcon as Mic,
-  DesktopIcon as Monitor,
-  PhoneIcon as Phone,
-  PaletteIcon as Palette,
   ArrowsClockwiseIcon as RefreshCw,
-  SendIcon as SendHorizontal,
-  TrashIcon as Trash2,
   UserCircleIcon as User,
   ShieldCheck,
   ScrollText,
 } from "@/components/icons";
 import {
+  AccentRowIcon,
   AccountProfileIcon,
+  AppearanceRowIcon,
   ConsentAgentIcon,
   ConnectedSystemsAgentIcon,
+  DeleteRowIcon,
   DeveloperToolsProfileIcon,
   DevicesProfileIcon,
+  DisconnectRowIcon,
+  DiscoverableRowIcon,
   FingerprintProfileIcon,
   GmailAgentIcon,
+  InboxRowIcon,
+  KeyRowIcon,
   LocationAgentIcon,
+  MarketplaceAgentIcon,
   MemoryAgentIcon,
+  PassphraseRowIcon,
+  PhoneRowIcon,
   PreferencesProfileIcon,
   InviteFriendsProfileIcon,
+  ResetRowIcon,
   SecurityProfileIcon,
   SignOutProfileIcon,
   SupportProfileIcon,
+  SyncRowIcon,
+  VaultRowIcon,
+  VoiceRowIcon,
   WalletAgentIcon,
 } from "@/components/icons/agents";
 import { toast } from "sonner";
@@ -3375,7 +3378,8 @@ function ProfilePageContent({
           onClick={() => router.push(ROUTES.CONSENTS)}
         />
         <SettingsRow
-          icon={ContactRound}
+          icon={DiscoverableRowIcon}
+          iconTone="capability"
           title="Find and connect me by phone number"
           description={contactDiscoverableStatusText}
           trailing={
@@ -3392,7 +3396,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={MarketplaceAgentIcon}
+          iconTone="capability"
           title="Marketplace visibility"
           description={marketplaceStatusText}
           trailing={
@@ -3424,8 +3429,8 @@ function ProfilePageContent({
     <div className="profile-account-content">
       <SettingsGroup title="Identity">
         <SettingsRow
-          icon={User}
-          iconTone="blue"
+          icon={AccountProfileIcon}
+          iconTone="capability"
           title="Display name"
           description={user.displayName || "Not available"}
           trailing={
@@ -3448,14 +3453,14 @@ function ProfilePageContent({
           </div>
         ) : null}
         <SettingsRow
-          icon={Mail}
-          iconTone="orange"
+          icon={GmailAgentIcon}
+          iconTone="capability"
           title="Mail"
           description={user.email || "Not available"}
         />
         <SettingsRow
-          icon={Phone}
-          iconTone="green"
+          icon={PhoneRowIcon}
+          iconTone="capability"
           title="Phone number"
           description={phoneSummaryText}
           trailing={
@@ -3491,8 +3496,8 @@ function ProfilePageContent({
       </SettingsGroup>
       <SettingsGroup title="Account actions">
         <SettingsRow
-          icon={RefreshCw}
-          iconTone="orange"
+          icon={ResetRowIcon}
+          iconTone="capability"
           className="profile-account-reset-row"
           title="Reset account"
           description={resetRowDescription}
@@ -3500,7 +3505,8 @@ function ProfilePageContent({
           onClick={() => void handleResetClick()}
         />
         <SettingsRow
-          icon={Trash2}
+          icon={DeleteRowIcon}
+          iconTone="capability"
           className="profile-account-delete-row"
           testId="profile-account-delete-row"
           title={deleteButtonLabel}
@@ -3517,7 +3523,8 @@ function ProfilePageContent({
     <div className="space-y-4">
       <SettingsGroup>
         <SettingsRow
-          icon={Monitor}
+          icon={AppearanceRowIcon}
+          iconTone="capability"
           title="Appearance"
           description="Light, dark, or system."
           trailing={
@@ -3529,7 +3536,8 @@ function ProfilePageContent({
           stackTrailingOnMobile
         />
         <SettingsRow
-          icon={Palette}
+          icon={AccentRowIcon}
+          iconTone="capability"
           title="Accent"
           description="Choose the app accent."
           trailing={
@@ -3584,7 +3592,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={Mic}
+          icon={VoiceRowIcon}
+          iconTone="capability"
           title="Voice"
           description="What One's voice can do, and its safety controls."
           chevron
@@ -3781,7 +3790,8 @@ function ProfilePageContent({
     <div className="space-y-4 sm:space-y-5">
       <SettingsGroup>
         <SettingsRow
-          icon={Mail}
+          icon={GmailAgentIcon}
+          iconTone="capability"
           title="Connection"
           description={gmailSettingsDescription}
           trailing={<Badge variant="secondary">{gmailStatusLabel}</Badge>}
@@ -3795,7 +3805,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Actions"
           description="Sync, receipts, or disconnect."
           chevron
@@ -3828,8 +3839,8 @@ function ProfilePageContent({
       <SettingsGroup title="Vault">
         {vaultAccess.needsVaultCreation ? (
           <SettingsRow
-            icon={KeyRound}
-            iconTone="blue"
+            icon={VaultRowIcon}
+            iconTone="capability"
             title="Create your vault"
             description="Secure saved details."
             chevron
@@ -3848,8 +3859,8 @@ function ProfilePageContent({
           <>
             {vaultMethod ? (
               <SettingsRow
-                icon={KeyRound}
-                iconTone="blue"
+                icon={VaultRowIcon}
+                iconTone="capability"
                 title="Default unlock"
                 description={defaultUnlockDescription}
                 trailing={
@@ -3900,8 +3911,8 @@ function ProfilePageContent({
             ) : null}
             {!vaultAccess.canMutateSecureData ? (
               <SettingsRow
-                icon={KeyRound}
-                iconTone="blue"
+                icon={VaultRowIcon}
+                iconTone="capability"
                 title="Unlock vault"
                 description="Change methods or passphrase."
                 chevron
@@ -3911,8 +3922,8 @@ function ProfilePageContent({
 
             {vaultAccess.canMutateSecureData && recommendedQuickMethod ? (
               <SettingsRow
-                icon={Fingerprint}
-                iconTone="purple"
+                icon={FingerprintProfileIcon}
+                iconTone="capability"
                 title={
                   enrolledPasskeyWrappers.length > 0
                     ? `Add another ${readableQuickMethod(recommendedQuickMethod)}`
@@ -3937,8 +3948,8 @@ function ProfilePageContent({
               return (
                 <SettingsRow
                   key={vaultWrapperKey(wrapper)}
-                  icon={Fingerprint}
-                  iconTone="purple"
+                  icon={FingerprintProfileIcon}
+                  iconTone="capability"
                   title={
                     enrolledPasskeyWrappers.length > 1
                       ? `Passkey ${index + 1}`
@@ -3999,8 +4010,8 @@ function ProfilePageContent({
 
             {vaultMethod ? (
               <SettingsRow
-                icon={RefreshCw}
-                iconTone="orange"
+                icon={PassphraseRowIcon}
+                iconTone="capability"
                 title="Change passphrase"
                 description="Update vault protection."
                 disabled={switchingVaultMethod}
@@ -4010,8 +4021,8 @@ function ProfilePageContent({
             ) : null}
 
             <SettingsRow
-              icon={KeyRound}
-              iconTone="indigo"
+              icon={KeyRowIcon}
+              iconTone="capability"
               title="BYOK and passkeys"
               description="Additional key methods are being verified."
               disabled
@@ -4036,7 +4047,8 @@ function ProfilePageContent({
           stackTrailingOnMobile
         />
         <SettingsRow
-          icon={SendHorizontal}
+          icon={InboxRowIcon}
+          iconTone="capability"
           title="Inbox"
           description={
             gmail.status?.google_email
@@ -4047,7 +4059,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Latest sync"
           description={gmailLastSyncText}
           trailing={
@@ -4072,7 +4085,8 @@ function ProfilePageContent({
     <SettingsGroup title="Actions">
       {gmailPresentation.isConnected ? (
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Sync now"
           description="Fetch new receipt mail messages and refresh extracted records."
           disabled={gmailActionsBusy || !gmailPresentation.isConnected}
@@ -4096,7 +4110,8 @@ function ProfilePageContent({
       )}
 
       <SettingsRow
-        icon={RefreshCw}
+        icon={SyncRowIcon}
+        iconTone="capability"
         title="Refresh status"
         description="Re-check your Mail connection, sync status, and inbox details."
         disabled={gmailActionsBusy}
@@ -4115,7 +4130,8 @@ function ProfilePageContent({
 
       {gmailPresentation.isConnected ? (
         <SettingsRow
-          icon={Trash2}
+          icon={DisconnectRowIcon}
+          iconTone="capability"
           title="Disconnect Mail"
           description="Revoke Mail, stop future syncs, and delete Mail receipt data."
           tone="destructive"
@@ -4408,7 +4424,8 @@ function ProfilePageContent({
         content: (
           <SettingsGroup title={PROFILE_LABELS.accountAccess}>
             <SettingsRow
-              icon={LogOut}
+              icon={SignOutProfileIcon}
+              iconTone="capability"
               title="Sign out"
               description="Sign out on this device."
               onClick={() => void handleSignOut()}
