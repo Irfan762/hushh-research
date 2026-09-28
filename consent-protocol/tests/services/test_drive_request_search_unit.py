@@ -14,6 +14,7 @@ from hushh_mcp.services.drive_owner_search_service import (
     DriveOwnerSearchService,
     compile_request_queries,
 )
+from hushh_mcp.services.drive_request_bulk_service import DriveRequestBulkService
 from hushh_mcp.services.external_mcp_client import ExternalMcpToolResult
 from hushh_mcp.services.google_drive_adapter import (
     FACT_FIELDS,
@@ -50,6 +51,137 @@ def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
     assert "video/" not in query and "audio/" not in query
     assert "modifiedTime" not in query
     assert period == {"start": start, "end": end, "timezone": "UTC"}
+
+
+def test_request_plan_requires_each_distinct_subject_term():
+    queries, _ = compile_request_queries(
+        {"mode": "find", "terms": ["onboarding", "guide"], "file_kind": "document"},
+        {"purpose": "Onboarding guide documents"},
+        "UTC",
+    )
+    subject = queries[0]["arguments"]["query"].split(" and ((mimeType", 1)[0]
+    assert "fullText contains 'onboarding'" in subject
+    assert "fullText contains 'guide'" in subject
+    assert ")) and ((" in subject
+    assert "fullText contains 'onboarding')) or ((" not in subject
+
+
+def test_request_plan_unions_explicitly_coordinated_categories():
+    queries, _ = compile_request_queries(
+        {"mode": "find", "terms": ["contract", "invoice"], "file_kind": "document"},
+        {"purpose": "Contracts and invoices from last 3 months"},
+        "UTC",
+    )
+    subject = queries[0]["arguments"]["query"].split(" and ((mimeType", 1)[0]
+    assert "fullText contains 'contract'" in subject
+    assert "fullText contains 'invoice'" in subject
+    assert ")) or ((" in subject
+
+
+@pytest.mark.parametrize(
+    "bad_plan",
+    [
+        {"terms": ["onboarding"], "file_kind": "any"},
+        {"terms": ["onboarding", "documents"], "file_kind": "document"},
+        {"exact_title": "Onboarding Documents", "file_kind": "document"},
+    ],
+)
+@pytest.mark.asyncio
+async def test_document_request_reasks_inconsistent_planner_before_search(bad_plan):
+    calls = []
+
+    async def planner(*, prompt, user_id):
+        assert user_id == "owner"
+        calls.append(json.loads(prompt))
+        return {
+            "mode": "find",
+            **(bad_plan if len(calls) == 1 else {"terms": ["onboarding"], "file_kind": "document"}),
+        }
+
+    service = DriveRequestBulkService(planner=planner)
+    plan = await service._plan(
+        user_id="owner",
+        purpose={"purpose": "Onboarding documents from last 3 months"},
+        timezone="UTC",
+    )
+    assert plan.file_kind == "document"
+    assert len(calls) == 2
+    assert "plan_validation" in calls[1]
+
+
+@pytest.mark.asyncio
+async def test_topical_document_request_never_runs_as_a_broad_document_listing():
+    calls = []
+
+    async def planner(*, prompt, user_id):
+        calls.append(json.loads(prompt))
+        return {"mode": "find", "terms": [], "file_kind": "document"}
+
+    service = DriveRequestBulkService(planner=planner)
+    with pytest.raises(DriveReadError, match="invalid_argument"):
+        await service._plan(
+            user_id="owner",
+            purpose={"purpose": "Onboarding documents from last 3 months"},
+            timezone="UTC",
+        )
+    assert len(calls) == 2
+
+    # An intentionally broad request has no subject to preserve.
+    calls.clear()
+    plan = await service._plan(
+        user_id="owner", purpose={"purpose": "All documents from last 3 months"}, timezone="UTC"
+    )
+    assert plan.terms == [] and len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_explicitly_named_plural_title_is_not_rejected_as_broad_request():
+    calls = []
+
+    async def planner(*, prompt, user_id):
+        calls.append(json.loads(prompt))
+        return {"mode": "find", "exact_title": "Onboarding Documents", "file_kind": "document"}
+
+    service = DriveRequestBulkService(planner=planner)
+    plan = await service._plan(
+        user_id="owner",
+        purpose={"purpose": "Please share the file named Onboarding Documents"},
+        timezone="UTC",
+    )
+    assert plan.exact_title == "Onboarding Documents"
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_completed_legacy_request_restarts_search_with_shareability_facts():
+    context = {
+        "purpose": {"purpose": "Onboarding documents from last 3 months"},
+        "revision": 3,
+    }
+    store = SimpleNamespace(
+        by_client=AsyncMock(return_value={"status": "completed", "jobId": "old-job"}),
+        clear_legacy_completed_request=AsyncMock(return_value=True),
+    )
+    search = SimpleNamespace(
+        store=store,
+        create_for_request=AsyncMock(return_value={"status": "queued", "jobId": "new-job"}),
+    )
+
+    async def planner(*, prompt, user_id):
+        return {"mode": "find", "terms": ["onboarding"], "file_kind": "document"}
+
+    service = DriveRequestBulkService(
+        sharing=SimpleNamespace(request_bulk_context=AsyncMock(return_value=context)),
+        search=search,
+        planner=planner,
+        require_owner=AsyncMock(),
+    )
+    state = await service.start_search(user_id="owner", request_id="request-id")
+    assert state == {"status": "queued", "jobId": "new-job"}
+    store.clear_legacy_completed_request.assert_awaited_once_with(
+        user_id="owner", request_id="request-id"
+    )
+    assert search.create_for_request.await_args.kwargs["plan"]["file_kind"] == "document"
 
 
 @pytest.mark.asyncio
@@ -165,8 +297,13 @@ def _provider_file(identity, name, mime="application/vnd.google-apps.document", 
         "createdTime": "2026-09-26T00:00:00Z",
         "modifiedTime": "2026-09-26T00:00:00Z",
         "trashed": False,
+        "capabilities": {"canShare": True},
         **changes,
     }
+
+
+def _request_candidate(identity, name, mime="application/vnd.google-apps.document", **changes):
+    return {**_provider_file(identity, name, mime, **changes), "title": name}
 
 
 def _real_rest_service(monkeypatch, respond):
@@ -200,6 +337,42 @@ def _real_rest_service(monkeypatch, respond):
     return DriveOwnerSearchService(
         transport=rest.GoogleDriveRestTransport(oauth=oauth, adapter=adapter)
     ), adapter
+
+
+@pytest.mark.asyncio
+async def test_request_search_returns_separate_coordinated_categories(monkeypatch):
+    plan = {"mode": "find", "terms": ["contract", "invoice"], "file_kind": "document"}
+    purpose = {"purpose": "Contracts and invoices from last 3 months"}
+    queries, _ = compile_request_queries(plan, purpose, "UTC")
+
+    def respond(path, params, keys):
+        if path == "/drives":
+            return {"drives": []}
+        assert path == "/files" and params["corpora"] == "user"
+        assert "fullText contains 'contract'" in params["q"]
+        assert "fullText contains 'invoice'" in params["q"]
+        assert ")) or ((" in params["q"]
+        return {
+            "files": [
+                _provider_file("contract-only", "Employment contract"),
+                _provider_file("invoice-only", "August invoice"),
+            ]
+        }
+
+    service, _ = _real_rest_service(monkeypatch, respond)
+    checkpoint = _checkpoint()
+    checkpoint.update(
+        request_subject_terms=plan["terms"],
+        request_notes=False,
+        arguments=queries[0]["arguments"],
+        queries=queries,
+        requested_period=None,
+    )
+    checkpoint, files, incomplete, done = await service._page(
+        {"user_id": "owner", "checkpoint": checkpoint}
+    )
+    assert not incomplete and not done
+    assert {item["id"] for item in files} == {"contract-only", "invoice-only"}
 
 
 async def test_real_rest_projection_resolves_shortcut_resource_key_and_live_facts(monkeypatch):
@@ -237,11 +410,69 @@ async def test_real_rest_projection_resolves_shortcut_resource_key_and_live_fact
     assert not incomplete and not done
     assert [(item["id"], item["mimeType"]) for item in files] == [("original", "application/pdf")]
     assert files[0]["resourceKey"] == "target-key"
+    assert files[0]["shareable"] is True
     assert files[0]["createdTime"] == "2026-01-01T00:00:00Z"
     assert files[0]["shortcutName"] == alias["name"]
     assert checkpoint["coverage_counts"]["resolvedShortcutCount"] == 1
     assert "targetResourceKey" in LIST_FIELDS and "resourceKey" in FACT_FIELDS
     assert len(adapter.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_request_folder_children_need_topic_and_search_carries_shareability():
+    checkpoint = _checkpoint()
+    checkpoint.update(
+        request_file_kind="document",
+        request_subject_terms=["onboarding"],
+        request_notes=False,
+    )
+    service = DriveOwnerSearchService()
+    files, incomplete = await service._request_candidates(
+        {"user_id": "owner"},
+        checkpoint,
+        [
+            _request_candidate("wanted", "Onboarding guide", capabilities={"canShare": False}),
+            _request_candidate(
+                "allowed",
+                "Onboarding checklist",
+                clientEncryptionDetails={"encryptionState": "unencrypted"},
+            ),
+            _request_candidate(
+                "encrypted",
+                "Onboarding encrypted guide",
+                clientEncryptionDetails={"encryptionState": "encrypted"},
+            ),
+            _request_candidate("unknown", "Onboarding summary", capabilities={}),
+            _request_candidate("unrelated", "Engineering resume"),
+            _request_candidate("photo", "IMG_0795.HEIC", "image/heic"),
+        ],
+        folder_scoped=True,
+        drive_id=None,
+    )
+    assert not incomplete
+    assert {item["id"]: item["shareable"] for item in files} == {
+        "wanted": False,
+        "allowed": True,
+        "encrypted": False,
+        "unknown": False,
+    }
+    assert checkpoint["coverage_counts"]["excludedByTopicCount"] == 1
+    assert checkpoint["coverage_counts"]["excludedByKindCount"] == 1
+    assert {item["unavailableReason"] for item in files if item["shareable"] is False} == {
+        "source_not_shareable",
+        "shareability_unverified",
+    }
+
+    # A direct Drive fullText hit can have a generic title. Its presence in
+    # the provider result is stronger than a parent-folder-only association.
+    direct, _ = await service._request_candidates(
+        {"user_id": "owner"},
+        checkpoint,
+        [_request_candidate("full-text-hit", "Meeting notes")],
+        folder_scoped=False,
+        drive_id=None,
+    )
+    assert [item["id"] for item in direct] == ["full-text-hit"]
 
 
 async def test_matching_folder_shortcut_pages_generic_gemini_notes_and_nested_folders(monkeypatch):
@@ -336,7 +567,15 @@ async def test_user_shared_drive_pages_exhaust_even_when_a_file_page_is_empty(mo
         assert path == "/files" and keys is None
         if params["corpora"] == "user":
             if params.get("pageToken") == "user-next":
-                return {"files": [_provider_file("shared-with-me", "Shared standup notes")]}
+                return {
+                    "files": [
+                        _provider_file(
+                            "shared-with-me",
+                            "Shared standup notes",
+                            capabilities={"canShare": False},
+                        )
+                    ]
+                }
             return {"files": [], "nextPageToken": "user-next"}
         assert params["corpora"] == "drive"
         if params["driveId"] == "drive-one" and not params.get("pageToken"):
@@ -355,6 +594,8 @@ async def test_user_shared_drive_pages_exhaust_even_when_a_file_page_is_empty(mo
             break
     assert done
     assert {item["id"] for item in found} == {"shared-with-me", "drive-one", "drive-two"}
+    assert next(item for item in found if item["id"] == "shared-with-me")["shareable"] is False
+    assert all(item["shareable"] is True for item in found if item["id"] != "shared-with-me")
     assert not any("sharedWithMe = true" in params.get("q", "") for _, params, _ in adapter.calls)
     assert any(params.get("pageToken") == "more-drives" for _, params, _ in adapter.calls)
     assert any(params.get("pageToken") == "drive-next" for _, params, _ in adapter.calls)

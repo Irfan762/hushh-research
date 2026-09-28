@@ -176,11 +176,11 @@ function driveFeedLine(
     case "document_share_outcome":
       if (sharedWithMe) {
         return status === "partial"
-          ? "Shared some Drive files with you"
+          ? "Drive request incomplete"
           : "Shared Drive files with you";
       }
       return status === "partial"
-        ? "Got some of your shared files"
+        ? "Could not share all selected files"
         : "Now has your shared files";
     case "document_share_revoked":
       return sharedWithMe

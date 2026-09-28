@@ -20,6 +20,28 @@ from hushh_mcp.services.drive_suggestion_service import (
 from hushh_mcp.services.drive_work_wake import wake_drive_work
 from hushh_mcp.services.google_drive_adapter import DriveReadError
 
+_DOCUMENT_NOUN = re.compile(r"\b(?:docs?|documents?)\b", re.I)
+_PLURAL_DOCUMENT_NOUN = re.compile(r"\b(?:docs|documents)\b", re.I)
+_OTHER_FILE_NOUN = re.compile(
+    r"\b(?:photos?|images?|videos?|recordings?|audios?|sheets?|spreadsheets?|slides?|presentations?|pdfs?|folders?)\b",
+    re.I,
+)
+_GENERIC_SEARCH_TERM = re.compile(
+    r"\b(?:docs?|documents?|files?|pdfs?|months?|weeks?|days?)\b"
+    r"|\b(?:last|past|latest|recent)\s+\d{1,2}\b",
+    re.I,
+)
+_LITERAL_TITLE = re.compile(r"[\"“][^\"”]{3,}[\"”]|\S+\.(?:pdf|docx?|txt|md)\b", re.I)
+_NAMED_TITLE_CUE = re.compile(r"\b(?:file|document|doc)\s+(?:named|called|titled)\b", re.I)
+_TOPIC_NEAR_DOCUMENT = re.compile(
+    r"\b([A-Za-z][A-Za-z0-9_-]*)\s+(?:docs?|documents?)\b"
+    r"|\b(?:docs?|documents?)\s+(?:for|about|on|regarding)\s+([A-Za-z][A-Za-z0-9_-]*)\b",
+    re.I,
+)
+_GENERIC_TOPIC = frozenset(
+    {"all", "any", "my", "the", "some", "these", "those", "recent", "latest"}
+)
+
 
 class DriveRequestBulkService:
     def __init__(
@@ -61,28 +83,68 @@ class DriveRequestBulkService:
         # shortcuts; time is checked across title/created/modified metadata.
         if re.search(r"\bstand[ -]?up\b", query, re.I) and re.search(r"\bnotes?\b", query, re.I):
             return LiveSearchPlan(terms=["standup"], file_kind="document", mode="find")
+        prompt = {
+            "document_request": purpose,
+            "current_time_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            "user_timezone": timezone,
+        }
+        documents_only = bool(_DOCUMENT_NOUN.search(query) and not _OTHER_FILE_NOUN.search(query))
+        near_kind = _TOPIC_NEAR_DOCUMENT.search(query)
+        topic_required = bool(
+            near_kind
+            and next((part for part in near_kind.groups() if part), "").casefold()
+            not in _GENERIC_TOPIC
+        )
         async with asyncio.timeout(65):
-            plan = await plan_live_search(
-                self.planner,
-                prompt=json.dumps(
-                    {
-                        "document_request": purpose,
-                        "current_time_utc": datetime.now(UTC).isoformat(timespec="seconds"),
-                        "user_timezone": timezone,
-                    },
-                    ensure_ascii=False,
-                ),
-                user_id=user_id,
-            )
-        if plan.mode != "find":
-            raise DriveReadError("invalid_argument")
-        return plan
+            for attempt in (1, 2):
+                plan = await plan_live_search(
+                    self.planner,
+                    prompt=json.dumps(prompt, ensure_ascii=False),
+                    user_id=user_id,
+                )
+                if plan.mode != "find":
+                    raise DriveReadError("invalid_argument")
+                mismatch = (
+                    documents_only
+                    and plan.file_kind != "document"
+                    or any(_GENERIC_SEARCH_TERM.search(term) for term in plan.terms)
+                    or bool(
+                        plan.exact_title
+                        and _PLURAL_DOCUMENT_NOUN.search(query)
+                        and not _LITERAL_TITLE.search(query)
+                        and not _NAMED_TITLE_CUE.search(query)
+                    )
+                    or topic_required
+                    and not plan.terms
+                    and not plan.exact_title
+                )
+                if not mismatch:
+                    return plan
+                if attempt == 2:
+                    break
+                # Reject a valid-shaped but contradictory plan and ask the
+                # semantic planner to correct it. Never silently change its
+                # selected terms or type in the host.
+                prompt["plan_validation"] = (
+                    "The search plan is inconsistent with the request. When it asks for "
+                    "documents without another file type, use file_kind=document, including "
+                    "Google Docs, PDFs and text files. Keep only distinctive subject terms; "
+                    "file-type words and date-window phrases are not search terms. Use "
+                    "exact_title only when the request names one literal file. A named "
+                    "topic needs at least one distinctive subject term."
+                )
+        raise DriveReadError("invalid_argument")
 
     async def start_search(self, *, user_id, request_id, timezone="UTC"):
         context = await self._context(user_id, request_id, start=True)
         existing = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
         if existing is not None and existing["status"] not in {"failed", "limited", "stopped"}:
-            return existing
+            if existing[
+                "status"
+            ] != "completed" or not await self.search.store.clear_legacy_completed_request(
+                user_id=user_id, request_id=request_id
+            ):
+                return existing
         plan = await self._plan(user_id=user_id, purpose=context["purpose"], timezone=timezone)
         await self._owner()
         return await self.search.create_for_request(
