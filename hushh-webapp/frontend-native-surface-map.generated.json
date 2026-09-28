@@ -1795,9 +1795,7 @@
         "shell_verification_file": null,
         "shell_verification_includes": [],
         "interaction_layer_policy": {
-          "allowed_families": [
-            "legal_document"
-          ]
+          "allowed_families": []
         },
         "voice_playbook": {
           "playbook_id": "route.login",
@@ -1845,7 +1843,6 @@
       },
       "voice_action_contract_file": "app/login/page.voice-action-contract.json",
       "voice_action_contract_ids": [
-        "auth.close_legal",
         "auth.open_privacy",
         "auth.open_terms",
         "auth.sign_in_apple",
@@ -9623,5 +9620,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "bab9c8891ba7bf613e4ca8994489b3cfd6db08c872c5de5ccf6ae5195ef160df"
+  "content_sha256": "88b8a5735c74ed02b14ce858f17b7fd5e3c0765985ef30a0c41af4f9e1e3af99"
 }
