@@ -96,6 +96,23 @@ official regular paths and native viewBox; do not hide SVG paths with CSS or
 hand-draw substitutes. Animated menu/close controls crossfade registry icons.
 Capabilities retain duotone. Verify rendered glyphs, not just import names.
 
+### Settings rows: one treatment, one glyph per concept
+
+A `SettingsRow` leading icon uses `iconTone="capability"` with a registry glyph
+that carries its own colour: the `*AgentIcon` and `*ProfileIcon` exports, or the
+semantic `*RowIcon` set in `hushh-webapp/components/icons/agents/row-icons.tsx`
+(vault, passphrase, sync, reset, delete, disconnect, invite code and so on).
+The row paints no tile. The Profile menu and every nested Profile screen share
+one size (32px well, 28px glyph, from `app/globals.css`); the coloured tile tones
+(`blue`, `orange`, `gray`...) are legacy and must not return on Profile surfaces.
+The same concept uses the same export on every screen: email is
+`GmailAgentIcon`, security is `SecurityProfileIcon`, devices are
+`DevicesProfileIcon`, invitations are `InviteFriendsProfileIcon`. When a row
+needs a concept the registry lacks, add a `*RowIcon` there; never import a glyph
+library from application code. A state (off, paused) may mute the same glyph
+rather than swap to a gray tile. `__tests__/components/iconography-motion.contract.test.ts`
+enforces both the import boundary and the Profile row treatment.
+
 Codex discovers this portable skill through `.agents/skills/hushh-icon-theme/`;
 Claude uses `.claude/skills/hushh-icon-theme/`. Both bridges copy only this
 frontmatter and point here. Governed owner skills remain in `.codex/skills/`;

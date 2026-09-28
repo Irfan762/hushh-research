@@ -1542,9 +1542,9 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   left: var(--ios-account-separator-leading);
 }
 
-[data-profile-stack-screen="account"] [data-slot="settings-row-icon"],
-[data-profile-stack-screen="panel:account"] [data-slot="settings-row-icon"],
-.profile-account-content [data-slot="settings-row-icon"] {
+[data-profile-stack-screen="account"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
+[data-profile-stack-screen="panel:account"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
+.profile-account-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) {
   background: var(--ios-account-utility-icon-tile-background) !important;
   border-radius: 8px !important;
   color: var(--ios-account-utility-icon-glyph) !important;
@@ -1552,9 +1552,9 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   width: 32px !important;
 }
 
-[data-profile-stack-screen="account"] [data-slot="settings-row-icon"] svg,
-[data-profile-stack-screen="panel:account"] [data-slot="settings-row-icon"] svg,
-.profile-account-content [data-slot="settings-row-icon"] svg {
+[data-profile-stack-screen="account"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
+[data-profile-stack-screen="panel:account"] [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
+.profile-account-content [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg {
   color: var(--ios-account-utility-icon-glyph) !important;
   height: 17px !important;
   stroke-width: 1.65 !important;
@@ -1603,9 +1603,9 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   background: var(--app-destructive) !important;
 }
 
-[data-profile-stack-screen="account"] [data-icon-tone] svg,
-[data-profile-stack-screen="panel:account"] [data-icon-tone] svg,
-.profile-account-content [data-icon-tone] svg,
+[data-profile-stack-screen="account"] [data-icon-tone]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
+[data-profile-stack-screen="panel:account"] [data-icon-tone]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
+.profile-account-content [data-icon-tone]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) svg,
 .profile-home-content
   [data-icon-tone]:not([data-icon-tone="capability"]):not(
     [data-icon-tone="transparent"]
@@ -1616,13 +1616,13 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 
 [data-profile-stack-screen="account"]
   .profile-account-service-row
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 [data-profile-stack-screen="panel:account"]
   .profile-account-service-row
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 .profile-account-content
   .profile-account-service-row
-  [data-slot="settings-row-icon"] {
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) {
   background: var(--ios-account-service-icon-tile-background) !important;
   color: var(--ios-account-service-icon-glyph) !important;
 }
@@ -1668,43 +1668,43 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 
 [data-profile-stack-screen="account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 [data-profile-stack-screen="account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"]
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"])
   svg,
 [data-profile-stack-screen="panel:account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 [data-profile-stack-screen="panel:account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"]
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"])
   svg,
 .profile-account-content
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 .profile-account-content
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"]
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"])
   svg {
   color: var(--ios-account-utility-icon-glyph) !important;
 }
 
 [data-profile-stack-screen="account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 [data-profile-stack-screen="panel:account"]
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"],
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]),
 .profile-account-content
   [data-tone="destructive"]
-  [data-slot="settings-row-icon"] {
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) {
   background: var(--ios-account-destructive) !important;
 }
 
 .profile-account-content
   .profile-account-reset-row
-  [data-slot="settings-row-icon"] {
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) {
   background: var(--ios-account-utility-icon-tile-background) !important;
   color: #ffffff !important;
 }
@@ -1717,7 +1717,7 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 
 .profile-account-content
   .profile-account-delete-row
-  [data-slot="settings-row-icon"] {
+  [data-slot="settings-row-icon"]:not([data-icon-tone="capability"]):not([data-icon-tone="transparent"]) {
   background: var(--ios-account-destructive) !important;
 }
 
@@ -2069,10 +2069,18 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
  * direction, 2026-09-27): the authored duotone glyph in its own vivid colour,
  * with no tile behind it. The glyph is the /one list-row size (28px, the
  * AgentSectionIcon "roster" glyph); the well keeps the 32px footprint the
- * tiles had, so titles and separators stay where they were. The coloured
- * tiles above remain for Account and Vault detail rows. */
+ * tiles had, so titles and separators stay where they were.
+ *
+ * Nested Profile screens (Account, Vault methods, Mail, Referrals, Trusted
+ * devices and the rest of the stack) draw the same way, so a concept does not
+ * change look one tap deeper. The coloured tiles above now only apply to a
+ * row that opts out of the capability tone. */
 .profile-home-content [data-icon-tone="capability"],
-.profile-home-content [data-icon-tone="transparent"] {
+.profile-home-content [data-icon-tone="transparent"],
+[data-profile-stack-content="true"] [data-icon-tone="capability"],
+[data-profile-stack-content="true"] [data-icon-tone="transparent"],
+.profile-account-content [data-icon-tone="capability"],
+.profile-account-content [data-icon-tone="transparent"] {
   background: transparent !important;
   border-radius: 0 !important;
   box-shadow: none !important;
@@ -2081,7 +2089,11 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 }
 
 .profile-home-content [data-icon-tone="capability"] svg,
-.profile-home-content [data-icon-tone="transparent"] svg {
+.profile-home-content [data-icon-tone="transparent"] svg,
+[data-profile-stack-content="true"] [data-icon-tone="capability"] svg,
+[data-profile-stack-content="true"] [data-icon-tone="transparent"] svg,
+.profile-account-content [data-icon-tone="capability"] svg,
+.profile-account-content [data-icon-tone="transparent"] svg {
   height: 28px !important;
   width: 28px !important;
 }

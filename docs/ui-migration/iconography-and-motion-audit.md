@@ -233,3 +233,26 @@ evidence; entire authenticated pages are not captured.
 The previous migration census found 309 files with Lucide imports. The application
 source pass now uses the registry facade across all runtime files; reproduce with
 `rg -l 'from ["\\x27]lucide-react' hushh-webapp/{app,components,lib} | wc -l`.
+
+## Nested Profile iconography sweep: 2026-09-28
+
+The Profile menu moved to the /one launcher treatment on 2026-09-27, but the
+screens one tap deeper still drew legacy glyphs on coloured or gray iOS tiles.
+Account, Preferences, Vault methods, Mail, Referrals, Trusted devices, the
+sharing rows on My data, Connected Systems, Shared with you, Live voice and the
+wallet card screens now use `iconTone="capability"` with a registry glyph in its
+own colour. New concepts live in `hushh-webapp/components/icons/agents/row-icons.tsx`;
+recurring concepts reuse one export (email, security, devices, invitations,
+memory). The Account tile CSS now excludes capability rows, which also fixes the
+Wallet card row that had been painted onto a tile at 17px.
+
+Outside Profile, Connect's invite, requestable-detail and no-access rows, and the
+circle create/join/add/invite-code rows in Connect and Location, now match.
+The chat history sidebar and Connect search clear no longer pass `strokeWidth`,
+which the registry ignores. Kai, RIA, KYC, onboarding and research
+`SettingsRow` tiles are not yet migrated.
+
+`__tests__/components/iconography-motion.contract.test.ts` guards both rules with
+negative controls: no direct glyph-library import outside `components/icons`, and
+no tiled row on Profile surfaces.
+

@@ -2,10 +2,10 @@
 
 import { useState } from "react";
 import {
-  LaptopIcon as Laptop,
   SpinnerGapIcon as Loader2,
   TrashIcon as Trash2,
 } from "@/components/icons";
+import { DevicesProfileIcon } from "@/components/icons/agents";
 
 import {
   AppPageContentRegion,
@@ -135,7 +135,8 @@ export default function TrustedDevicesPage() {
                 return (
                   <SettingsRow
                     key={device.device_id}
-                    icon={Laptop}
+                    icon={DevicesProfileIcon}
+                    iconTone="capability"
                     title={device.device_name}
                     description={sync.label}
                     trailing={

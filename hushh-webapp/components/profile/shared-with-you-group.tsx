@@ -4,9 +4,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import {
-  ShareNetworkIcon as SharedIcon,
-  TreeStructureIcon as MemoryIcon,
-} from "@/components/icons";
+  MemoryAgentIcon,
+  ShareRowIcon,
+  SyncRowIcon,
+  WarningRowIcon,
+} from "@/components/icons/agents";
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
 import { HelperText } from "@/components/app-ui/typography";
 import { Button } from "@/lib/morphy-ux/button";
@@ -75,8 +77,8 @@ export function SharedWithYouGroup({ vaultOwnerToken }: { vaultOwnerToken: strin
     <>
       <SettingsGroup separatorInset testId="memory-browse-group">
         <SettingsRow
-          icon={MemoryIcon}
-          iconTone="purple"
+          icon={MemoryAgentIcon}
+          iconTone="capability"
           title="Browse all memory"
           description="Every category, down to each saved detail."
           onClick={() => router.push(ROUTES.PKM)}
@@ -87,17 +89,17 @@ export function SharedWithYouGroup({ vaultOwnerToken }: { vaultOwnerToken: strin
       <SettingsGroup title="Shared with you" separatorInset testId="shared-with-you-group">
         {failed ? (
           <SettingsRow
-            icon={SharedIcon}
-            iconTone="gray"
+            icon={WarningRowIcon}
+            iconTone="capability"
             title="Shared information couldn’t load"
             description="Refresh to try again."
           />
         ) : shares === null ? (
-          <SettingsRow icon={SharedIcon} iconTone="gray" title="Checking what others share…" />
+          <SettingsRow icon={SyncRowIcon} iconTone="capability" title="Checking what others share…" />
         ) : people.length === 0 ? (
           <SettingsRow
-            icon={SharedIcon}
-            iconTone="gray"
+            icon={ShareRowIcon}
+            iconTone="capability"
             title="Nothing shared with you right now"
             description="When someone approves your request, it appears here."
           />
@@ -105,8 +107,8 @@ export function SharedWithYouGroup({ vaultOwnerToken }: { vaultOwnerToken: strin
           people.map((entry) => (
             <SettingsRow
               key={entry.personRef || entry.person}
-              icon={SharedIcon}
-              iconTone="indigo"
+              icon={ShareRowIcon}
+              iconTone="capability"
               title={entry.person}
               description={`${entry.labels.length} ${entry.labels.length === 1 ? "item" : "items"} · ${entry.labels.slice(0, 3).join(", ")}${entry.labels.length > 3 ? "…" : ""}`}
               onClick={entry.profilePath ? () => router.push(entry.profilePath!) : undefined}
@@ -145,8 +147,8 @@ function ReceivedDriveShares({ vaultOwnerToken }: { vaultOwnerToken: string | nu
   return <SettingsGroup title="Drive files shared with you" separatorInset testId="received-drive-files-group">
     {failed ? <div className="space-y-2 px-4 py-3"><HelperText role="status">Couldn’t load Drive files.</HelperText>
       <Button type="button" variant="muted" size="compact" onClick={() => setRetry(value => value + 1)}>Try again</Button></div>
-      : shares === null ? <SettingsRow icon={SharedIcon} iconTone="gray" title="Checking Drive shares…" />
-        : shares.length === 0 ? <SettingsRow icon={SharedIcon} iconTone="gray" title="No Drive files shared yet" />
+      : shares === null ? <SettingsRow icon={SyncRowIcon} iconTone="capability" title="Checking Drive shares…" />
+        : shares.length === 0 ? <SettingsRow icon={ShareRowIcon} iconTone="capability" title="No Drive files shared yet" />
           : shares.map(share => <ReceivedDriveShare key={share.shareId} share={share} token={vaultOwnerToken} />)}
   </SettingsGroup>;
 }
