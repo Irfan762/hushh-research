@@ -26,6 +26,7 @@ import {
   Play,
   SealCheck,
   ShareNetwork,
+  Siren,
   Sparkle,
   Trash,
   Tray,
@@ -116,6 +117,8 @@ export const LinkRowIcon = createRowIcon(LinkSimple, ROW_TONE.cobalt, "LinkRowIc
 export const ShareRowIcon = createRowIcon(ShareNetwork, ROW_TONE.indigo, "ShareRowIcon");
 export const JoinRowIcon = createRowIcon(UserPlus, ROW_TONE.purple, "JoinRowIcon");
 export const PeopleRowIcon = createRowIcon(UsersThree, ROW_TONE.indigo, "PeopleRowIcon");
+/** An SOS alert from someone who listed you as an emergency contact. */
+export const EmergencyRowIcon = createRowIcon(Siren, ROW_TONE.red, "EmergencyRowIcon");
 export const InviteCodeRowIcon = createRowIcon(Key, ROW_TONE.amber, "InviteCodeRowIcon");
 export const UseAgentRowIcon = createRowIcon(Sparkle, ROW_TONE.indigo, "UseAgentRowIcon");
 

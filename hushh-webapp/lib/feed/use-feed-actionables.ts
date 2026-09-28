@@ -2,16 +2,17 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import type { ComponentType } from "react";
 import type { LucideIcon } from "@/components/icons";
+import { Info } from "@/components/icons";
 import {
-  Info,
-  MapPin,
-  ShieldCheck,
-  Siren,
-  TrendingUp,
-  UserRound,
-  Users,
-} from "@/components/icons";
+  ConsentAgentIcon,
+  EmergencyRowIcon,
+  FinanceAgentIcon,
+  JoinRowIcon,
+  LocationAgentIcon,
+  PeopleRowIcon,
+} from "@/components/icons/agents";
 
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
@@ -81,9 +82,16 @@ import {
 } from "@/lib/services/connections-service";
 import { buildKaiMarketRoute } from "@/lib/navigation/routes";
 
-/** Subset of SettingsRow's icon-well tones (that type is not exported). */
+/**
+ * Subset of SettingsRow's icon-well tones (that type is not exported). Feed
+ * rows use "capability": a bare duotone registry glyph, the same one Profile
+ * uses for the same concept, never a coloured tile (hushh-icon-theme).
+ */
 export type FeedIconTone =
-  "accent" | "blue" | "purple" | "green" | "orange" | "red" | "gray";
+  "capability" | "accent" | "blue" | "purple" | "green" | "orange" | "red" | "gray";
+
+/** A registry glyph (`@/components/icons/agents`) or a legacy line icon. */
+export type FeedIcon = ComponentType<{ className?: string }>;
 
 export type FeedActionTone = "primary" | "ghost" | "danger";
 
@@ -111,7 +119,7 @@ export interface FeedActionButton {
  */
 export interface FeedActionable {
   id: string;
-  icon: LucideIcon;
+  icon: FeedIcon;
   iconTone: FeedIconTone;
   /** Person identity to render before falling back to the domain icon. */
   person?: {
@@ -201,8 +209,8 @@ export function ownerConsentRequestActionable(
     : [];
   return {
     id: `consent:${request.key}`,
-    icon: ShieldCheck,
-    iconTone: "accent",
+    icon: ConsentAgentIcon,
+    iconTone: "capability",
     person: request.isPerson
       ? {
           displayName: request.requesterLabel,
@@ -668,8 +676,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
         });
         items.push({
           id: `consent:${entry.id}`,
-          icon: ShieldCheck,
-          iconTone: "accent",
+          icon: ConsentAgentIcon,
+          iconTone: "capability",
           person:
             ["ria", "investor", "person"].includes(entry.counterpart_type) &&
             (entry.counterpart_id || entry.counterpart_image_url)
@@ -722,8 +730,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       if (consentItems && remainingConsentCount > 0) {
         items.push({
           id: "consent:overflow",
-          icon: ShieldCheck,
-          iconTone: "accent",
+          icon: ConsentAgentIcon,
+          iconTone: "capability",
           title: "View all pending requests",
           description: `${remainingConsentCount} more pending ${remainingConsentCount === 1 ? "request is" : "requests are"} waiting in Consent Center.`,
           href: buildConsentCenterHref("pending", { from: "/one/feed" }),
@@ -763,8 +771,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
         : toTimestamp(grant.createdAt);
       items.push({
         id: `sms-emergency:${grant.id}`,
-        icon: Siren,
-        iconTone: "red",
+        icon: EmergencyRowIcon,
+        iconTone: "capability",
         person:
           label !== "A contact"
             ? {
@@ -774,8 +782,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
             : null,
         // Only a still-live alert gets the pinned "Live" emergency treatment.
         // A revoked/expired one renders as a plain "Needs you" row (see
-        // feed-page.tsx) — Siren icon + red icon-well tint are all that's
-        // left as the "this was an emergency" signal.
+        // feed-page.tsx); the red siren glyph is all that's left as the
+        // "this was an emergency" signal.
         emphasis: isRevoked ? undefined : "emergency",
         // "sent an SMS", not "triggered an SOS". SMS is Save my Soul, this
         // product's own name for the lane, and the rule that recipient-facing
@@ -810,8 +818,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       const label = request.requesterDisplayName?.trim() || "Someone";
       items.push({
         id: `location:${request.id}`,
-        icon: MapPin,
-        iconTone: "blue",
+        icon: LocationAgentIcon,
+        iconTone: "capability",
         person:
           label !== "Someone"
             ? {
@@ -882,8 +890,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       const circleName = invite.circleName?.trim() || "a Circle";
       items.push({
         id: `circle-invite:${invite.id}`,
-        icon: Users,
-        iconTone: "blue",
+        icon: PeopleRowIcon,
+        iconTone: "capability",
         person:
           label !== "Someone"
             ? {
@@ -949,8 +957,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       });
       items.push({
         id: `connection:${request.id}`,
-        icon: UserRound,
-        iconTone: "green",
+        icon: JoinRowIcon,
+        iconTone: "capability",
         person:
           label !== "Someone"
             ? {
@@ -1116,8 +1124,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       }
       items.push({
         id: `debate:${task.runId}`,
-        icon: TrendingUp,
-        iconTone: "accent",
+        icon: FinanceAgentIcon,
+        iconTone: "capability",
         spinning: running || task.persistenceState === "pending",
         title: task.ticker || "Analysis",
         description: statusText,
@@ -1169,8 +1177,8 @@ export function useFeedActionables(): UseFeedActionablesResult {
       }
       items.push({
         id: `task:${task.taskId}`,
-        icon: TrendingUp,
-        iconTone: running ? "gray" : "orange",
+        icon: FinanceAgentIcon,
+        iconTone: "capability",
         spinning: running,
         title: task.title,
         description: running
