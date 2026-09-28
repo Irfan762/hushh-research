@@ -7012,7 +7012,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       className={sidebarClassName}
       collapsed={collapsed}
       mode={mode}
-      hideCloseButton={true}
+      // The drawer now runs full height over the chat header (2026-09-28), so the
+      // header's hamburger-to-cross sits under the panel; the panel carries its
+      // own close control instead of leaving a modal with no visible way out.
+      hideCloseButton={false}
       surface={agentSurface}
       onClose={onClose}
       onToggleCollapsed={toggleHistoryDrawer}

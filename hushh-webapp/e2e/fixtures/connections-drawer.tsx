@@ -141,7 +141,8 @@ function Fixture() {
             onSelectConversation={() => {}}
             onRenameConversation={() => {}}
             onDeleteConversation={() => {}}
-            hideCloseButton
+            onClose={() => changeOpen(false)}
+            hideCloseButton={false}
             mode="mobile"
             className="h-full w-full"
             onOpenConnectors={() => setMode("connections")}
