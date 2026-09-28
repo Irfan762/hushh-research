@@ -198,21 +198,105 @@ vault key, connector credential, scope payload, or decrypted value is stored.
 
 #### Continuing the asking chat after an answer
 
-When the other person approves, declines, or lets a chat-sent request expire,
-the requester's app opens one follow-up turn in the same conversation with
+When the other person approves, declines, lets a chat-sent request expire, or
+later ends access, the requester's app opens one follow-up turn in the same
+conversation with
 `forwardedProps.consentContinuation = {bundleId, outcome, sharedInformation?}`
-and the fixed message `Consent approved`, `Request declined` or `Request
-expired`. `POST /api/one/agent-chat` admits it only with the requester's
-VAULT_OWNER token and chat key, only in the conversation that recorded the
-submission, only when the ledger's current outcome for that bundle (read as the
-requester) equals `outcome`, and only once per bundle (`409` otherwise). No tool
-runs in that turn. `sharedInformation` is accepted only for
-an approval (≤ 12,000 characters), is the text the requester's device decrypted
-from the approved export, and is held as a 10-minute in-memory request secret;
-session state carries only its reference. Anything else returns `400`/`409`.
+and the fixed message for that outcome:
+
+| `outcome` | Fixed message |
+| --- | --- |
+| `granted` | `Consent approved` |
+| `partially_granted` | `Partly approved` |
+| `denied` | `Request declined` |
+| `expired` | `Request expired` |
+| `revoked` | `Access ended` |
+
+`POST /api/one/agent-chat` admits it only with the requester's VAULT_OWNER token
+and chat key, only in the conversation that recorded the submission, only when
+the ledger's current outcome for that bundle (`progress.outcome`, read as the
+requester) equals `outcome`, and only once per bundle (`409` otherwise). The one
+exception: a bundle continued with `granted` or `partially_granted` may be
+continued once more with `expired` or `revoked`. A client that sends `granted`
+for a partial answer is admitted and recorded as `partially_granted`. The model
+is told which fields were shared and which were not. No tool runs in that turn
+(tool calling mode `NONE`) and it runs at the lowest thinking level the model
+accepts. `sharedInformation` is accepted only for `granted`/`partially_granted`
+(≤ 12,000 characters), is the text the requester's device decrypted from the
+approved export, and is held as a 10-minute in-memory request secret; session
+state carries only its reference. Anything else returns `400`/`409`.
 `GET /api/one/agent-chat/history/{conversation_id}` returns `consentOutcomes`
-(`{bundleId: outcome}` for bundles already continued) and restores the follow-up
-message as a `selection` chip.
+(`{bundleId: outcome}` for bundles already continued), `consentAccessEnded`
+(`{bundleId: "revoked"|"expired"}`), and restores the follow-up message as a
+`selection` chip.
+
+**Redaction after access ends (CONTRACT C3).** Every turn that ran while a
+bundle's shared information was live in the conversation (the answer turn and
+later turns until access ends) is recorded against the bundle in sealed session
+state. Before each later model call the server re-reads the bundle as the
+requester; once access has ended (`revoked`, `expired`, or `progress.ended_at`
+set) it replaces those turns' model-side content in the model request with
+`Access to <labels> from <name> ended; do not use or repeat it.` Stored sealed
+events are not modified. In the history response, those turns' assistant
+messages carry `metadata.consentBundleId` and
+`metadata.consentAccess = {bundleId, state: "live"|"ended", outcome, personName, labels}`;
+once ended the message's `content` is `""`, its cards and activity are dropped,
+`metadata.consentAccessEnded` is `true`, and only one such message is returned
+per turn. The status chip carries `consentBundleId` (and `consentAccessEnded`).
+
+#### Request progress (CONTRACT C1)
+
+`GET /api/one/information-requests/{bundle_id}` (VAULT_OWNER, requester-bound)
+keeps `bundleId, personRef, purpose, durationSeconds, cancelled, items` and adds:
+
+```json
+"progress": {
+  "requested_at": "iso",
+  "delivered_at": "iso|null",
+  "seen_at": "iso|null",
+  "decided_at": "iso|null",
+  "outcome": "pending|granted|partially_granted|denied|expired|revoked|cancelled",
+  "access_ends_at": "iso|null",
+  "ended_at": "iso|null",
+  "fields": [{"scope": "attr.food.preferences.*", "label": "Food preferences", "status": "pending|granted|denied|expired|revoked|cancelled"}]
+}
+```
+
+`delivered_at` is the first `NOTIFICATION_SENT` and `seen_at` the first
+`NOTIFICATION_OPENED` for any field. `decided_at` is set once no field is
+pending. `access_ends_at` is when current access ends. `ended_at` is when access
+that was granted ended (revoked or ran out); it stays `null` for a request that
+expired before a decision. `revoked` (the owner ended it) is never reported as
+`expired` (time ended it). `cancelled` means the requester withdrew. Labels come
+from `hushh_mcp/consent/scope_labels.py`. A field in a credential domain is
+refused at creation with `403` even if a catalog offered it.
+
+#### Outcome doorbell: `information_request_updated` (CONTRACT C2)
+
+This is the single, canonical event a requester (and later the requester's pod
+agent) consumes: `(requester_user_id, bundle_id, outcome, at)`. The consent
+listener emits it to the requester over FCM data and the authenticated consent
+SSE stream for `CONSENT_GRANTED`, `CONSENT_DENIED`, `TIMEOUT`, `REVOKED` and
+`CANCELLED` rows of a person-to-person bundle, including each field of a
+partial answer. Payload (identifiers and words only, never a scope, label or
+value):
+
+```json
+{"type": "information_request_updated", "bundle_id": "uuid", "request_id": "one_person_…",
+ "action": "CONSENT_GRANTED|CONSENT_DENIED|TIMEOUT|REVOKED|CANCELLED",
+ "outcome": "pending|granted|partially_granted|denied|expired|revoked|cancelled",
+ "at": "iso", "message_id": "information-request:<bundle>:<request>:<action>:<issued_at>"}
+```
+
+`outcome` is the bundle's `progress.outcome` after this event (omitted only if
+that read failed; the client rereads the bundle anyway). TIMEOUT rows carry
+`bundle_id` since 2026-09-28. Delivery is exactly once per event per device:
+each consent event is claimed by its `consent_audit` id in
+`consent_event_deliveries` (migration 259) before the push, the owner's
+`NOTIFICATION_SENT` record or the requester's doorbell push is sent, so the
+many workers that receive the same PostgreSQL NOTIFY cannot repeat it. Each SSE
+stream lives in one worker and receives the event once. The visible push stays
+bare (see `consent-protocol/docs/reference/fcm-notifications.md`).
 
 `GET /api/one/agent-chat/information-requests/{bundle_id}/conversation`
 (VAULT_OWNER + chat key) returns `{conversationId}` for the requester's own

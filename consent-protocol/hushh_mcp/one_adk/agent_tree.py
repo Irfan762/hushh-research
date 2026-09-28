@@ -102,6 +102,11 @@ from hushh_mcp.one_adk.consent_continuation import (
     block_tools_during_consent_answer,
     consent_continuation_instruction,
 )
+from hushh_mcp.one_adk.consent_redaction import (
+    consent_answer_fast_path,
+    redact_ended_consent_context,
+    track_consent_access,
+)
 from hushh_mcp.one_adk.drive_write_tools import (
     comment_on_drive_file,
     copy_drive_file,
@@ -2462,6 +2467,30 @@ def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
     return before_external_read_tool(tool, args, tool_context)
 
 
+async def _requester_bundle(owner_id: str, bundle_id: str) -> dict[str, Any] | None:
+    """Requester-bound bundle read for consent redaction; absent for anyone else."""
+    from hushh_mcp.services.information_request_service import InformationRequestService
+
+    if not owner_id or owner_id.startswith("anonymous:"):
+        return None
+    bundle: dict[str, Any] = await InformationRequestService().get(
+        requester_user_id=owner_id, bundle_id=bundle_id
+    )
+    return bundle
+
+
+async def _track_one_consent_access(callback_context: Any) -> None:
+    await track_consent_access(callback_context, lookup=_requester_bundle)
+
+
+def _one_consent_before_model(callback_context: Any, llm_request: Any) -> None:
+    """Redact ended shared information, then speed up a consent answer turn."""
+    redact_ended_consent_context(callback_context, llm_request)
+    consent_answer_fast_path(
+        callback_context, llm_request, model=getattr(llm_request, "model", None)
+    )
+
+
 def build_one_text_agent(
     *,
     model: Any | None = None,
@@ -2488,10 +2517,12 @@ def build_one_text_agent(
             specialist_model=text_model,
             allow_workspace_tools=allow_workspace_tools,
         ),
-        before_agent_callback=timed_one_before_agent,
+        # Consent access is checked once per turn, then redacted before every
+        # model call (consent_redaction.py, CONTRACT C3).
+        before_agent_callback=[timed_one_before_agent, _track_one_consent_access],
         before_tool_callback=_before_one_tool,
         after_tool_callback=after_external_read_tool,
-        before_model_callback=timed_one_before_model,
+        before_model_callback=[_one_consent_before_model, timed_one_before_model],
         after_model_callback=timed_one_after_model,
         # Preserve the configured Chat thinking level for measured comparison.
         generate_content_config=genai_types.GenerateContentConfig(

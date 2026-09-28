@@ -7,6 +7,7 @@ import hashlib
 import json
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from db.db_client import get_db
@@ -14,10 +15,14 @@ from hushh_mcp.consent.export_envelope import (
     connector_key_fingerprint,
     scope_handle_for_machine_scope,
 )
+from hushh_mcp.consent.requestable_scope_policy import is_scope_requestable_by_others
+from hushh_mcp.consent.scope_labels import human_scope_label
 from hushh_mcp.services.consent_center_service import requester_identity_metadata
 from hushh_mcp.services.consent_db import ConsentDBService
 from hushh_mcp.services.consent_request_links import build_consent_request_url
 from hushh_mcp.services.person_profile_service import PersonProfileService, requester_principal
+
+UNREQUESTABLE_MESSAGE = "That information can't be requested from another person."
 
 
 class InformationRequestError(ValueError):
@@ -112,6 +117,172 @@ def _bound_person_export(
     )
 
 
+# Every state transition of a bundle's fields, oldest first (owner-bound).
+PROGRESS_LEDGER_SQL = """SELECT request_id, action, issued_at, expires_at, poll_timeout_at
+   FROM consent_audit
+   WHERE user_id = :subject
+     AND request_id = ANY(:request_ids)
+     AND action IN ('REQUESTED', 'CONSENT_GRANTED', 'CONSENT_DENIED',
+                    'REVOKED', 'TIMEOUT', 'CANCELLED')
+   ORDER BY issued_at, id"""
+# Outcomes after which a requester's chat must stop using what was shared.
+ACCESS_ENDED_OUTCOMES = frozenset({"revoked", "expired"})
+
+
+def _iso_ms(value: Any) -> str | None:
+    try:
+        millis = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return datetime.fromtimestamp(millis / 1000, tz=timezone.utc).isoformat()
+
+
+def _iso_any(value: Any) -> str | None:
+    if isinstance(value, datetime):
+        stamp = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return stamp.astimezone(timezone.utc).isoformat()
+    if value is None or value == "":
+        return None
+    return _iso_ms(value) or str(value)
+
+
+def _field_progress(events: list[dict[str, Any]], now_ms: int) -> dict[str, Any]:
+    """One field's state from its ordered ledger rows (oldest first).
+
+    ``revoked`` (the owner ended it) stays distinct from ``expired`` (time ended
+    it, before or after a decision). ``granted_ms`` / ``ended_ms`` let the bundle
+    say when access began and ended.
+    """
+    status = "pending"
+    decided_ms: int | None = None
+    granted_ms: int | None = None
+    ends_ms: int | None = None
+    ended_ms: int | None = None
+    request_deadline: int | None = None
+    for event in events:
+        action = str(event.get("action") or "").upper()
+        issued = _int_or_none(event.get("issued_at"))
+        if action == "REQUESTED":
+            status = "pending"
+            request_deadline = _int_or_none(event.get("poll_timeout_at")) or _int_or_none(
+                event.get("expires_at")
+            )
+        elif action == "CONSENT_GRANTED":
+            status, decided_ms, granted_ms = "granted", issued, issued
+            ends_ms = _int_or_none(event.get("expires_at"))
+        elif action == "CONSENT_DENIED":
+            status, decided_ms = "denied", issued
+        elif action == "REVOKED":
+            status, ended_ms = "revoked", issued
+        elif action == "TIMEOUT":
+            status = "expired"
+        elif action == "CANCELLED":
+            status = "cancelled"
+    if status == "pending" and request_deadline is not None and request_deadline <= now_ms:
+        status = "expired"
+    if status == "granted" and ends_ms is not None and ends_ms <= now_ms:
+        status, ended_ms = "expired", ends_ms
+    return {
+        "status": status,
+        "decided_ms": decided_ms,
+        "granted_ms": granted_ms,
+        "ends_ms": ends_ms if status == "granted" else None,
+        "ended_ms": ended_ms if granted_ms is not None else None,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    try:
+        return int(value) if value is not None and value != "" else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def bundle_outcome_from_statuses(statuses: list[str], *, cancelled: bool = False) -> str:
+    """The one outcome of a request, from its per-field statuses.
+
+    Any field still waiting keeps the request pending. Otherwise granted wins
+    (partially when anything else was declined or has ended); then revoked,
+    denied and expired, in that order.
+    """
+    if cancelled:
+        return "cancelled"
+    if not statuses or "pending" in statuses:
+        return "pending"
+    if "granted" in statuses:
+        return "granted" if all(value == "granted" for value in statuses) else "partially_granted"
+    if "revoked" in statuses:
+        return "revoked"
+    if "denied" in statuses:
+        return "denied"
+    return "expired"
+
+
+def build_request_progress(
+    *,
+    bundle: dict[str, Any],
+    items: list[dict[str, Any]],
+    ledger_rows: list[dict[str, Any]],
+    notification_rows: list[dict[str, Any]],
+    now_ms: int,
+) -> dict[str, Any]:
+    """Contract C1 ``progress``: where a person-to-person request stands.
+
+    ``delivered_at`` is the first NOTIFICATION_SENT for any field and
+    ``seen_at`` the first NOTIFICATION_OPENED. ``decided_at`` is set once no
+    field waits. ``access_ends_at`` is when current access ends; ``ended_at`` is
+    when access that WAS granted ended (revoked or run out), and stays null for
+    a request that ran out before anyone decided.
+    """
+    by_request: dict[str, list[dict[str, Any]]] = {}
+    for row in sorted(ledger_rows, key=lambda row: _int_or_none(row.get("issued_at")) or 0):
+        by_request.setdefault(str(row.get("request_id") or ""), []).append(row)
+    fields = []
+    states = []
+    for item in items:
+        state = _field_progress(by_request.get(str(item["request_id"]), []), now_ms)
+        states.append(state)
+        fields.append(
+            {
+                "scope": item.get("scope"),
+                "label": human_scope_label(str(item.get("scope") or ""), item.get("label")),
+                "status": state["status"],
+            }
+        )
+    cancelled = bundle.get("cancelled_at") is not None
+    outcome = bundle_outcome_from_statuses(
+        [state["status"] for state in states], cancelled=cancelled
+    )
+
+    def first(action: str) -> str | None:
+        times = [
+            stamp
+            for row in notification_rows
+            if str(row.get("action") or "").upper() == action
+            and (stamp := _int_or_none(row.get("issued_at"))) is not None
+        ]
+        return _iso_ms(min(times)) if times else None
+
+    decided = [state["decided_ms"] for state in states if state["decided_ms"] is not None]
+    access_ends = [state["ends_ms"] for state in states if state["ends_ms"] is not None]
+    ended = [state["ended_ms"] for state in states if state["ended_ms"] is not None]
+    return {
+        "requested_at": _iso_any(bundle.get("created_at")),
+        "delivered_at": first("NOTIFICATION_SENT"),
+        "seen_at": first("NOTIFICATION_OPENED"),
+        "decided_at": _iso_ms(max(decided)) if decided and outcome != "pending" else None,
+        "outcome": outcome,
+        "access_ends_at": _iso_ms(max(access_ends)) if access_ends else None,
+        "ended_at": _iso_ms(max(ended)) if ended else None,
+        "fields": fields,
+    }
+
+
+def access_ended(progress: dict[str, Any] | None) -> bool:
+    """True once any access this request granted has ended (revoked or run out)."""
+    return bool(isinstance(progress, dict) and progress.get("ended_at"))
+
+
 # The owner sees one "opened" record per approved item per hour, not one per
 # poll: the requesting device refreshes the encrypted package on every open of
 # its own screen, and a ledger that repeats itself that often stops being read.
@@ -196,6 +367,12 @@ class InformationRequestService:
             public_person_ref=person_ref,
             scope_refs=scope_refs,
         )
+        # The catalog already hides these; this is the independent check at the
+        # moment of creation, so no adapter or stale catalog can nominate one.
+        if any(
+            not is_scope_requestable_by_others(str(scope.get("scope") or "")) for scope in scopes
+        ):
+            raise InformationRequestError(UNREQUESTABLE_MESSAGE, status_code=403)
         subject_user_id = str(subject.get("user_id") or "")
         principal = requester_principal(str(viewer["public_person_ref"]))
         idem_hash = hashlib.sha256(f"{requester_user_id}|{idempotency_key}".encode()).hexdigest()
@@ -323,6 +500,9 @@ class InformationRequestService:
                     "reason": purpose,
                     "bundle_id": bundle_id,
                     "bundle_scope_count": len(scopes),
+                    # Read by the owner Feed trigger (migration 259) so the one
+                    # bundle row names what was asked for in words.
+                    "human_label": human_scope_label(str(scope["scope"]), scope.get("label")),
                     "connector_public_key": connector["connector_public_key"],
                     "connector_key_id": connector["connector_key_id"],
                     "connector_wrapping_alg": connector["connector_wrapping_alg"],
@@ -398,7 +578,35 @@ class InformationRequestService:
             "durationSeconds": bundle["duration_seconds"],
             "cancelled": bundle.get("cancelled_at") is not None,
             "items": output,
+            "progress": await self._progress(bundle, items, now_ms),
         }
+
+    async def _progress(
+        self, bundle: dict[str, Any], items: list[dict[str, Any]], now_ms: int
+    ) -> dict[str, Any]:
+        subject_user_id = str(bundle["subject_user_id"])
+        request_ids = [str(item["request_id"]) for item in items]
+        ledger_rows = (
+            await self._rows(
+                PROGRESS_LEDGER_SQL, {"subject": subject_user_id, "request_ids": request_ids}
+            )
+            if request_ids
+            else []
+        )
+        notifications = [
+            row
+            for row in await self._consent.list_internal_request_events(
+                request_ids, actions=["NOTIFICATION_SENT", "NOTIFICATION_OPENED"]
+            )
+            if str(row.get("user_id") or "") == subject_user_id
+        ]
+        return build_request_progress(
+            bundle=bundle,
+            items=items,
+            ledger_rows=ledger_rows,
+            notification_rows=notifications,
+            now_ms=now_ms,
+        )
 
     async def verify_submission_receipt(
         self, *, requester_user_id: str, bundle_id: str, idempotency_key: str

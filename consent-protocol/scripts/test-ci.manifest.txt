@@ -507,3 +507,14 @@ tests/test_structure_agent_prompt_is_unambiguous.py
 # rollback refusal) runs against the isolated PostgreSQL CI service.
 tests/test_one_attention.py
 tests/test_one_attention_ledger_postgres.py
+# Consent lifecycle in chat (2026-09-28). After a grant ends, One's real ADK
+# runner no longer sends the shared answer, or anything derived from it, to the
+# model, with a negative control that shows it would otherwise. The requester's
+# outcome doorbell stays bare. Migration 259 on real PostgreSQL: eight workers
+# handling one consent event send one push (without the claim, eight), one owner
+# Feed row per request bundle, NOTIFY carries the audit id, rollback refuses
+# while claims are recent. The Feed keeps a bundle item's who, what and why.
+tests/test_consent_redaction.py
+tests/test_consent_outcome_delivery_postgres.py
+tests/test_consent_listener_notifications.py
+tests/test_feed_metadata_allowlist.py

@@ -117,14 +117,16 @@ those details after unlock from the owner-scoped pending list. Built by
 
 ### Information request answered (`information_request_updated`)
 
-When the owner approves or declines a person-to-person request, or it times
-out, the requester gets one bare alert:
+When the owner approves or declines a person-to-person request, it times out,
+or the owner later ends access, the requester gets one bare alert. This is the
+canonical outcome event documented in `docs/reference/architecture/api-contracts.md`
+(`information_request_updated`), sent exactly once per event (migration 259):
 
 | Field | Value |
 | ----- | ----- |
-| Title / body | `Hussh One` / `Your information request has an answer` (fixed; never the outcome, scope or values) |
-| `type` | `information_request_updated` with `action` and `bundle_id`, `request_id` |
-| Alert | `CONSENT_GRANTED`, `CONSENT_DENIED`, `TIMEOUT`; `REVOKED` and `CANCELLED` stay silent |
+| Title / body | `Hussh One` / `Your information request has an answer`; for `REVOKED`, `Access to information shared with you has ended` (fixed; never a scope, label or value) |
+| `type` | `information_request_updated` with `action`, `bundle_id`, `request_id`, `outcome` (the bundle's outcome word) and `at` |
+| Alert | `CONSENT_GRANTED`, `CONSENT_DENIED`, `TIMEOUT`, `REVOKED`, once the whole request is settled (`outcome` not `pending`); `CANCELLED` stays silent |
 | Tag | `information-request:{bundle_id}` (one card per request) |
 | Body tap | `/?informationRequest=<bundle_id>`; after unlock the app finds the asking conversation in the person's sealed history and continues it there |
 
