@@ -495,3 +495,11 @@ tests/test_chat_history_byok.py
 # CHAT_CUTOVER_TEST_DATABASE_URL points at a throwaway real-schema Postgres.
 tests/test_chat_history_cutover_migration.py
 tests/test_structure_agent_prompt_is_unambiguous.py
+# One's own attention moments: the picked-up card after a first connection
+# (nothing stored server-side, once per source, out-of-contract output rejected)
+# and the generic feed push (no personal content, notable-only, capped). Opening
+# the push runs One's real ADK runner with no tools and no persisted item text.
+# The ledger SQL (claim-once, first-week window, daily cap, cascade, replay and
+# rollback refusal) runs against the isolated PostgreSQL CI service.
+tests/test_one_attention.py
+tests/test_one_attention_ledger_postgres.py

@@ -1050,6 +1050,11 @@ export async function streamAgentChat(input: {
    * the server admits it only for an approved grant and keeps it for this turn.
    */
   consentContinuation?: AgentChatConsentContinuation;
+  /**
+   * The turn a "One has something for you" tap starts. Only the opaque feed
+   * row id is sent; the server admits it only for an item it actually pushed.
+   */
+  feedAttention?: { itemId: string };
   /** One saved Drive result, checked against the current owner and live Drive before use. */
   driveSearchSelection?: { jobId: string; position: number };
   pendingEmailDraft?: PendingEmailDraftContext | null;
@@ -1784,6 +1789,7 @@ export async function streamAgentChat(input: {
         ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
         ...(input.consentContinuation ? { consentContinuation: input.consentContinuation } : {}),
+        ...(input.feedAttention ? { feedAttention: { itemId: input.feedAttention.itemId } } : {}),
         // Only the native app asks the server for a "One replied" push when it
         // stops reading; a web tab's closed stream must not wake a phone.
         notifyOnDetach: Capacitor.isNativePlatform(),

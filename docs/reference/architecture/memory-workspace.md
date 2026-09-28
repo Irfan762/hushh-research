@@ -31,6 +31,16 @@ Memory is available by default once the vault is unlocked. The former
 and the runtime policy guards are now baseline requirements. No hosted MCP
 handshake, developer credential authority, or encrypted export format changes.
 
+## The picked-up card after a first connection
+
+After a person connects Gmail, Calendar or Drive, chat may show "Here's what I
+picked up": a few inferences from that source's metadata, each with Keep and
+Forget. The card is a review surface, not memory. Nothing is saved until Keep,
+which sends that one item through the same owner-confirmed encrypted writer as
+**Add** (`confirmedByUser: true`, with a second confirmation when it would change
+what active recipients receive). Forget only removes it from the screen. The
+server stores no item text; it records only that the source was offered.
+
 ## Conversational capture and context transfers
 
 Chat uses the existing Memory proposal and encrypted writer, not a second memory

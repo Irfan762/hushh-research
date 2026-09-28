@@ -1173,6 +1173,16 @@
     {
       "data_class": "workflow_state",
       "exact_tables": [
+        "one_attention_ledger"
+      ],
+      "id": "one_attention_ledger",
+      "lifecycle_status": "current",
+      "owner": "backend-runtime-governance",
+      "primary_access_path": "POST /api/one/first-connect-insights claims one row per connected source before generating the picked-up card; the feed attention sweep claims one row per notable feed_events id and counts sent rows for the daily push cap; agent-chat admission of a feedAttention turn reads the sent row."
+    },
+    {
+      "data_class": "workflow_state",
+      "exact_tables": [
         "one_capability_runs"
       ],
       "id": "one_capability_runtime",
@@ -5773,9 +5783,9 @@
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
-    "agent_registry": "c195252f1f2fbef61f0da8991d4db7e821f9bdb7f69758c2de6f019d13a8ac72",
+    "agent_registry": "9de364492a371c7b7e7b70de84ad95a67e0fed6603e1375d173a6fa91ee2976e",
     "cache_manifest": "7ed4a0cf2f8504a940b59e874ccde800cf3feead6c5fab7e8f00daa26c629e3c",
-    "data_plane": "473bc066950e349f0109a6bf475cad93450359fddc16add368bba8fbe8baed89",
+    "data_plane": "e1e1bc9d5ca90a9cba5fa6653fac4e37031d21babd251dcacc002b8ac8592c82",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "4d5f3976e18455d72d5f0de6b22275ae56a474e03d87288022601bd380ccd37e",
     "route_index": "a93ea81cfafed91dd93fbe0a51399a988a8ed2a7014d0b93cb8efdf777ddc35d",
@@ -5794,6 +5804,6 @@
     "one_specialist_tools": 6,
     "physical_routes": 142,
     "semantic_routes": 14,
-    "table_families": 77
+    "table_families": 78
   }
 }
