@@ -855,6 +855,47 @@ describe("exact-file document review", () => {
       expect(screen.queryByRole("button", { name: "Enable background Drive access" })).toBeNull();
     });
 
+    it("requires explicit owner selection and approval to recover a skipped automatic file", async () => {
+      let phase: "searching" | "review_ready" | "queued" = "searching";
+      const search = durableSearch({ status: "running", matched: 3,
+        coverage: { ...durableSearch({ status: "completed" }).coverage!, providerPagesExhausted: false } });
+      const batch = durableBulk({ fileCount: 2, positions: [2, 3],
+        counts: { ...durableBulk().counts, total: 2, pending: 2 } });
+      state.status.mockResolvedValue(pending());
+      state.review.mockImplementation(async () => partial({ durableAvailable: true,
+        trustedAuto: false, preparationError: null, progressiveAllowed: true, search,
+        bulkShare: phase === "searching" ? null : { ...batch,
+          status: phase === "queued" ? "queued" : "review_ready", canApprove: phase === "review_ready" },
+        batches: phase === "searching" ? [] : [batch], batchCount: phase === "searching" ? 0 : 1,
+        claimedPositions: phase === "searching" ? [1, 2] : [1, 2, 3],
+        recoverablePositions: phase === "searching" ? [2] : [],
+      }));
+      state.requestSearchFiles.mockResolvedValue({ jobId: searchJobId, revision: 1, matched: 3,
+        files: [1, 2, 3].map(position => ({ ...searchFile(position), shareable: true })), nextCursor: null });
+      state.prepareRequestBatch.mockImplementation(async () => { phase = "review_ready"; return batch; });
+      state.approveBulkShare.mockImplementation(async () => { phase = "queued"; return { ...batch, status: "queued", canApprove: false }; });
+
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      const previouslyClaimed = await screen.findByRole("checkbox", { name: "Standup 1" });
+      const recovery = screen.getByRole("checkbox", { name: "Standup 2" });
+      const fresh = screen.getByRole("checkbox", { name: "Standup 3" });
+      expect(previouslyClaimed).toBeDisabled();
+      expect(recovery).toBeEnabled();
+      expect(recovery).not.toBeChecked();
+      expect(fresh).toBeChecked();
+      expect(screen.getByText("Automatic sharing stopped before this file was sent. Select it to review and share.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Review 1 file" })).toBeEnabled();
+      expect(state.prepareRequestBatch).not.toHaveBeenCalled();
+      fireEvent.click(recovery);
+      fireEvent.click(screen.getByRole("button", { name: "Review 2 files" }));
+      await waitFor(() => expect(state.prepareRequestBatch).toHaveBeenCalledWith(
+        "owner-a", requestId, expect.objectContaining({ status: "running" }), [2, 3], expect.any(Function),
+      ));
+      expect(state.approveBulkShare).not.toHaveBeenCalled();
+      fireEvent.click(await screen.findByRole("button", { name: "Share 2 files" }));
+      await waitFor(() => expect(state.approveBulkShare).toHaveBeenCalledTimes(1));
+    });
+
     it("reviews the first 25 while Drive keeps searching, then offers the next unclaimed page", async () => {
       let phase: "searching" | "first_review" | "first_queued" | "second_review" = "searching";
       const secondId = "55555555-5555-4555-8555-555555555555";

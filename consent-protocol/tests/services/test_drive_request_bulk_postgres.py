@@ -1148,6 +1148,166 @@ async def test_auto_approved_batch_stops_after_authority_revoked(request_bulk, s
 
 
 @pytest.mark.asyncio
+async def test_owner_recovers_only_never_posted_auto_skipped_file(request_bulk, sharing):
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_live_preferences(
+              user_id,connection_generation,background_enabled)
+              VALUES('owner',1,TRUE)""")
+        )
+    auto = await _trusted_review(request_bulk, sharing)
+    with request_bulk.db.engine.begin() as connection:
+        request_id = connection.execute(
+            text("SELECT origin_request_id FROM drive_bulk_shares WHERE share_id=:share"),
+            {"share": auto["shareId"]},
+        ).scalar_one()
+        search_id = connection.execute(
+            text("SELECT search_job_id FROM drive_bulk_shares WHERE share_id=:share"),
+            {"share": auto["shareId"]},
+        ).scalar_one()
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=auto["shareId"],
+        revision=auto["revision"],
+        review_digest=auto["reviewDigest"],
+        approval_source="trusted_auto",
+    )
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_share_requests SET
+            preparation_error_code='manual_search_active' WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+    # The grant worker settles this effect before a Google POST. The request
+    # remains pending so its owner can review the exact file again.
+    assert (
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=auto["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        is None
+    )
+    assert (await sharing.request_status(user_id="owner", request_id=str(request_id)))[
+        "status"
+    ] == "pending"
+    before = await request_bulk.batches_by_request(user_id="owner", request_id=str(request_id))
+    assert before["claimedPositions"] == [1]
+    assert before["recoverablePositions"] == [1]
+    assert before["aggregateCounts"]["total"] == 1
+    assert before["aggregateCounts"]["skipped"] == 1
+
+    owner = await request_bulk.create_review(
+        user_id="owner",
+        search_job_id=str(search_id),
+        client_request_id=str(uuid4()),
+        recipients=[_recipient("trusted-member", "trusted@example.invalid")],
+        excluded=[],
+        origin_request_id=str(request_id),
+        selected_positions=[1],
+    )
+    assert owner["shareId"] != auto["shareId"]
+    with request_bulk.db.engine.begin() as connection:
+        historical, current = connection.execute(
+            text("""SELECT share_id,origin_request_id FROM drive_bulk_share_files
+            WHERE share_id IN (:auto,:owner) ORDER BY share_id"""),
+            {"auto": auto["shareId"], "owner": owner["shareId"]},
+        ).all()
+        claims = {str(share): origin for share, origin in (historical, current)}
+        assert claims[auto["shareId"]] is None
+        assert str(claims[owner["shareId"]]) == str(request_id)
+    pending = await request_bulk.batches_by_request(user_id="owner", request_id=str(request_id))
+    assert pending["claimedPositions"] == [1]
+    assert pending["recoverablePositions"] == []
+    assert pending["aggregateCounts"]["total"] == 1
+    assert pending["aggregateCounts"]["skipped"] == 0
+    assert pending["aggregateCounts"]["pending"] == 1
+
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=owner["shareId"],
+        revision=owner["revision"],
+        review_digest=owner["reviewDigest"],
+    )
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_bulk_share_effects SET state='succeeded'
+            WHERE share_id=:share"""),
+            {"share": owner["shareId"]},
+        )
+        request_bulk._finalize(connection, owner["shareId"])
+    outcome = await request_bulk.batches_by_request(user_id="owner", request_id=str(request_id))
+    assert outcome["aggregateCounts"]["total"] == 1
+    assert outcome["aggregateCounts"]["shared"] == 1
+    assert outcome["aggregateCounts"]["skipped"] == 0
+    assert (await sharing.request_status(user_id="owner", request_id=str(request_id)))[
+        "status"
+    ] == "completed"
+    delivery = DriveSharingService(
+        oauth=SimpleNamespace(lifecycle=SimpleNamespace(db=sharing.db)),
+        store=DriveSuggestionStore(db=sharing.db),
+        verify_recipient=AsyncMock(),
+    )
+    recipient = await delivery.delivery(user_id="trusted-member", request_id=str(request_id))
+    assert recipient["fileCount"] == recipient["counts"]["total"] == 1
+    assert recipient["sharedCount"] == recipient["counts"]["shared"] == 1
+    assert recipient["counts"]["skipped"] == 0
+    assert recipient["issues"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state,attempts", [("skipped", 1), ("unknown", 1)])
+async def test_owner_cannot_recover_effect_that_may_have_posted(
+    request_bulk, sharing, state, attempts
+):
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_live_preferences(
+              user_id,connection_generation,background_enabled)
+              VALUES('owner',1,TRUE)""")
+        )
+    review = await _trusted_review(request_bulk, sharing)
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=review["shareId"],
+        revision=review["revision"],
+        review_digest=review["reviewDigest"],
+        approval_source="trusted_auto",
+    )
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_bulk_share_effects SET state=:state,attempts=:attempts,
+            safe_error_code='recipient_changed' WHERE share_id=:share"""),
+            {"state": state, "attempts": attempts, "share": review["shareId"]},
+        )
+        connection.execute(
+            text("""UPDATE drive_share_requests SET
+            preparation_error_code='manual_search_active'
+            WHERE request_id=(SELECT origin_request_id FROM drive_bulk_shares
+              WHERE share_id=:share)"""),
+            {"share": review["shareId"]},
+        )
+        request_id, search_id = connection.execute(
+            text("""SELECT origin_request_id,search_job_id FROM drive_bulk_shares
+            WHERE share_id=:share"""),
+            {"share": review["shareId"]},
+        ).one()
+    batches = await request_bulk.batches_by_request(user_id="owner", request_id=str(request_id))
+    assert batches["recoverablePositions"] == []
+    with pytest.raises(DriveSharingError, match="bulk_conflict"):
+        await request_bulk.create_review(
+            user_id="owner",
+            search_job_id=str(search_id),
+            client_request_id=str(uuid4()),
+            recipients=[_recipient("trusted-member", "trusted@example.invalid")],
+            excluded=[],
+            origin_request_id=str(request_id),
+            selected_positions=[1],
+        )
+
+
+@pytest.mark.asyncio
 async def test_owner_selected_exact_request_keeps_legacy_review_path(request_bulk, sharing):
     request = await sharing.create_request(
         recipient=VerifiedGoogleRecipient(

@@ -344,6 +344,8 @@ function UnlockedDocumentReview({
     ids: [],
   });
   const [excluded, setExcluded] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
+  // Recovery requires an affirmative tick; fresh unclaimed files retain their default selection.
+  const [recoverySelected, setRecoverySelected] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
   const [unshareableSeen, setUnshareableSeen] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
   const [searchCursor, setSearchCursor] = useState<string | null>(null);
   const [searchPrevious, setSearchPrevious] = useState<(string | null)[]>([]);
@@ -644,6 +646,7 @@ function UnlockedDocumentReview({
   const batches = review?.batches ?? [];
   const batchCount = review?.batchCount ?? batches.length;
   const claimedPositions = review?.claimedPositions ?? [];
+  const recoverablePositions = review?.recoverablePositions ?? [];
   const durableReview = isDurableReview(review);
   const legacySearch = search?.status === "completed" && search.coverage?.shareabilityVerified !== true;
   const searchReady = search?.status === "completed" && !search.incompleteSearch &&
@@ -802,11 +805,14 @@ function UnlockedDocumentReview({
     .filter((id) => !unselectedIds.includes(id));
   const allSelected = !!review && selectedIds.length === review.files.length;
   const excludedPositions = search && excluded.jobId === search.jobId ? excluded.positions : [];
+  const selectedRecoveryPositions = search && recoverySelected.jobId === search.jobId ? recoverySelected.positions : [];
   const blockedPositions = search && unshareableSeen.jobId === search.jobId ? unshareableSeen.positions : [];
   const manualExcludedCount = excludedPositions.filter(position => !blockedPositions.includes(position)).length;
   const selectedPositions = progressive && searchPage && search
     ? searchPage.files.filter(file => file.shareable === true &&
-        !claimedPositions.includes(file.position) && !excludedPositions.includes(file.position))
+        (recoverablePositions.includes(file.position)
+          ? selectedRecoveryPositions.includes(file.position)
+          : !claimedPositions.includes(file.position) && !excludedPositions.includes(file.position)))
       .map(file => file.position)
     : [];
   const selectedCount = progressive ? selectedPositions.length : search
@@ -1113,40 +1119,54 @@ function UnlockedDocumentReview({
               {legacySearch ? <HelperText>Earlier files cannot be selected while the new check runs.</HelperText> :
               <div aria-label="Matching Drive files" aria-busy={searchPageLoading}>
                 <SettingsGroup embedded title={progressive ? "Files found so far" : "Files"}
-                  description={progressive ? "Choose from this page. Shared and queued files remain visible but cannot be selected again." : undefined}
+                  description={progressive ? `Choose from this page. Shared and queued files cannot be selected again.${recoverablePositions.length ? " Files skipped by automatic sharing need your selection." : ""}` : undefined}
                   {...groupSurface}>
-                  {searchPage?.files.map(file => (
+                  {searchPage?.files.map(file => {
+                    const recoverable = progressive && recoverablePositions.includes(file.position);
+                    const alreadyClaimed = progressive && claimedPositions.includes(file.position) && !recoverable;
+                    return (
                     <SettingsRow
                       key={file.position}
                       asChild
                       title={file.name}
-                      description={progressive && claimedPositions.includes(file.position)
-                        ? "Already in a sharing batch"
-                        : file.shareable === false
+                      description={file.shareable === false
                         ? file.unavailableReason ? SEARCH_FILE_UNAVAILABLE[file.unavailableReason] : "Can't share this file"
+                        : recoverable
+                        ? "Automatic sharing stopped before this file was sent. Select it to review and share."
+                        : alreadyClaimed
+                        ? "Already in a sharing batch"
                         : undefined}
                       disabled={locked || file.shareable === false || progressive &&
-                        (file.shareable !== true || claimedPositions.includes(file.position) || bulkShare?.status === "review_ready")}
+                        (file.shareable !== true || alreadyClaimed || bulkShare?.status === "review_ready")}
                       trailing={
                         <Checkbox
                           aria-label={file.name}
                           className={CHECKBOX_CLASS}
-                          checked={file.shareable !== false && !excludedPositions.includes(file.position) &&
-                            (!progressive || !claimedPositions.includes(file.position))}
+                          checked={file.shareable !== false && (recoverable
+                            ? selectedRecoveryPositions.includes(file.position)
+                            : !excludedPositions.includes(file.position) && !alreadyClaimed)}
                           disabled={locked || file.shareable === false || progressive &&
-                            (file.shareable !== true || claimedPositions.includes(file.position) || bulkShare?.status === "review_ready")}
-                          onCheckedChange={checked => setExcluded({
-                            jobId: search.jobId,
-                            positions: checked === true
-                              ? excludedPositions.filter(position => position !== file.position)
-                              : [...excludedPositions, file.position],
-                          })}
+                            (file.shareable !== true || alreadyClaimed || bulkShare?.status === "review_ready")}
+                          onCheckedChange={checked => {
+                            if (recoverable) {
+                              setRecoverySelected({ jobId: search.jobId,
+                                positions: checked === true
+                                  ? [...new Set([...selectedRecoveryPositions, file.position])]
+                                  : selectedRecoveryPositions.filter(position => position !== file.position) });
+                              return;
+                            }
+                            setExcluded({ jobId: search.jobId,
+                              positions: checked === true
+                                ? excludedPositions.filter(position => position !== file.position)
+                                : [...excludedPositions, file.position] });
+                          }}
                         />
                       }
                     >
                       <label className="cursor-pointer" />
                     </SettingsRow>
-                  ))}
+                    );
+                  })}
                 </SettingsGroup>
               </div>}
               {searchPageLoading ? <HelperText>Loading files…</HelperText> : null}

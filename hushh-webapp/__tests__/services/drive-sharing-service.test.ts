@@ -251,6 +251,18 @@ describe("private sharing transport", () => {
       [running.matched + 1], guard)).rejects.toMatchObject({ code: "invalid_selection" });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
+  it("accepts only previously claimed positions as explicit manual recovery candidates", async () => {
+    const running = { ...requestSearch(), status: "running" as const,
+      coverage: { ...requestSearch().coverage!, providerPagesExhausted: false } };
+    const candidate = { ...rawReview(), durableAvailable: true, trustedAuto: false,
+      search: running, bulkShare: null, batches: [], batchCount: 0,
+      claimedPositions: [2], recoverablePositions: [2], progressiveAllowed: true };
+    fetcher.mockResolvedValueOnce(reply(candidate));
+    expect((await DriveSharingService.review("vault", requestId, guard)).recoverablePositions).toEqual([2]);
+    fetcher.mockResolvedValueOnce(reply({ ...candidate, recoverablePositions: [3] }));
+    await expect(DriveSharingService.review("vault", requestId, guard))
+      .rejects.toMatchObject({ code: "invalid_response" });
+  });
   it("keeps a historical frozen share larger than 25 files on the legacy review path", async () => {
     fetcher.mockResolvedValueOnce(reply({ ...rawReview(), durableAvailable: true,
       search: requestSearch(), bulkShare: requestBulk(), batches: [requestBulk()],

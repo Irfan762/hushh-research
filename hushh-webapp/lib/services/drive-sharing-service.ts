@@ -73,6 +73,8 @@ export type SharingReview = {
   batchCount?: number;
   /** All positions already frozen in any batch for this request. */
   claimedPositions?: number[];
+  /** Skipped automatic positions the owner may explicitly review after manual takeover. */
+  recoverablePositions?: number[];
   progressiveAllowed?: boolean;
   aggregateCounts?: DriveBulkShareCounts;
 };
@@ -1037,6 +1039,16 @@ export class DriveSharingService {
         throw new DriveSharingError("invalid_response");
       return parsed;
     })();
+    const recoverablePositions = result.recoverablePositions === undefined ? undefined : (() => {
+      if (!Array.isArray(result.recoverablePositions) || result.recoverablePositions.length > 10_000 ||
+        !search || !claimedPositions)
+        throw new DriveSharingError("invalid_response");
+      const parsed = result.recoverablePositions.map(position => bulkCount(position, 10_000));
+      if (parsed.includes(0) || new Set(parsed).size !== parsed.length ||
+        parsed.some(position => position > search.matched || !claimedPositions.includes(position)))
+        throw new DriveSharingError("invalid_response");
+      return parsed;
+    })();
     if (result.progressiveAllowed === true && batches && claimedPositions === undefined)
       throw new DriveSharingError("invalid_response");
     if (result.progressiveAllowed !== undefined && typeof result.progressiveAllowed !== "boolean")
@@ -1095,6 +1107,7 @@ export class DriveSharingService {
       ...(batches === undefined ? {} : { batches }),
       ...(batchCount === undefined ? {} : { batchCount }),
       ...(claimedPositions === undefined ? {} : { claimedPositions }),
+      ...(recoverablePositions === undefined ? {} : { recoverablePositions }),
       ...(result.progressiveAllowed === true ? { progressiveAllowed: true } : {}),
       ...(aggregateCounts === undefined ? {} : { aggregateCounts }),
     };

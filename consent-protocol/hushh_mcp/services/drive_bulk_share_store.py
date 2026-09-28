@@ -49,14 +49,20 @@ def safe_bulk_reason(value):
     return value if value in _SAFE_REASONS else "unavailable"
 
 
-def bulk_outcome_summary(connection, *, share_id, total, recipient_user_id=None):
+def bulk_outcome_summary(
+    connection, *, share_id, total, recipient_user_id=None, active_request_id=None
+):
     """One count source for A and B; B's query is scoped to B's own effects."""
     rows = connection.execute(
-        text("""SELECT state,safe_error_code,count(*) AS n
-        FROM drive_bulk_share_effects WHERE share_id=:share
-          AND (:recipient IS NULL OR recipient_user_id=:recipient)
-        GROUP BY state,safe_error_code"""),
-        {"share": share_id, "recipient": recipient_user_id},
+        text("""SELECT e.state,e.safe_error_code,count(*) AS n
+        FROM drive_bulk_share_effects e
+        JOIN drive_bulk_share_files f ON f.share_id=e.share_id AND f.position=e.position
+        WHERE e.share_id=:share
+          AND (:recipient IS NULL OR e.recipient_user_id=:recipient)
+          AND (CAST(:active_request AS uuid) IS NULL
+            OR f.origin_request_id=CAST(:active_request AS uuid))
+        GROUP BY e.state,e.safe_error_code"""),
+        {"share": share_id, "recipient": recipient_user_id, "active_request": active_request_id},
     ).all()
     states, reasons = Counter(), Counter()
     for state, reason, count in rows:
@@ -298,6 +304,63 @@ class DriveBulkShareStore(DriveLivePreferences):
                 )
             )
         return recipients
+
+    def _recoverable_claims(
+        self, connection, *, user_id, request_id, search_job_id, selected_positions=None, lock=False
+    ):
+        """Old auto effects that were skipped before any possible provider POST.
+
+        Keep the old batch/effect as an audit record. Only a new explicit owner
+        review may release its source-position claim, under the connector lock.
+        Matching the current search digest prevents a stale position from
+        silently referring to another Drive file after a search refresh.
+        """
+        rows = connection.execute(
+            text(
+                """SELECT f.share_id,f.position,f.source_position,r.metadata_envelope
+                FROM drive_bulk_share_files f
+                JOIN drive_bulk_shares b ON b.share_id=f.share_id
+                JOIN drive_bulk_share_effects e ON e.share_id=f.share_id
+                  AND e.position=f.position
+                JOIN drive_owner_search_results r ON r.job_id=:job
+                  AND r.user_id=:user AND r.position=f.source_position
+                  AND r.file_digest=f.file_digest
+                WHERE f.user_id=:user AND f.origin_request_id=:request
+                  AND b.origin_request_id=:request AND b.progressive_batch=TRUE
+                  AND b.approval_source='trusted_auto' AND b.approved_at IS NOT NULL
+                  AND b.recipient_count=1
+                  AND e.recipient_user_id=(SELECT recipient_user_id
+                    FROM drive_share_requests WHERE request_id=:request)
+                  AND e.state='skipped' AND e.safe_error_code='recipient_changed'
+                  AND e.attempts=0 AND e.lease_id IS NULL
+                  AND e.lease_expires_at IS NULL AND e.receipt_envelope IS NULL
+                  AND NOT EXISTS(SELECT 1 FROM drive_bulk_share_effects other
+                    WHERE other.share_id=e.share_id AND other.position=e.position
+                      AND other.recipient_user_id<>e.recipient_user_id)
+                  AND (CAST(:selected AS integer[]) IS NULL
+                    OR f.source_position=ANY(CAST(:selected AS integer[])))
+                ORDER BY f.source_position
+                """
+                + (" FOR UPDATE OF f,e" if lock else "")
+            ),
+            {
+                "job": search_job_id,
+                "user": user_id,
+                "request": request_id,
+                "selected": selected_positions,
+            },
+        ).mappings()
+        return [
+            row
+            for row in rows
+            if self._open(
+                row["metadata_envelope"],
+                user_id=user_id,
+                resource_id=f"{search_job_id}:{row['source_position']}",
+                purpose="owner-search-result",
+            ).get("shareable")
+            is True
+        ]
 
     def _view(self, connection, row):
         # UI hint only. approve() performs the authoritative locked check.
@@ -669,9 +732,41 @@ class DriveBulkShareStore(DriveLivePreferences):
                         existing_batch = self._row(
                             connection, _ROW, {"share": next(iter(shares)), "user": user_id}
                         )
-                        if existing_batch and existing_batch["request_digest"] == digest:
+                        if (
+                            existing_batch
+                            and existing_batch["request_digest"] == digest
+                            and not (
+                                existing_batch["approval_source"] == "trusted_auto"
+                                and request_row["preparation_error_code"] == "manual_search_active"
+                            )
+                        ):
                             return self._view(connection, existing_batch)
-                    raise DriveSharingError("bulk_conflict")
+                    recoverable = (
+                        self._recoverable_claims(
+                            connection,
+                            user_id=user_id,
+                            request_id=origin,
+                            search_job_id=search,
+                            selected_positions=[item["source_position"] for item in claimed],
+                            lock=True,
+                        )
+                        if request_row["preparation_error_code"] == "manual_search_active"
+                        else []
+                    )
+                    if len(recoverable) != len(claimed):
+                        raise DriveSharingError("bulk_conflict")
+                    for item in recoverable:
+                        connection.execute(
+                            text("""UPDATE drive_bulk_share_files
+                            SET origin_request_id=NULL
+                            WHERE share_id=:share AND position=:position
+                              AND origin_request_id=:request"""),
+                            {
+                                "share": item["share_id"],
+                                "position": item["position"],
+                                "request": origin,
+                            },
+                        )
                 if connection.execute(
                     text("""SELECT EXISTS(
                     SELECT 1 FROM drive_bulk_shares WHERE user_id=:user
@@ -845,17 +940,44 @@ class DriveBulkShareStore(DriveLivePreferences):
                 item
                 for (item,) in connection.execute(
                     text("""
-                SELECT source_position FROM drive_bulk_share_files
-                WHERE user_id=:user AND origin_request_id=:request
-                ORDER BY source_position LIMIT 10000
+                SELECT DISTINCT f.source_position FROM drive_bulk_share_files f
+                JOIN drive_bulk_shares b ON b.share_id=f.share_id
+                WHERE b.user_id=:user AND b.origin_request_id=:request
+                ORDER BY f.source_position LIMIT 10000
             """),
                     {"user": user_id, "request": request},
                 ).all()
             ]
+            context = self._row(
+                connection,
+                """SELECT q.preparation_error_code,s.job_id
+                FROM drive_share_requests q
+                LEFT JOIN drive_owner_search_jobs s ON s.user_id=q.user_id
+                  AND s.client_request_id=q.request_id
+                WHERE q.user_id=:user AND q.request_id=:request""",
+                {"user": user_id, "request": request},
+            )
+            recoverable = (
+                [
+                    item["source_position"]
+                    for item in self._recoverable_claims(
+                        connection,
+                        user_id=user_id,
+                        request_id=request,
+                        search_job_id=context["job_id"],
+                    )
+                ]
+                if context
+                and context["preparation_error_code"] == "manual_search_active"
+                and context["job_id"] is not None
+                else []
+            )
             total = connection.execute(
-                text("""SELECT COALESCE(sum(file_count),0)
-                FROM drive_bulk_shares WHERE user_id=:user AND origin_request_id=:request
-                  AND expires_at>clock_timestamp()"""),
+                text("""SELECT count(*) FROM drive_bulk_share_files f
+                JOIN drive_bulk_shares b ON b.share_id=f.share_id
+                WHERE b.user_id=:user AND b.origin_request_id=:request
+                  AND b.expires_at>clock_timestamp()
+                  AND (b.progressive_batch=FALSE OR f.origin_request_id=:request)"""),
                 {"user": user_id, "request": request},
             ).scalar_one()
             states = dict(
@@ -863,7 +985,10 @@ class DriveBulkShareStore(DriveLivePreferences):
                     text("""SELECT e.state,count(*)
                 FROM drive_bulk_share_effects e
                 JOIN drive_bulk_shares b ON b.share_id=e.share_id
+                JOIN drive_bulk_share_files f ON f.share_id=e.share_id
+                  AND f.position=e.position
                 WHERE b.user_id=:user AND b.origin_request_id=:request
+                  AND (b.progressive_batch=FALSE OR f.origin_request_id=:request)
                 GROUP BY e.state"""),
                     {"user": user_id, "request": request},
                 ).all()
@@ -884,6 +1009,7 @@ class DriveBulkShareStore(DriveLivePreferences):
                 "batches": [self._view(connection, dict(row)) for row in rows],
                 "batchCount": count,
                 "claimedPositions": claimed,
+                "recoverablePositions": recoverable,
                 "aggregateCounts": aggregate,
                 "progressiveAllowed": not legacy,
             }
@@ -1585,6 +1711,15 @@ class DriveBulkShareStore(DriveLivePreferences):
         ).scalar_one()
         if unfinished:
             return
+        if self._recoverable_claims(
+            connection,
+            user_id=request["user_id"],
+            request_id=request_id,
+            search_job_id=source["job_id"],
+        ):
+            # An auto batch was skipped before any provider POST. Keep the
+            # request actionable so the owner can explicitly review it.
+            return
         remaining = connection.execute(
             text("""SELECT r.position,r.metadata_envelope
             FROM drive_owner_search_results r
@@ -1609,6 +1744,8 @@ class DriveBulkShareStore(DriveLivePreferences):
                 text("""SELECT e.state,count(*)
             FROM drive_bulk_share_effects e
             JOIN drive_bulk_shares b ON b.share_id=e.share_id
+            JOIN drive_bulk_share_files f ON f.share_id=e.share_id
+              AND f.position=e.position AND f.origin_request_id=:request
             WHERE b.origin_request_id=:request AND b.user_id=:user
               AND b.progressive_batch=TRUE AND b.approved_at IS NOT NULL
             GROUP BY e.state"""),

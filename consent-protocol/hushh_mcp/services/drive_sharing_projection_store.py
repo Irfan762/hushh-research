@@ -130,15 +130,28 @@ class DriveSharingProjectionStore(DriveRevocationStore):
             )
             bulk_shared = 0
             bulk_summary = None
+            bulk_file_count = 0
             if bulks:
                 counts = Counter()
                 issues = Counter()
                 for bulk in bulks:
+                    active_request = request_id if bulk["progressive_batch"] else None
+                    total = (
+                        connection.execute(
+                            text("""SELECT count(*) FROM drive_bulk_share_files
+                            WHERE share_id=:share AND origin_request_id=:request"""),
+                            {"share": bulk["share_id"], "request": request_id},
+                        ).scalar_one()
+                        if active_request is not None
+                        else bulk["file_count"]
+                    )
+                    bulk_file_count += total
                     summary = bulk_outcome_summary(
                         connection,
                         share_id=bulk["share_id"],
-                        total=bulk["file_count"],
+                        total=total,
                         recipient_user_id=request["recipient_user_id"],
+                        active_request_id=active_request,
                     )
                     counts.update(summary["counts"])
                     issues.update({item["reasonCode"]: item["count"] for item in summary["issues"]})
@@ -194,7 +207,7 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                             "bulkShareId": str(bulks[-1]["share_id"]),
                             "progressiveBatch": any(bulk["progressive_batch"] for bulk in bulks),
                             "batchCount": len(bulks),
-                            "fileCount": sum(bulk["file_count"] for bulk in bulks),
+                            "fileCount": bulk_file_count,
                             "sharedCount": bulk_shared,
                             "sharingStatus": "running"
                             if request["status"] == "pending"
@@ -203,7 +216,9 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                             else "partial"
                             if request["status"] == "partial"
                             else bulks[-1]["status"],
-                            "bulkStatus": "running"
+                            "bulkStatus": bulks[-1]["status"]
+                            if not any(bulk["progressive_batch"] for bulk in bulks)
+                            else "running"
                             if request["status"] == "pending"
                             else "completed"
                             if request["status"] == "completed"

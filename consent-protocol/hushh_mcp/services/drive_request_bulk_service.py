@@ -151,6 +151,9 @@ class DriveRequestBulkService:
                 await self._owner()
                 if takeover["status"] == "queued":
                     await self.wake("suggestions")
+                # Queued auto effects are now fenced. Let the sharing worker
+                # settle them as never-posted skips so owner recovery appears.
+                await self.wake("sharing")
                 return takeover
         existing = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
         if existing is not None and existing["status"] not in {"failed", "limited", "stopped"}:
@@ -198,6 +201,7 @@ class DriveRequestBulkService:
                 "batches": [],
                 "batchCount": 0,
                 "claimedPositions": [],
+                "recoverablePositions": [],
                 "aggregateCounts": {
                     "total": 0,
                     "processed": 0,
