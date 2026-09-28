@@ -979,7 +979,11 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <PageHeader
                   title="Shared with you"
-                  description="End-to-end encrypted information shared with your account. Unlock your vault to view it."
+                  description={
+                    <span className="text-sm">
+                      End-to-end encrypted information shared with your account. Unlock your vault to view it.
+                    </span>
+                  }
                 />
 
                 {allGrants.length > 1 ? (
@@ -1176,7 +1180,11 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
             >
               <PageHeader
                 title="Available to request"
-                description="Choose only what is needed. The person reviews every request before access is granted."
+                description={
+                  <span className="text-sm">
+                    Choose only what is needed. The person reviews every request before access is granted.
+                  </span>
+                }
               />
               {/*
                 One nested list, the same one the Memory route uses.
@@ -1229,7 +1237,11 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
             <section aria-labelledby="request-history" className="space-y-3">
               <PageHeader
                 title="Request history"
-                description="Requests you sent to this person and their current status."
+                description={
+                  <span className="text-sm">
+                    Requests you sent to this person and their current status.
+                  </span>
+                }
               />
               {currentHistory?.failed ? (
                 <p role="status" className="text-sm text-muted-foreground">Older requests could not be loaded. Showing recent activity only.</p>
