@@ -12,7 +12,7 @@ import pytest
 from hushh_mcp.one_voice import protocol
 from hushh_mcp.one_voice.config import OneVoiceLiveConfig
 from hushh_mcp.one_voice.live_client import LiveEvent
-from hushh_mcp.one_voice.session import AuthResult, VoiceSession, _restored
+from hushh_mcp.one_voice.session import AuthResult, VoiceSession
 from hushh_mcp.one_voice.tickets import TicketClaims
 from hushh_mcp.one_voice.tools import location_state, registry
 from hushh_mcp.one_voice.tools.base import (
@@ -24,6 +24,7 @@ from hushh_mcp.one_voice.tools.base import (
     ToolResult,
     ToolSpec,
     now_iso,
+    restore_context,
 )
 from hushh_mcp.one_voice.tools.executor import ToolExecutor
 from tests.one_voice.fakes import (
@@ -1619,7 +1620,7 @@ def test_a_stored_context_written_by_a_newer_server_keeps_what_it_can():
         confirmed_at=now_iso(),
     ).model_dump(mode="json")
 
-    restored = _restored(
+    restored = restore_context(
         EntityContext,
         {"people": {"u-priya": person}, "a_field_from_a_later_version": {"x": 1}},
     )
@@ -1631,6 +1632,6 @@ def test_a_stored_context_written_by_a_newer_server_keeps_what_it_can():
 
 def test_a_genuinely_corrupt_stored_context_is_dropped_and_never_trusted():
     """Tolerating unknown keys must not become tolerating bad values."""
-    assert _restored(EntityContext, {"people": "not-a-mapping"}).people == {}
-    assert _restored(EntityContext, "not-a-dict-at-all").people == {}
-    assert _restored(EntityContext, None).people == {}
+    assert restore_context(EntityContext, {"people": "not-a-mapping"}).people == {}
+    assert restore_context(EntityContext, "not-a-dict-at-all").people == {}
+    assert restore_context(EntityContext, None).people == {}

@@ -711,3 +711,152 @@ def test_an_ordinal_outside_the_offerable_range_is_refused_by_the_schema():
     for bad in (0, 26, -1):
         with pytest.raises(ValidationError):
             _spec().input_model(request="read one", ordinal=bad)
+
+
+# -- opening the original, without the model ---------------------------------
+#
+# A tap and "open the second one" must end at the same resolver. The Live model
+# is handed counts and never learns which message was second, so routing a tap
+# through it would add a round trip and a chance of it calling something else.
+
+
+CONV = "22222222-2222-4222-8222-222222222222"
+
+
+class _FakeReader:
+    """Records how it was built and what it was asked to read."""
+
+    calls: list[dict[str, Any]] = []
+
+    def __init__(self, **kwargs: Any):
+        self.kwargs = kwargs
+        _FakeReader.calls.append(kwargs)
+        self.operations: list[tuple[str, dict[str, Any]]] = []
+
+    async def read(self, operation: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        self.operations.append((operation, arguments))
+        _FakeReader.calls[-1]["operation"] = (operation, arguments)
+        return {
+            "status": "ok",
+            "untrusted_external_content": [
+                {
+                    "source_ref": "mail:1",
+                    "subject": HOSTILE_SUBJECT,
+                    "sender": "Accounts",
+                    "received_at": "2026-09-26T08:00:00+00:00",
+                    "body": HOSTILE_BODY,
+                    "body_truncated": False,
+                }
+            ],
+            "truncated": False,
+            "metadata_only": False,
+            "coverage": {"returned": 1, "content_depth": "message"},
+        }
+
+    async def require_current(self) -> None:
+        return None
+
+
+@pytest.fixture
+def open_app(monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from api.middleware import require_vault_owner_token
+    from api.routes.one import voice
+    from hushh_mcp.one_voice.tools.base import EntityContext
+
+    _FakeReader.calls = []
+    entities = EntityContext()
+    entities.offer_mail(["id-first", "id-second"], account=ACCOUNT, mailbox="inbox")
+
+    class _Conversation:
+        entity_context = entities.model_dump(mode="json")
+        screen_context: dict[str, Any] = {}
+
+    class _Conversations:
+        async def get(self, *, user_id, conversation_id):
+            return _Conversation()
+
+    monkeypatch.setattr(
+        "hushh_mcp.one_voice.conversations.ConversationStore", lambda: _Conversations()
+    )
+    monkeypatch.setattr("hushh_mcp.services.gmail_metadata_reader.GmailMetadataReader", _FakeReader)
+    monkeypatch.setattr(
+        "hushh_mcp.services.gmail_receipts_service.get_gmail_receipts_service", lambda: object()
+    )
+    monkeypatch.setattr(
+        "hushh_mcp.services.connector_feature_admission.connector_feature_enabled",
+        lambda *_a, **_k: True,
+    )
+    application = FastAPI()
+    application.include_router(voice.router)
+    application.dependency_overrides[require_vault_owner_token] = lambda: {
+        "user_id": USER,
+        "token": _fixture_credential("vault"),
+    }
+    return TestClient(application), entities
+
+
+def test_a_tap_opens_the_offered_message_through_the_same_resolver(open_app, monkeypatch):
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, _ = open_app
+
+    response = client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 2})
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["message"]["subject"] == HOSTILE_SUBJECT
+    assert HOSTILE_BODY in body["message"]["body"]
+    built = _FakeReader.calls[-1]
+    # The id came from the offer, not from the client and not from a search.
+    assert built["operation"] == (
+        "read_message_by_id",
+        {"message_ids": ["id-second"], "mailbox": "inbox"},
+    )
+    # Negative control for the fence: drop `expect_account` from the route and
+    # this fails while the happy path still passes.
+    assert built["expect_account"] == ACCOUNT
+
+
+@pytest.mark.parametrize("ordinal", [3, 25])
+def test_a_position_that_was_never_offered_is_refused_without_a_read(
+    open_app, monkeypatch, ordinal
+):
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, _ = open_app
+
+    response = client.post(
+        "/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": ordinal}
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "MAIL_OFFER_UNRESOLVED"
+    assert response.json()["detail"]["offered"] == 2
+    assert _FakeReader.calls == [], "a position with nothing behind it must not reach Gmail"
+
+
+def test_the_voice_switch_closes_the_open_route_too(open_app, monkeypatch):
+    """A withdrawn read has to close every door, not only the spoken one."""
+    monkeypatch.setenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, "false")
+    client, _ = open_app
+
+    response = client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 1})
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "VOICE_MAIL_READS_DISABLED"
+    assert _FakeReader.calls == []
+
+
+def test_opening_asks_for_one_message_and_nothing_else(open_app, monkeypatch):
+    """The by-id read has no listing, so no search result can have shifted, and
+    it cannot widen to a page of mail the person did not ask for."""
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, _ = open_app
+
+    client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 1})
+
+    operation, arguments = _FakeReader.calls[-1]["operation"]
+    assert operation == "read_message_by_id"
+    assert arguments["message_ids"] == ["id-first"]
+    assert "query" not in arguments and "limit" not in arguments

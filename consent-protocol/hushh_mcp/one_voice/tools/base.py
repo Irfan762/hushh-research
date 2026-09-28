@@ -187,6 +187,27 @@ class OfferedRequest(BaseModel):
     direction: Literal["incoming", "outgoing"]
 
 
+def restore_context(model: type[Any], stored: Any) -> Any:
+    """Rebuild a persisted context, keeping what this version understands.
+
+    ``EntityContext`` and ``ScreenContext`` forbid unknown keys, which is the
+    right contract for the model and the wrong behaviour for a stored row: a
+    field written by a newer server fails validation for the whole row, and every
+    caller's fallback is an empty context. A rollback would therefore drop every
+    confirmed person and circle in every live conversation because of one key it
+    did not recognise.
+
+    Unknown keys are dropped and the rest is kept. A genuinely corrupt value
+    still falls back to empty and is never trusted.
+    """
+    raw = stored if isinstance(stored, dict) else {}
+    known = {key: value for key, value in raw.items() if key in model.model_fields}
+    try:
+        return model.model_validate(known)
+    except Exception:  # noqa: BLE001 - a corrupt context is dropped, never trusted
+        return model()
+
+
 class OfferedMail(BaseModel):
     """The messages One last put in front of the person, in that order.
 
