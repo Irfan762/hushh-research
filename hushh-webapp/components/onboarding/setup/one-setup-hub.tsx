@@ -355,7 +355,7 @@ export function OneSetupHub() {
       as="main"
       width="reading"
       fitContent
-      className="relative isolate max-w-[600px]"
+      className={`relative isolate max-w-[600px] ${styles.hubPage}`}
       nativeTest={{
         routeId: "/one/setup",
         marker: "native-route-one-setup",
@@ -395,7 +395,7 @@ export function OneSetupHub() {
                   isComplete={runtimeChoiceComplete}
                 />
               </SettingsGroup>
-              <div className="mx-auto w-full sm:w-80">
+              <div className={`mx-auto w-full sm:w-80 ${styles.hubFooter}`}>
                 <Button
                   type="button"
                   variant="blue"

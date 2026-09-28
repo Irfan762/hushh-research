@@ -204,10 +204,6 @@
       "file": "app/api/kai/[...path]/route.ts"
     },
     {
-      "template": "/api/legal/{doc}",
-      "file": "app/api/legal/[doc]/route.ts"
-    },
-    {
       "template": "/api/marketplace/{path*}",
       "file": "app/api/marketplace/[...path]/route.ts"
     },
@@ -2441,9 +2437,7 @@
         "shell_verification_file": "app/connect/page-client.tsx",
         "shell_verification_includes": [
           "AppPageShell",
-          "AppPageHeaderRegion",
           "AppPageContentRegion",
-          "PageHeader",
           "SurfaceStack"
         ],
         "interaction_layer_policy": {
@@ -8360,6 +8354,59 @@
       "thread_and_consent_contract": null
     },
     {
+      "route": "/privacy",
+      "page_file": "app/privacy/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "hidden",
+        "exemption_reason": "Public Privacy Policy page (Google OAuth consent screen and app store privacy URL) intentionally bypasses the signed-in app shell so it renders without signing in or installing the app.",
+        "shell_verification_file": null,
+        "shell_verification_includes": [],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.privacy.policy",
+          "purpose": "Help the person read the Privacy Policy screen through its generated controls.",
+          "screen": "app",
+          "entry_cue": "",
+          "proactivity": "ambient",
+          "primary_action_id": null,
+          "happy_path_action_ids": [],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Explain the current guard and retain the goal.",
+            "cancelled": "Respect the cancellation and retain a safe next step.",
+            "failed": "Acknowledge the failure without claiming completion.",
+            "timeout": "Retain the goal and offer one safe retry.",
+            "callback_error": "Return to the verified callback recovery path without claiming success.",
+            "route_mismatch": "Use the verified current route and its generated actions only."
+          },
+          "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+          "next_route": "/privacy",
+          "return_policy": "navigate",
+          "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+        }
+      },
+      "native": {
+        "route": "/privacy",
+        "classification": "excluded-web-only",
+        "reason": "Public Privacy Policy page for people without the app (Google OAuth consent screen and store listing URL). It is static text with no native bridge; the native build still bundles it, and sign-in and Profile link to it."
+      },
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
       "route": "/products/hushh-tech/launch",
       "page_file": "app/products/hushh-tech/launch/page.tsx",
       "physical_page_exists": true,
@@ -9466,6 +9513,59 @@
       "thread_and_consent_contract": null
     },
     {
+      "route": "/terms",
+      "page_file": "app/terms/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "hidden",
+        "exemption_reason": "Public Terms of Use page (Google OAuth consent screen and app store terms URL) intentionally bypasses the signed-in app shell so it renders without signing in or installing the app.",
+        "shell_verification_file": null,
+        "shell_verification_includes": [],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.terms.of.use",
+          "purpose": "Help the person read the Terms of Use screen through its generated controls.",
+          "screen": "app",
+          "entry_cue": "",
+          "proactivity": "ambient",
+          "primary_action_id": null,
+          "happy_path_action_ids": [],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Explain the current guard and retain the goal.",
+            "cancelled": "Respect the cancellation and retain a safe next step.",
+            "failed": "Acknowledge the failure without claiming completion.",
+            "timeout": "Retain the goal and offer one safe retry.",
+            "callback_error": "Return to the verified callback recovery path without claiming success.",
+            "route_mismatch": "Use the verified current route and its generated actions only."
+          },
+          "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+          "next_route": "/terms",
+          "return_policy": "navigate",
+          "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+        }
+      },
+      "native": {
+        "route": "/terms",
+        "classification": "excluded-web-only",
+        "reason": "Public Terms of Use page for people without the app (Google OAuth consent screen and store listing URL). It is static text with no native bridge; the native build still bundles it, and sign-in and Profile link to it."
+      },
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
       "route": "/welcome",
       "page_file": "app/welcome/page.tsx",
       "physical_page_exists": true,
@@ -9519,5 +9619,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "4bda38810daf39b39ab5e52d69989167d2fcd07174f55e32c4d9753c1b540497"
+  "content_sha256": "e15055d03af5ec65984f8146ac59ed1ee173088a32fb38a0955a2ec497aa2864"
 }

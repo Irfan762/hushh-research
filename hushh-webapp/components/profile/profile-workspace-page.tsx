@@ -26,6 +26,8 @@ import {
   SendIcon as SendHorizontal,
   TrashIcon as Trash2,
   UserCircleIcon as User,
+  ShieldCheck,
+  ScrollText,
 } from "@/components/icons";
 import {
   AccountProfileIcon,
@@ -140,6 +142,7 @@ import {
   replaceProfilePaneLocation,
   resolveProfilePaneUrlState,
   stripProfilePaneTransientParams,
+  type ProfilePaneLocation,
 } from "@/lib/navigation/profile-pane";
 import {
   resolveGmailConnectionPresentation,
@@ -572,8 +575,11 @@ export type ProfilePagePresentation = "route" | "pane";
 
 function ProfilePageContent({
   presentation = "route",
+  paneLocation,
 }: {
   presentation?: ProfilePagePresentation;
+  /** Pane only: the location to show, when the host holds it (see ProfilePane). */
+  paneLocation?: ProfilePaneLocation;
 }) {
   const isPanePresentation = presentation === "pane";
   const [canShowPkmAgentLab, setCanShowPkmAgentLab] = useState(false);
@@ -733,9 +739,9 @@ function ProfilePageContent({
   const profileRouteState = useMemo(
     () =>
       isPanePresentation
-        ? resolveProfilePaneUrlState(searchParams).location
+        ? (paneLocation ?? resolveProfilePaneUrlState(searchParams).location)
         : resolveProfileRouteState(pathname, searchParams),
-    [isPanePresentation, pathname, searchParams],
+    [isPanePresentation, paneLocation, pathname, searchParams],
   );
   const localCrmEnabled = isLocalCrmBuildEnabled();
   const activePanel =
@@ -4499,21 +4505,21 @@ function ProfilePageContent({
             <SettingsGroup title="Your settings" separatorInset>
               <SettingsRow
                 icon={AccountProfileIcon}
-                iconTone="blue"
+                iconTone="capability"
                 title={PROFILE_LABELS.account}
                 chevron
                 onClick={openAccountPanel}
               />
               <SettingsRow
                 icon={PreferencesProfileIcon}
-                iconTone="purple"
+                iconTone="capability"
                 title={PROFILE_LABELS.preferences}
                 chevron
                 onClick={openPreferencesPanel}
               />
               <SettingsRow
                 icon={SecurityProfileIcon}
-                iconTone="green"
+                iconTone="capability"
                 title={PROFILE_LABELS.security}
                 chevron
                 voiceControlId="profile_security"
@@ -4524,7 +4530,7 @@ function ProfilePageContent({
               />
               <SettingsRow
                 icon={DevicesProfileIcon}
-                iconTone="indigo"
+                iconTone="capability"
                 title="Trusted devices"
                 chevron
                 onClick={() =>
@@ -4533,7 +4539,7 @@ function ProfilePageContent({
               />
               <SettingsRow
                 icon={ConnectedSystemsAgentIcon}
-                iconTone="green"
+                iconTone="capability"
                 title="Connectors"
                 description="Google Workspace and finance connections"
                 chevron
@@ -4541,7 +4547,7 @@ function ProfilePageContent({
               />
               <SettingsRow
                 icon={InviteFriendsProfileIcon}
-                iconTone="purple"
+                iconTone="capability"
                 title={PROFILE_LABELS.referrals}
                 chevron
                 voiceControlId="profile_referrals"
@@ -4557,7 +4563,7 @@ function ProfilePageContent({
               />
               <SettingsRow
                 icon={SupportProfileIcon}
-                iconTone="blue"
+                iconTone="capability"
                 title={PROFILE_LABELS.support}
                 chevron
                 onClick={() =>
@@ -4567,7 +4573,7 @@ function ProfilePageContent({
               {canShowPkmAgentLab ? (
                 <SettingsRow
                   icon={DeveloperToolsProfileIcon}
-                  iconTone="orange"
+                  iconTone="capability"
                   title={PROFILE_LABELS.developerTools}
                   trailing={<Badge variant="secondary">Local</Badge>}
                   chevron
@@ -4576,10 +4582,29 @@ function ProfilePageContent({
               ) : null}
             </SettingsGroup>
 
+            <SettingsGroup title="Legal" separatorInset>
+              <SettingsRow
+                icon={ShieldCheck}
+                iconTone="capability"
+                title="Privacy Policy"
+                testId="profile-legal-privacy-row"
+                chevron
+                onClick={() => router.push(ROUTES.PRIVACY)}
+              />
+              <SettingsRow
+                icon={ScrollText}
+                iconTone="capability"
+                title="Terms of Use"
+                testId="profile-legal-terms-row"
+                chevron
+                onClick={() => router.push(ROUTES.TERMS)}
+              />
+            </SettingsGroup>
+
             <SettingsGroup title={PROFILE_LABELS.accountAccess} separatorInset>
               <SettingsRow
                 icon={SignOutProfileIcon}
-                iconTone="red"
+                iconTone="capability"
                 title="Sign out"
                 tone="destructive"
                 chevron
@@ -4862,12 +4887,17 @@ function ProfilePageContent({
 
 export function ProfilePage({
   presentation = "route",
+  paneLocation,
 }: {
   presentation?: ProfilePagePresentation;
+  paneLocation?: ProfilePaneLocation;
 }) {
   return (
     <Suspense fallback={null}>
-      <ProfilePageContent presentation={presentation} />
+      <ProfilePageContent
+        presentation={presentation}
+        paneLocation={paneLocation}
+      />
     </Suspense>
   );
 }
