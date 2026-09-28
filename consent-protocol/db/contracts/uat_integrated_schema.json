@@ -1320,6 +1320,14 @@
       "created_at",
       "updated_at"
     ],
+    "one_attention_ledger": [
+      "user_id",
+      "kind",
+      "subject_ref",
+      "outcome",
+      "created_at",
+      "updated_at"
+    ],
     "one_capability_runs": [
       "run_id",
       "schema_version",
@@ -2230,14 +2238,6 @@
       "onboarding_callback_state",
       "onboarding_callback_attempt_id",
       "onboarding_journey_updated_at",
-      "created_at",
-      "updated_at"
-    ],
-    "one_attention_ledger": [
-      "user_id",
-      "kind",
-      "subject_ref",
-      "outcome",
       "created_at",
       "updated_at"
     ]

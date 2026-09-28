@@ -23,7 +23,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
-import { ChevronRight, X } from "lucide-react";
+import { ChevronRight, X } from "@/components/icons";
 
 import { ConnectorBrandMark } from "@/components/agent/connector-brand-mark";
 import type { ChatOnboardingController } from "@/lib/agent/chat-onboarding/use-chat-onboarding";
