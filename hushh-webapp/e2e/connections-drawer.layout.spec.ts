@@ -598,15 +598,29 @@ test("dismissing Connectors returns the next hamburger open to chat history", as
   const connectors = page.getByRole("dialog", { name: "Connectors", exact: true });
   const chats = page.getByRole("dialog", { name: "Agent chat history", exact: true });
 
+  // Radix attaches its outside-pointer listener after the open transition
+  // starts; clicking the scrim mid-animation was a race (flaky on chromium).
+  const settled = () =>
+    expect
+      .poll(() =>
+        page.evaluate(
+          () => document.getAnimations().filter((a) => a.playState === "running").length,
+        ),
+      )
+      .toBe(0);
+
   await hamburger.click();
   await page.getByLabel("Open Connectors", { exact: true }).click();
   await expect(connectors).toBeVisible();
+  await settled();
   await page.mouse.click(24, 400);
   await expect(connectors).not.toBeVisible();
   await hamburger.click();
   await expect(chats.getByRole("searchbox", { name: "Search chats" })).toBeVisible();
 
   await page.getByLabel("Open Connectors", { exact: true }).click();
+  await expect(connectors).toBeVisible();
+  await settled();
   await page.keyboard.press("Escape");
   await expect(connectors).not.toBeVisible();
   await hamburger.click();
