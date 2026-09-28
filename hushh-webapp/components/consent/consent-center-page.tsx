@@ -585,7 +585,7 @@ export function toLocallyGrantedEntry(
     durationHours ?? (Number(metadata.expiry_hours) || undefined);
   return {
     ...entry,
-    id: `local-grant:${requestId}`,
+    id: `local-access:${requestId}`,
     kind: "active_grant",
     status: "active",
     action: "CONSENT_GRANTED",
@@ -1275,7 +1275,7 @@ function ConsentEntryDetail({
             ? "Circle invitation"
             : "Location sharing",
           description: isCircleMemberInvite
-            ? "Open Location to review the Circle and choose Join or Decline. This invitation grants no location access."
+            ? "Open Location to review the Circle and choose Join or Decline. This invitation gives no location access."
             : "Review this request or access in Location.",
           href: locationHref,
           label: isCircleMemberInvite ? "Open invitation" : "Open Location",
@@ -3044,7 +3044,7 @@ export function ConsentCenterPage() {
       screenId: "consents",
       title: "Consent manager",
       purpose:
-        "This screen is the permission workspace for reviewing pending requests, active grants, and prior decisions.",
+        "This screen is the permission workspace for reviewing pending requests, active access, and prior decisions.",
       sections: [
         {
           id: "pending",
@@ -3054,7 +3054,7 @@ export function ConsentCenterPage() {
         {
           id: "active",
           title: "Active",
-          purpose: "Shows currently active consent grants.",
+          purpose: "Shows the access you are sharing right now.",
         },
         {
           id: "previous",
@@ -3105,7 +3105,7 @@ export function ConsentCenterPage() {
               {
                 id: "consent_revoke",
                 label: "Revoke active access",
-                purpose: "Revokes the selected active grant.",
+                purpose: "Ends the selected access that is still active.",
                 role: "button",
               },
             ]
@@ -3116,7 +3116,7 @@ export function ConsentCenterPage() {
           id: "consents",
           label: "Consents",
           explanation:
-            "Consents is the permission workspace where sharing requests and active grants are reviewed.",
+            "Consents is the permission workspace where sharing requests and active access are reviewed.",
           aliases: ["consents", "consent center", "consent manager"],
         },
       ],
