@@ -2729,7 +2729,7 @@ async def propose_information_request(
     ("What is Kushal's favorite restaurant?") or asks you to request it. Pass
     the person, the things in the person's own words as ``fields``, their
     question as they said it as ``question``, and ``purpose`` only if they gave
-    a reason (leave it empty and a reason is suggested). The server picks the
+    a reason (otherwise send it empty and a reason is suggested). The server picks the
     closest thing that person makes requestable, from labels only, and parks a
     proposal; the card shows it with Send and Change. Nothing is sent: the
     person's tap on that card is the authorization, so do not ask for a spoken
