@@ -147,6 +147,19 @@ class DriveBulkShareService:
         return result
 
     @drive_operation(job_key="share_id")
+    async def retry(
+        self, *, user_id: str, share_id: str, revision: int, review_digest: str
+    ) -> dict:
+        await self._owner()
+        self._admit(user_id)
+        result = await self.store.retry(
+            user_id=user_id, share_id=share_id, revision=revision, review_digest=review_digest
+        )
+        await self.wake("sharing")
+        await self._owner()
+        return result
+
+    @drive_operation(job_key="share_id")
     async def stop(self, *, user_id: str, share_id: str) -> dict:
         started = time.perf_counter()
         await self._owner()

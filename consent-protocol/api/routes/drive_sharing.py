@@ -1170,6 +1170,22 @@ async def approve_bulk_share(
     )
 
 
+@router.post("/bulk/{share_id}/retry", status_code=202)
+async def retry_bulk_share(
+    share_id: UUID,
+    body: BulkShareApprovalRequest,
+    owner: Owner = Depends(_owner),
+):
+    return await _call(
+        "retry",
+        owner=owner,
+        factory=_bulk_share_service,
+        share_id=str(share_id),
+        revision=body.revision,
+        review_digest=body.reviewDigest,
+    )
+
+
 @router.post("/bulk/{share_id}/stop")
 async def stop_bulk_share(
     share_id: UUID,

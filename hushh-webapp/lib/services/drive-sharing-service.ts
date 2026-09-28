@@ -89,6 +89,9 @@ export type SharingDelivery = {
   fileCount?: number;
   sharedCount?: number;
   bulkShareId?: string | null;
+  bulkStatus?: DriveBulkShareView["status"];
+  counts?: DriveBulkShareCounts;
+  issues?: DriveBulkShareIssue[];
 };
 export type SharingDeliveryFile = {
     name: string;
@@ -539,6 +542,31 @@ function parseCircleShareView(value: RecordValue): DriveCircleShareView {
   };
 }
 
+export type DriveBulkShareCounts = {
+  total: number;
+  processed: number;
+  shared: number;
+  alreadyShared: number;
+  skipped: number;
+  failed: number;
+  needsReview: number;
+  unknown: number;
+  pending: number;
+};
+const BULK_REASON_CODES = [
+  "source_changed", "source_not_shareable", "recipient_changed", "connection_changed", "stopped",
+  "sharing_unavailable", "retry_limit", "provider_unavailable", "permission_rejected",
+  "permission_outcome_unknown", "permission_catalog_incomplete", "unavailable",
+] as const;
+export type DriveBulkReasonCode = (typeof BULK_REASON_CODES)[number];
+export type DriveBulkShareIssue = { reasonCode: DriveBulkReasonCode; count: number };
+const BULK_OUTCOME_STATES = [
+  "queued", "dispatching", "unknown", "succeeded", "preexisting", "skipped", "failed", "present_unattributed", "absent",
+] as const;
+export type DriveBulkFileOutcome = {
+  status: (typeof BULK_OUTCOME_STATES)[number];
+  reasonCode: DriveBulkReasonCode | null;
+};
 /** A frozen, owner-reviewed search result set. Counts are file-recipient effects. */
 export type DriveBulkShareView = {
   shareId: string;
@@ -550,20 +578,13 @@ export type DriveBulkShareView = {
   recipientCount: number;
   recipients: Array<{ name: string | null; email: string }>;
   excluded: Array<{ name: string | null; reason: DriveCircleExclusion }>;
-  counts: {
-    total: number;
-    processed: number;
-    shared: number;
-    alreadyShared: number;
-    skipped: number;
-    failed: number;
-    needsReview: number;
-    unknown: number;
-    pending: number;
-  };
+  counts: DriveBulkShareCounts;
+  issues?: DriveBulkShareIssue[];
   notifications: { settled: number; pending: number; unavailable: number };
   canApprove: boolean;
   canStop: boolean;
+  canRetry?: boolean;
+  retryableCount?: number;
   createdAt: string;
   updatedAt: string;
   expiresAt: string;
@@ -571,7 +592,8 @@ export type DriveBulkShareView = {
 
 export type DriveBulkShareFilePage = {
   shareId: string;
-  files: Array<{ position: number; name: string; mimeType: string; modifiedTime: string | null; openUrl: string | null }>;
+  files: Array<{ position: number; name: string; mimeType: string; modifiedTime: string | null; openUrl: string | null;
+    outcomes?: DriveBulkFileOutcome[] }>;
   nextCursor: string | null;
 };
 
@@ -606,14 +628,62 @@ function bulkText(value: unknown, max: number): string {
   return result;
 }
 
+function bulkStatus(value: unknown): DriveBulkShareView["status"] {
+  const status = bulkText(value, 20) as DriveBulkShareView["status"];
+  if (!BULK_STATUSES.has(status)) throw new DriveSharingError("invalid_response");
+  return status;
+}
+
+function bulkReason(value: unknown): DriveBulkReasonCode {
+  if (!(BULK_REASON_CODES as readonly unknown[]).includes(value))
+    throw new DriveSharingError("invalid_response");
+  return value as DriveBulkReasonCode;
+}
+
+function parseBulkCounts(value: unknown, total: number): DriveBulkShareCounts {
+  const counts = record(value);
+  const result = {
+    total: bulkCount(counts.total), processed: bulkCount(counts.processed),
+    shared: bulkCount(counts.shared), alreadyShared: bulkCount(counts.alreadyShared),
+    skipped: bulkCount(counts.skipped), failed: bulkCount(counts.failed),
+    needsReview: bulkCount(counts.needsReview), unknown: bulkCount(counts.unknown),
+    pending: bulkCount(counts.pending),
+  };
+  const settled = result.shared + result.alreadyShared + result.skipped + result.failed + result.needsReview;
+  if (result.total !== total || result.processed !== settled || settled + result.unknown + result.pending !== total)
+    throw new DriveSharingError("invalid_response");
+  return result;
+}
+
+function parseBulkIssues(value: unknown, total: number): DriveBulkShareIssue[] {
+  if (!Array.isArray(value) || value.length > BULK_REASON_CODES.length) throw new DriveSharingError("invalid_response");
+  const issues = value.map(item => {
+    const row = record(item);
+    const count = bulkCount(row.count);
+    if (!count || count > total) throw new DriveSharingError("invalid_response");
+    return { reasonCode: bulkReason(row.reasonCode), count };
+  });
+  if (new Set(issues.map(item => item.reasonCode)).size !== issues.length ||
+    issues.reduce((sum, item) => sum + item.count, 0) > total)
+    throw new DriveSharingError("invalid_response");
+  return issues;
+}
+
 function parseBulkShareView(value: RecordValue): DriveBulkShareView {
-  const status = bulkText(value.status, 20) as DriveBulkShareView["status"];
-  if (!BULK_STATUSES.has(status) || typeof value.canApprove !== "boolean" || typeof value.canStop !== "boolean" ||
+  const status = bulkStatus(value.status);
+  if (typeof value.canApprove !== "boolean" || typeof value.canStop !== "boolean" ||
     !Array.isArray(value.recipients) || value.recipients.length > 10 ||
     !Array.isArray(value.excluded) || value.excluded.length > 100)
     throw new DriveSharingError("invalid_response");
-  const counts = record(value.counts);
   const notifications = record(value.notifications);
+  const fileCount = bulkCount(value.fileCount, 10_000);
+  const recipientCount = bulkCount(value.recipientCount, 10);
+  const total = fileCount * recipientCount;
+  if (value.canRetry !== undefined && typeof value.canRetry !== "boolean")
+    throw new DriveSharingError("invalid_response");
+  const retryableCount = value.retryableCount === undefined ? 0 : bulkCount(value.retryableCount, total);
+  if (value.canRetry === true && (!retryableCount || !["partial", "failed"].includes(status)))
+    throw new DriveSharingError("invalid_response");
   const recipients = value.recipients.map(item => {
     const row = record(item);
     return { name: row.name == null ? null : bulkText(row.name, 200), email: bulkText(row.email, 320) };
@@ -627,18 +697,14 @@ function parseBulkShareView(value: RecordValue): DriveBulkShareView {
   const result: DriveBulkShareView = {
     shareId: id(value.shareId), searchJobId: id(value.searchJobId), status,
     revision: revision(value.revision), reviewDigest: digest(value.reviewDigest),
-    fileCount: bulkCount(value.fileCount, 10_000), recipientCount: bulkCount(value.recipientCount, 10),
+    fileCount, recipientCount,
     recipients, excluded,
-    counts: {
-      total: bulkCount(counts.total), processed: bulkCount(counts.processed),
-      shared: bulkCount(counts.shared), alreadyShared: bulkCount(counts.alreadyShared),
-      skipped: bulkCount(counts.skipped), failed: bulkCount(counts.failed),
-      needsReview: bulkCount(counts.needsReview), unknown: bulkCount(counts.unknown),
-      pending: bulkCount(counts.pending),
-    },
+    counts: parseBulkCounts(value.counts, total),
+    ...(value.issues === undefined ? {} : { issues: parseBulkIssues(value.issues, total) }),
     notifications: { settled: bulkCount(notifications.settled, 10), pending: bulkCount(notifications.pending, 10),
       unavailable: bulkCount(notifications.unavailable, 10) },
     canApprove: value.canApprove, canStop: value.canStop,
+    canRetry: value.canRetry === true, retryableCount,
     createdAt: date(value.createdAt), updatedAt: date(value.updatedAt), expiresAt: date(value.expiresAt),
   };
   if (result.recipientCount !== recipients.length || result.counts.processed > result.counts.total ||
@@ -662,8 +728,18 @@ function parseBulkFilePage(value: RecordValue): DriveBulkShareFilePage {
     }
     const position = bulkCount(row.position, 10_000);
     if (position === 0) throw new DriveSharingError("invalid_response");
+    if (row.outcomes !== undefined && (!Array.isArray(row.outcomes) || row.outcomes.length > 10))
+      throw new DriveSharingError("invalid_response");
+    const outcomes = row.outcomes === undefined ? undefined : (row.outcomes as unknown[]).map(item => {
+      const outcome = record(item);
+      if (!(BULK_OUTCOME_STATES as readonly unknown[]).includes(outcome.status))
+        throw new DriveSharingError("invalid_response");
+      return { status: outcome.status as DriveBulkFileOutcome["status"],
+        reasonCode: outcome.reasonCode == null ? null : bulkReason(outcome.reasonCode) };
+    });
     return { position, name: bulkText(row.name, 1000), mimeType: bulkText(row.mimeType, 256),
-      modifiedTime: row.modifiedTime == null ? null : date(row.modifiedTime), openUrl };
+      modifiedTime: row.modifiedTime == null ? null : date(row.modifiedTime), openUrl,
+      ...(outcomes === undefined ? {} : { outcomes }) };
   });
   if (new Set(files.map(item => item.position)).size !== files.length)
     throw new DriveSharingError("invalid_response");
@@ -979,7 +1055,7 @@ export class DriveSharingService {
     token: string, requestId: string, search: DriveSearchStatus,
     excludedPositions: number[], guard: SharingSessionGuard,
   ): Promise<DriveBulkShareView> {
-    if (search.status !== "completed" || search.incompleteSearch ||
+    if (search.status !== "completed" || search.incompleteSearch || search.coverage?.providerPagesExhausted === false ||
       search.matched - (search.unshareableCount ?? 0) <= 0 ||
       excludedPositions.length >= search.matched ||
       new Set(excludedPositions).size !== excludedPositions.length ||
@@ -1003,13 +1079,20 @@ export class DriveSharingService {
     const result = await this.request(token, requestId, guard, "/delivery");
     if (id(result.requestId) !== requestId)
       throw new DriveSharingError("invalid_response");
+    const fileCount = result.bulkShareId == null ? null : bulkCount(result.fileCount, 10_000);
+    const sharedCount = fileCount === null ? null : bulkCount(result.sharedCount, fileCount);
+    const counts = result.counts === undefined || fileCount === null ? undefined : parseBulkCounts(result.counts, fileCount);
+    if (counts && counts.shared + counts.alreadyShared !== sharedCount)
+      throw new DriveSharingError("invalid_response");
     return {
       status: string(result.status, 80),
       files: files(result.files, parseDeliveryFile),
       ...(result.bulkShareId == null ? {} : {
         bulkShareId: id(result.bulkShareId),
-        fileCount: bulkCount(result.fileCount, 10_000),
-        sharedCount: bulkCount(result.sharedCount, 10_000),
+        fileCount: fileCount!, sharedCount: sharedCount!,
+        ...((result.bulkStatus ?? result.sharingStatus) == null ? {} : { bulkStatus: bulkStatus(result.bulkStatus ?? result.sharingStatus) }),
+        ...(counts === undefined ? {} : { counts }),
+        ...(result.issues === undefined ? {} : { issues: parseBulkIssues(result.issues, fileCount!) }),
       }),
     };
   }
@@ -1492,6 +1575,18 @@ export class DriveSharingService {
     const result = parseBulkShareView(await this.send(`${SHARING_PATH}/bulk/${id(view.shareId)}/approve`, token, guard,
       { revision: revision(view.revision), reviewDigest: digest(view.reviewDigest), confirmed: true }));
     if (result.shareId !== view.shareId || result.searchJobId !== view.searchJobId)
+      throw new DriveSharingError("invalid_response");
+    return result;
+  }
+
+  /** Retry only the exact reviewed effects the server declares safe to retry. */
+  static async retryBulkShare(token: string, view: DriveBulkShareView, guard: SharingSessionGuard): Promise<DriveBulkShareView> {
+    if (view.canRetry !== true || !view.retryableCount || !["partial", "failed"].includes(view.status))
+      throw new DriveSharingError("invalid_argument");
+    const result = parseBulkShareView(await this.send(`${SHARING_PATH}/bulk/${id(view.shareId)}/retry`, token, guard,
+      { revision: revision(view.revision), reviewDigest: digest(view.reviewDigest), confirmed: true }));
+    if (result.shareId !== view.shareId || result.searchJobId !== view.searchJobId || result.fileCount !== view.fileCount ||
+      result.recipientCount !== view.recipientCount)
       throw new DriveSharingError("invalid_response");
     return result;
   }
