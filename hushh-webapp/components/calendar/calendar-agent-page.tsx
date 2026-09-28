@@ -492,25 +492,29 @@ export function CalendarAgentPage({
       }}
     >
       <AppPageContentRegion className={CALENDAR_SETUP_REGION_CLASSNAME}>
-        <div className="flex flex-col items-center text-center space-y-0.5 pb-3 pt-5">
-            <CalendarConnectIcon className="size-10 mb-2.5" style={{ color: "#FF3B30" }} />
-            <p className="text-lg font-semibold tracking-tight">
-              {connected ? "Google Calendar" : "Connect Google Calendar"}
-            </p>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              {detail}
-            </p>
+        <div className="flex flex-col items-center text-center space-y-1 pb-4 pt-8 max-w-sm mx-auto">
+          <div className="mb-6 flex size-24 items-center justify-center rounded-[24px] bg-[#FFF0F1] dark:bg-red-950/40">
+            <CalendarConnectIcon className="size-11" style={{ color: "#FF3B30" }} />
+          </div>
 
-          <div className="space-y-4 pt-0">
+          <h2 className="text-2xl sm:text-[26px] font-bold tracking-tight text-foreground">
+            {connected ? "Google Calendar" : "Connect Google Calendar"}
+          </h2>
+
+          <p className="text-base text-muted-foreground/80 mt-1 max-w-xs leading-normal">
+            {detail}
+          </p>
+
+          <div className="space-y-4 pt-6 w-full flex flex-col items-center">
             {connectionPending || loading || (!status && !user) ? (
-              <span className="inline-flex items-center gap-2 border-t border-border/60 pt-4 text-sm text-muted-foreground">
+              <span className="inline-flex items-center gap-2 pt-2 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
                 {connectionPending
                   ? "Finishing Calendar connection…"
                   : "Loading Calendar…"}
               </span>
             ) : connected ? (
-              <div className="border-t border-border/60 pt-4 space-y-4 flex flex-col items-center">
+              <div className="pt-2 space-y-4 flex flex-col items-center w-full">
                 {/* Connection Status & Permission */}
                 <div className="flex flex-col items-center gap-1.5 text-center px-2">
                   <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
@@ -534,7 +538,7 @@ export function CalendarAgentPage({
                         openChat("Summarize my calendar events and help me plan meetings");
                       }
                     }}
-                    className="sm:w-full"
+                    className="w-full rounded-full"
                   >
                     Try Calendar Agent with One
                   </AskOneButton>
@@ -549,12 +553,12 @@ export function CalendarAgentPage({
                 </div>
               </div>
             ) : shouldShowSetup ? (
-              <div className="border-t border-border/60 pt-4 pb-1">
+              <div className="pt-2 pb-1 w-full">
                 <div className="flex flex-col items-center justify-center text-center space-y-3 w-full">
                   <Button
                     disabled={busy}
                     onClick={() => void connect("read")}
-                    className="w-full justify-center h-11 text-base font-semibold shadow-sm"
+                    className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066CC] text-white shadow-sm transition-colors"
                     data-voice-control-id="open_calendar_connector"
                     data-voice-action-id={
                       journeyVariant === "onboarding"
@@ -566,17 +570,17 @@ export function CalendarAgentPage({
                   >
                     {connectLabel}
                   </Button>
-                  <p className="text-xs text-muted-foreground text-center">
-                    Private by default. Disconnect anytime.
+                  <p className="text-xs text-muted-foreground/70 text-center">
+                    Disconnect anytime.
                   </p>
                 </div>
               </div>
             ) : (
-              <div className="flex flex-col items-center gap-2 border-t border-border/60 pt-4">
+              <div className="flex flex-col items-center gap-3 pt-2 w-full">
                 <Button
                   disabled={busy}
                   onClick={() => void connect("read")}
-                  className="w-full justify-center"
+                  className="w-full justify-center h-12 text-base font-semibold rounded-full bg-[#007AFF] hover:bg-[#0066CC] text-white shadow-sm transition-colors"
                   data-voice-control-id="open_calendar_connector"
                   data-voice-action-id={
                     journeyVariant === "onboarding"
@@ -588,8 +592,8 @@ export function CalendarAgentPage({
                 >
                   {connectLabel}
                 </Button>
-                <p className="text-xs text-muted-foreground">
-                  Reconnect to keep using Calendar with One.
+                <p className="text-xs text-muted-foreground/70 text-center">
+                  Disconnect anytime.
                 </p>
               </div>
             )}
