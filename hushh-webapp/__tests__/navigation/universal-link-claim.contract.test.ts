@@ -181,9 +181,18 @@ describe("Universal Link / App Link claim", () => {
     const androidAuth = read(
       "android/app/src/main/java/com/hussh/app/plugins/HushhAuth/HushhAuthPlugin.kt",
     );
+    const androidDriveFence = read(
+      "android/app/src/main/java/com/hussh/app/plugins/HushhAuth/NativeDriveAuthorizationFence.kt",
+    );
     const iosAuth = read("ios/App/App/Plugins/HushhAuthPlugin.swift");
     expect(androidAuth).toContain("uri.userInfo != null || uri.port != -1");
     expect(androidAuth).toContain("scheduleDriveFallbackCancellation(operation)");
+    expect(androidAuth).toContain(
+      "NativeDriveOAuthPolicy.FALLBACK_RETURN_GRACE_MS",
+    );
+    expect(androidDriveFence).toContain(
+      "const val FALLBACK_RETURN_GRACE_MS = 5_000L",
+    );
     expect(iosAuth).toContain(
       "url.user == nil, url.password == nil, url.port == nil",
     );
