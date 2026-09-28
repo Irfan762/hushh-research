@@ -6,7 +6,12 @@ import { useVault } from "@/lib/vault/vault-context";
 import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vault/session-epoch";
 import { useCoarseClock, usePeriodicTask } from "@/lib/perf/use-periodic-task";
 import { Button } from "@/lib/morphy-ux/button";
+import { Card } from "@/lib/morphy-ux/card";
+import { Check, ChevronDown, X } from "@/components/icons";
+import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
+import { ConnectorBrandMark } from "@/components/agent/connector-brand-mark";
 import { HelperText } from "@/components/app-ui/typography";
+import { dismissDriveSharingCard, isDriveSharingCardDismissed } from "@/lib/agent/drive-sharing-card-preferences";
 import { DriveSearchError, DriveSearchService, type DriveSearchResults, type DriveSearchSelection, type DriveSearchStatus } from "@/lib/services/drive-search-service";
 import { DriveSharingError, DriveSharingService, type DriveBulkShareFilePage, type DriveBulkShareView } from "@/lib/services/drive-sharing-service";
 
@@ -101,15 +106,15 @@ export function DriveBackgroundSearches({ onUseInChat }: SearchSelectionProps = 
   const { user } = useAuth();
   const { isVaultUnlocked, getVaultOwnerToken } = useVault();
   if (!user || !isVaultUnlocked) return null;
-  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} getToken={getVaultOwnerToken} onUseInChat={onUseInChat} />;
+  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} ownerId={user.uid} getToken={getVaultOwnerToken} onUseInChat={onUseInChat} />;
 }
 export function DriveRecentSharing() {
   const { user } = useAuth();
   const { isVaultUnlocked, getVaultOwnerToken } = useVault();
   if (!user || !isVaultUnlocked) return null;
-  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} getToken={getVaultOwnerToken} sharingOnly />;
+  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} ownerId={user.uid} getToken={getVaultOwnerToken} sharingOnly />;
 }
-function RecentSearches({ getToken, onUseInChat, sharingOnly = false }: OwnerProps & SearchSelectionProps & { sharingOnly?: boolean }) {
+function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }: OwnerProps & SearchSelectionProps & { ownerId: string; sharingOnly?: boolean }) {
   const owner = useOwnerGuard(getToken);
   const serial = useRef(0);
   const bulkSerial = useRef(0);
@@ -119,6 +124,8 @@ function RecentSearches({ getToken, onUseInChat, sharingOnly = false }: OwnerPro
   const [bulkError, setBulkError] = useState(false);
   const seen = useRef(false);
   const seenBulk = useRef(false);
+  const dismissed = useRef(new Set<string>());
+  const [bulkErrorDismissed, setBulkErrorDismissed] = useState(false);
   const load = useCallback(async () => {
     const ticket = ++serial.current;
     const { token, guard: checkOwner } = owner();
@@ -143,13 +150,29 @@ function RecentSearches({ getToken, onUseInChat, sharingOnly = false }: OwnerPro
       const next = await DriveSharingService.recentBulkShares(token, guard);
       guard();
       seenBulk.current ||= next.length > 0;
-      setBulkShares(next.filter(share => Date.parse(share.expiresAt) > Date.now()));
+      const visible = await Promise.all(next.map(async share => ({ share,
+        hidden: dismissed.current.has(share.shareId) || await isDriveSharingCardDismissed(ownerId, share.shareId),
+      })));
+      guard();
+      setBulkShares(visible.filter(({ share, hidden }) => !hidden && !dismissed.current.has(share.shareId) && Date.parse(share.expiresAt) > Date.now())
+        .map(({ share }) => share));
       setBulkError(false);
     } catch {
       try { guard(); } catch { return; }
       setBulkShares([]); setBulkError(seenBulk.current);
     }
-  }, [owner]);
+  }, [owner, ownerId]);
+  const dismiss = (share: DriveBulkShareView) => {
+    const { guard } = owner();
+    try { guard(); } catch { return; }
+    dismissed.current.add(share.shareId);
+    setBulkShares(items => items.filter(item => item.shareId !== share.shareId));
+    void dismissDriveSharingCard(ownerId, share.shareId, share.expiresAt, () => {
+      try { guard(); return true; } catch { return false; }
+    });
+    // Return focus to the task the person was doing; no share is stopped.
+    document.querySelector<HTMLTextAreaElement>("[data-agent-chat-composer-form] textarea")?.focus();
+  };
   const invalidate = useCallback(() => { ++serial.current; ++bulkSerial.current; }, []);
   useEffect(() => {
     if (!sharingOnly) void load();
@@ -159,8 +182,8 @@ function RecentSearches({ getToken, onUseInChat, sharingOnly = false }: OwnerPro
     return () => { invalidate(); window.removeEventListener(CHANGED, changed); };
   }, [load, loadBulk, invalidate, sharingOnly]);
   const detached = sharingOnly ? bulkShares : bulkShares.filter(share => !jobs.some(job => job.jobId === share.searchJobId));
-  if (!jobs.length && !error && !detached.length && !bulkError) return null;
-  return <div className="mx-auto w-full max-w-4xl space-y-2">
+  if (!jobs.length && !error && !detached.length && (!bulkError || bulkErrorDismissed)) return null;
+  return <div className={`mx-auto w-full max-w-4xl space-y-2 ${sharingOnly ? "max-h-[min(24rem,40dvh)] overflow-y-auto p-1" : ""}`}>
     {!sharingOnly && (jobs.length || error) ? <details open className="rounded-2xl bg-foreground/[0.035] px-4 py-2 text-sm" aria-label="Drive searches">
     <summary className="min-h-11 cursor-pointer content-center font-medium">Recent Drive searches{jobs.length ? ` · ${jobs.length}` : ""}</summary>
     {error ? <div className="space-y-2 py-2"><HelperText role="status">Couldn’t load your searches.</HelperText>
@@ -169,14 +192,23 @@ function RecentSearches({ getToken, onUseInChat, sharingOnly = false }: OwnerPro
       {jobs.map(job => <DriveBackgroundSearchCard key={job.jobId} initial={job} getToken={getToken} onUseInChat={onUseInChat} />)}
     </div>
   </details> : null}
-    {detached.length || bulkError ? <details open className="rounded-2xl bg-foreground/[0.035] px-4 py-2 text-sm" aria-label="Drive sharing progress">
-      <summary className="min-h-11 cursor-pointer content-center font-medium">Drive sharing{detached.length ? ` · ${detached.length}` : ""}</summary>
-      {bulkError ? <div className="space-y-2 py-2"><HelperText role="status">Couldn’t load sharing progress.</HelperText>
-        <Button type="button" variant="muted" size="compact" onClick={() => void loadBulk()}>Try again</Button></div> : null}
-      <div className="space-y-3 py-2">{detached.map(share =>
-        <DriveBulkShareReview key={share.shareId} searchJobId={share.searchJobId} initial={share} getToken={getToken} />)}</div>
-    </details> : null}
+    {bulkError && !bulkErrorDismissed ? <Card preset="compact" effect="fill" className="p-4"><div className="flex items-center justify-between gap-3">
+      <div className="space-y-2"><HelperText role="status">Couldn’t load sharing progress.</HelperText>
+        <Button type="button" variant="muted" size="compact" onClick={() => void loadBulk()}>Try again</Button></div>
+      <DriveSharingClose onClick={() => setBulkErrorDismissed(true)} />
+    </div></Card> : null}
+    <div className="space-y-3">{detached.map(share =>
+      <DriveBulkShareReview key={share.shareId} searchJobId={share.searchJobId} initial={share} getToken={getToken}
+        onDismiss={() => dismiss(share)} />)}</div>
   </div>;
+}
+
+function DriveSharingClose({ onClick }: { onClick: () => void }) {
+  return <ShellActionSurface onClick={onClick} aria-label="Close Drive sharing card"
+    title="Hide this card without changing file access."
+    className="h-11 w-11 !border-transparent !bg-transparent !shadow-none text-destructive hover:!bg-destructive/10 hover:!text-destructive">
+    <X className="h-5 w-5" aria-hidden="true" />
+  </ShellActionSurface>;
 }
 
 export function DriveBackgroundSearchCard({ initial, getToken, onUseInChat }: OwnerProps & SearchSelectionProps & { initial: DriveSearchStatus }) {
@@ -326,8 +358,8 @@ const BULK_EXCLUSION_COPY: Record<string, string> = {
 
 /** Reviewing a saved result set never grants permission; only the Share tap does. */
 function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientRequestId = searchJobId,
-  autoPrepare = false }: OwnerProps & { searchJobId: string; initial?: DriveBulkShareView | null;
-  clientRequestId?: string; autoPrepare?: boolean }) {
+  autoPrepare = false, onDismiss }: OwnerProps & { searchJobId: string; initial?: DriveBulkShareView | null;
+  clientRequestId?: string; autoPrepare?: boolean; onDismiss?: () => void }) {
   const owner = useOwnerGuard(getToken);
   const [view, setView] = useState<DriveBulkShareView | null>(initial);
   const [page, setPage] = useState<DriveBulkShareFilePage | null>(null);
@@ -335,7 +367,7 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
   const [previous, setPrevious] = useState<(string | null)[]>([]);
   const [loading, setLoading] = useState(!initial);
   const [previewLoading, setPreviewLoading] = useState(false);
-  const [action, setAction] = useState<"preparing" | "approving" | "stopping" | null>(null);
+  const [action, setAction] = useState<"preparing" | "approving" | "stopping" | "retrying" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState(false);
   const statusSerial = useRef(0);
@@ -351,7 +383,9 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
     const guard = () => { checkOwner(); if (ticket !== statusSerial.current) throw new DriveSharingError("superseded"); };
     setLoading(true);
     try {
-      const shares = await DriveSharingService.bulkSharesForSearch(token, searchJobId, guard);
+      const shares = initial
+        ? [await DriveSharingService.bulkShareStatus(token, initial.shareId, guard)]
+        : await DriveSharingService.bulkSharesForSearch(token, searchJobId, guard);
       guard();
       let current = shares.filter(item => Date.parse(item.expiresAt) > Date.now())
         .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))[0] ?? null;
@@ -371,7 +405,7 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
     } finally {
       if (ticket === statusSerial.current) setLoading(false);
     }
-  }, [owner, searchJobId, autoPrepare, clientRequestId]);
+  }, [owner, searchJobId, autoPrepare, clientRequestId, initial]);
 
   useEffect(() => {
     const statusSerialRef = statusSerial;
@@ -399,10 +433,11 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
     return () => { ++previewSerialRef.current; };
   }, [view?.shareId, view?.status, cursor, owner]);
 
-  const mutate = async (kind: "preparing" | "approving" | "stopping") => {
+  const mutate = async (kind: "preparing" | "approving" | "stopping" | "retrying") => {
     if (busy.current) return;
     if (kind === "approving" && (!view?.canApprove || view.status !== "review_ready" || !page || previewError)) return;
-    if (kind === "stopping" && (!view || !BULK_ACTIVE.has(view.status))) return;
+    if (kind === "stopping" && (!view?.canStop || !BULK_ACTIVE.has(view.status))) return;
+    if (kind === "retrying" && (!view?.canRetry || !view.retryableCount || !["partial", "failed"].includes(view.status))) return;
     busy.current = true;
     ++statusSerial.current;
     setAction(kind); setError(null);
@@ -413,7 +448,9 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
         ? await DriveSharingService.prepareBulkShare(token, searchJobId, guard, clientRequestId)
         : kind === "approving"
           ? await DriveSharingService.approveBulkShare(token, view!, guard)
-          : await DriveSharingService.stopBulkShare(token, view!.shareId, guard);
+          : kind === "retrying"
+            ? await DriveSharingService.retryBulkShare(token, view!, guard)
+            : await DriveSharingService.stopBulkShare(token, view!.shareId, guard);
       guard();
       if (next.searchJobId !== searchJobId) throw new DriveSharingError("invalid_response");
       completed = next;
@@ -424,7 +461,9 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
       setError(code === "review_changed" || code === "source_changed" || code === "recipient_changed"
         ? "Sharing details changed. Load the review again." : "Couldn’t finish that. Check sharing status and try again.");
     } finally {
-      busy.current = false; setAction(null);
+      busy.current = false;
+      try { guard(); } catch { return; }
+      setAction(null);
       if (completed) {
         try {
           guard(); setView(completed); setCursor(null); setPrevious([]); setPage(null);
@@ -434,19 +473,35 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
     }
   };
 
-  if (loading && !view && !error) return <HelperText>Checking prior shares…</HelperText>;
-  if (error) return <div className="space-y-2"><HelperText ref={target} role="status" tabIndex={-1}>{error}</HelperText>
-    <Button type="button" variant="muted" size="compact" onClick={() => void load()}>Try again</Button></div>;
+  if (loading && !view && !error) return <HelperText>Checking sharing…</HelperText>;
+  if (error) return <Card preset="compact" effect="fill" className="p-4"><div className="flex items-start justify-between gap-3">
+    <div className="space-y-2"><HelperText ref={target} role="status" tabIndex={-1}>{error}</HelperText>
+      <Button type="button" variant="muted" size="compact" onClick={() => void load()}>Try again</Button></div>
+    {onDismiss ? <DriveSharingClose onClick={onDismiss} /> : null}
+  </div></Card>;
   if (!view) return <Button type="button" variant="muted" size="compact" disabled={!!action}
     onClick={() => void mutate("preparing")}>{action === "preparing" ? "Preparing review…" : "Review sharing"}</Button>;
 
   const { counts } = view;
   const complete = !BULK_ACTIVE.has(view.status) && view.status !== "review_ready";
-  return <section className="space-y-3 rounded-xl border border-border/50 p-3" aria-label="Share saved Drive search">
-    <HelperText ref={target} role="status" tabIndex={-1}>
-      {view.status === "review_ready" ? `Review ${view.fileCount.toLocaleString()} files with ${view.recipientCount} ${view.recipientCount === 1 ? "person" : "people"}` :
-        `${view.status === "queued" || view.status === "running" ? "Sharing" : "Sharing " + view.status} · ${counts.processed.toLocaleString()} of ${counts.total.toLocaleString()} file access checks`}
-    </HelperText>
+  const available = counts.shared + counts.alreadyShared;
+  const attention = counts.skipped + counts.failed + counts.needsReview + counts.unknown;
+  const allAvailable = complete && counts.total > 0 && available === counts.total;
+  const title = view.status === "review_ready" ? "Review Drive sharing" : allAvailable ? "Files are ready" :
+    view.status === "stopped" ? "Sharing stopped" : complete ? "Sharing finished" : "Sharing files";
+  const summary = view.status === "review_ready"
+    ? `Review ${view.fileCount.toLocaleString()} files with ${view.recipientCount} ${view.recipientCount === 1 ? "person" : "people"}`
+    : `${available.toLocaleString()} of ${counts.total.toLocaleString()} ${view.recipientCount === 1 ? "files available" : "file shares complete"}`;
+  return <Card preset="compact" effect="fill" role="region" className="min-w-0 p-4 sm:p-5" aria-label="Drive sharing"><div className="space-y-3">
+    <div className="flex items-start gap-3">
+      <ConnectorBrandMark brand="drive" />
+      <div className="min-w-0 flex-1 space-y-1 pt-0.5">
+        <p className="text-sm font-semibold text-foreground">{title}</p>
+        <p ref={target} role="status" tabIndex={-1} className="text-sm leading-5 text-foreground/70">{summary}</p>
+      </div>
+      {allAvailable ? <Check className="mt-2 h-5 w-5 shrink-0 text-[color:var(--app-success-deep)] dark:text-[color:var(--app-success-bright)]" aria-label="Sharing complete" /> : null}
+      {onDismiss ? <DriveSharingClose onClick={onDismiss} /> : null}
+    </div>
     {view.status === "review_ready" ? <>
       <HelperText>Viewer access to these files. New matches are not included.</HelperText>
       <div aria-label="Files in this share" aria-busy={previewLoading} className="space-y-1">
@@ -470,13 +525,56 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
         onClick={() => void mutate("approving")}>{action === "approving" ? "Starting share…" :
           `Share ${view.fileCount.toLocaleString()} files with ${view.recipientCount} ${view.recipientCount === 1 ? "person" : "people"}`}</Button>
     </> : <>
-      <HelperText>{counts.shared.toLocaleString()} shared · {counts.alreadyShared.toLocaleString()} already had access · {counts.failed.toLocaleString()} failed · {counts.skipped.toLocaleString()} skipped
-        {counts.needsReview > 0 ? ` · ${counts.needsReview.toLocaleString()} need review` : ""}
-        {counts.unknown > 0 ? ` · ${counts.unknown.toLocaleString()} being checked` : ""}</HelperText>
-      <HelperText>Notifications: {view.notifications.settled} sent · {view.notifications.pending} pending · {view.notifications.unavailable} unavailable.</HelperText>
-      {complete ? <HelperText>{view.status === "completed" ? "Sharing complete." : "Some files were not shared. Review the counts above."}</HelperText> :
-        <div className="space-y-2"><HelperText>Progress continues after you leave. Stopping leaves completed shares in place.</HelperText>
-          <Button type="button" variant="muted" size="compact" disabled={!!action} onClick={() => void mutate("stopping")}>{action === "stopping" ? "Stopping…" : "Stop remaining"}</Button></div>}
+      {!complete ? <div role="progressbar" aria-label="Drive sharing progress" aria-valuemin={0} aria-valuemax={counts.total || 1}
+        aria-valuenow={counts.processed} className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div className="h-full rounded-full bg-primary" style={{ width: `${counts.total ? counts.processed / counts.total * 100 : 0}%` }} />
+      </div> : null}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-foreground/70">
+        {counts.shared > 0 ? <span>{counts.shared.toLocaleString()} newly shared</span> : null}
+        {counts.alreadyShared > 0 ? <span>{counts.alreadyShared.toLocaleString()} already had access</span> : null}
+        {counts.pending > 0 ? <span>{counts.pending.toLocaleString()} remaining</span> : null}
+      </div>
+      {attention > 0 ? <details className="group" open={view.status === "stopped" || !!view.canRetry}>
+        <summary className="flex min-h-11 cursor-pointer list-none items-center gap-2 text-sm font-medium text-foreground">
+          <span className="h-2 w-2 shrink-0 rounded-full bg-[color:var(--app-warning)]" aria-hidden="true" />
+          {attention.toLocaleString()} {view.recipientCount === 1 ? (attention === 1 ? "file needs" : "files need") : (attention === 1 ? "share needs" : "shares need")} attention
+          <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground group-open:rotate-180" aria-hidden="true" />
+        </summary>
+        <div className="space-y-2 pb-2 text-sm leading-5 text-foreground/70">
+          {!view.issues?.length && counts.skipped > 0 ? <p>{counts.skipped.toLocaleString()} not shared</p> : null}
+          {!view.issues?.length && counts.failed > 0 ? <p>{counts.failed.toLocaleString()} failed</p> : null}
+          {counts.needsReview > 0 ? <p>{counts.needsReview.toLocaleString()} need a new review before sharing</p> : null}
+          {counts.unknown > 0 ? <p>{counts.unknown.toLocaleString()} outcomes are still being checked. Check access in Drive before retrying.</p> : null}
+          {view.issues?.map(issue => <p key={issue.reasonCode}>{issue.count.toLocaleString()} · {DRIVE_SHARE_ISSUE_COPY[issue.reasonCode]}</p>)}
+        </div>
+      </details> : null}
+      {view.canRetry && !!view.retryableCount && ["partial", "failed"].includes(view.status) ?
+        <Button type="button" variant="muted" size="compact"
+          className="bg-[color:var(--app-accent-tint)] text-[color:var(--brand-700)] hover:bg-[color:var(--app-accent-surface)] dark:text-[color:var(--app-accent-bright)]"
+          disabled={!!action} onClick={() => void mutate("retrying")}>
+          {action === "retrying" ? "Retrying…" : `Retry ${view.retryableCount.toLocaleString()} unshared ${view.retryableCount === 1 ? "file" : "files"}`}
+        </Button> : null}
+      {!complete ? <div className="flex flex-wrap items-center justify-between gap-3">
+        <HelperText className="min-w-0 flex-1">You can close this card. Sharing continues.</HelperText>
+        {view.canStop ? <Button type="button" variant="muted" size="compact"
+          className="text-[color:var(--app-destructive-deep)] hover:text-[color:var(--app-destructive-deep)] dark:text-[color:var(--app-destructive-bright)] dark:hover:text-[color:var(--app-destructive-bright)]" disabled={!!action} onClick={() => void mutate("stopping")}
+          title="Stop remaining files. Files already shared stay available.">{action === "stopping" ? "Stopping…" : "Stop remaining"}</Button> : null}
+      </div> : view.status === "stopped" ? <HelperText>Files already shared stay available.</HelperText> : null}
     </>}
-  </section>;
+  </div></Card>;
 }
+
+const DRIVE_SHARE_ISSUE_COPY: Record<import("@/lib/services/drive-sharing-service").DriveBulkReasonCode, string> = {
+  source_changed: "The file changed. Review it again before sharing.",
+  source_not_shareable: "Your Google account cannot share this file. Check its permissions in Drive.",
+  recipient_changed: "The recipient’s Google account changed. Verify their account before a new request.",
+  connection_changed: "Your Drive connection changed. Reconnect before a new request.",
+  stopped: "Stopped before sharing.",
+  sharing_unavailable: "Drive sharing is disabled.",
+  retry_limit: "Google Drive could not finish after several attempts. Make a new request to try again.",
+  provider_unavailable: "Google Drive was unavailable. Retry the unshared files.",
+  permission_rejected: "Google Drive denied sharing. Check the file’s permissions in Drive.",
+  permission_outcome_unknown: "Access has not been confirmed. Check it in Drive before retrying.",
+  permission_catalog_incomplete: "Google Drive could not confirm existing access. Check it before retrying.",
+  unavailable: "Sharing could not finish. Check the file in Drive.",
+};
