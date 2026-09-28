@@ -23,7 +23,23 @@ import {
   type AgentConsentContinuationHandler,
   type InformationRequestSubmissionReceipt,
 } from "@/components/agent/agent-structured-experience";
-import { prepareConsentContinuation, watchSentInformationRequest } from "@/lib/agent/consent-continuation";
+import {
+  collectOutgoingRequestCards,
+  continuedElsewhere,
+  prepareConsentContinuation,
+  rebuildWaitingRequests,
+  redactedConsentAnswers,
+  revealConsentContinuationReply,
+  setInformationRequestPhase,
+  tagConsentContinuationMessages,
+  watchSentInformationRequest,
+} from "@/lib/agent/consent-continuation";
+import {
+  consentOutcomeDisplayText,
+  informationRequestOutcome,
+  type ConsentOutcome,
+} from "@/lib/consent/open-granted-person-information";
+import { PersonProfileService } from "@/lib/services/person-profile-service";
 import { FEED_ATTENTION_LABEL } from "@/lib/agent/feed-attention";
 import { useFeedAttentionTurn } from "@/lib/agent/use-feed-attention-turn";
 import {
@@ -231,6 +247,7 @@ import {
   AGENT_CHAT_STREAM_LOST_ERROR,
   AgentChatStreamLostError,
   deleteAgentChatConversation,
+  getAgentChatConsentOutcomes,
   getLostAgentTurnOutcome,
   renameAgentChatConversation,
   streamAgentChat,
@@ -360,6 +377,25 @@ import {
   type GmailInformationRequestSourcePreview,
 } from "@/lib/services/gmail-information-requests-service";
 
+/**
+ * One's answer from shared information whose sharing has ended.
+ * Local stand-in with the same props as Lane C1's `AccessEndedNotice`
+ * (`components/agent/consent/`); swap this for that import when it lands.
+ */
+export function AccessEndedNotice({ personName, label }: { personName: string; label: string }) {
+  const who = personName.trim() || "the other person";
+  const what = label.trim() || "what they shared";
+  return (
+    <div role="status" data-testid="access-ended-notice"
+      className="max-w-[85%] rounded-2xl border border-border/60 bg-muted/40 px-4 py-3 text-sm">
+      <p className="font-medium text-foreground">Access ended</p>
+      <p className="mt-1 leading-5 text-muted-foreground">
+        {`Access to ${what} from ${who} ended, so this answer is hidden. Ask again if you need it.`}
+      </p>
+    </div>
+  );
+}
+
 type AgentMessage = {
   id: string;
   /**
@@ -395,9 +431,24 @@ type AgentMessage = {
   lostTurn?: AgentLostTurn;
   /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
   followUps?: string[];
+  /**
+   * The information request this outcome chip or continuation answer belongs
+   * to. Set live when the turn starts; restored from history metadata
+   * (`metadata.consentBundleId`) when the server tags it.
+   */
+  consentBundleId?: string;
+  /** The outcome chip's words for the person; the message text stays the fixed sent label. */
+  consentChipText?: string;
+  /** The server already hid this answer because the sharing it used ended. */
+  consentAccessEnded?: boolean;
 };
 
 type AgentLostTurn = { conversationId: string; startedAtMs: number };
+
+const EMPTY_CONSENT_OUTCOMES: Readonly<Record<string, string>> = Object.freeze({});
+
+/** How a follow-up turn ended; a consent answer another device already gave is settled, not failed. */
+type FollowUpTurnResult = "answered" | "continued_elsewhere" | "failed";
 
 /** Short inline notice under a partial answer whose connection was lost. */
 export const AGENT_PARTIAL_ANSWER_LOST_NOTICE = "Connection lost before One finished.";
@@ -2091,6 +2142,8 @@ export function storedMessageToAgentMessage(
       : {}),
     ...(structuredExperiences.length ? { structuredExperiences } : {}),
     ...(streamEvents.length ? { streamEvents } : {}),
+    ...(message.metadata?.consentBundleId ? { consentBundleId: message.metadata.consentBundleId } : {}),
+    ...(message.metadata?.consentAccessEnded ? { consentAccessEnded: true } : {}),
   };
 }
 
@@ -5987,14 +6040,44 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       feedAttention?: { itemId: string };
       pkmContext?: string;
     } = {},
-  ) => {
-    if (!hasChatAccess || !user?.uid) return;
+  ): Promise<FollowUpTurnResult> => {
+    if (!hasChatAccess || !user?.uid) return "failed";
     const userId = user.uid;
     const token = getVaultOwnerToken();
     if (!token) {
       addErrorMessage("Vault access expired. Unlock again to continue.");
-      return;
+      return "failed";
     }
+    const consentBundleId = extra.consentContinuation?.bundleId.toLowerCase();
+    // A consent follow-up another device already continued is refused by the
+    // server (409). That is a settled answer, not an error: the reply from the
+    // other device replaces this bubble, with no error shown.
+    let consentFailure: { reason: string; error?: unknown } | null = null;
+    const settleConsentFailure = async (): Promise<FollowUpTurnResult> => {
+      const failure = consentFailure;
+      if (!failure || !consentBundleId) return "failed";
+      const threadId = conversationIdRef.current;
+      const key = vaultKeyRef.current;
+      if (threadId && key && await continuedElsewhere({
+        conversationId: threadId,
+        bundleId: consentBundleId,
+        vaultOwnerToken: token,
+        vaultKey: key,
+      })) {
+        setMessages((current) => current.filter((item) => item.id !== assistantMessageId));
+        clearAgentChatHistoryCache(userId);
+        dispatchAgentChatHistoryInvalidated(userId);
+        if (conversationIdRef.current === threadId) {
+          void restoreConversationMessages(threadId, token, () => conversationIdRef.current === threadId)
+            .catch(() => undefined);
+        }
+        return "continued_elsewhere";
+      }
+      updateMessage(assistantMessageId, (current) =>
+        settleAssistantMessageError(current, failure.reason, failure.error),
+      );
+      return "failed";
+    };
 
     const turnId = Date.now();
     const debugTurnId = `agent_delegate_${turnId}`;
@@ -6033,6 +6116,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       text: "",
       timestamp,
       status: "streaming",
+      ...(consentBundleId ? { consentBundleId } : {}),
     });
     latestVisibleTurnIdRef.current = debugTurnId;
     setActiveToolCalls([]);
@@ -6104,9 +6188,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
             flushAssistantDelta();
-            updateMessage(assistantMessageId, (current) =>
-              settleAssistantMessageError(current, message),
-            );
+            if (consentBundleId) {
+              consentFailure ??= { reason: message };
+            } else {
+              updateMessage(assistantMessageId, (current) =>
+                settleAssistantMessageError(current, message),
+              );
+            }
             setIsChatLoading(false);
             setIsStreaming(false);
           },
@@ -6121,13 +6209,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         }));
         setIsChatLoading(false);
         setIsStreaming(false);
-        return;
+        return "failed";
       }
       flushAssistantDelta();
       if (streamResult.conversationId) {
         updateConversationId(streamResult.conversationId);
       }
-      if (streamResult.detached) return; // settled-turn effect reloads the answer
+      if (consentFailure) {
+        setIsChatLoading(false);
+        setIsStreaming(false);
+        return await settleConsentFailure();
+      }
+      if (streamResult.detached) return "answered"; // settled-turn effect reloads the answer
       updateMessage(assistantMessageId, (message) => {
         if (message.status === "error") return message;
         return {
@@ -6139,8 +6232,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       void loadConversationList(true).catch(() => undefined);
       setIsChatLoading(false);
       setIsStreaming(false);
+      return "answered";
     } catch (error) {
       flushAssistantDelta();
+      let result: FollowUpTurnResult = "failed";
       if (streamAbortController.signal.aborted) {
         updateMessage(assistantMessageId, (message) => ({
           ...message,
@@ -6152,13 +6247,19 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           error instanceof Error && error.message
             ? error.message
             : "Agent chat request failed.";
-        updateMessage(assistantMessageId, (current) =>
-          settleAssistantMessageError(current, message, error),
-        );
+        if (consentBundleId) {
+          consentFailure ??= { reason: message, error };
+          result = await settleConsentFailure();
+        } else {
+          updateMessage(assistantMessageId, (current) =>
+            settleAssistantMessageError(current, message, error),
+          );
+        }
       }
       void loadConversationList(true).catch(() => undefined);
       setIsChatLoading(false);
       setIsStreaming(false);
+      return result;
     } finally {
       cancelAssistantFlush();
       if (streamAbortControllerRef.current === streamAbortController) {
@@ -6565,31 +6666,182 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     });
   };
 
-  // The other person answered a request this chat sent: show the outcome as a
-  // status chip at the end of that turn, then let One answer from it.
+  // --- Requests this conversation sent: durable waiting and access ended ---
+  // Rebuilt from the conversation itself on every load, so a reload, a cold
+  // start or a second device never loses a request that is still waiting.
+  const [consentLedger, setConsentLedger] = useState<{
+    conversationId: string;
+    continued: Record<string, string>;
+  } | null>(null);
+  const [liveBundleOutcomes, setLiveBundleOutcomes] = useState<Record<string, ConsentOutcome | null>>({});
+  const outgoingRequestCards = useMemo(() => collectOutgoingRequestCards(messages), [messages]);
+  const outgoingRequestCardsRef = useRef(outgoingRequestCards);
+  outgoingRequestCardsRef.current = outgoingRequestCards;
+  const outgoingRequestKey = outgoingRequestCards.map((card) => card.bundleId).join(",");
+  const continuedOutcomes = consentLedger && consentLedger.conversationId === conversationId
+    ? consentLedger.continued
+    : EMPTY_CONSENT_OUTCOMES;
+
+  useEffect(() => {
+    const ownerId = user?.uid;
+    const threadId = conversationId;
+    const token = vaultOwnerToken;
+    const key = vaultKey;
+    if (!hasChatAccess || !ownerId || !threadId || !token || !key || !outgoingRequestKey) return;
+    let active = true;
+    void getAgentChatConsentOutcomes({ conversationId: threadId, vaultOwnerToken: token, vaultKey: key })
+      .then((continued) => {
+        if (!active) return;
+        setConsentLedger({ conversationId: threadId, continued });
+        // Every card whose answer this conversation has not continued waits
+        // again: the doorbell finds an answer that landed while the app was
+        // closed, and the card continues it once (the server marker holds).
+        for (const request of rebuildWaitingRequests({
+          ownerId,
+          conversationId: threadId,
+          cards: outgoingRequestCardsRef.current,
+          continued,
+        })) {
+          watchSentInformationRequest(request);
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [conversationId, hasChatAccess, outgoingRequestKey, user?.uid, vaultKey, vaultOwnerToken]);
+
+  const consentTags = useMemo(() => tagConsentContinuationMessages({
+    messages,
+    cards: outgoingRequestCards,
+    continued: continuedOutcomes,
+  }), [continuedOutcomes, messages, outgoingRequestCards]);
+  const sharedAnswerBundleKey = useMemo(() => [...new Set(
+    [...consentTags.values()]
+      .filter((tag) => tag.role === "answer" && tag.continuedOutcome === "granted")
+      .map((tag) => tag.bundleId),
+  )].sort().join(","), [consentTags]);
+
+  // Answers from shared information: re-read the ledger on load, on any
+  // doorbell for that request, and on return to the app. A stop or a lapse
+  // hides them. Decrypted information itself is never kept past its turn.
+  useEffect(() => {
+    const token = vaultOwnerToken;
+    if (!hasChatAccess || !token || !sharedAnswerBundleKey) return;
+    const bundles = sharedAnswerBundleKey.split(",");
+    let active = true;
+    const check = (only?: string) => {
+      for (const bundleId of only ? [only] : bundles) {
+        void PersonProfileService.getInformationRequest({ bundleId, vaultOwnerToken: token })
+          .then((bundle) => {
+            if (!active || bundle.bundleId.toLowerCase() !== bundleId) return;
+            const outcome = informationRequestOutcome(bundle);
+            setLiveBundleOutcomes((current) =>
+              current[bundleId] === outcome ? current : { ...current, [bundleId]: outcome });
+          })
+          .catch(() => undefined);
+      }
+    };
+    const onConsentChanged = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      if (detail?.source !== "information_request_updated") return;
+      const bundleId = String(detail.bundleId || "").toLowerCase();
+      if (bundles.includes(bundleId)) check(bundleId);
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") check();
+    };
+    check();
+    window.addEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      active = false;
+      window.removeEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [hasChatAccess, sharedAnswerBundleKey, vaultOwnerToken]);
+
+  const redactedAnswerIds = useMemo(() => redactedConsentAnswers({
+    tags: consentTags,
+    liveOutcomes: liveBundleOutcomes,
+    serverRedacted: new Set(messages.filter((message) => message.consentAccessEnded).map((message) => message.id)),
+  }), [consentTags, liveBundleOutcomes, messages]);
+
+  const outgoingRequestCardFor = (messageId: string) => {
+    const tag = consentTags.get(messageId);
+    return tag ? outgoingRequestCards.find((card) => card.bundleId === tag.bundleId) ?? null : null;
+  };
+
+  const consentChipLabel = (message: AgentMessage): string => {
+    if (message.consentChipText) return message.consentChipText;
+    const tag = consentTags.get(message.id);
+    if (!tag || tag.role !== "chip") return message.text;
+    const card = outgoingRequestCardFor(message.id);
+    return consentOutcomeDisplayText({
+      outcome: tag.continuedOutcome,
+      personName: card?.personName,
+      sharedLabels: card?.labels,
+    });
+  };
+
+  // The other person answered a request this chat sent: the card reads
+  // "reading" at once, a chip says what happened in words ("Kushal shared
+  // Food preferences"), and One answers from it in view. The turn itself
+  // sends the server's fixed label, which admission requires.
   const continueWithConsentOutcome: AgentConsentContinuationHandler["continueWithOutcome"] = async (input) => {
     const token = getVaultOwnerToken();
     const key = vaultKeyRef.current;
-    if (!hasChatAccess || !user?.uid || !token || !key) return false;
-    const prepared = await prepareConsentContinuation({
-      userId: user.uid,
-      vaultKey: key,
-      vaultOwnerToken: token,
-      ...input,
+    const ownerId = user?.uid;
+    if (!hasChatAccess || !ownerId || !token || !key) return false;
+    setInformationRequestPhase(ownerId, input.bundleId, "reading");
+    let prepared: Awaited<ReturnType<typeof prepareConsentContinuation>>;
+    try {
+      prepared = await prepareConsentContinuation({
+        userId: ownerId,
+        vaultKey: key,
+        vaultOwnerToken: token,
+        ...input,
+      });
+    } catch (error) {
+      setInformationRequestPhase(ownerId, input.bundleId, null);
+      throw error;
+    }
+    if (!prepared) {
+      setInformationRequestPhase(ownerId, input.bundleId, null);
+      return false;
+    }
+    const sent = prepared;
+    const bundleId = input.bundleId.toLowerCase();
+    revealConsentContinuationReply({
+      userScrolled: transcriptUserScrollRef,
+      scrollToSubmittedTurn: scrollToSubmittedTurnRef,
     });
-    if (!prepared) return false;
-    appendMessage({
-      id: `msg-${crypto.randomUUID()}-consent-outcome`,
-      role: "user",
-      text: prepared.message,
-      timestamp: formatNow(),
-      status: "done",
-      kind: "selection",
+    setMessages((current) => {
+      const card = collectOutgoingRequestCards(current).find((entry) => entry.bundleId === bundleId);
+      return [...current, {
+        id: `msg-${crypto.randomUUID()}-consent-outcome`,
+        role: "user",
+        text: sent.message,
+        consentBundleId: bundleId,
+        consentChipText: consentOutcomeDisplayText({
+          outcome: input.outcome,
+          personName: card?.personName,
+          sharedLabels: sent.sharedLabels.length ? sent.sharedLabels : card?.labels,
+        }),
+        timestamp: formatNow(),
+        status: "done",
+        kind: "selection",
+      }];
     });
     enqueueWorkspaceOperation({
       id: `consent-${input.bundleId}`,
       run: async () => {
-        await sendFollowUpTurn(prepared.message, { consentContinuation: prepared.continuation });
+        revealConsentContinuationReply({
+          userScrolled: transcriptUserScrollRef,
+          scrollToSubmittedTurn: scrollToSubmittedTurnRef,
+        });
+        const settled = await sendFollowUpTurn(sent.message, { consentContinuation: sent.continuation });
+        setInformationRequestPhase(ownerId, input.bundleId, settled === "failed" ? null : "answered");
       },
     });
     return true;
@@ -7599,8 +7851,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               {visibleMessages.map((message) => (
                 <Fragment key={message.id}>
                   {renderChatOnboarding({ kind: "before", messageId: message.id, visibleMessageIds })}
-                  {message.kind === "selection" ? (
-                    <SelectionChip label={message.text} />
+                  {message.role === "assistant" && redactedAnswerIds.has(message.id) ? (
+                    <AccessEndedNotice
+                      personName={outgoingRequestCardFor(message.id)?.personName ?? ""}
+                      label={(outgoingRequestCardFor(message.id)?.labels ?? []).join(", ")}
+                    />
+                  ) : message.kind === "selection" ? (
+                    <SelectionChip label={consentChipLabel(message)} />
                   ) : (
                     <AgentBubble
                       message={message}

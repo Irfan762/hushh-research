@@ -61,6 +61,10 @@ export type AgentChatMessage = {
     turnActivity?: { activityType?: string; content?: unknown } | null;
     /** Pasted text sent with a user turn, restored as a chip (never as message text). */
     attachments?: AgentTextAttachment[];
+    /** The information request this outcome chip or continuation answer belongs to. */
+    consentBundleId?: string;
+    /** The server hid this answer because sharing it relied on has ended. */
+    consentAccessEnded?: boolean;
   } | null;
 };
 
@@ -1937,6 +1941,8 @@ export async function getAgentChatHistory(input: {
         specialist_read?: unknown;
         turnActivity?: { activityType?: string; content?: unknown } | null;
         attachments?: unknown;
+        consentBundleId?: unknown;
+        consentAccessEnded?: unknown;
       } | null;
     }>;
   };
@@ -1966,6 +1972,9 @@ export async function getAgentChatHistory(input: {
               ...(message.role === "assistant" && message.metadata.turnActivity
                 ? { turnActivity: message.metadata.turnActivity } : {}),
               ...(attachments.length ? { attachments } : {}),
+              ...(typeof message.metadata.consentBundleId === "string" && message.metadata.consentBundleId
+                ? { consentBundleId: message.metadata.consentBundleId } : {}),
+              ...(message.metadata.consentAccessEnded === true ? { consentAccessEnded: true } : {}),
               connectorRead:
                 message.role === "assistant"
                   ? parseConnectorReadReceipt(message.metadata.specialist_read)
