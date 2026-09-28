@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   sync: vi.fn(),
   finance: vi.fn(),
   welcome: vi.fn(),
+  hasFinanceIntent: false,
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => state.router }));
 vi.mock("@/hooks/use-auth", () => ({
@@ -47,7 +48,7 @@ vi.mock("@/lib/services/pre-vault-user-state-service", () => ({
 }));
 vi.mock("@/lib/services/pre-vault-sensitive-draft-service", () => ({
   PreVaultSensitiveDraftService: {
-    hasFinanceIntent: () => false,
+    hasFinanceIntent: () => state.hasFinanceIntent,
     finalizeForVault: state.finalize,
   },
 }));
@@ -77,6 +78,7 @@ const destination = "/circle/join?code=23456789ABCD";
 beforeEach(() => {
   vi.resetAllMocks();
   state.user = { uid: "recipient" };
+  state.hasFinanceIntent = false;
   state.finalize.mockResolvedValue(undefined);
   state.sync.mockResolvedValue(undefined);
   state.finance.mockResolvedValue(undefined);
@@ -89,7 +91,8 @@ beforeEach(() => {
 });
 
 describe("AI-choice setup invitation continuation", () => {
-  it("keeps the invite captured before completion lets the outer guard change the URL", async () => {
+  it.each([false, true])("keeps the invite captured across completion (pending Finance: %s)", async (hasFinanceIntent) => {
+    state.hasFinanceIntent = hasFinanceIntent;
     let complete!: () => void;
     state.acknowledge.mockImplementation(
       () =>
@@ -106,7 +109,11 @@ describe("AI-choice setup invitation continuation", () => {
     // while the component's finalization promise is still resuming.
     window.history.replaceState(null, "", destination);
     await act(async () => complete());
-    expect(state.router.replace).toHaveBeenCalledWith(destination);
+    expect(state.router.replace).toHaveBeenCalledWith(
+      hasFinanceIntent
+        ? "/one/setup/finance/import?return_to=" + encodeURIComponent(destination)
+        : destination,
+    );
     expect(state.router.replace).not.toHaveBeenCalledWith("/");
     expect(state.finalize).toHaveBeenCalledOnce();
     expect(state.sync).toHaveBeenCalledOnce();

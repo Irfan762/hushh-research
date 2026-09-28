@@ -21,6 +21,7 @@ import { useVault } from "@/lib/vault/vault-context";
 import {
   isOneSetupSurfaceRoute,
   buildOneSetupConnectionsRoute,
+  resolveOneSetupCompletionTarget,
   normalizeInternalRouteHref,
   ROUTES,
 } from "@/lib/navigation/routes";
@@ -63,7 +64,7 @@ export function OneSetupHub() {
   const [finalizationError, setFinalizationError] = useState<string | null>(null);
   const [vaultInvitationOpen, setVaultInvitationOpen] = useState(false);
   const [vaultDialogOpen, setVaultDialogOpen] = useState(false);
-  const finalizationInFlightRef = useRef<Promise<void> | null>(null);
+  const finalizationInFlightRef = useRef<Promise<string> | null>(null);
   const [runtimeChoiceSnapshot, setRuntimeChoiceSnapshot] = useState<{
     userId: string | null;
     state: "loading" | "required" | "complete";
@@ -160,10 +161,10 @@ export function OneSetupHub() {
           ],
   });
 
-  const completeSetupAfterVault = useCallback(async (): Promise<void> => {
+  const completeSetupAfterVault = useCallback(async (): Promise<string> => {
     if (!user?.uid) {
       router.replace(completionTarget);
-      return;
+      return completionTarget;
     }
     if (!vaultKey || !vaultOwnerToken) {
       throw new Error("Not ready yet. Try again.");
@@ -171,6 +172,10 @@ export function OneSetupHub() {
     if (finalizationInFlightRef.current) {
       return finalizationInFlightRef.current;
     }
+    const target = resolveOneSetupCompletionTarget(
+      returnTo,
+      PreVaultSensitiveDraftService.hasFinanceIntent(user.uid),
+    );
 
     const finalize = (async () => {
       setFinalizationError(null);
@@ -211,15 +216,12 @@ export function OneSetupHub() {
       // Finance source intents intentionally remain process-memory-only until
       // this encryption boundary completes. Resume the canonical source flow
       // once, now that it has a valid vault session.
-      router.replace(
-        PreVaultSensitiveDraftService.hasFinanceIntent(user.uid)
-          ? ROUTES.ONE_SETUP_FINANCE_IMPORT
-          : completionTarget,
-      );
+      router.replace(target);
+      return target;
     })();
     finalizationInFlightRef.current = finalize;
     try {
-      await finalize;
+      return await finalize;
     } catch (error) {
       setFinalizationError(
         error instanceof Error
@@ -234,6 +236,7 @@ export function OneSetupHub() {
     }
   }, [
     completionTarget,
+    returnTo,
     queueEntryWelcome,
     router,
     user?.uid,
@@ -330,11 +333,11 @@ export function OneSetupHub() {
           summary: "One step left: set a lock.",
         };
       }
-      await completeSetupAfterVault();
+      const routeAfter = await completeSetupAfterVault();
       return {
         status: "succeeded" as const,
-        summary: "Setup complete. Opening home.",
-        routeAfter: completionTarget,
+        summary: "Setup complete.",
+        routeAfter,
       };
     } finally {
       setDismissing(false);

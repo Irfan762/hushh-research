@@ -563,6 +563,23 @@ export function buildOneSetupConnectionsRoute(
   });
 }
 
+/** Resume the memory-only Finance selection without losing its later return. */
+export function buildOneSetupFinanceImportRoute(returnTo?: string | null): string {
+  return withQuery(ROUTES.ONE_SETUP_FINANCE_IMPORT, {
+    return_to: resolveOneSetupReturnTo(returnTo),
+  });
+}
+
+/** Shared by the root terminal and its admission guard during cache settlement. */
+export function resolveOneSetupCompletionTarget(
+  returnTo: string | null | undefined,
+  hasFinanceIntent: boolean,
+): string {
+  return hasFinanceIntent
+    ? buildOneSetupFinanceImportRoute(returnTo)
+    : resolveOneSetupReturnTo(returnTo) ?? ROUTES.HOME;
+}
+
 export function buildProfileVaultRoute(returnTo?: string | null) {
   return withQuery(ROUTES.PROFILE_SECURITY, {
     unlock_vault: "1",

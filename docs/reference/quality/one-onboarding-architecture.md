@@ -64,6 +64,14 @@ verification, setup, and Profile unlock. Setup links preserve a sanitized
 destination. The final Connect join/Invite to One confirmation remains explicit:
 opening a link or completing the guest introduction never grants membership.
 
+A pending memory-only Finance source takes precedence over that return target.
+Both root-completion paths resume `/one/setup/finance/import?return_to=…`; the
+source chooser retains the validated continuation until its existing explicit
+Finish or skip succeeds. A source result does not revive the completed root
+journey, and extraction cancellation still returns to the chooser. Failed
+capability persistence cannot navigate to the invitation; unsafe or setup-loop
+return targets fall back to the normal Finance destination.
+
 Guest routes own their viewport without persistent app chrome. The shared UI
 uses existing typography, icons, motion, and safe-area tokens; enlarged text and
 short landscape viewports may scroll to keep actions reachable.

@@ -17,7 +17,11 @@ import setupStyles from "@/components/onboarding/setup/one-setup-hub.module.css"
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocalOnboardingActionHandler } from "@/lib/agent/local-onboarding-actions";
-import { resolveOneSetupReturnTo, ROUTES } from "@/lib/navigation/routes";
+import {
+  resolveOneSetupCompletionTarget,
+  resolveOneSetupReturnTo,
+  ROUTES,
+} from "@/lib/navigation/routes";
 import { VaultService } from "@/lib/services/vault-service";
 import { PreVaultUserStateService } from "@/lib/services/pre-vault-user-state-service";
 import type { OneRuntimeSetupChoice } from "@/lib/services/pre-vault-user-state-service";
@@ -158,12 +162,12 @@ export function GeminiRuntimeConfigurationPage({
     // Acknowledging completion can let the outer admission guard navigate
     // immediately. Capture the setup URL before any await; reading it after
     // that handoff would lose return_to and send an invite recipient home.
-    const completionTarget = resolveOneSetupReturnTo(
+    const returnTo = resolveOneSetupReturnTo(
       new URLSearchParams(window.location.search).get("return_to"),
-    ) ?? (
-      PreVaultSensitiveDraftService.hasFinanceIntent(user.uid)
-        ? ROUTES.ONE_SETUP_FINANCE_IMPORT
-        : ROUTES.HOME
+    );
+    const completionTarget = resolveOneSetupCompletionTarget(
+      returnTo,
+      PreVaultSensitiveDraftService.hasFinanceIntent(user.uid),
     );
 
     const finalize = (async () => {
