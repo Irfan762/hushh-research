@@ -20,6 +20,7 @@ import { useAuth } from "@/lib/firebase/auth-context";
 import { useVault } from "@/lib/vault/vault-context";
 import {
   isOneSetupSurfaceRoute,
+  buildOneSetupConnectionsRoute,
   normalizeInternalRouteHref,
   ROUTES,
 } from "@/lib/navigation/routes";
@@ -308,7 +309,7 @@ export function OneSetupHub() {
         toast.info("Choose your AI first.", {
           action: {
             label: "Choose",
-            onClick: () => router.push(ROUTES.ONE_SETUP_CONNECTIONS),
+            onClick: () => router.push(buildOneSetupConnectionsRoute(returnTo)),
           },
         });
         return {
@@ -385,7 +386,7 @@ export function OneSetupHub() {
                   id="connections"
                   title="Choose your AI"
                   description={runtimeChoiceComplete ? "Change this any time." : "Use ours, or bring your own."}
-                  href={ROUTES.ONE_SETUP_CONNECTIONS}
+                  href={buildOneSetupConnectionsRoute(returnTo)}
                   voiceControlId="one_setup_tile_connections"
                   icon={lucideCapabilityIcon(PlugZap)}
                   tone="connected"

@@ -76,7 +76,8 @@ vi.mock("@/lib/morphy-ux/button", () => ({
   }) => <button onClick={onClick}>{children}</button>,
 }));
 
-vi.mock("@/lib/navigation/routes", () => ({
+vi.mock("@/lib/navigation/routes", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@/lib/navigation/routes")>(),
   ROUTES: {
     HOME: "/",
     ONE_SETUP: "/one/setup",
@@ -220,6 +221,16 @@ describe("OnboardingJourneyGuard", () => {
       expect(replace).toHaveBeenCalledWith("/one/setup?return_to=%2Fone");
     });
     expect(screen.getByText("Returning to setup...")).toBeTruthy();
+  });
+
+  it.each(["/one/setup", "/one/setup/connections"])("returns a completed invite journey to its destination from %s", async (setupRoute) => {
+    pathnameValue = setupRoute;
+    const destination = "/circle/join?code=23456789ABCD";
+    window.history.replaceState(null, "", setupRoute + "?return_to=" + encodeURIComponent(destination));
+    isPersistentSetupResolvedMock.mockReturnValue(true);
+    render(<OnboardingJourneyGuard><div>setup</div></OnboardingJourneyGuard>);
+    await waitFor(() => expect(replace).toHaveBeenCalledWith(destination));
+    expect(replace).not.toHaveBeenCalledWith("/");
   });
 
   it("ejects a dismissed user who reaches a setup surface", async () => {

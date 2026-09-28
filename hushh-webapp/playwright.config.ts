@@ -112,6 +112,7 @@ export default defineConfig({
         /setup-hub\.layout\.spec\.ts/,
         /phone-entry\.layout\.spec\.ts/,
         /circle-discovery\.layout\.spec\.ts/,
+        /guest-preview\.layout\.spec\.ts/,
         /document-share-review\.layout\.spec\.ts/,
         /connections-drawer\.layout\.spec\.ts/,
         /connect-living-circles\.layout\.spec\.ts/,

@@ -125,6 +125,10 @@ import { copyTextToClipboard } from "@/components/agent/chat-markdown-link";
 import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
+import {
+  CHAT_USER_BUBBLE_CLASSNAME,
+  CHAT_ASSISTANT_BODY_CLASSNAME,
+} from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
@@ -1786,9 +1790,9 @@ export function AgentBubble({
           className={cn(
             "text-sm leading-6",
             isUser
-              ? "rounded-[22px] rounded-br-[7px] bg-[linear-gradient(145deg,var(--app-accent),var(--app-accent-deep))] px-4 py-2.5 text-[color:var(--app-accent-fg)] shadow-[0_14px_34px_-24px_var(--app-accent-deep)]"
+              ? CHAT_USER_BUBBLE_CLASSNAME
               : showAssistantBubble
-                ? "px-1 py-2 text-foreground"
+                ? CHAT_ASSISTANT_BODY_CLASSNAME
                 : "px-0 py-1 text-foreground",
             isError &&
               "rounded-2xl border border-destructive/20 bg-destructive/[0.06] px-4 py-2.5 text-foreground",

@@ -17,7 +17,7 @@ import setupStyles from "@/components/onboarding/setup/one-setup-hub.module.css"
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { useLocalOnboardingActionHandler } from "@/lib/agent/local-onboarding-actions";
-import { ROUTES } from "@/lib/navigation/routes";
+import { resolveOneSetupReturnTo, ROUTES } from "@/lib/navigation/routes";
 import { VaultService } from "@/lib/services/vault-service";
 import { PreVaultUserStateService } from "@/lib/services/pre-vault-user-state-service";
 import type { OneRuntimeSetupChoice } from "@/lib/services/pre-vault-user-state-service";
@@ -56,7 +56,14 @@ export function GeminiRuntimeConfigurationPage({
   const [finalizationError, setFinalizationError] = useState<string | null>(
     null,
   );
-  const finalizationInFlightRef = useRef<Promise<void> | null>(null);
+  const finalizationInFlightRef = useRef<Promise<string | undefined> | null>(null);
+  const activeUserRef = useRef<string | null>(user?.uid ?? null);
+  useEffect(() => {
+    activeUserRef.current = user?.uid ?? null;
+    return () => {
+      activeUserRef.current = null;
+    };
+  }, [user?.uid]);
   const queueEntryWelcome = useOneConversationSession(
     (state) => state.queueEntryWelcome,
   );
@@ -137,10 +144,10 @@ export function GeminiRuntimeConfigurationPage({
   // because the hub remains an independent, still-reachable entry point
   // (explicit `/one/setup` deep links, "Reset account") with its own tested
   // behavior that this change does not touch.
-  const completeSetupAndGoHome = useCallback(async (): Promise<void> => {
+  const completeSetupAndGoHome = useCallback(async (): Promise<string | undefined> => {
     if (!user?.uid) {
       router.replace(ROUTES.HOME);
-      return;
+      return ROUTES.HOME;
     }
     if (!vaultKey || !vaultOwnerToken) {
       throw new Error("Not ready yet. Try again.");
@@ -148,6 +155,16 @@ export function GeminiRuntimeConfigurationPage({
     if (finalizationInFlightRef.current) {
       return finalizationInFlightRef.current;
     }
+    // Acknowledging completion can let the outer admission guard navigate
+    // immediately. Capture the setup URL before any await; reading it after
+    // that handoff would lose return_to and send an invite recipient home.
+    const completionTarget = resolveOneSetupReturnTo(
+      new URLSearchParams(window.location.search).get("return_to"),
+    ) ?? (
+      PreVaultSensitiveDraftService.hasFinanceIntent(user.uid)
+        ? ROUTES.ONE_SETUP_FINANCE_IMPORT
+        : ROUTES.HOME
+    );
 
     const finalize = (async () => {
       setFinalizationError(null);
@@ -175,17 +192,15 @@ export function GeminiRuntimeConfigurationPage({
         vaultKey,
         vaultOwnerToken,
       });
+      if (activeUserRef.current !== user.uid) return;
       queueEntryWelcome(user.uid);
       setSetupVaultDialogOpen(false);
-      router.replace(
-        PreVaultSensitiveDraftService.hasFinanceIntent(user.uid)
-          ? ROUTES.ONE_SETUP_FINANCE_IMPORT
-          : ROUTES.HOME,
-      );
+      router.replace(completionTarget);
+      return completionTarget;
     })();
     finalizationInFlightRef.current = finalize;
     try {
-      await finalize;
+      return await finalize;
     } catch (error) {
       setFinalizationError(
         error instanceof Error
@@ -243,11 +258,11 @@ export function GeminiRuntimeConfigurationPage({
         setSetupVaultDialogOpen(true);
         return { status: "succeeded", summary: "One step left: set a lock." };
       }
-      await completeSetupAndGoHome();
+      const routeAfter = await completeSetupAndGoHome();
       return {
         status: "succeeded",
-        summary: "Setup complete. Opening home.",
-        routeAfter: ROUTES.HOME,
+        summary: "Setup complete.",
+        routeAfter,
       };
     } finally {
       setFinishing(false);

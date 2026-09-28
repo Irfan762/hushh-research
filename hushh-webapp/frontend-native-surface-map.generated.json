@@ -631,8 +631,8 @@
       "page_file": "app/circle/join/page.tsx",
       "physical_page_exists": true,
       "route_contract": {
-        "mode": "redirect",
-        "exemption_reason": "Public Circle join landing route reads the invite code from the query string and redirects into the in-app Join-with-code flow; it owns no signed-in app shell of its own.",
+        "mode": "hidden",
+        "exemption_reason": "Public three-screen Circle invitation preview owns its navigation; account-based joining continues through the protected Connect flow.",
         "shell_verification_file": null,
         "shell_verification_includes": [],
         "interaction_layer_policy": {
@@ -663,14 +663,22 @@
       },
       "native": {
         "route": "/circle/join",
-        "classification": "excluded-web-only",
-        "reason": "Invite landing opened from a shared link. The link arrives in a browser, and the flow hands off to the app rather than being rendered by it."
+        "classification": "native-required-functional",
+        "initialRoute": "/circle/join?code=native-invitation-fixture",
+        "expectedMarker": "native-route-circle-join",
+        "expectedRoute": "/circle/join",
+        "autoReviewerLogin": false,
+        "expectedAuth": "anonymous",
+        "allowedDataStates": [
+          "loaded",
+          "unavailable-valid"
+        ]
       },
       "shell": {
         "app_page_shell": true,
         "page_header": true,
         "settings_ui": false,
-        "shared_loader": false,
+        "shared_loader": true,
         "back_button_pattern": "shared-shell"
       },
       "voice_action_contract_file": null,
@@ -9623,5 +9631,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "bab9c8891ba7bf613e4ca8994489b3cfd6db08c872c5de5ccf6ae5195ef160df"
+  "content_sha256": "4f9a370e126034eb0cb9a7229a1d1712b9f13c74a7097ae065a2a84d26342ecf"
 }

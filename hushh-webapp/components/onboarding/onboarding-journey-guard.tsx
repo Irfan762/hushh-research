@@ -15,6 +15,7 @@ import {
   isOneSetupRoute,
   isOneSetupSurfaceRoute,
   normalizeStaticExportPathname,
+  resolveOneSetupReturnTo,
   ROUTES,
 } from "@/lib/navigation/routes";
 import {
@@ -174,14 +175,17 @@ export function OnboardingJourneyGuard({
       if (setupSurface) {
         // First onboarding and known capability handoffs are admitted. A
         // dismissed user who reaches the setup hub (browser/OS back, history,
-        // direct URL, or stale navigation) is ejected to the canonical root;
+        // direct URL, or stale navigation) continues to its safe return target;
         // capability routes must remain reachable so their own coordinators can
         // resolve completed entries to the capability workspace.
         if (shouldEjectSetupSurface) {
-          if (redirectTargetRef.current !== ROUTES.HOME) {
-            redirectTargetRef.current = ROUTES.HOME;
+          const completionTarget = resolveOneSetupReturnTo(
+            new URL(currentHref, "https://one.local").searchParams.get("return_to"),
+          ) ?? ROUTES.HOME;
+          if (redirectTargetRef.current !== completionTarget) {
+            redirectTargetRef.current = completionTarget;
             setRedirecting(true);
-            router.replace(ROUTES.HOME);
+            router.replace(completionTarget);
           }
           return;
         }
