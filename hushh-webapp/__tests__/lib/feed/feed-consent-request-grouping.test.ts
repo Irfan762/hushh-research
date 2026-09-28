@@ -1,0 +1,222 @@
+import { describe, expect, it, vi } from "vitest";
+
+import { groupPendingConsentRequests } from "@/lib/consent/owner-consent-request";
+import { collapseConsentBundleRows } from "@/lib/feed/feed-consent-grouping";
+import { presentFeedItem } from "@/lib/feed/feed-item-renderers";
+import { ownerConsentRequestActionable } from "@/lib/feed/use-feed-actionables";
+import type { ConsentCenterEntry } from "@/lib/services/consent-center-service";
+import type { FeedItem } from "@/lib/services/feed-service";
+
+/**
+ * One request is one Feed item.
+ *
+ * Measured on UAT 2026-09-28: a three-item ask from Kushal rendered in the
+ * owner's Feed as "Someone requested Preferences." -- no name, no reason, a
+ * label that disagreed with the access it became, and one row per item. The
+ * contract (C5) is one item per request, reading "<Name> wants your <labels> ·
+ * <reason>", with Allow and Don't allow inline.
+ *
+ * Negative control (run by hand, 2026-09-28): making
+ * `groupPendingConsentRequests` key every entry by its own request id instead
+ * of its bundle fails "folds per-item rows" and "one row per request" below.
+ */
+
+const ISSUED_AT = "1790000000000"; // the wire's numeric string, epoch ms
+
+function pending(
+  scope: string,
+  index: number,
+  overrides: Partial<ConsentCenterEntry> = {},
+): ConsentCenterEntry {
+  return {
+    id: `req-${index}`,
+    request_id: `req-${index}`,
+    kind: "incoming_request",
+    status: "pending",
+    action: "REQUESTED",
+    scope,
+    scope_description: "Preferences",
+    counterpart_type: "person",
+    counterpart_id: "user-kushal",
+    counterpart_label: "Kushal Trivedi",
+    reason: "Picking a place for our dinner together",
+    issued_at: ISSUED_AT,
+    approval_timeout_at: 1790604800000,
+    metadata: { bundle_id: "bundle-dinner", expiry_hours: 168 },
+    ...overrides,
+  };
+}
+
+const THREE_ITEMS = [
+  pending("attr.food.preferences.*", 1),
+  pending("attr.food.dietary_restrictions.*", 2),
+  pending("attr.travel.preferences.*", 3),
+];
+
+describe("owner consent request grouping", () => {
+  it("folds per-item rows that share a bundle into one request", () => {
+    const requests = groupPendingConsentRequests(THREE_ITEMS);
+
+    expect(requests).toHaveLength(1);
+    const [request] = requests;
+    expect(request!.key).toBe("bundle:bundle-dinner");
+    expect(request!.members.map((member) => member.request_id)).toEqual([
+      "req-1",
+      "req-2",
+      "req-3",
+    ]);
+    // Named from each item's key, never the shared stored "Preferences".
+    expect(request!.labels).toEqual([
+      "Food preferences",
+      "Food dietary restrictions",
+      "Travel preferences",
+    ]);
+    expect(request!.headline).toBe("Kushal wants your Food preferences and 2 more");
+    expect(request!.requestedAt).toBe(1790000000000);
+    expect(request!.durationHours).toBe(168);
+    expect(request!.complete).toBe(true);
+  });
+
+  it("keeps separate asks separate", () => {
+    const requests = groupPendingConsentRequests([
+      pending("attr.food.preferences.*", 1, { metadata: {} }),
+      pending("attr.travel.preferences.*", 2, { metadata: {} }),
+    ]);
+    expect(requests.map((request) => request.key)).toEqual([
+      "request:req-1",
+      "request:req-2",
+    ]);
+  });
+
+  it("decides nothing inline while a server bundle is still arriving", () => {
+    const [request] = groupPendingConsentRequests([
+      {
+        ...pending("", 0),
+        id: "bundle:bundle-dinner",
+        scope: null,
+        request_id: null,
+        bundle_id: "bundle-dinner",
+        bundle_complete: false,
+        bundle_items: [
+          { request_id: "req-1", label: "Food preferences", status: "pending", entry: null },
+        ],
+      },
+    ]);
+    const row = ownerConsentRequestActionable(request!, {
+      allow: vi.fn(),
+      deny: vi.fn(),
+      openDetails: vi.fn(),
+      onDecided: vi.fn(),
+      sortAt: 0,
+    });
+    expect(request!.complete).toBe(false);
+    expect(row.actions.map((action) => action.key)).toEqual(["details"]);
+  });
+
+  it("leaves requests with their own ceremony out of the inline queue", () => {
+    const requests = groupPendingConsentRequests([
+      pending("attr.location.live", 1, {
+        metadata: { request_source: "one_location_access_request" },
+      }),
+      pending("attr.food.preferences.*", 2, {
+        metadata: { request_source: "one_email_kyc_v1" },
+      }),
+    ]);
+    expect(requests).toEqual([]);
+  });
+});
+
+describe("the Feed row for one request", () => {
+  it("reads as one sentence with the reason, and offers Details, Don't allow and Allow", async () => {
+    const [request] = groupPendingConsentRequests([THREE_ITEMS[0]!]);
+    const allow = vi.fn(async () => true);
+    const deny = vi.fn(async () => false);
+    const onDecided = vi.fn();
+    const openDetails = vi.fn();
+    const row = ownerConsentRequestActionable(request!, {
+      allow,
+      deny,
+      openDetails,
+      onDecided,
+      sortAt: 1,
+    });
+
+    expect(row.title).toBe("Kushal wants your Food preferences");
+    expect(row.description).toBe("Picking a place for our dinner together");
+    expect(row.title).not.toMatch(/Someone|requested|Preferences\./);
+    expect(row.displayTimestamp).toBe(1790000000000);
+    expect(row.actions.map((action) => [action.key, action.label])).toEqual([
+      ["details", "Details"],
+      ["deny", "Don't allow"],
+      ["allow", "Allow"],
+    ]);
+    // Don't allow is irreversible, so it arms before it fires.
+    expect(row.actions.find((action) => action.key === "deny")?.confirm).toBe(true);
+
+    await row.actions.find((action) => action.key === "allow")!.run();
+    expect(allow).toHaveBeenCalledWith(request);
+    expect(onDecided).toHaveBeenCalledWith("bundle:bundle-dinner");
+
+    // A decision that did not happen (the unlock was cancelled) leaves the
+    // row where it is.
+    onDecided.mockClear();
+    await row.actions.find((action) => action.key === "deny")!.run();
+    expect(deny).toHaveBeenCalledWith(request);
+    expect(onDecided).not.toHaveBeenCalled();
+
+    row.actions.find((action) => action.key === "details")!.run();
+    expect(openDetails).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("consent history rows", () => {
+  function historyRow(id: string, scope: string, read = false): FeedItem {
+    return {
+      id,
+      source_domain: "consent",
+      event_type: "consent_requested",
+      actor_label: null,
+      metadata: {
+        scope,
+        scope_description: "Preferences",
+        bundle_id: "bundle-dinner",
+        requester_label: "Kushal Trivedi",
+        reason: "Picking a place for our dinner together",
+      },
+      read,
+      created_at: "2026-09-28T20:51:00.000Z",
+    };
+  }
+
+  it("shows one row per request, named and with its reason", () => {
+    const rows = collapseConsentBundleRows([
+      historyRow("30", "attr.food.preferences.*"),
+      historyRow("29", "attr.food.dietary_restrictions.*", true),
+      historyRow("28", "attr.travel.preferences.*", true),
+      {
+        ...historyRow("27", "attr.food.preferences.*"),
+        event_type: "consent_revoked",
+        metadata: { scope: "attr.food.preferences.*" },
+      },
+    ]);
+
+    expect(rows.map((row) => row.id)).toEqual(["30", "27"]);
+    expect(rows[0]!.read).toBe(false);
+    const requested = presentFeedItem(rows[0]!);
+    expect(requested.label).toBe("Kushal Trivedi");
+    expect(requested.description).toBe(
+      "Asked for your Food preferences and 2 more · picking a place for our dinner together",
+    );
+    expect(requested.description).not.toContain("Someone");
+    // Same words as the Needs you row and the Active row.
+    expect(presentFeedItem(rows[1]!).description).toBe(
+      "You stopped sharing your Food preferences",
+    );
+  });
+
+  it("leaves a row that stands alone untouched, so the memoised row keeps its identity", () => {
+    const alone = historyRow("40", "attr.food.preferences.*");
+    const [row] = collapseConsentBundleRows([alone]);
+    expect(row).toBe(alone);
+  });
+});

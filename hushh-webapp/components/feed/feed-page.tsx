@@ -31,6 +31,8 @@ import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
 import { FeedPushPrompt } from "@/components/feed/feed-push-prompt";
+import { OwnerConsentUnlockPrompt } from "@/components/consent/owner-consent-unlock-prompt";
+import { collapseConsentBundleRows } from "@/lib/feed/feed-consent-grouping";
 import {
   SettingsGroup,
   SettingsPresentationProvider,
@@ -278,6 +280,7 @@ function FeedPageSession({
     retry: retryActionables,
     hasClearableSmsEmergencies,
     clearSmsEmergencies,
+    consentUnlockPrompt,
   } = useFeedActionables();
 
   // Counts only -- never who, and never what any item says. The Feed is a list
@@ -454,7 +457,9 @@ function FeedPageSession({
       );
     }
     previousItemsRef.current = new Map(merged.map((item) => [item.id, item]));
-    return merged;
+    // One request is one row in history too: per-item consent rows that share
+    // a bundle fold into the newest of them.
+    return collapseConsentBundleRows(merged);
   }, [
     data,
     pagination.additionalItems,
@@ -779,6 +784,7 @@ function FeedPageSession({
           </AppPageContentRegion>
         </SettingsPresentationProvider>
       </div>
+      <OwnerConsentUnlockPrompt prompt={consentUnlockPrompt} />
     </AppPageShell>
   );
 }

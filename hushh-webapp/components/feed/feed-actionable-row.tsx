@@ -19,11 +19,14 @@ import type {
 
 function ActionButton({
   action,
+  dense,
   mobileLabel,
   runningActionKey,
   runAction,
 }: {
   action: FeedActionButton;
+  /** Tighter phone padding, for a row that carries a third quiet action. */
+  dense?: boolean;
   mobileLabel?: string;
   runningActionKey: string | null;
   runAction: (action: FeedActionButton) => Promise<void>;
@@ -75,6 +78,10 @@ function ActionButton({
       }}
       className={cn(
         "w-auto min-w-[5.5rem] max-w-full shrink-0 whitespace-nowrap px-4 sm:min-w-24",
+        dense && "max-sm:px-3",
+        // Below 375px the row itself opens the same Details (see onSelect),
+        // so the icon steps aside and the two decisions keep one line.
+        action.phoneIcon && "min-w-11 px-0 max-[374px]:hidden sm:px-4",
         action.tone === "danger" &&
           !showConfirm &&
           "text-destructive hover:bg-destructive/10",
@@ -83,7 +90,19 @@ function ActionButton({
       {isRunning ? (
         <Icon icon={Loader2} size="xs" className="animate-spin" />
       ) : null}
-      {mobileLabel && !showConfirm ? (
+      {action.phoneIcon && !isRunning ? (
+        <>
+          <Icon
+            icon={action.phoneIcon}
+            size="sm"
+            aria-hidden="true"
+            className="sm:hidden"
+          />
+          <span aria-hidden="true" className="hidden sm:inline">
+            {action.label}
+          </span>
+        </>
+      ) : mobileLabel && !showConfirm ? (
         <>
           <span aria-hidden="true" className="sm:hidden">
             {mobileLabel}
@@ -154,6 +173,7 @@ function ActionButtons({ actions }: { actions: FeedActionButton[] }) {
   };
 
   if (!actions.length) return null;
+  const dense = actions.some((action) => Boolean(action.phoneIcon));
   const renderAction = (
     action: FeedActionButton,
     mobileLabel?: string,
@@ -161,6 +181,7 @@ function ActionButtons({ actions }: { actions: FeedActionButton[] }) {
     <ActionButton
       key={action.key}
       action={action}
+      dense={dense}
       mobileLabel={mobileLabel}
       runningActionKey={runningActionKey}
       runAction={runAction}
