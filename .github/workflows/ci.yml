@@ -601,51 +601,19 @@ jobs:
           plutil -insert GOOGLE_APP_ID -string "1:123456789:ios:abcdef1234567890abcdef" "$PLIST"
           plutil -lint "$PLIST"
 
-      # Swift package resolution is network-bound (174s cold on run
-      # 36346187928) and needs only node_modules and the committed
-      # CapApp-SPM/Package.swift, so it runs underneath the ~220s web export
-      # instead of after it. It is a prefetch, never the verdict: the wait step
-      # below lets it finish before cap sync writes the project, and the resolve
-      # step after sync runs again against what sync generated.
-      #
       # There is deliberately no actions/cache for these packages. A cache saved
       # by a pull_request run is scoped to that PR, so a new PR never restored
       # one (every restore key missed on 36346187928), each save cost ~80s and
       # ~4.5GB of the repository's 10GB cache budget, evicting the npm cache
       # every other lane restores from main.
-      - name: Prefetch Swift packages in the background
-        shell: bash
-        run: |
-          set -euo pipefail
-          nohup bash -c '
-            rc=0
-            xcodebuild -resolvePackageDependencies \
-              -project "${XCODE_PROJECT}" \
-              -scheme "${XCODE_SCHEME}" \
-              -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm" || rc=$?
-            echo "$rc" > "${RUNNER_TEMP}/spm-prefetch.exit"
-          ' > "${RUNNER_TEMP}/spm-prefetch.log" 2>&1 &
-          echo "$!" > "${RUNNER_TEMP}/spm-prefetch.pid"
-
+      #
+      # Resolution stays sequential after cap sync. A background prefetch under
+      # the web export was measured on run 36371292301: the export slowed from
+      # 223s to 478s on the shared macOS runner and the resolve after sync still
+      # took 218s, because sync regenerates the package graph the prefetch used.
       - name: Build the native web export
         shell: bash
         run: npm run --prefix hushh-webapp cap:build
-
-      - name: Wait for the Swift package prefetch
-        shell: bash
-        timeout-minutes: 15
-        run: |
-          set -euo pipefail
-          pid="$(cat "${RUNNER_TEMP}/spm-prefetch.pid")"
-          while kill -0 "$pid" 2>/dev/null; do sleep 2; done
-          rc="$(cat "${RUNNER_TEMP}/spm-prefetch.exit" 2>/dev/null || echo missing)"
-          echo "Swift package prefetch exit: $rc"
-          if [ "$rc" != "0" ]; then
-            # Not fatal: the resolve step below is authoritative and fails on
-            # its own if resolution is really broken.
-            echo "::warning::Swift package prefetch exited $rc; the resolve step will retry."
-            tail -n 40 "${RUNNER_TEMP}/spm-prefetch.log" || true
-          fi
 
       - name: Sync the generated Capacitor iOS project
         shell: bash
@@ -776,7 +744,6 @@ jobs:
           path: |
             ${{ runner.temp }}/AppTests.xcresult
             ${{ runner.temp }}/xcodebuild-ios-tests.log
-            ${{ runner.temp }}/spm-prefetch.log
             ${{ runner.temp }}/simulator-boot.log
           if-no-files-found: ignore
           retention-days: 7
