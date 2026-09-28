@@ -23569,7 +23569,7 @@
       },
       "action_id": "consent.revoke",
       "surface_id": "consents",
-      "label": "Revoke a grant",
+      "label": "Stop sharing access",
       "aliases": [
         "revoke that access",
         "stop sharing that",
@@ -23653,7 +23653,7 @@
         "required_inputs": [
           {
             "name": "request_id",
-            "prompt": "Which grant should I revoke?",
+            "prompt": "Which shared access should I end?",
             "required": true,
             "slot": "request_id",
             "resolver": "opaque_request_id"
@@ -23666,7 +23666,7 @@
         "workflow_steps": [
           {
             "type": "action",
-            "label": "Revoke a grant",
+            "label": "Stop sharing access",
             "failure_behavior": "stop",
             "action_id": "consent.revoke",
             "settlement_target": {
