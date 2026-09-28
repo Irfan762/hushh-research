@@ -131,3 +131,200 @@ async def test_spoken_facts_are_not_a_side_channel_into_the_model():
     _, fake = await _run_read()
     sent = fake.tool_responses[0]["response"]
     assert sent.get("spoken_facts") == []
+
+
+# -- the real result class, through the real session -------------------------
+#
+# Everything above uses a stand-in tool whose model_public is a safe override.
+# That proves VoiceSession honours the seam; it cannot prove the shipped mail
+# tool uses it. These drive the actual `read_mail` spec and the actual
+# MailReadResult, with only the delegated read faked, so the class under test is
+# the one that runs in production.
+
+
+def _real_outcome(conversation_id: str) -> dict:
+    return {
+        "conversationId": conversation_id,
+        "response": f"{SUBJECT}: {HOSTILE_BODY}",
+        "isComplete": True,
+        "stateChanged": False,
+        "structured": {
+            "schema_version": "specialist_read.v1",
+            "connector": "mail",
+            "status": "ok",
+            "sources": [{"source_ref": "mail:1", "label": "Mail", "kind": "metadata"}],
+            "truncated": False,
+            "metadata_only": True,
+        },
+        "items": [
+            {
+                "source_ref": "mail:1",
+                "subject": SUBJECT,
+                "sender": "Accounts Payable",
+                "received_at": "2026-09-26T08:00:00+00:00",
+            },
+            {
+                "source_ref": "mail:2",
+                "subject": "Second subject",
+                "sender": "Priya Nair",
+                "received_at": "2026-09-26T09:00:00+00:00",
+            },
+        ],
+        "coverage": {
+            "operation": "list_recent",
+            "mailbox": "inbox",
+            "unit": "messages",
+            "assessed": 2,
+            "returned": 2,
+            "cited": 1,
+            "matches_beyond_page": False,
+            "items_omitted": False,
+            "content_shortened": False,
+            "content_depth": "metadata",
+            "one_page_only": True,
+            "plan_source": "planner",
+        },
+        "offer": {
+            "message_ids": ["id-first", "id-second"],
+            "account": "google-sub-owner",
+            "mailbox": "inbox",
+        },
+    }
+
+
+async def _run_real_mail(
+    monkeypatch, calls: list[dict], *, second_turn: bool, conversations=None, ordinal_only=False
+):
+    """Drive the shipped read_mail through a real VoiceSession."""
+    from hushh_mcp.one_voice.tools import mail as mail_tool
+
+    async def _delegated(**kwargs):
+        calls.append(kwargs)
+        await kwargs["require_access"]()
+        return _real_outcome(kwargs["conversation_id"])
+
+    monkeypatch.setattr(mail_tool, "run_delegated_mail_read", _delegated)
+    monkeypatch.setattr(mail_tool, "connector_feature_enabled", lambda *_a, **_k: True)
+    monkeypatch.setattr(mail_tool, "get_gmail_receipts_service", lambda: object())
+    tools = mail_tool.TOOLS
+    by_name = {t.name: t for t in tools}
+    monkeypatch.setattr(registry, "all_tools", lambda: tools)
+    monkeypatch.setattr(registry, "get_tool", lambda name: by_name.get(str(name or "")))
+    monkeypatch.setattr(
+        registry,
+        "declarations",
+        lambda: [t.declaration() for t in tools] + list(registry.SESSION_TOOL_DECLARATIONS),
+    )
+
+    ordinal_call = LiveEvent(
+        kind="tool_call",
+        function_calls=[
+            {
+                "id": "c9",
+                "name": "read_mail",
+                "args": {"request": "read the second one", "ordinal": 2},
+            }
+        ],
+    )
+    events = (
+        [ordinal_call]
+        if ordinal_only
+        else [
+            LiveEvent(
+                kind="tool_call",
+                function_calls=[
+                    {"id": "c1", "name": "read_mail", "args": {"request": "any mail?"}}
+                ],
+            )
+        ]
+    )
+    if second_turn:
+        events.append(
+            LiveEvent(
+                kind="tool_call",
+                function_calls=[
+                    {
+                        "id": "c2",
+                        "name": "read_mail",
+                        "args": {"request": "read the second one", "ordinal": 2},
+                    }
+                ],
+            )
+        )
+    events.append(None)
+
+    transport = FakeTransport([AUTH])
+    fake = FakeLive(events)
+    session = _session(transport, fake, conversations=conversations)
+    task = asyncio.create_task(session.run())
+    await asyncio.sleep(0.3)
+    transport.push({"type": "end"})
+    await asyncio.wait_for(task, 5)
+    return transport, fake
+
+
+async def test_the_shipped_mail_result_shows_the_person_and_tells_the_model_nothing(monkeypatch):
+    """The real MailReadResult, not a fake with a safe override."""
+    calls: list[dict] = []
+    transport, fake = await _run_real_mail(monkeypatch, calls, second_turn=False)
+
+    shown = transport.frames("tool.result")[0]["result_public"]
+    assert HOSTILE_BODY in shown["answer"]
+    assert shown["items"][0]["subject"] == SUBJECT
+    assert shown["items"][0]["sender"] == "Accounts Payable"
+
+    sent = fake.tool_responses[0]["response"]
+    blob = repr(sent)
+    assert HOSTILE_BODY not in blob, f"hostile body reached the model: {blob}"
+    assert SUBJECT not in blob, f"mail subject reached the model: {blob}"
+    assert "Accounts Payable" not in blob, f"a sender reached the model: {blob}"
+    assert "Priya Nair" not in blob
+    # The count it may say is the server's, and it is the only number there.
+    assert sent["coverage"]["returned"] == 2
+    assert sent["coverage"]["cited"] == 1
+    assert "2 messages" in " ".join(sent["spoken_facts"])
+
+
+async def test_a_position_named_on_a_later_turn_reaches_the_message_that_was_offered(monkeypatch):
+    """Two turns in one session: the second resolves against what the first showed."""
+    calls: list[dict] = []
+    await _run_real_mail(monkeypatch, calls, second_turn=True)
+
+    assert len(calls) == 2, "both turns must reach the delegated read"
+    assert calls[0]["message_ids"] == ()
+    assert calls[1]["message_ids"] == ("id-second",)
+    assert calls[1]["expect_account"] == "google-sub-owner"
+
+
+async def test_the_offer_survives_a_reconnect_and_carries_no_mail_text(monkeypatch):
+    """The offer is state, so it has to be state that persists.
+
+    A ``ToolContext`` lives for one session, so two turns in one socket would
+    pass on the in-memory object alone and prove nothing about the row. Here the
+    second session is a fresh one reading the saved conversation, which is what a
+    reconnect actually is.
+
+    It also pins what the row may hold. Ids and an account, and nothing a sender
+    wrote: this row is persisted and feeds client frames, so a subject stored
+    here would be third-party text in a place declared free of it.
+    """
+    from tests.one_voice.fakes import MemoryConversationStore
+
+    store = MemoryConversationStore()
+    first: list[dict] = []
+    await _run_real_mail(monkeypatch, first, second_turn=False, conversations=store)
+
+    saved = store.entity_saves[-1]["offered_mail"]
+    assert saved["message_ids"] == ["id-first", "id-second"]
+    assert saved["account"] == "google-sub-owner"
+    blob = repr(saved)
+    assert SUBJECT not in blob and "Accounts Payable" not in blob and "Priya Nair" not in blob
+
+    # A new session over the same conversation, as a reconnect would be.
+    second: list[dict] = []
+    await _run_real_mail(
+        monkeypatch, second, second_turn=False, conversations=store, ordinal_only=True
+    )
+
+    assert len(second) == 1, "the stored offer must resolve without a fresh search"
+    assert second[0]["message_ids"] == ("id-second",)
