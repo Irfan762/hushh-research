@@ -622,4 +622,26 @@ def _project_page(page: dict[str, Any], files: list[Any]) -> dict:
             "incompleteSearch": page.get("incompleteSearch", False),
         }
     )
+    # The shared MCP metadata filter intentionally keeps only its historical
+    # scalar fields. This REST-only sharing search also needs the owner-specific
+    # canShare fact; validate and reattach exactly that fact after filtering.
+    for item, destination in zip(files, projected["files"], strict=True):
+        capabilities = item.get("capabilities")
+        if capabilities is not None:
+            if not isinstance(capabilities, dict) or (
+                capabilities.get("canShare") is not None
+                and type(capabilities["canShare"]) is not bool
+            ):
+                raise DriveReadError("provider_response_invalid")
+            if "canShare" in capabilities:
+                destination["capabilities"] = {"canShare": capabilities["canShare"]}
+        encryption = item.get("clientEncryptionDetails")
+        if encryption is not None:
+            if not isinstance(encryption, dict) or not isinstance(
+                encryption.get("encryptionState"), str
+            ):
+                raise DriveReadError("provider_response_invalid")
+            destination["clientEncryptionDetails"] = {
+                "encryptionState": encryption["encryptionState"]
+            }
     return projected

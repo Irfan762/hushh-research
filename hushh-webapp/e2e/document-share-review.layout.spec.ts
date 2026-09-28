@@ -548,8 +548,8 @@ test("partial sharing outcomes and safe retry fit the sheet at 390px", async ({ 
         createdAt: "2026-09-28T00:00:00Z", updatedAt: "2026-09-28T00:01:00Z", expiresAt: "2099-10-01T00:00:00Z",
         coverage: { corpora: ["user", "member_shared_drives"], fileKind: "document", requestedPeriod: {
           start: "2026-06-28", end: "2026-09-28", timezone: "Asia/Kolkata" }, dateBasis: "title_date_then_created_or_modified",
-          contentPeriodVerified: false, providerRowsScanned: 540, excludedByDateCount: 450, deduplicatedCount: 18,
-          unavailableShortcutCount: 36, providerPagesExhausted: true } }, bulkShare: bulk() };
+          contentPeriodVerified: false, providerRowsScanned: 540, excludedByDateCount: 450, excludedByTopicCount: 7, deduplicatedCount: 18,
+          unavailableShortcutCount: 36, providerPagesExhausted: true, shareabilityVerified: true } }, bulkShare: bulk() };
     if (url.pathname.endsWith("/delivery")) result = { requestId: reviewId, status: retries ? "approved" : "partial",
       files: [], bulkShareId: shareId, bulkStatus: retries ? "queued" : "partial", fileCount: 72, sharedCount: 71,
       counts: counts(), issues: issues() };
@@ -566,10 +566,11 @@ test("partial sharing outcomes and safe retry fit the sheet at 390px", async ({ 
   await draft.fill("Keep this draft while sharing finishes");
   await page.getByRole("button", { name: "Review document request" }).click();
   const panel = page.getByRole("dialog", { name: "Document request" });
-  await expect(panel.getByRole("status")).toHaveText("Sharing finished");
+  await expect(panel.getByRole("status")).toHaveText("Sharing incomplete");
   await expect(panel.getByText("71 of 72 files available", { exact: true })).toBeVisible();
   await expect(panel.getByText("1 not shared", { exact: true })).toBeVisible();
   await expect(panel.getByText("36 unavailable matches were not included.", { exact: true })).toBeVisible();
+  await expect(panel.getByText(/7 files in matching folders were excluded because their names did not match this request/)).toBeVisible();
   await expect(panel.getByText(/0 failed/)).toHaveCount(0);
   await expect(panel.getByText(filename, { exact: true })).toBeVisible();
   for (const control of [panel.getByRole("button", { name: "Retry 1 file", exact: true }),

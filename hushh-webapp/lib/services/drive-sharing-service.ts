@@ -1055,7 +1055,8 @@ export class DriveSharingService {
     token: string, requestId: string, search: DriveSearchStatus,
     excludedPositions: number[], guard: SharingSessionGuard,
   ): Promise<DriveBulkShareView> {
-    if (search.status !== "completed" || search.incompleteSearch || search.coverage?.providerPagesExhausted === false ||
+    if (search.status !== "completed" || search.incompleteSearch ||
+      search.coverage?.providerPagesExhausted === false || search.coverage?.shareabilityVerified !== true ||
       search.matched - (search.unshareableCount ?? 0) <= 0 ||
       excludedPositions.length >= search.matched ||
       new Set(excludedPositions).size !== excludedPositions.length ||

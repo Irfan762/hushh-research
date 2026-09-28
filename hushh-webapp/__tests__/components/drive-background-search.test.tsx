@@ -138,6 +138,7 @@ describe("durable Drive search UI", () => {
       counts: { ...partial.counts, processed: 71, skipped: 0, pending: 1 }, issues: [] });
     render(<DriveRecentSharing />);
     await screen.findByText("71 of 72 files available");
+    expect(screen.getByText("Sharing incomplete")).toBeTruthy();
     expect(screen.getByText("62 newly shared")).toBeTruthy();
     expect(screen.getByText("9 already had access")).toBeTruthy();
     expect(screen.getByText(/Google Drive was unavailable/)).toBeTruthy();

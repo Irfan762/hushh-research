@@ -133,6 +133,12 @@ const durableSearch = (overrides: Record<string, unknown> = {}) => ({
   updatedAt: "2026-09-28T00:01:00Z",
   expiresAt: "2026-09-29T00:00:00Z",
   errorCode: null,
+  ...(overrides.status === "completed" && !("coverage" in overrides) ? { coverage: {
+    corpora: ["user"], fileKind: "document", requestedPeriod: null,
+    dateBasis: "title_date_then_created_or_modified", contentPeriodVerified: false,
+    providerRowsScanned: 525, excludedByDateCount: 0, deduplicatedCount: 0,
+    unavailableShortcutCount: 0, providerPagesExhausted: true, shareabilityVerified: true,
+  } } : {}),
   ...overrides,
 });
 const durableBulk = (overrides: Record<string, unknown> = {}) => ({
@@ -804,6 +810,51 @@ describe("exact-file document review", () => {
       expect(screen.getByRole("button", { name: "Share files" })).toBeDisabled();
     });
 
+    it("replaces a legacy completed search before its files can be reviewed", async () => {
+      const complete = durableSearch({ status: "completed", matched: 2 });
+      const legacy = { ...complete, coverage: { ...complete.coverage!, shareabilityVerified: false } };
+      const refreshed = durableSearch({ jobId: "55555555-5555-4555-8555-555555555555",
+        status: "queued", matched: 0, coverage: { ...complete.coverage!, shareabilityVerified: true } });
+      const start = deferred<void>();
+      let replaced = false;
+      state.status.mockResolvedValue(pending());
+      state.review.mockImplementation(async () => partial({ durableAvailable: true,
+        search: replaced ? refreshed : legacy, bulkShare: null }));
+      state.startRequestSearch.mockImplementation(async () => {
+        await start.promise;
+        replaced = true;
+        return refreshed;
+      });
+      state.requestSearchFiles.mockResolvedValue({ jobId: refreshed.jobId, revision: 1,
+        matched: 0, files: [], nextCursor: null });
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Updating file access checks"));
+      expect(screen.getByText("Earlier files cannot be selected while the new check runs.")).toBeVisible();
+      expect(screen.getByRole("button", { name: "Updating file access" })).toBeDisabled();
+      expect(state.requestSearchFiles).not.toHaveBeenCalled();
+      expect(state.prepareRequestBulk).not.toHaveBeenCalled();
+      await act(async () => start.resolve());
+      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Searching Drive · 0 found"));
+      await poll();
+      expect(state.startRequestSearch).toHaveBeenCalledOnce();
+      expect(state.prepareRequestBulk).not.toHaveBeenCalled();
+    });
+
+    it("does not approve a frozen selection from a legacy search", async () => {
+      const complete = durableSearch({ status: "completed", matched: 2 });
+      const legacy = { ...complete, coverage: { ...complete.coverage!, shareabilityVerified: false } };
+      state.status.mockResolvedValue(pending());
+      state.review.mockResolvedValue(partial({ durableAvailable: true, search: legacy,
+        bulkShare: durableBulk({ status: "review_ready", fileCount: 2, canApprove: true }) }));
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      expect(await screen.findByRole("alert")).toHaveTextContent(
+        "This selection predates the sharing permission check. Ask for a new document request before sharing.",
+      );
+      expect(screen.getByRole("button", { name: "New request needed" })).toBeDisabled();
+      expect(state.startRequestSearch).not.toHaveBeenCalled();
+      expect(state.approveBulkShare).not.toHaveBeenCalled();
+    });
+
     it("resumes a request search after the sheet closes without starting another one", async () => {
       let running = false;
       state.status.mockResolvedValue(pending());
@@ -856,6 +907,7 @@ describe("exact-file document review", () => {
       phase = "complete";
       await poll();
       expect(await screen.findByText("Standup 1")).toBeVisible();
+      expect(state.startRequestSearch).not.toHaveBeenCalled();
       expect(screen.getByText("525 matching files. Select the files to share.")).toBeVisible();
       fireEvent.click(screen.getByRole("checkbox", { name: "Standup 1" }));
       fireEvent.click(screen.getByRole("button", { name: "Next 25" }));
@@ -909,8 +961,9 @@ describe("exact-file document review", () => {
           corpora: ["user", "member_shared_drives"], fileKind: "document",
           requestedPeriod: { start: "2026-06-28", end: "2026-09-28", timezone: "Asia/Kolkata" },
           dateBasis: "title_date_then_created_or_modified", contentPeriodVerified: false,
-          providerRowsScanned: 540, excludedByDateCount: 450, deduplicatedCount: 18,
+          providerRowsScanned: 540, excludedByDateCount: 450, excludedByTopicCount: 7, deduplicatedCount: 18,
           unavailableShortcutCount: 36, providerPagesExhausted: true,
+          shareabilityVerified: true,
         } }),
         bulkShare: durableBulk({ status: "partial", fileCount: 72, canApprove: false,
           counts: { total: 72, processed: 72, shared: 62, alreadyShared: 9, skipped: 1,
@@ -927,14 +980,17 @@ describe("exact-file document review", () => {
         }],
       }));
       render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
-      expect(await screen.findByRole("status")).toHaveTextContent("Sharing finished");
+      expect(await screen.findByRole("status")).toHaveTextContent("Sharing incomplete");
       expect(screen.getByText("71 of 72 files available")).toBeVisible();
       expect(screen.getByText("108 matching files found · 72 selected for sharing")).toBeVisible();
       expect(screen.getByText("36 unavailable matches were not included.")).toBeVisible();
       expect(screen.getByText("1 not shared")).toBeVisible();
+      expect(screen.getByText(/ask its owner or shared drive manager to check sharing permissions/i)).toBeVisible();
+      expect(screen.getByText("Review the newly shared originals below. Remove any unintended access in Google Drive.")).toBeVisible();
       expect(screen.queryByText(/0 failed/)).toBeNull();
       expect(screen.getByText("All returned Drive pages checked.")).toBeVisible();
       expect(screen.getByText("Your files and shared drives · 540 results checked")).toBeVisible();
+      expect(screen.getByText(/7 files in matching folders were excluded because their names did not match this request/)).toBeVisible();
       expect(screen.getByText(/Dates inside file contents were not checked/)).toBeVisible();
       expect(await screen.findByText("Unshared original")).toBeVisible();
       expect(screen.getAllByRole("link", { name: "Open in Google Drive" })[0]).toHaveAttribute(
@@ -952,7 +1008,7 @@ describe("exact-file document review", () => {
         skipped: 3, failed: 0, needsReview: 0, unknown: 0, pending: 0 }, "3 not shared", null],
       ["failed", "Sharing failed", { total: 3, processed: 3, shared: 0, alreadyShared: 0,
         skipped: 0, failed: 3, needsReview: 0, unknown: 0, pending: 0 }, "3 failed", null],
-      ["partial", "Sharing finished", { total: 3, processed: 3, shared: 1, alreadyShared: 1,
+      ["partial", "Sharing incomplete", { total: 3, processed: 3, shared: 1, alreadyShared: 1,
         skipped: 0, failed: 0, needsReview: 1, unknown: 0, pending: 0 }, "1 needs review", null],
     ])("explains every outcome category for a %s share", async (status, label, counts, outcome, secondOutcome) => {
       state.status.mockResolvedValue({ ...initial(), status: status === "running" ? "approved" : "partial" });
@@ -984,6 +1040,13 @@ describe("exact-file document review", () => {
       render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
       expect(await screen.findByText("71 of 72 files available")).toBeVisible();
       expect(screen.getByText(bulkStatus === "running" ? "1 waiting to share" : "1 not shared")).toBeVisible();
+      if (bulkStatus === "partial") {
+        expect(screen.getByRole("status")).toHaveTextContent("Sharing incomplete");
+        expect(screen.getByText(/Only confirmed available files appear here/)).toHaveTextContent(
+          "Ask the owner to review the 1 file not confirmed available.",
+        );
+        expect(screen.getByText(/The owner's Google account lacks sharing permission/)).toBeVisible();
+      }
       expect(await screen.findByText("Confirmed original")).toBeVisible();
       expect(screen.queryByText("Unshared original")).toBeNull();
       expect(screen.queryByText(/0 failed/)).toBeNull();
@@ -1087,10 +1150,12 @@ describe("exact-file document review", () => {
         search: durableSearch({ status: "completed", matched: 2, unshareableCount: 2 }), bulkShare: null }));
       state.requestSearchFiles.mockResolvedValue({ jobId: searchJobId, revision: 4, matched: 2,
         files: [1, 2].map(position => ({ ...searchFile(position), shareable: false,
-          unavailableReason: "shortcut_target_unavailable" })), nextCursor: null });
+          unavailableReason: position === 1 ? "source_not_shareable" : "shareability_unverified" })), nextCursor: null });
       render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
       expect(await screen.findByText("Standup 1")).toBeVisible();
-      expect(screen.getByText("2 files can't be shared and won't be included.")).toBeVisible();
+      expect(screen.getByText("2 files have no confirmed sharing permission and won't be included.")).toBeVisible();
+      expect(screen.getByText("Your Google account cannot share this file")).toBeVisible();
+      expect(screen.getByText("Sharing permission could not be verified")).toBeVisible();
       expect(screen.getByRole("checkbox", { name: "Standup 1" })).toBeDisabled();
       expect(screen.getByRole("checkbox", { name: "Standup 2" })).not.toBeChecked();
       expect(screen.getByRole("button", { name: "Review 0 files" })).toBeDisabled();

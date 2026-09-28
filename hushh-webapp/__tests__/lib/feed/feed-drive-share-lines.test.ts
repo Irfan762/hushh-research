@@ -49,7 +49,7 @@ describe("Drive rows in the Feed", () => {
     );
   });
 
-  it("says when only some files were shared", () => {
+  it("marks a partial Drive request incomplete for both people", () => {
     expect(
       presentFeedItem(
         item("document_share_outcome", {
@@ -57,7 +57,12 @@ describe("Drive rows in the Feed", () => {
           user_facing_status: "partial",
         }),
       ).description,
-    ).toBe("Shared some Drive files with you");
+    ).toBe("Drive request incomplete");
+    expect(
+      presentFeedItem(
+        item("document_share_outcome", { user_facing_status: "partial" }),
+      ).description,
+    ).toBe("Could not share all selected files");
   });
 
   it("announces an approved share before it finishes, and a decline", () => {

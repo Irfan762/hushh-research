@@ -109,6 +109,7 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                         "excludedByDateCount",
                         "excludedByKindCount",
                         "excludedByNoteTypeCount",
+                        "excludedByTopicCount",
                         "excludedFolderTopicCount",
                         "deduplicatedCount",
                         "unavailableShortcutCount",
@@ -125,6 +126,13 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 "providerPagesExhausted": row["status"] == "completed"
                 and not row["incomplete_search"],
             }
+        if checkpoint.get("request_origin_id"):
+            # This owner-only bit lets an old completed request search be
+            # refreshed before review. The checkpoint and result metadata
+            # remain encrypted; no provider capability or file data escapes.
+            result.setdefault("coverage", {})["shareabilityVerified"] = (
+                checkpoint.get("request_shareability_version") == 1
+            )
         return result
 
     def _owned(self, connection, user_id, identity, *, locked=False):
@@ -296,6 +304,65 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             )
 
         await self._transaction(operation)
+
+    async def clear_legacy_completed_request(self, *, user_id, request_id):
+        """Replace an old request search lacking Drive shareability evidence.
+
+        A completed search may be discarded only while its origin request is
+        pending and no review has frozen its results. The job row lock orders
+        this operation before a concurrent review's source FOR SHARE lock.
+        """
+        client = _identity(request_id)
+
+        def operation(connection):
+            self._lock(connection, {"user_id": user_id, "connector_id": "google_drive"})
+            current = self._access(connection, user_id)
+            row = self._row(
+                connection,
+                """SELECT * FROM drive_owner_search_jobs
+                WHERE user_id=:user AND client_request_id=:client
+                  AND expires_at>clock_timestamp() FOR UPDATE""",
+                {"user": user_id, "client": client},
+            )
+            if row is None or row["status"] != "completed":
+                return False
+            if row["connection_generation"] != current["connection_generation"]:
+                raise DriveReadError("connection_changed")
+            checkpoint = self._checkpoint(row)
+            if (
+                checkpoint.get("request_origin_id") != client
+                or checkpoint.get("request_shareability_version") == 1
+            ):
+                return False
+            request = self._row(
+                connection,
+                """SELECT status,revision,expires_at,bulk_search_started_at
+                FROM drive_share_requests WHERE request_id=:request AND user_id=:user""",
+                {"request": client, "user": user_id},
+            )
+            if (
+                request is None
+                or request["status"] != "pending"
+                or request["revision"] != checkpoint.get("request_revision")
+                or request["bulk_search_started_at"] is None
+                or request["expires_at"]
+                <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+            ):
+                return False
+            if self._row(
+                connection,
+                """SELECT share_id FROM drive_bulk_shares
+                WHERE origin_request_id=:request OR search_job_id=:job LIMIT 1""",
+                {"request": client, "job": row["job_id"]},
+            ):
+                return False
+            connection.execute(
+                text("DELETE FROM drive_owner_search_jobs WHERE job_id=:job"),
+                {"job": row["job_id"]},
+            )
+            return True
+
+        return await self._transaction(operation)
 
     async def align_request_expiry(self, *, user_id, request_id):
         client = _identity(request_id)

@@ -61,6 +61,10 @@ const requestSearch = (): DriveSearchStatus => ({
   pagesScanned: 6, incompleteSearch: false, unshareableCount: 5,
   canStop: false, createdAt: "2026-09-28T00:00:00Z",
   updatedAt: "2026-09-28T00:01:00Z", expiresAt: "2026-09-29T00:00:00Z", errorCode: null,
+  coverage: { corpora: ["user"], fileKind: "document", requestedPeriod: null,
+    dateBasis: "title_date_then_created_or_modified", contentPeriodVerified: false,
+    providerRowsScanned: 525, excludedByDateCount: 0, deduplicatedCount: 0,
+    unavailableShortcutCount: 0, providerPagesExhausted: true, shareabilityVerified: true },
 });
 const requestBulk = () => ({
   shareId: "33333333-3333-4333-8333-333333333333", searchJobId: documentId,
@@ -195,6 +199,9 @@ describe("private sharing transport", () => {
     const search = { ...requestSearch(), status: "limited" } as const;
     await expect(DriveSharingService.prepareRequestBulk("vault", requestId, search, [], guard))
       .rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(DriveSharingService.prepareRequestBulk("vault", requestId, {
+      ...requestSearch(), coverage: { ...requestSearch().coverage!, shareabilityVerified: false },
+    }, [], guard)).rejects.toMatchObject({ code: "invalid_selection" });
     expect(fetcher).not.toHaveBeenCalled();
     fetcher.mockResolvedValueOnce(reply({ ...requestBulk(), fileCount: 525 }));
     await expect(DriveSharingService.prepareRequestBulk("vault", requestId, requestSearch(), [1, 26], guard))

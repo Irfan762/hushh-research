@@ -534,7 +534,10 @@ class DriveBulkShareStore(DriveLivePreferences):
                         resource_id=f"{search}:{item['position']}",
                         purpose="owner-search-result",
                     )
-                    if metadata.get("shareable") is False:
+                    # Request search is a discovery step, not grant authority.
+                    # Only an explicit Drive canShare preflight may enter the
+                    # owner review; missing/legacy evidence must fail closed.
+                    if metadata.get("shareable") is not True:
                         excluded_set.add(item["position"])
             chosen_files = [item for item in files if item["position"] not in excluded_set]
             if not chosen_files:
@@ -815,6 +818,32 @@ class DriveBulkShareStore(DriveLivePreferences):
                     <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
                 ):
                     raise DriveSharingError("request_changed")
+                search = self._row(
+                    connection,
+                    """SELECT job_id,status,revision,incomplete_search,checkpoint_envelope
+                    FROM drive_owner_search_jobs
+                    WHERE job_id=:job AND user_id=:user FOR SHARE""",
+                    {"job": row["search_job_id"], "user": user_id},
+                )
+                if (
+                    search is None
+                    or search["status"] != "completed"
+                    or search["incomplete_search"]
+                    or search["revision"] != row["search_revision"]
+                ):
+                    raise DriveSharingError("search_incomplete")
+                checkpoint = self._open(
+                    search["checkpoint_envelope"],
+                    user_id=user_id,
+                    resource_id=str(search["job_id"]),
+                    purpose="owner-search-checkpoint",
+                )
+                if (
+                    checkpoint.get("request_origin_id") != str(origin["request_id"])
+                    or checkpoint.get("request_revision") != origin["revision"]
+                    or checkpoint.get("request_shareability_version") != 1
+                ):
+                    raise DriveSharingError("search_incomplete")
             if len(recipients) != row["recipient_count"] or any(
                 not (
                     self._request_recipient_current(connection, user_id, item["user_id"])

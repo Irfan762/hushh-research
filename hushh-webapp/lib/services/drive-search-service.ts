@@ -11,6 +11,10 @@ export type DriveSearchCoverage = {
   contentPeriodVerified: false;
   providerRowsScanned: number;
   excludedByDateCount: number;
+  /** Files in matching folders omitted because their titles did not match the request. */
+  excludedByTopicCount?: number;
+  /** Owner-only: request search checked live Drive sharing capability. */
+  shareabilityVerified?: boolean;
   deduplicatedCount: number;
   unavailableShortcutCount: number;
   providerPagesExhausted: boolean;
@@ -38,7 +42,7 @@ export type DriveSearchFile = {
   modifiedTime: string | null;
   openUrl: string | null;
   shareable?: boolean;
-  unavailableReason?: "shortcut_target_unavailable" | null;
+  unavailableReason?: "shortcut_target_unavailable" | "source_not_shareable" | "shareability_unverified" | null;
 };
 /** A single saved result, resolved and rechecked by the owner-authenticated chat route. */
 export type DriveSearchSelection = { jobId: string; position: number };
@@ -89,7 +93,9 @@ function coverage(value: unknown): DriveSearchCoverage {
     item.corpora.some(corpus => corpus !== "user" && corpus !== "member_shared_drives") ||
     new Set(item.corpora).size !== item.corpora.length ||
     item.dateBasis !== "title_date_then_created_or_modified" || item.contentPeriodVerified !== false ||
-    typeof item.providerPagesExhausted !== "boolean") throw new DriveSearchError("invalid_response");
+    typeof item.providerPagesExhausted !== "boolean" ||
+    item.shareabilityVerified !== undefined && typeof item.shareabilityVerified !== "boolean")
+    throw new DriveSearchError("invalid_response");
   let requestedPeriod: DriveSearchCoverage["requestedPeriod"] = null;
   if (item.requestedPeriod != null) {
     const period = record(item.requestedPeriod);
@@ -102,6 +108,12 @@ function coverage(value: unknown): DriveSearchCoverage {
     dateBasis: item.dateBasis, contentPeriodVerified: false,
     providerRowsScanned: count(item.providerRowsScanned, Number.MAX_SAFE_INTEGER),
     excludedByDateCount: count(item.excludedByDateCount, Number.MAX_SAFE_INTEGER),
+    ...(item.excludedByTopicCount === undefined ? {} : {
+      excludedByTopicCount: count(item.excludedByTopicCount, Number.MAX_SAFE_INTEGER),
+    }),
+    ...(item.shareabilityVerified === undefined ? {} : {
+      shareabilityVerified: item.shareabilityVerified as boolean,
+    }),
     deduplicatedCount: count(item.deduplicatedCount, Number.MAX_SAFE_INTEGER),
     unavailableShortcutCount: count(item.unavailableShortcutCount), providerPagesExhausted: item.providerPagesExhausted };
 }
@@ -127,7 +139,10 @@ function file(value: unknown): DriveSearchFile {
   const item = record(value);
   if (item.shareable !== undefined && typeof item.shareable !== "boolean")
     throw new DriveSearchError("invalid_response");
-  if (item.unavailableReason != null && item.unavailableReason !== "shortcut_target_unavailable")
+  if (item.unavailableReason != null &&
+    item.unavailableReason !== "shortcut_target_unavailable" &&
+    item.unavailableReason !== "source_not_shareable" &&
+    item.unavailableReason !== "shareability_unverified")
     throw new DriveSearchError("invalid_response");
   // Accept Google file links only. Provider response strings never become HTML.
   let openUrl: string | null = null;
@@ -141,7 +156,7 @@ function file(value: unknown): DriveSearchFile {
   return { position: position(item.position), id: text(item.id, 256), name: text(item.name, 1000), mimeType: text(item.mimeType, 256),
     modifiedTime: item.modifiedTime == null ? null : date(item.modifiedTime), openUrl,
     ...(item.shareable === undefined ? {} : { shareable: item.shareable as boolean }),
-    ...(item.unavailableReason == null ? {} : { unavailableReason: "shortcut_target_unavailable" as const }) };
+    ...(item.unavailableReason == null ? {} : { unavailableReason: item.unavailableReason as DriveSearchFile["unavailableReason"] }) };
 }
 
 export function parseDriveSearchResults(value: unknown, jobId: string): DriveSearchResults {
