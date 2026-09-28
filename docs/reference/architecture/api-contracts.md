@@ -1576,8 +1576,9 @@ only opaque job/share IDs, never a list of Drive IDs or recipient emails.
 | --- | --- |
 | `POST /` | `{searchJobId,clientRequestId,audience:"trusted_circle"}`. Idempotently freezes the completed result IDs and currently eligible, verified recipient identities under an exact review digest. No Google permission or recipient message is created. |
 | `GET /` and `GET /{id}` | Owner's recent review and durable share status: file/recipient counts, exclusions, review revision/digest, and separate queued, confirmed, already-present, skipped, failed, and uncertain effect counts. An uncertain provider write requires review; a queued approval is never called delivered. |
-| `GET /{id}/files?cursor=…` | Owner-only, 25-file pages from the frozen encrypted manifest for inspection before approval. No content downloads. |
+| `GET /{id}/files?cursor=…` | Owner-only, 25-file pages from the frozen encrypted manifest before and after approval. Each file includes bounded per-recipient `outcomes` with recorded status and allowlisted `reasonCode`; original links remain available. No content downloads. |
 | `POST /{id}/approve` | `{revision,reviewDigest,confirmed:true}` from the current exact-set review. HTTP 202 queues file-by-recipient Viewer grants; it does not mean Google access or notification has succeeded. |
+| `POST /{id}/retry` | `{revision,reviewDigest,confirmed:true}` explicitly requeues only a pre-POST `skipped/provider_unavailable` effect with no receipt or lease, in the same frozen manifest. Requires a current owner, exact revision/digest, live connection generation, current recipient relationship and unexpired originating request. Confirmed, stopped, and uncertain effects are never replayed. Returns HTTP 202. |
 | `POST /{id}/stop` | Empty body; fences remaining grants. Already confirmed Google permissions remain and are reported honestly. |
 | `GET /received` and `GET /received/{id}/files?cursor=…` | Current recipient's collection and 25-file pages of *confirmed* original-file links only. The recipient needs a current verified email, not a Drive connector. A changed identity cannot read the old collection. |
 
@@ -1596,6 +1597,17 @@ Only one bulk share can be prepared for a saved search, including across chats o
 repeated requests with different client IDs; reopening recovers the same review
 or progress rather than queueing duplicate grants.
 
+Owner status includes `issues: [{reasonCode,count}]`, `retryableCount` and `canRetry`.
+The displayed partition is `shared + alreadyShared + skipped + failed + needsReview
++ unknown + pending = total`; `processed` counts terminal effects, including failures,
+and is never used as a delivered count. After explicit approval, request delivery
+includes `bulkStatus`, the same recipient-scoped `counts`, and aggregate safe `issues`.
+B receives no failed candidate names or private search metadata. A stopped job keeps
+its stopped status while in-flight effects settle; the originating request then moves
+out of approved and publishes its final outcome. Stop, settlement and retry lock the
+bulk parent before its effects. A retry emits a new request revision without changing
+the reviewed file/recipient manifest.
+
 #### Complete search for a document request
 
 An incoming document request can use the same checkpointed Drive REST search and
@@ -1611,7 +1623,7 @@ file reviews retain their original selection.
 | Method / suffix under `/sharing/requests/{id}` | Contract |
 | --- | --- |
 | `POST /search` | Start or resume the request-bound metadata search. The request ID is the idempotency key; no content or permission is read or written. |
-| `GET /search` | Owner-only checkpoint status, including matched count, pages scanned, incomplete flag, and terminal error. A running or incomplete search cannot be approved as the full set. |
+| `GET /search` | Owner-only checkpoint status, including matched count, unavailable shortcut count, pages scanned, incomplete flag, terminal error and optional `coverage` describing corpus, file kind, frozen date range/basis, scan/exclusion counts and provider page exhaustion. A running or incomplete search cannot be approved as the full set. |
 | `GET /search/files?cursor=…` | Owner-only pages of matching file metadata with stable positions for review. The list may grow until the search completes. |
 | `POST /bulk` | Freeze the completed search for this request's verified recipient, omitting owner-deselected and unavailable shortcut positions. Returns the exact review digest and selected count; no permission is created. |
 
@@ -1625,6 +1637,21 @@ search and sharing. Search results are Drive metadata matches for owner review,
 not proof that every document's contents cover a requested period. The existing
 owner search operational cache uses server-held encryption and is not strict
 client-key zero knowledge, as described above.
+
+Request searches preserve shortcut target metadata through the actual REST projection,
+resolve targets and folder shortcuts, and traverse matching meeting-folder descendants
+with durable encrypted cursors. Document-like note formats include Google Docs, PDF,
+plain text and Word documents; recordings are excluded from a notes request. Topic
+matching uses Drive's file search and existing meeting-note eligibility. The period
+uses a date in the file title first, then creation/modification metadata; it is not a
+content-date verification. Provider pagination is exhausted across the user corpus
+and each member shared drive, including empty pages with continuation tokens; folder
+or result bounds and `incompleteSearch` prevent an exhausted-coverage claim. Every
+selected result is an original file deduplicated by ID. Link-shared originals use
+Google's resource-key header for metadata and permission operations; keys remain
+inside encrypted operational metadata. Only documented rate-limit reason codes on
+a bounded 403 response are treated as transient. An uncertain permission POST is
+reconciled with reads rather than automatically repeated.
 
 ### Exact-file Drive sharing (default-off)
 

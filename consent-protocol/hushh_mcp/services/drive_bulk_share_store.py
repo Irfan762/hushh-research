@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
@@ -25,6 +26,58 @@ _TERMINAL = frozenset(
 )
 _ACTIVE = frozenset({"queued", "running"})
 _ROW = "SELECT * FROM drive_bulk_shares WHERE share_id=:share AND user_id=:user"
+_SAFE_REASONS = frozenset(
+    {
+        "source_changed",
+        "source_not_shareable",
+        "recipient_changed",
+        "connection_changed",
+        "stopped",
+        "sharing_unavailable",
+        "retry_limit",
+        "provider_unavailable",
+        "permission_rejected",
+        "permission_outcome_unknown",
+        "permission_catalog_incomplete",
+        "unavailable",
+    }
+)
+
+
+def safe_bulk_reason(value):
+    """Release only public reason codes, never provider bodies or diagnostics."""
+    return value if value in _SAFE_REASONS else "unavailable"
+
+
+def bulk_outcome_summary(connection, *, share_id, total, recipient_user_id=None):
+    """One count source for A and B; B's query is scoped to B's own effects."""
+    rows = connection.execute(
+        text("""SELECT state,safe_error_code,count(*) AS n
+        FROM drive_bulk_share_effects WHERE share_id=:share
+          AND (:recipient IS NULL OR recipient_user_id=:recipient)
+        GROUP BY state,safe_error_code"""),
+        {"share": share_id, "recipient": recipient_user_id},
+    ).all()
+    states, reasons = Counter(), Counter()
+    for state, reason, count in rows:
+        states[state] += count
+        if state in {"skipped", "failed", "present_unattributed", "absent", "unknown"}:
+            reasons[safe_bulk_reason(reason)] += count
+    processed = sum(states[state] for state in _TERMINAL)
+    return {
+        "counts": {
+            "total": total,
+            "processed": processed,
+            "shared": states["succeeded"],
+            "alreadyShared": states["preexisting"],
+            "skipped": states["skipped"],
+            "failed": states["failed"],
+            "needsReview": states["present_unattributed"] + states["absent"],
+            "unknown": states["unknown"],
+            "pending": max(0, total - processed - states["unknown"]),
+        },
+        "issues": [{"reasonCode": code, "count": count} for code, count in sorted(reasons.items())],
+    }
 
 
 def _uuid(value: object) -> str:
@@ -234,25 +287,37 @@ class DriveBulkShareStore(DriveLivePreferences):
             "unknown": 0,
             "pending": total,
         }
+        issues = []
         if row["approved_at"] is not None:
-            states = dict(
-                connection.execute(
-                    text(
-                        "SELECT state,count(*) AS n FROM drive_bulk_share_effects WHERE share_id=:share GROUP BY state"
-                    ),
-                    {"share": row["share_id"]},
-                ).all()
-            )
-            counts["shared"] = states.get("succeeded", 0)
-            counts["alreadyShared"] = states.get("preexisting", 0)
-            counts["skipped"] = states.get("skipped", 0)
-            counts["failed"] = states.get("failed", 0)
-            counts["needsReview"] = states.get("present_unattributed", 0) + states.get("absent", 0)
-            counts["unknown"] = states.get("unknown", 0)
-            counts["processed"] = sum(states.get(state, 0) for state in _TERMINAL)
-            counts["pending"] = max(0, total - counts["processed"] - counts["unknown"])
+            summary = bulk_outcome_summary(connection, share_id=row["share_id"], total=total)
+            counts, issues = summary["counts"], summary["issues"]
         elif row["status"] == "stopped":
             counts.update(processed=total, skipped=total, pending=0)
+            issues = [{"reasonCode": "stopped", "count": total}] if total else []
+        retryable_count = (
+            connection.execute(
+                text("""SELECT count(*) FROM drive_bulk_share_effects
+            WHERE share_id=:share AND state='skipped' AND safe_error_code='provider_unavailable'
+              AND receipt_envelope IS NULL AND lease_id IS NULL"""),
+                {"share": row["share_id"]},
+            ).scalar_one()
+            if row["status"] in {"partial", "failed"}
+            else 0
+        )
+        retry_origin_current = True
+        if retryable_count and row["origin_request_id"] is not None:
+            origin = self._row(
+                connection,
+                """SELECT status,revision,expires_at FROM drive_share_requests
+                WHERE request_id=:request AND user_id=:user""",
+                {"request": row["origin_request_id"], "user": row["user_id"]},
+            )
+            retry_origin_current = bool(
+                origin
+                and origin["status"] == "partial"
+                and origin["revision"] == row["origin_request_revision"]
+                and origin["expires_at"] > datetime.now(UTC)
+            )
         recipients = self._recipients(connection, row)
         notice_states = dict(
             connection.execute(
@@ -278,6 +343,13 @@ class DriveBulkShareStore(DriveLivePreferences):
             "recipients": [{"name": item["name"], "email": item["email"]} for item in recipients],
             "excluded": excluded,
             "counts": counts,
+            "issues": issues,
+            "retryableCount": retryable_count,
+            "canRetry": retryable_count > 0
+            and retry_origin_current
+            and same_connection
+            and self._owner_grants_enabled(row["user_id"])
+            and row["expires_at"] > datetime.now(UTC),
             "notifications": {
                 "settled": notice_states.get("settled", 0),
                 "pending": notice_states.get("queued", 0) + notice_states.get("dispatching", 0),
@@ -631,6 +703,28 @@ class DriveBulkShareStore(DriveLivePreferences):
                 ).mappings()
             )
             files = []
+            outcomes = {}
+            if row["approved_at"] is not None and items:
+                for effect in connection.execute(
+                    text("""SELECT position,state,safe_error_code
+                    FROM drive_bulk_share_effects
+                    WHERE share_id=:share AND position>:after AND position<=:last
+                    ORDER BY position,recipient_user_id"""),
+                    {
+                        "share": share,
+                        "after": after,
+                        "last": items[min(limit, len(items)) - 1]["position"],
+                    },
+                ).mappings():
+                    outcomes.setdefault(effect["position"], []).append(
+                        {
+                            "status": effect["state"],
+                            "reasonCode": safe_bulk_reason(effect["safe_error_code"])
+                            if effect["safe_error_code"]
+                            and effect["state"] not in {"succeeded", "preexisting"}
+                            else None,
+                        }
+                    )
             for item in items[:limit]:
                 metadata = self._file(item, user_id)
                 files.append(
@@ -640,6 +734,7 @@ class DriveBulkShareStore(DriveLivePreferences):
                         "mimeType": metadata["mimeType"],
                         "modifiedTime": metadata.get("modifiedTime"),
                         "openUrl": metadata.get("openUrl"),
+                        "outcomes": outcomes.get(item["position"], []),
                     }
                 )
             return {
@@ -651,6 +746,36 @@ class DriveBulkShareStore(DriveLivePreferences):
             }
 
         return await self._transaction(operation)
+
+    def _assert_no_overlapping_share(self, connection, *, user_id, share):
+        overlapping = connection.execute(
+            text("""
+            SELECT EXISTS(
+              SELECT 1 FROM drive_bulk_shares other
+              WHERE other.user_id=:user AND other.share_id<>:share
+                AND other.approved_at IS NOT NULL
+                AND (
+                  (other.expires_at>clock_timestamp() AND (
+                    other.status IN ('queued','running')
+                    OR EXISTS(
+                      SELECT 1 FROM drive_bulk_share_effects effect
+                      WHERE effect.share_id=other.share_id
+                        AND effect.state IN ('queued','dispatching','unknown')
+                    )
+                  ))
+                  OR EXISTS(
+                    SELECT 1 FROM drive_bulk_share_effects effect
+                    WHERE effect.share_id=other.share_id
+                      AND effect.state='dispatching'
+                      AND effect.lease_expires_at>clock_timestamp()
+                  )
+                )
+            )
+            """),
+            {"user": user_id, "share": share},
+        ).scalar_one()
+        if overlapping:
+            raise DriveSharingError("drive_share_in_progress")
 
     async def approve(self, *, user_id, share_id, revision, review_digest):
         share = _uuid(share_id)
@@ -703,38 +828,7 @@ class DriveBulkShareStore(DriveLivePreferences):
                 len(recipients) != 1 or recipients[0]["user_id"] != origin["recipient_user_id"]
             ):
                 raise DriveSharingError("recipient_changed")
-            # The owner connection row is locked above, so concurrent approvals
-            # serialize here. A stopped share may still have a dispatched POST;
-            # wait for its receipt or reconciliation before starting another
-            # result set that could contain the same file and recipient.
-            overlapping = connection.execute(
-                text("""
-                SELECT EXISTS(
-                  SELECT 1 FROM drive_bulk_shares other
-                  WHERE other.user_id=:user AND other.share_id<>:share
-                    AND other.approved_at IS NOT NULL
-                    AND (
-                      (other.expires_at>clock_timestamp() AND (
-                        other.status IN ('queued','running')
-                        OR EXISTS(
-                          SELECT 1 FROM drive_bulk_share_effects effect
-                          WHERE effect.share_id=other.share_id
-                            AND effect.state IN ('queued','dispatching','unknown')
-                        )
-                      ))
-                      OR EXISTS(
-                        SELECT 1 FROM drive_bulk_share_effects effect
-                        WHERE effect.share_id=other.share_id
-                          AND effect.state='dispatching'
-                          AND effect.lease_expires_at>clock_timestamp()
-                      )
-                    )
-                )
-                """),
-                {"user": user_id, "share": share},
-            ).scalar_one()
-            if overlapping:
-                raise DriveSharingError("drive_share_in_progress")
+            self._assert_no_overlapping_share(connection, user_id=user_id, share=share)
             connection.execute(
                 text("""
                 INSERT INTO drive_bulk_share_effects(
@@ -775,6 +869,98 @@ class DriveBulkShareStore(DriveLivePreferences):
                         "revision": request["revision"],
                     },
                 )
+            return self._view(connection, updated)
+
+        return await self._transaction(operation)
+
+    async def retry(self, *, user_id, share_id, revision, review_digest):
+        """Explicitly retry only frozen effects that never reached a provider POST."""
+        share = _uuid(share_id)
+        if type(revision) is not int or revision < 1 or not isinstance(review_digest, str):
+            raise DriveSharingError("invalid_argument")
+
+        def operation(connection):
+            if not self._owner_grants_enabled(user_id):
+                raise DriveSharingError("sharing_unavailable")
+            self._lock(connection, {"user_id": user_id, "connector_id": "google_drive"})
+            row = self._owned(connection, user_id, share, locked=True)
+            if (
+                row["status"] not in {"partial", "failed"}
+                or row["approved_at"] is None
+                or row["revision"] != revision
+                or not hmac.compare_digest(row["review_digest"], review_digest)
+            ):
+                raise DriveSharingError("bulk_changed")
+            self.live_active(connection, user_id=user_id, generation=row["connection_generation"])
+            self._assert_no_overlapping_share(connection, user_id=user_id, share=share)
+            origin = None
+            if row["origin_request_id"] is not None:
+                origin = self._row(
+                    connection,
+                    """SELECT * FROM drive_share_requests
+                WHERE request_id=:request AND user_id=:user FOR UPDATE""",
+                    {"request": row["origin_request_id"], "user": user_id},
+                )
+                if (
+                    origin is None
+                    or origin["status"] != "partial"
+                    or origin["revision"] != row["origin_request_revision"]
+                    or origin["expires_at"]
+                    <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
+                ):
+                    raise DriveSharingError("request_changed")
+            recipients = self._recipients(connection, row)
+            if len(recipients) != row["recipient_count"] or any(
+                not (
+                    self._request_recipient_current(connection, user_id, item["user_id"])
+                    if origin is not None
+                    else self._recipient_current(connection, user_id, item["user_id"])
+                )
+                for item in recipients
+            ):
+                raise DriveSharingError("recipient_changed")
+            if origin is not None and (
+                len(recipients) != 1 or recipients[0]["user_id"] != origin["recipient_user_id"]
+            ):
+                raise DriveSharingError("recipient_changed")
+            changed = connection.execute(
+                text("""UPDATE drive_bulk_share_effects
+            SET state='queued',safe_error_code=NULL,attempts=0,next_at=clock_timestamp(),
+                updated_at=clock_timestamp()
+            WHERE share_id=:share AND state='skipped' AND safe_error_code='provider_unavailable'
+              AND receipt_envelope IS NULL AND lease_id IS NULL"""),
+                {"share": share},
+            ).rowcount
+            if not changed:
+                raise DriveSharingError("bulk_changed")
+            if origin is not None:
+                origin = self._row(
+                    connection,
+                    """UPDATE drive_share_requests
+                SET status='approved',revision=revision+1,updated_at=clock_timestamp()
+                WHERE request_id=:request RETURNING *""",
+                    {"request": origin["request_id"]},
+                )
+                connection.execute(
+                    text("""INSERT INTO drive_share_events(
+                event_id,request_id,user_id,revision,event_type)
+                VALUES(:id,:request,:user,:revision,'document_share_decided')
+                ON CONFLICT (request_id,user_id,revision,event_type) DO NOTHING"""),
+                    {
+                        "id": str(uuid4()),
+                        "request": origin["request_id"],
+                        "user": origin["recipient_user_id"],
+                        "revision": origin["revision"],
+                    },
+                )
+            updated = self._row(
+                connection,
+                """UPDATE drive_bulk_shares
+            SET status='queued',revision=revision+1,origin_request_revision=:origin_revision,
+                updated_at=clock_timestamp()
+            WHERE share_id=:share RETURNING *""",
+                {"share": share, "origin_revision": origin["revision"] if origin else None},
+            )
             return self._view(connection, updated)
 
         return await self._transaction(operation)
@@ -835,7 +1021,6 @@ class DriveBulkShareStore(DriveLivePreferences):
         )
         if not row or row["status"] in {
             "review_ready",
-            "stopped",
             "completed",
             "partial",
             "failed",
@@ -857,12 +1042,16 @@ class DriveBulkShareStore(DriveLivePreferences):
             for state in ("failed", "skipped", "present_unattributed", "absent")
         )
         status = "partial" if successes and errors else "failed" if errors else "completed"
-        connection.execute(
-            text("""UPDATE drive_bulk_shares SET status=:status,revision=revision+1,
-              updated_at=clock_timestamp(),expires_at=GREATEST(expires_at,clock_timestamp()+INTERVAL '7 days')
-              WHERE share_id=:share"""),
-            {"share": share, "status": status},
-        )
+        if row["status"] != "stopped":
+            connection.execute(
+                text("""UPDATE drive_bulk_shares SET status=:status,revision=revision+1,
+                  updated_at=clock_timestamp(),expires_at=GREATEST(expires_at,clock_timestamp()+INTERVAL '7 days')
+                  WHERE share_id=:share"""),
+                {"share": share, "status": status},
+            )
+        # Stop suppresses queued writes, but in-flight effects still settle.
+        # Once all effects are terminal, the originating request must leave
+        # approved and emit its final outcome even when the bulk job is stopped.
         origin = self._row(
             connection,
             "SELECT origin_request_id FROM drive_bulk_shares WHERE share_id=:share",
@@ -1121,6 +1310,9 @@ class DriveBulkShareStore(DriveLivePreferences):
             raise ValueError("invalid bulk effect state")
 
         def operation(connection):
+            # Parent-before-effect matches Stop/claim/retry and prevents an
+            # effect receipt racing Stop from forming a lock cycle.
+            self._owned(connection, job["user_id"], job["share_id"], locked=True, unexpired=False)
             effect = self._row(
                 connection,
                 """SELECT * FROM drive_bulk_share_effects WHERE share_id=:share
@@ -1185,6 +1377,9 @@ class DriveBulkShareStore(DriveLivePreferences):
             error = "provider_unavailable"
 
         def operation(connection):
+            parent = self._owned(
+                connection, job["user_id"], job["share_id"], locked=True, unexpired=False
+            )
             effect = self._row(
                 connection,
                 """SELECT * FROM drive_bulk_share_effects WHERE share_id=:share
@@ -1197,7 +1392,6 @@ class DriveBulkShareStore(DriveLivePreferences):
             )
             if effect is None or str(effect["lease_id"]) != job["lease_id"]:
                 return "superseded"
-            parent = self._owned(connection, job["user_id"], job["share_id"], unexpired=False)
             if (
                 uncertain
                 or effect["state"] == "dispatching"

@@ -103,6 +103,11 @@ class DriveBulkShareWorker:
                 file_id=job["file"]["id"],
                 access_token=credentials["accessToken"],
                 require_current=lambda: self.store.require_reconciliation_current(job),
+                **(
+                    {"resource_key": job["file"]["resourceKey"]}
+                    if job["file"].get("resourceKey")
+                    else {}
+                ),
             )
             present = existing_individual_permission(snapshot, email=job["recipient"]["email"])
             await self.store.require_reconciliation_current(job)
@@ -137,6 +142,8 @@ class DriveBulkShareWorker:
                 "access_token": credentials["accessToken"],
                 "require_current": lambda: self.store.require_current(job),
             }
+            if file.get("resourceKey"):
+                args["resource_key"] = file["resourceKey"]
             await self.adapter.inspect_shareable(
                 **args,
                 expected_version="1",
