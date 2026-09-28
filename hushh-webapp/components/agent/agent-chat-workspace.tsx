@@ -137,8 +137,13 @@ import {
 import { describeSelection } from "@/lib/agent/describe-selection";
 import type { DriveBatchProgress, DriveCompilationUiState } from "@/lib/agent/drive-batch-progress";
 import { driveOwnerCompileKey, type DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
-import { useEntryWelcome, type EntryWelcome } from "@/lib/agent/use-entry-welcome";
-import { AgentFirstRunActions } from "@/components/agent/agent-first-run-actions";
+import { useEntryWelcome } from "@/lib/agent/use-entry-welcome";
+import { useChatOnboarding } from "@/lib/agent/chat-onboarding/use-chat-onboarding";
+import {
+  ChatOnboardingDailyTip,
+  ChatOnboardingTurns,
+  type ChatOnboardingBubbleMessage,
+} from "@/components/agent/chat-onboarding/chat-onboarding-transcript";
 import {
   parseAgentActivityExperience,
   personSelectionPrompt,
@@ -1407,78 +1412,6 @@ function AgentWelcomePanel({
     </section>
   );
 }
-
-/**
- * The one-time note shown right after setup. It is deliberately an ordinary
- * assistant message: same width cap, typography and spacing as AgentBubble's
- * assistant branch, with no card chrome. It used to be a 28px-radius hero card
- * with a 3xl heading and a "What's ready so far" summary, which read as a
- * different surface and told a brand-new person about setup they had not done.
- * It now offers the first actions instead: connect accounts, set up agents,
- * or ask one of the curated starters.
- */
-function PostSetupWelcomeCard({
-  name,
-  context,
-  prompts,
-  vaultOwnerToken,
-  hasPortfolioData,
-  disabled,
-  onPromptSelect,
-  onOpenConnector,
-  onNavigate,
-}: {
-  name: string;
-  context: EntryWelcome;
-  prompts: readonly string[];
-  vaultOwnerToken: string | null;
-  hasPortfolioData: boolean;
-  disabled: boolean;
-  onPromptSelect: (prompt: string) => void;
-  onOpenConnector: (
-    provider: "gmail" | "drive" | "calendar" | undefined,
-    trigger: HTMLButtonElement,
-  ) => void;
-  onNavigate: (href: string) => void;
-}) {
-  return (
-    <section
-      data-testid="post-setup-welcome-card"
-      aria-label="Welcome"
-      className="motion-step-enter flex w-full items-start justify-start"
-    >
-      <div className="min-w-0 max-w-[90%] sm:max-w-[min(82%,48rem)]">
-        <div className="px-1 py-2 text-sm leading-6 text-foreground">
-          <p className="font-semibold">Welcome, {name}.</p>
-          <p className="mt-2">
-            I’m One, your private agent. Connect what you want me to work with,
-            or set up an agent. You decide what I see and who it’s shared with.
-          </p>
-        </div>
-        <AgentFirstRunActions
-          vaultOwnerToken={vaultOwnerToken}
-          hasPortfolioData={hasPortfolioData}
-          memoryHasItems={context.status === "ready" && context.totalAttributes > 0}
-          disabled={disabled}
-          onOpenConnector={onOpenConnector}
-          onNavigate={onNavigate}
-        />
-        <div role="group" aria-label="Try asking" className="mt-4">
-          <p className="px-1 text-xs font-medium text-muted-foreground">Try asking</p>
-          <div className="mt-2">
-            <AgentPromptSuggestions
-              prompts={prompts}
-              disabled={disabled}
-              onPromptSelect={onPromptSelect}
-              align="start"
-            />
-          </div>
-        </div>
-      </div>
-    </section>
-  );
-}
-
 
 function useAnimatedAssistantText(targetText: string, active: boolean) {
   const [displayedText, setDisplayedText] = useState(active ? "" : targetText);
@@ -3407,6 +3340,19 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     () => getWelcomePrompts(welcomePromptSetIndex),
     [welcomePromptSetIndex],
   );
+  // One's conversational onboarding replaces the old post-setup tile card.
+  const chatOnboarding = useChatOnboarding({
+    userId: user?.uid,
+    displayName: formatAgentDisplayName(user?.displayName, user?.email),
+    vaultKey,
+    vaultOwnerToken,
+    isVaultUnlocked,
+    startSignal: Boolean(postSetupWelcomeContext),
+    messages,
+    conversationId,
+    onFocusComposer: () => composerTextareaRef.current?.focus(),
+    visiblePrompts: welcomePrompts,
+  });
 
   useEffect(() => {
     if (welcomePromptSetInitializedRef.current) return;
@@ -6588,6 +6534,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     if ((!typedText.trim() && !attachmentText?.trim()) || isVoiceConnecting || voiceActive) {
       return;
     }
+    // Only after the person chose "Something else" for their name, and only
+    // when it is name-shaped; anything else is an ordinary turn to One.
+    if (!attachment && chatOnboarding.captureComposerText(typedText)) {
+      setInput("");
+      return;
+    }
     // Enter (form submit) and the Send button both land here, so both bring
     // One's pending turn into view. The button used to call this directly
     // and skip the marking, which lived only in the form's submit handler.
@@ -6788,6 +6740,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       }
       return true;
     }),
+  );
+  const visibleMessageIds = visibleMessages.map((message) => message.id);
+  const renderChatOnboarding = (slot: Parameters<typeof ChatOnboardingTurns>[0]["slot"]) => (
+    <ChatOnboardingTurns
+      controller={chatOnboarding}
+      slot={slot}
+      renderBubble={(message: ChatOnboardingBubbleMessage) => (
+        <AgentBubble message={message} userAvatarUrl={userAvatarUrl} userInitials={userInitials} />
+      )}
+      onConnect={(action, trigger) =>
+        action.kind === "connector"
+          ? openConnectorSurface(action.provider, trigger)
+          : router.push(action.href)
+      }
+    />
   );
   const trailingSpecialistLoadingMessages = pendingSpecialistDirective
     ? messages.filter(
@@ -7473,29 +7440,29 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : null}
 
-              {postSetupWelcomeContext ? (
-                <PostSetupWelcomeCard
-                  name={displayName}
-                  context={postSetupWelcomeContext}
-                  prompts={welcomePrompts}
-                  vaultOwnerToken={vaultOwnerToken}
-                  hasPortfolioData={hasPortfolioData}
-                  disabled={isChatLoading || isStreaming}
-                  onPromptSelect={handleWelcomePromptSelect}
-                  onOpenConnector={openConnectorSurface}
-                  onNavigate={(href) => router.push(href)}
-                />
+              {chatOnboarding.turns.length ? (
+                renderChatOnboarding({ kind: "top" })
               ) : !hasStartedConversation ? (
-                <AgentWelcomePanel
-                  name={displayName}
-                  prompts={welcomePrompts}
-                  disabled={isChatLoading || isStreaming}
-                  onPromptSelect={handleWelcomePromptSelect}
-                />
+                <>
+                  <AgentWelcomePanel
+                    name={displayName}
+                    prompts={welcomePrompts}
+                    disabled={isChatLoading || isStreaming}
+                    onPromptSelect={handleWelcomePromptSelect}
+                  />
+                  {chatOnboarding.dailyTip ? (
+                    <ChatOnboardingDailyTip
+                      tip={chatOnboarding.dailyTip}
+                      onUse={handleWelcomePromptSelect}
+                      onDismiss={chatOnboarding.dismissDailyTip}
+                    />
+                  ) : null}
+                </>
               ) : null}
 
               {visibleMessages.map((message) => (
                 <Fragment key={message.id}>
+                  {renderChatOnboarding({ kind: "before", messageId: message.id, visibleMessageIds })}
                   {message.kind === "selection" ? (
                     <SelectionChip label={message.text} />
                   ) : (
@@ -7734,6 +7701,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                     : null}
                 </Fragment>
               ))}
+              {renderChatOnboarding({ kind: "end", visibleMessageIds })}
 
               {walletWidgets.map((widget) =>
                 widget.kind === "list" ? (
@@ -8848,9 +8816,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           isVoiceConnecting
                         }
                         placeholder={
-                          composerExpanded
+                          chatOnboarding.composerPlaceholder ??
+                          (composerExpanded
                             ? "Write a longer message..."
-                            : "Message One..."
+                            : "Message One...")
                         }
                         rows={1}
                         className={
