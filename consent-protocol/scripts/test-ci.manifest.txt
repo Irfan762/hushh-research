@@ -353,6 +353,8 @@ tests/services/test_location_nearby_visit_command_postgres.py
 tests/test_agui_turn_timing.py
 # Startup warmup: a worker's first chat turn imports nothing before its model call.
 tests/test_one_turn_warmup.py
+# Smart follow-ups end the turn in the answer's own model call, never a second.
+tests/test_one_follow_up_suggestions.py
 # Shutdown drain: a stream cut by SIGTERM still ends with a terminal RUN_ERROR.
 tests/test_agent_chat_drain.py
 tests/test_encrypted_adk_session_service.py

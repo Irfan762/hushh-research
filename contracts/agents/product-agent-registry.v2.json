@@ -3753,7 +3753,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "f839fee2c11d7aae1dc56be951d1b91f85e9f46f54a5e2e54795e37a5daa3466",
+      "system_instruction_sha256": "ed184ccefad45bf3fff6accce11f5b02d45f0e7187df462a2c3e9d567cdef72e",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
@@ -3809,6 +3809,12 @@
           "name": "propose_drive_file_trash",
           "py_func": "hushh_mcp.one_adk.drive_write_tools.propose_drive_file_trash",
           "required_scope": "vault.owner"
+        },
+        {
+          "description": "Offer two or three short next questions after a substantive typed-chat answer, in the same response; the app shows them as tappable chips that fill the composer and reads or changes nothing.",
+          "name": "suggest_follow_ups",
+          "py_func": "hushh_mcp.one_adk.follow_up_suggestions.suggest_follow_ups",
+          "required_scope": "cap.one.invoke"
         }
       ],
       "ui_type": "chat",
