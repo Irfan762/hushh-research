@@ -393,7 +393,7 @@ function WelcomeRadar() {
           data-one-welcome-core
         >
           <MapPin
-            className="h-6 w-6 fill-[#087ff5]/16 stroke-[#087ff5]"
+            className="h-6 w-6 text-[color:var(--app-accent)]"
             strokeWidth={2.7}
           />
         </span>
@@ -499,7 +499,7 @@ function WelcomeScreen({
           </div>
           {/* Centered measure like the feature-screen CTA below: full-width
               here stretched edge to edge on desktop and read as a bar. */}
-          <div className="mx-auto w-full max-w-[430px] shrink-0">
+          <div className="mx-auto w-full max-w-[244px] shrink-0">
             <PrimaryButton inverse onClick={onStart}>
               Get started
             </PrimaryButton>
@@ -957,7 +957,7 @@ function FeaturesScreen({
         </p>
       </div>
       <div
-        className="mx-auto w-full max-w-[430px] shrink-0 pt-5"
+        className="mx-auto w-full max-w-[244px] shrink-0 pt-5"
         data-one-feature-cta
       >
         <PrimaryButton

@@ -112,7 +112,7 @@ describe("OneLocationOnboardingFlow four-step contract", () => {
       "hover:bg-white/90",
     );
     expect(document.querySelector("[data-one-welcome-core] svg")?.className.baseVal).toContain(
-      "stroke-[#087ff5]",
+      "text-[color:var(--app-accent)]",
     );
   });
 
