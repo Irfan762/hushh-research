@@ -93,7 +93,9 @@ async def _run_read() -> tuple[FakeTransport, FakeLive]:
         [
             LiveEvent(
                 kind="tool_call",
-                function_calls=[{"id": "c1", "name": "read_mail", "args": {"request": "any mail?"}}],
+                function_calls=[
+                    {"id": "c1", "name": "read_mail", "args": {"request": "any mail?"}}
+                ],
             ),
             None,
         ]

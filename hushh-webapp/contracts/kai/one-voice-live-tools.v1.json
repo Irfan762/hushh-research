@@ -1492,6 +1492,36 @@
       "ui_refresh": []
     },
     {
+      "circle_args": [],
+      "description": "Answer a question about the person's own mailbox: recent or unread mail, mail from someone, what needs a reply, or what a specific message says. Shows the matching messages and says how many were found. Reading never marks mail read and never archives, sends or deletes anything.",
+      "firebase_plane": false,
+      "gateway_action_id": "email.chat.turn",
+      "name": "read_mail",
+      "parameters": {
+        "additionalProperties": false,
+        "description": "The person's own question, forwarded to the planner unchanged.\n\nNot a command phrase and not parsed here: the planner owns turning it into\nexactly one bounded operation.",
+        "properties": {
+          "request": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Request",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request"
+        ],
+        "type": "object"
+      },
+      "person_args": [],
+      "policy": "read",
+      "result_statuses": [],
+      "tier": null,
+      "ui_refresh": [
+        "mail"
+      ]
+    },
+    {
       "circle_args": [
         "circle"
       ],
