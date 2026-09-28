@@ -68,6 +68,20 @@ successful after a session change, but cannot republish information into the new
 session; cancellation is not a rollback of a request already accepted upstream.
 Rendered continuity, extraction completeness and latency still need live proof.
 
+## Chat onboarding preferences
+
+After setup, One asks in chat what to call the person and how it should talk.
+Those two answers are saved only when the person taps **Save to memory**, as a
+typed structured write through `PkmWriteCoordinator.saveMergedDomain` to
+`identity.communication_preferences` (`preferred_name`, `reply_style`). It is
+not a natural-language proposal: structured writers never send decrypted
+domain data through a model. The per-turn memory packet renders the values as
+"Identity > Communication Preferences > ...", and One's authored instruction
+treats them as a style preference that never widens what it may read, share,
+save, or do. Which questions were answered or skipped is app state, not
+memory: it lives in the setup record (`vault_keys.one_chat_onboarding`), never
+in PKM and never in browser storage.
+
 UX reference: [Muse's published design](https://introducing.muse.ai/) describes quiet
 background status, inspectable memory, and explicit approval for consequential
 actions. These are design references, not evidence of Hussh implementation or

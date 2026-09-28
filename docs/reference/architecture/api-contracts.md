@@ -260,6 +260,16 @@ pre-vault contract. A selected setup credential is process-memory-only: it may
 be request-validated before the vault but is encrypted through the existing
 vault-owner PKM mutation path only at Finish setup.
 
+The same two routes carry `oneChatOnboarding`, the durable progress of One's
+conversational onboarding (migration 257, `vault_keys.one_chat_onboarding`):
+`{version: 1, status: in_progress|completed, answered, skipped, completedOn,
+tipDismissedOn}`, where `answered` and `skipped` hold only the question ids
+`name`, `focus` and `tone`, and the two dates are `YYYY-MM-DD`. The backend
+re-normalizes it (`normalize_one_chat_onboarding`) and drops any other key, so
+the plaintext row can never hold an answer. A person's preferred name and
+reply style are written only to encrypted memory, client-side, after they
+confirm. Omitting the field leaves the stored record unchanged.
+
 ### One Model Preference
 
 The Chat header reads the served model catalog independently of identity
