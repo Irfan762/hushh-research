@@ -40,7 +40,7 @@ import { AgentStructuredExperienceView } from "@/components/agent/agent-structur
 import { ConsentCardPhaseContext, RequesterProgressBody } from "@/components/agent/consent/requester-consent-card";
 import { AccessEndedNotice } from "@/components/agent/consent/access-ended-notice";
 import { SharedDetailsList, humanSharedDetails } from "@/components/agent/consent/shared-details";
-import { parseRequestProgress, timelineFor, type RequestProgress } from "@/components/agent/consent/request-progress";
+import { parseRequestProgress, progressHeadline, timelineFor, type RequestProgress } from "@/components/agent/consent/request-progress";
 import { askSentence } from "@/components/agent/consent/ask-proposal-card";
 import { parseScopeProposal } from "@/lib/agent/scope-proposal";
 import { parseAgentToolResultExperience } from "@/lib/agent/agui-structured-experiences";
@@ -94,6 +94,18 @@ describe("request progress timeline", () => {
     expect(parseRequestProgress({ requested_at: ASKED, outcome: "maybe" })).toBeNull();
   });
 
+  it("tolerates a withdrawn request: parses cancelled and shows only what really happened", () => {
+    const withdrawn = progress({ outcome: "cancelled", delivered_at: ASKED,
+      fields: [{ label: "Food preferences", status: "cancelled" }] });
+    expect(withdrawn.outcome).toBe("cancelled");
+    expect(withdrawn.fields).toEqual([{ label: "Food preferences", status: "cancelled" }]);
+    const steps = timelineFor(withdrawn);
+    expect(stateOf(steps)).toMatchObject({ delivered: "done:Delivered", seen: "upcoming:Seen", decided: "done:Withdrawn" });
+    expect(steps.some(step => step.state === "current")).toBe(false);
+    expect(steps.map(step => step.key)).not.toContain("reading");
+    expect(progressHeadline(withdrawn, "Kushal Trivedi")).toBe("You withdrew this request");
+  });
+
   it("walks Asked, Delivered, Seen, Decided with exactly one live step while waiting", () => {
     expect(stateOf(timelineFor(progress()))).toMatchObject({ asked: "done:Asked", delivered: "current:Delivered", seen: "upcoming:Seen" });
     expect(stateOf(timelineFor(progress({ delivered_at: ASKED })))).toMatchObject({ delivered: "done:Delivered", seen: "current:Seen" });
@@ -133,6 +145,14 @@ describe("living requester card body", () => {
     expect(screen.getByRole("list", { name: "Request progress" }).querySelector("[aria-current='step']"))
       .toHaveAttribute("data-step", "seen");
     expect(screen.getByRole("status")).toHaveTextContent("Delivered to Kushal");
+  });
+
+  it("says when the person saw it, not that it was delivered, once Seen is done", () => {
+    const SEEN = "2026-09-28T14:05:00Z";
+    render(<RequesterProgressBody progress={progress({ delivered_at: ASKED, seen_at: SEEN })} personName="Kushal Trivedi" purpose="Dinner" />);
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/^Kushal saw it\s*\d{1,2}:\d{2}\s?[AP]M$/);
+    expect(status).not.toHaveTextContent("Delivered");
   });
 
   it("lists shared and declined items with human labels and when access ends", () => {
@@ -320,6 +340,40 @@ describe("One picks, you confirm", () => {
       proposed: [{ scope: "scope-food", label: "Food preferences", why: null }], duration_default: 168, reason_suggestion: "dinner planning",
     });
     expect(experience).toMatchObject({ type: "one.scope_discovery.v1", proposal: { durationHours: 168 } });
+  });
+
+  it("reads Lane B's actual propose_information_request output (test_consent_lifecycle_chat.py)", () => {
+    // The exact shape consent-protocol asserts for "What is Sarah Chen's favorite restaurant?".
+    const PERSON_REF = "11111111-1111-4111-8111-111111111111";
+    const laneB = {
+      status: "proposal_ready", proposalId: "a".repeat(32),
+      person: { displayName: "Sarah Chen", personRef: PERSON_REF, profilePath: `/people/${PERSON_REF}` },
+      fields: ["Favorite cuisine"], unmatchedFields: [],
+      purpose: "I'd like to know your favorite cuisine.", durationHours: 168,
+      proposed: [{ scope: "psr_cuisine", label: "Favorite cuisine", why: "\"restaurant\" relates to food & dining" }],
+      alternatives: [{ scope: "psr_diet", label: "Dietary needs", why: "Related" }],
+      duration_default: "7d", reason_suggestion: "I'd like to know your favorite cuisine.",
+      connectorReady: true, nextStep: "Say one short line.",
+      directive: { actionId: "consent.request", slots: { scopeRefs: ["psr_cuisine"] } },
+    };
+    const experience = parseAgentToolResultExperience("propose_information_request", laneB);
+    expect(experience).toMatchObject({
+      type: "one.scope_discovery.v1",
+      person: { personRef: PERSON_REF, displayName: "Sarah Chen", profilePath: `/people/${PERSON_REF}` },
+      proposal: {
+        proposed: [{ scopeRef: "psr_cuisine", label: "Favorite cuisine", why: "\"restaurant\" relates to food & dining" }],
+        durationHours: 168,
+        reasonSuggestion: "I'd like to know your favorite cuisine.",
+      },
+    });
+    // A non-day duration travels as B's numeric durationHours, which wins over its label.
+    const oneDay = parseAgentToolResultExperience("propose_information_request",
+      { ...laneB, durationHours: 24, duration_default: "24 hours" });
+    expect(oneDay).toMatchObject({ proposal: { durationHours: 24 } });
+    // A person reference that does not match its profile path is refused, never trusted.
+    expect(parseAgentToolResultExperience("propose_information_request",
+      { ...laneB, person: { ...laneB.person, personRef: "22222222-2222-4222-8222-222222222222" } }))
+      .not.toMatchObject({ type: "one.scope_discovery.v1" });
   });
 
   it("sends One's pick through the existing send path", async () => {

@@ -15,8 +15,9 @@
  * `current` step while something is still in motion.
  */
 
-export type RequestOutcome = "pending" | "granted" | "partially_granted" | "denied" | "expired" | "revoked";
-export type RequestFieldStatus = "pending" | "granted" | "denied" | "expired" | "revoked";
+/** `cancelled`: the requester withdrew the request (the server's `bundle_outcome_from_statuses`). */
+export type RequestOutcome = "pending" | "granted" | "partially_granted" | "denied" | "expired" | "revoked" | "cancelled";
+export type RequestFieldStatus = "pending" | "granted" | "denied" | "expired" | "revoked" | "cancelled";
 
 export type RequestProgressField = {
   label: string;
@@ -47,8 +48,8 @@ export type TimelineStep = {
   tone: "positive" | "neutral";
 };
 
-const OUTCOMES: readonly RequestOutcome[] = ["pending", "granted", "partially_granted", "denied", "expired", "revoked"];
-const FIELD_STATUSES: readonly RequestFieldStatus[] = ["pending", "granted", "denied", "expired", "revoked"];
+const OUTCOMES: readonly RequestOutcome[] = ["pending", "granted", "partially_granted", "denied", "expired", "revoked", "cancelled"];
+const FIELD_STATUSES: readonly RequestFieldStatus[] = ["pending", "granted", "denied", "expired", "revoked", "cancelled"];
 const MAX_FIELDS = 50;
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -112,6 +113,8 @@ function decidedLabel(progress: RequestProgress): string {
       return "Shared";
     case "denied":
       return "Declined";
+    case "cancelled":
+      return "Withdrawn";
     case "expired":
       return progress.decidedAt ? "Shared" : "No answer";
     default:
@@ -137,8 +140,13 @@ export function timelineFor(progress: RequestProgress, phase?: RequesterCardPhas
     ? ["asked", "delivered", "seen", "decided", "answered"]
     : ["asked", "delivered", "seen", "decided", "reading", "answered"];
   // Unanswered expiry: the owner never saw a decision point, so Seen is only
-  // done if it really happened.
+  // done if it really happened. A withdrawn request likewise shows only the
+  // steps that really happened before the requester withdrew it.
   if (isUnansweredExpiry(progress)) done.seen = Boolean(progress.seenAt);
+  if (progress.outcome === "cancelled") {
+    done.delivered = Boolean(progress.deliveredAt || progress.seenAt);
+    done.seen = Boolean(progress.seenAt);
+  }
   const labels: Record<TimelineStepKey, string> = {
     asked: "Asked", delivered: "Delivered", seen: "Seen", decided: decidedLabel(progress),
     reading: "Reading", answered: "Answered",
@@ -153,7 +161,8 @@ export function timelineFor(progress: RequestProgress, phase?: RequesterCardPhas
       state = "current";
       currentAssigned = true;
     }
-    const tone = key === "decided" && (progress.outcome === "denied" || isUnansweredExpiry(progress))
+    const tone = key === "decided"
+      && (progress.outcome === "denied" || progress.outcome === "cancelled" || isUnansweredExpiry(progress))
       ? "neutral" : "positive";
     return { key, label: labels[key], state, tone };
   });
@@ -198,6 +207,7 @@ export function progressHeadline(progress: RequestProgress, personName: string, 
   if (isAccessEnded(progress)) return "Access ended";
   if (isUnansweredExpiry(progress)) return `This request expired before ${name} answered`;
   if (progress.outcome === "denied") return `${name} chose not to share this`;
+  if (progress.outcome === "cancelled") return "You withdrew this request";
   if (progress.outcome === "granted" || progress.outcome === "partially_granted") {
     if (phase === "reading") return `Reading what ${name} shared…`;
     if (phase === "answered") return "One answered with what was shared";
@@ -205,7 +215,8 @@ export function progressHeadline(progress: RequestProgress, personName: string, 
       ? `${name} shared some of what you asked`
       : `${name} shared ${joinLabels(shared)}`;
   }
-  if (progress.seenAt) return `${name} is looking at your request`;
+  // The quiet timestamp beside the headline is the seen time: "Kushal saw it 2:14 PM".
+  if (progress.seenAt) return `${name} saw it`;
   if (progress.deliveredAt) return `Delivered to ${name}`;
   return `On its way to ${name}`;
 }
