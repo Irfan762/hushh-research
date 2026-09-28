@@ -231,7 +231,7 @@
     {
       "route_pattern": "/circle/join",
       "page_file": "app/circle/join/page.tsx",
-      "route_mode": "redirect",
+      "route_mode": "hidden",
       "orchestration_class": "transitional",
       "instruction_id": "route.circle.join",
       "context_policy": "suppress",
@@ -265,11 +265,11 @@
       "action_ids": [],
       "action_coverage": "none",
       "delegation_policy": {
-        "mode": "block_delegation",
+        "mode": "no_delegation",
         "allowed_delegate_agent_ids": []
       },
       "trust_boundary": "none",
-      "native_surface_id": null
+      "native_surface_id": "native-route-circle-join"
     },
     {
       "route_pattern": "/connected-systems",
