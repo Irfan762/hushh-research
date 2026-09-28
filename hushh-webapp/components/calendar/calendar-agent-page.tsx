@@ -57,7 +57,7 @@ import { waitForOAuthPopup } from "@/lib/profile/drive-oauth-popup";
 const CALENDAR_OAUTH_POPUP_TIMEOUT_MS = 120_000;
 
 function CalendarConnectIcon({
-  className = "size-6 mb-2",
+  className = "size-10 mb-2.5",
   style = { color: "#FF3B30" },
 }: {
   className?: string;
@@ -493,7 +493,7 @@ export function CalendarAgentPage({
     >
       <AppPageContentRegion className={CALENDAR_SETUP_REGION_CLASSNAME}>
         <div className="flex flex-col items-center text-center space-y-0.5 pb-3 pt-5">
-            <CalendarConnectIcon className="size-6 mb-2" style={{ color: "#FF3B30" }} />
+            <CalendarConnectIcon className="size-10 mb-2.5" style={{ color: "#FF3B30" }} />
             <p className="text-lg font-semibold tracking-tight">
               {connected ? "Google Calendar" : "Connect Google Calendar"}
             </p>
