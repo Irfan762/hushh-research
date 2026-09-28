@@ -14,6 +14,7 @@ from hushh_mcp.services.drive_live_preferences import DriveLivePreferences
 from hushh_mcp.services.drive_owner_search_service import DriveOwnerSearchService
 from hushh_mcp.services.drive_owner_search_store import DriveOwnerSearchStore
 from hushh_mcp.services.drive_owner_search_worker import DriveOwnerSearchWorker
+from hushh_mcp.services.drive_request_bulk_service import DriveRequestBulkService
 from hushh_mcp.services.drive_sharing_contract import (
     DriveSharingError,
     ShareRequestPurpose,
@@ -61,6 +62,37 @@ def _membership(sharing, status):
             (circle_id,user_id,status) VALUES (:circle,'recipient',:status)"""),
             {"circle": circle, "status": status},
         )
+
+
+def _auto_job(bulk, *, request_id):
+    job_id = _search(bulk, request_id=request_id, count=1)
+    with bulk.db.engine.begin() as connection:
+        envelope = connection.execute(
+            text("SELECT checkpoint_envelope FROM drive_owner_search_jobs WHERE job_id=:job"),
+            {"job": job_id},
+        ).scalar_one()
+        checkpoint = bulk._open(
+            envelope,
+            user_id="owner",
+            resource_id=job_id,
+            purpose="owner-search-checkpoint",
+        )
+        checkpoint["authority_mode"] = "trusted_auto"
+        connection.execute(
+            text("""UPDATE drive_owner_search_jobs
+              SET checkpoint_envelope=CAST(:envelope AS jsonb),status='queued',
+                next_at=clock_timestamp() WHERE job_id=:job"""),
+            {
+                "job": job_id,
+                "envelope": bulk._seal(
+                    checkpoint,
+                    user_id="owner",
+                    resource_id=job_id,
+                    purpose="owner-search-checkpoint",
+                ),
+            },
+        )
+    return job_id
 
 
 @pytest.mark.asyncio
@@ -175,18 +207,13 @@ async def test_revoked_auto_search_makes_no_provider_get_or_new_page(
     await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
     item = await _request(sharing)
     request_id = item["requestId"]
-    job_id = _search(request_bulk, request_id=request_id, count=1)
+    job_id = _auto_job(request_bulk, request_id=request_id)
     with sharing.db.engine.begin() as connection:
         before = connection.execute(
             text("""SELECT matched,pages_scanned FROM
             drive_owner_search_jobs WHERE job_id=:job"""),
             {"job": job_id},
         ).one()
-        connection.execute(
-            text("""UPDATE drive_owner_search_jobs SET status='queued',
-            next_at=clock_timestamp() WHERE job_id=:job"""),
-            {"job": job_id},
-        )
     if revocation == "background":
         await preferences.set_background(user_id="owner", enabled=False, confirmed=True)
     else:
@@ -220,6 +247,69 @@ async def test_revoked_auto_search_makes_no_provider_get_or_new_page(
     else:
         assert review["preparationError"] == "trusted_relationship_changed"
         assert after.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_background_reenabled_before_pause_keeps_search_due(request_bulk, sharing):
+    _membership(sharing, "active")
+    preferences = DriveLivePreferences(db=sharing.db)
+    await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
+    request = await _request(sharing)
+    job_id = _auto_job(request_bulk, request_id=request["requestId"])
+    store = DriveOwnerSearchStore(db=sharing.db)
+    job = await store.claim(user_id="owner", job_id=job_id)
+    assert job is not None
+    await preferences.set_background(user_id="owner", enabled=False, confirmed=True)
+    await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
+    assert await store.pause_for_background(job) == "queued"
+    with sharing.db.engine.begin() as connection:
+        assert connection.execute(
+            text("""SELECT next_at<expires_at FROM drive_owner_search_jobs
+              WHERE job_id=:job"""),
+            {"job": job_id},
+        ).scalar_one()
+
+
+@pytest.mark.asyncio
+async def test_owner_takeover_resumes_same_search_without_trusted_authority(request_bulk, sharing):
+    _membership(sharing, "active")
+    preferences = DriveLivePreferences(db=sharing.db)
+    await preferences.set_background(user_id="owner", enabled=True, confirmed=True)
+    request = await _request(sharing)
+    request_id = request["requestId"]
+    job_id = _auto_job(request_bulk, request_id=request_id)
+    store = DriveOwnerSearchStore(db=sharing.db)
+    old_auto_lease = await store.claim(user_id="owner", job_id=job_id)
+    assert old_auto_lease is not None
+    assert await sharing.trusted_request_for_job(user_id="owner", job_id=job_id) == request_id
+    _membership(sharing, "removed")
+    await preferences.set_background(user_id="owner", enabled=False, confirmed=True)
+    service = DriveRequestBulkService(
+        sharing=sharing,
+        search=DriveOwnerSearchService(store=store, transport=SimpleNamespace()),
+        bulk=request_bulk,
+        require_owner=AsyncMock(),
+        wake=AsyncMock(),
+    )
+    result = await service.start_search(user_id="owner", request_id=request_id)
+    assert result["status"] == "queued" and result["jobId"] == job_id
+    assert await sharing.trusted_request_for_job(user_id="owner", job_id=job_id) is None
+    review = await sharing.owner_review(user_id="owner", request_id=request_id)
+    assert review["trustedAuto"] is False and review["preparationError"] is None
+    with pytest.raises(DriveReadError, match="search_superseded"):
+        await store.require_current(old_auto_lease)
+    owner_lease = await store.claim(user_id="owner", job_id=job_id)
+    assert owner_lease is not None
+    assert owner_lease["checkpoint"]["authority_mode"] == "owner"
+    await store.require_current(owner_lease)
+    with sharing.db.engine.begin() as connection:
+        assert (
+            connection.execute(
+                text("""SELECT count(*) FROM drive_owner_search_results WHERE job_id=:job"""),
+                {"job": job_id},
+            ).scalar_one()
+            == 1
+        )
 
 
 @pytest.mark.asyncio

@@ -78,10 +78,18 @@ class DriveTrustedAutoService:
                     wake=self.wake,
                 )
                 if deadline_at is None:
-                    await service.start_search(user_id=user_id, request_id=request_id)
+                    await service.start_search(
+                        user_id=user_id,
+                        request_id=request_id,
+                        authority_mode="trusted_auto",
+                    )
                 else:
                     async with asyncio.timeout_at(deadline_at - 15):
-                        await service.start_search(user_id=user_id, request_id=request_id)
+                        await service.start_search(
+                            user_id=user_id,
+                            request_id=request_id,
+                            authority_mode="trusted_auto",
+                        )
                 outcomes["started"] += 1
                 # The durable search may have no committed rows yet. Wake its
                 # own slice before spending this invocation on empty batches.

@@ -534,8 +534,11 @@ class DriveOwnerSearchService:
         plan,
         require_current,
         timezone="UTC",
+        authority_mode="owner",
     ):
         """Start or resume the owner-approved request's durable metadata search."""
+        if authority_mode not in {"owner", "trusted_auto"}:
+            raise DriveReadError("invalid_argument")
         await require_current()
         query = purpose["purpose"]
         request = self._request(query, timezone)
@@ -558,6 +561,7 @@ class DriveOwnerSearchService:
                 "query_index": 0,
                 "request_origin_id": request_id,
                 "request_revision": request_revision,
+                "authority_mode": authority_mode,
                 "request_shareability_version": 1,
                 "request_file_kind": plan.get("file_kind", "any"),
                 "request_subject_terms": plan.get("terms", []),

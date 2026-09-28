@@ -221,6 +221,7 @@ class DriveSharingStore(DriveDocumentStore):
             row = self._related_request(connection, user_id, identity)
             if (
                 row["status"] != "pending"
+                or row["preparation_error_code"] == "manual_search_active"
                 or row["expires_at"]
                 <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
                 or self._open_request(row).get("trusted_auto") is not True
@@ -229,6 +230,22 @@ class DriveSharingStore(DriveDocumentStore):
                 )
             ):
                 raise DriveSharingError("trusted_request_unavailable")
+            if row["bulk_search_started_at"] is not None:
+                search = self._row(
+                    connection,
+                    """SELECT job_id,checkpoint_envelope FROM drive_owner_search_jobs
+                      WHERE user_id=:user AND client_request_id=:request""",
+                    {"user": user_id, "request": identity},
+                )
+                if search is not None:
+                    checkpoint = self.sharing_cipher.open(
+                        search["checkpoint_envelope"],
+                        user_id=user_id,
+                        resource_id=str(search["job_id"]),
+                        purpose="owner-search-checkpoint",
+                    )
+                    if checkpoint.get("authority_mode") != "trusted_auto":
+                        raise DriveSharingError("trusted_request_unavailable")
             return {
                 "requestId": identity,
                 "recipientUserId": row["recipient_user_id"],
@@ -315,17 +332,26 @@ class DriveSharingStore(DriveDocumentStore):
         def operation(connection):
             row = self._row(
                 connection,
-                """SELECT r.* FROM drive_owner_search_jobs j
+                """SELECT r.*,j.checkpoint_envelope,j.job_id FROM drive_owner_search_jobs j
                   JOIN drive_share_requests r ON r.request_id=j.client_request_id
                     AND r.user_id=j.user_id
                   WHERE j.job_id=:job AND j.user_id=:user
                     AND r.bulk_search_started_at IS NOT NULL
+                    AND r.preparation_error_code<>'manual_search_active'
                     AND r.expires_at>clock_timestamp()""",
                 {"job": identity, "user": user_id},
             )
+            if row is None or self._open_request(row).get("trusted_auto") is not True:
+                return None
+            checkpoint = self.sharing_cipher.open(
+                row["checkpoint_envelope"],
+                user_id=user_id,
+                resource_id=str(row["job_id"]),
+                purpose="owner-search-checkpoint",
+            )
             return (
                 str(row["request_id"])
-                if row and self._open_request(row).get("trusted_auto") is True
+                if checkpoint.get("authority_mode") == "trusted_auto"
                 else None
             )
 
@@ -341,6 +367,25 @@ class DriveSharingStore(DriveDocumentStore):
             code = "preparation_unavailable"
 
         def operation(connection):
+            # Serialize with background preference changes so an enabled owner
+            # cannot leave this request parked until the next scheduler pass.
+            connector = self._row(
+                connection,
+                """SELECT connection_generation FROM user_external_connector_connections
+                  WHERE user_id=:user AND connector_id='google_drive' FOR UPDATE""",
+                {"user": user_id},
+            )
+            background_ready = False
+            if code == "background_preparation_required" and connector is not None:
+                try:
+                    DriveLivePreferences(db=self.db).background_current(
+                        connection,
+                        user_id=user_id,
+                        generation=connector["connection_generation"],
+                    )
+                    background_ready = True
+                except DriveReadError:
+                    pass
             row = self._row(
                 connection,
                 """SELECT * FROM drive_share_requests WHERE request_id=:request
@@ -350,6 +395,7 @@ class DriveSharingStore(DriveDocumentStore):
             if (
                 row is None
                 or row["status"] != "pending"
+                or row["preparation_error_code"] == "manual_search_active"
                 or self._open_request(row).get("trusted_auto") is not True
             ):
                 return
@@ -363,23 +409,25 @@ class DriveSharingStore(DriveDocumentStore):
             )
             attempts = row["preparation_attempts"] + int(code == "preparation_unavailable")
             terminal = code == "preparation_unavailable" and attempts >= 3
-            visible_code = (
-                "background_preparation_required"
-                if code == "background_preparation_required"
-                else "trusted_relationship_changed"
-                if code == "trusted_relationship_changed"
-                else "preparation_unavailable"
-                if terminal
-                else "trusted_auto_active"
-                if has_job
-                else "trusted_auto_queued"
-            )
+            if code == "background_preparation_required":
+                visible_code = (
+                    ("trusted_auto_active" if has_job else "trusted_auto_queued")
+                    if background_ready
+                    else "background_preparation_required"
+                )
+            elif code == "trusted_relationship_changed":
+                visible_code = "trusted_relationship_changed"
+            elif terminal:
+                visible_code = "preparation_unavailable"
+            else:
+                visible_code = "trusted_auto_active" if has_job else "trusted_auto_queued"
             updated = self._row(
                 connection,
                 """UPDATE drive_share_requests
                   SET preparation_error_code=:code,
                     preparation_attempts=:attempts,
-                    preparation_next_at=clock_timestamp()+INTERVAL '5 minutes',
+                    preparation_next_at=CASE WHEN :ready THEN clock_timestamp()
+                      ELSE clock_timestamp()+INTERVAL '5 minutes' END,
                     bulk_search_started_at=CASE WHEN :has_job THEN bulk_search_started_at ELSE NULL END,
                     updated_at=clock_timestamp()
                   WHERE request_id=:request RETURNING *""",
@@ -388,6 +436,7 @@ class DriveSharingStore(DriveDocumentStore):
                     "code": visible_code,
                     "attempts": attempts,
                     "has_job": has_job,
+                    "ready": background_ready,
                 },
             )
             if visible_code in {
@@ -420,7 +469,9 @@ class DriveSharingStore(DriveDocumentStore):
                       preparation_error_code=CASE
                         WHEN preparation_error_code IN
                           ('trusted_auto_queued','background_preparation_required')
-                        THEN 'trusted_auto_active' ELSE NULL END,
+                        THEN 'trusted_auto_active'
+                        WHEN preparation_error_code='manual_search_active'
+                        THEN 'manual_search_active' ELSE NULL END,
                       updated_at=clock_timestamp()
                       WHERE request_id=:request RETURNING *""",
                     {"request": identity},
@@ -1441,7 +1492,8 @@ class DriveSharingStore(DriveDocumentStore):
             result = {
                 **self._summary(row),
                 "purpose": private["purpose"],
-                "trustedAuto": private.get("trusted_auto") is True,
+                "trustedAuto": private.get("trusted_auto") is True
+                and row.get("preparation_error_code") != "manual_search_active",
                 "recipientEmail": private["recipient"]["email"],
                 "role": "reader",
                 "duration": "until_revoked",
@@ -1451,7 +1503,7 @@ class DriveSharingStore(DriveDocumentStore):
                 "canApprove": False,
                 "preparationError": None
                 if row.get("preparation_error_code")
-                in {"trusted_auto_queued", "trusted_auto_active"}
+                in {"trusted_auto_queued", "trusted_auto_active", "manual_search_active"}
                 else row.get("preparation_error_code"),
                 "durableAvailable": bool(
                     current_connection["verified_policy_hash"] == LIVE_POLICY_HASH

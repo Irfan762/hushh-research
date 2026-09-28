@@ -136,8 +136,22 @@ class DriveRequestBulkService:
                 )
         raise DriveReadError("invalid_argument")
 
-    async def start_search(self, *, user_id, request_id, timezone="UTC"):
+    async def start_search(self, *, user_id, request_id, timezone="UTC", authority_mode="owner"):
+        if authority_mode not in {"owner", "trusted_auto"}:
+            raise DriveSharingError("invalid_argument")
         context = await self._context(user_id, request_id)
+        if authority_mode == "owner":
+            # This authenticated owner action can explicitly take over an
+            # earlier automatic request. Its exact results and frozen batches
+            # survive; the auto worker loses authority at the mode fence.
+            takeover = await self.search.store.takeover_request(
+                user_id=user_id, request_id=request_id
+            )
+            if takeover is not None:
+                await self._owner()
+                if takeover["status"] == "queued":
+                    await self.wake("suggestions")
+                return takeover
         existing = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
         if existing is not None and existing["status"] not in {"failed", "limited", "stopped"}:
             if existing[
@@ -157,6 +171,7 @@ class DriveRequestBulkService:
             plan=plan.model_dump(mode="json"),
             timezone=timezone,
             require_current=self.require_owner,
+            authority_mode=authority_mode,
         )
 
     async def search_status(self, *, user_id, request_id):

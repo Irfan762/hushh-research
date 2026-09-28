@@ -834,7 +834,24 @@ describe("exact-file document review", () => {
         files: [{ ...searchFile(1), shareable: true }], nextCursor: null });
       render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
       expect(await screen.findByText("Trusted Circle changed. Review this request manually before sharing.")).toBeVisible();
-      expect(screen.getByRole("button", { name: "Review 1 file" })).toBeEnabled();
+      expect(await screen.findByRole("button", { name: "Review 1 file" })).toBeEnabled();
+      expect(screen.queryByRole("button", { name: "Enable background Drive access" })).toBeNull();
+    });
+
+    it("shows manual batch review after an owner takes over a Trusted-circle search", async () => {
+      state.status.mockResolvedValue(pending());
+      // The owner review projection clears trustedAuto after authenticated manual takeover.
+      state.review.mockResolvedValue(partial({ durableAvailable: true, trustedAuto: false,
+        preparationError: null, progressiveAllowed: true,
+        search: durableSearch({ status: "running", matched: 1,
+          coverage: { ...durableSearch({ status: "completed" }).coverage!, providerPagesExhausted: false } }),
+        bulkShare: null, batches: [], batchCount: 0, claimedPositions: [],
+      }));
+      state.requestSearchFiles.mockResolvedValue({ jobId: searchJobId, revision: 1, matched: 1,
+        files: [{ ...searchFile(1), shareable: true }], nextCursor: null });
+      render(<DocumentShareReview requestId={requestId} onChanged={vi.fn()} />);
+      expect(await screen.findByRole("button", { name: "Review 1 file" })).toBeEnabled();
+      expect(screen.queryByText("Matching files are found and shared automatically.")).toBeNull();
       expect(screen.queryByRole("button", { name: "Enable background Drive access" })).toBeNull();
     });
 

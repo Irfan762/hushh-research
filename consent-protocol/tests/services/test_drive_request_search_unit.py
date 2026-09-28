@@ -190,6 +190,7 @@ async def test_completed_legacy_request_restarts_search_with_shareability_facts(
     store = SimpleNamespace(
         by_client=AsyncMock(return_value={"status": "completed", "jobId": "old-job"}),
         clear_legacy_completed_request=AsyncMock(return_value=True),
+        takeover_request=AsyncMock(return_value=None),
     )
     search = SimpleNamespace(
         store=store,
