@@ -256,9 +256,7 @@
     "mode": "hidden",
     "persistentChrome": "none",
     "interactionLayerPolicy": {
-      "allowedFamilies": [
-        "legal_document"
-      ]
+      "allowedFamilies": []
     },
     "exemptionReason": "Auth-only route intentionally bypasses the signed-in app shell.",
     "voicePlaybook": {
