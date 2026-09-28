@@ -19,6 +19,7 @@ from typing import Any, Literal
 
 from google.genai.types import HttpOptions, HttpOptionsDict
 
+from .gemini_config import resolve_fleet_model_name
 from .registry import ProviderId, normalize_provider
 from .vertex_failover import VertexRegionalClient
 
@@ -220,9 +221,13 @@ class ManagedGeminiRuntimeBinding:
         clean_location = str(location or "").strip() or (
             self.primary_location if self.auth_mode == VERTEX_ADC_AUTH_MODE else ""
         )
-        clean_model = self.validate_model(
-            model,
-            location=clean_location or None,
+        # Manifests name the fleet alias; Vertex has no model called
+        # ``gemini-default`` and answers it with a 4xx on every call.
+        clean_model = resolve_fleet_model_name(
+            self.validate_model(
+                model,
+                location=clean_location or None,
+            )
         )
         transport_options = (
             {"http_options": HttpOptions.model_validate(http_options)}
@@ -254,14 +259,17 @@ class ManagedGeminiRuntimeBinding:
     def build_regional_adk_model(self, model: str) -> Any:
         """An ADK model whose requests fail over across configured Vertex locations.
 
-        Only for tool-less single-turn genes: one request with no tools and no
-        side effects, so a transient provider failure (429/500/503) may replay in
-        the next location. The process-local ``VertexRegionalClient`` is shared per
-        project and location list, so a cooling-down endpoint is skipped by every
-        later gene instead of failing each one first. Live sessions and
-        tool-using turns keep the pinned primary region from ``build_adk_model``.
+        Failover happens only while a request is being opened (see
+        ``VertexRegionalClient``): a transient provider failure (429/500/503)
+        there has produced no output and chosen no tool, so replaying that one
+        request in the next location has no side effect, including for
+        tool-using text turns. A stream that has started never moves. The
+        process-local client is shared per project and location list, so a
+        cooling-down endpoint is skipped by every later request instead of
+        failing each one first. Live sessions keep their pinned region from
+        ``build_adk_model``.
         """
-        clean_model = self.validate_model(model)
+        clean_model = resolve_fleet_model_name(self.validate_model(model))
         if self.auth_mode != VERTEX_ADC_AUTH_MODE:
             return self.build_adk_model(clean_model)
         locations = self.locations_for_model(clean_model)

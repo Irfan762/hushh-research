@@ -22,6 +22,8 @@ export type ConnectorReadExperience = {
   truncated: boolean;
   metadataOnly: boolean;
   sourcePages?: (number | null)[];
+  backgroundSearchAvailable?: boolean;
+  backgroundSearchQuery?: string;
   /** The owner may explicitly compile this bounded title/date result in chat. */
   ownerCompileAvailable?: boolean;
   /** Canonical owner query validated by the Drive listing parser. */
@@ -179,7 +181,17 @@ export function parseConnectorReadReceipt(value: unknown): ConnectorReadExperien
   if (!input || Object.keys(input).some((key) => ![
     "schema_version", "connector", "status", "sources", "truncated", "metadata_only",
     "owner_compile_available", "owner_compile_query", "owner_compile_window",
+    "background_search_available", "background_search_query",
   ].includes(key))) return null;
+  const backgroundQuery = input.background_search_query;
+  // A malformed optional continuation must not erase otherwise valid search
+  // results. It can only remove the action. Newlines/tabs are literal user text.
+  const validBackgroundSearch = input.background_search_available === true &&
+    typeof backgroundQuery === "string" && backgroundQuery.trim().length > 0 &&
+    new TextEncoder().encode(backgroundQuery).byteLength <= 2048 &&
+    !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(backgroundQuery) &&
+    input.connector === "drive" && input.status === "ok" &&
+    input.metadata_only === true && input.truncated === true;
   const ownerCompileQuery = input.owner_compile_query;
   const ownerCompileWindow = input.owner_compile_window;
   const validOwnerQuery = typeof ownerCompileQuery === "string" &&
@@ -191,7 +203,6 @@ export function parseConnectorReadReceipt(value: unknown): ConnectorReadExperien
   if (input.schema_version !== "specialist_read.v1" || !["mail", "drive"].includes(input.connector as string) ||
     !STATUSES.includes(input.status as ConnectorReadExperience["status"]) ||
     typeof input.metadata_only !== "boolean" ||
-    (input.connector === "mail" && input.metadata_only !== true) ||
     typeof input.truncated !== "boolean" ||
     !Array.isArray(input.sources) || input.sources.length > 60 ||
     (input.owner_compile_available !== undefined &&
@@ -210,7 +221,10 @@ export function parseConnectorReadReceipt(value: unknown): ConnectorReadExperien
     if (!source || Object.keys(source).some((key) => !["source_ref", "kind", "label", "page"].includes(key)) ||
       typeof source.source_ref !== "string") return null;
     if (input.connector === "mail") {
-      if (source.kind !== "metadata" || source.label !== "Mail" ||
+      // Message and thread reads carry readable text, so the backend labels
+      // their sources "message"; listings and searches stay "metadata". The
+      // kind must agree with metadata_only so a receipt cannot mislabel scope.
+      if (source.kind !== (input.metadata_only ? "metadata" : "message") || source.label !== "Mail" ||
         !/^mail:(?:[1-9]|1[0-9]|2[0-5])$/.test(source.source_ref) || source.page != null) return null;
     } else {
       if (source.kind !== (input.metadata_only ? "metadata" : "document") || source.label !== "Document" ||
@@ -226,6 +240,8 @@ export function parseConnectorReadReceipt(value: unknown): ConnectorReadExperien
     status: input.status as ConnectorReadExperience["status"], sourceRefs: refs,
     truncated: input.truncated, metadataOnly: input.metadata_only,
     ...(input.connector === "drive" ? { sourcePages: pages } : {}),
+    ...(validBackgroundSearch ? { backgroundSearchAvailable: true,
+      backgroundSearchQuery: backgroundQuery as string } : {}),
     ...(input.owner_compile_available === true && validOwnerQuery && validWindow
       ? { ownerCompileAvailable: true, ownerCompileQuery: ownerCompileQuery as string,
         ownerCompileWindow: validWindow } : {}),

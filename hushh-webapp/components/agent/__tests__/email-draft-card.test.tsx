@@ -3,7 +3,10 @@ import { useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { EmailDraftCard } from "@/components/agent/email-draft-card";
-import { EmailDeliveryService } from "@/lib/services/email-delivery-service";
+import {
+  EmailDeliveryError,
+  EmailDeliveryService,
+} from "@/lib/services/email-delivery-service";
 import { ConnectionsService } from "@/lib/services/connections-service";
 
 vi.mock("@/lib/services/email-delivery-service", async () => {
@@ -121,6 +124,76 @@ describe("EmailDraftCard", () => {
     );
     expect(EmailDeliveryService.prepare).toHaveBeenCalledTimes(1);
     expect(onSent).toHaveBeenCalledTimes(1);
+  });
+
+  it("replaces a draft revised in chat and still sends only on the Send click", async () => {
+    vi.mocked(EmailDeliveryService.prepare).mockResolvedValue({
+      actionId: "action-1",
+      expiresAt: "2026-08-26T00:00:00Z",
+    });
+    vi.mocked(EmailDeliveryService.send).mockResolvedValue({
+      messageId: "msg-1",
+      threadId: null,
+      outcomeUnknown: false,
+    });
+    const onDraftChange = vi.fn();
+    const onSent = vi.fn();
+    const card = (key: string, initialDraft: { to: string; cc: string; subject: string; body: string }) => (
+      <EmailDraftCard
+        key={key}
+        initialInstruction="Reply to Pat"
+        initialDraft={{ bcc: "", ...initialDraft }}
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={onSent}
+        onDraftChange={onDraftChange}
+      />
+    );
+    const { rerender } = render(
+      card("assistant-1", {
+        to: "pat@example.com",
+        cc: "",
+        subject: "Account details",
+        body: "My account number is 12345678.",
+      }),
+    );
+
+    // The person's own edit is what the next chat turn sees.
+    fireEvent.change(screen.getByTestId("one-email-draft-subject"), {
+      target: { value: "Account details for Pat" },
+    });
+    expect(onDraftChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ subject: "Account details for Pat" }),
+    );
+
+    // "Add priya@example.com to cc and remove the account number": One's
+    // revision arrives on a new assistant message and replaces the card.
+    rerender(
+      card("assistant-2", {
+        to: "pat@example.com",
+        cc: "priya@example.com",
+        subject: "Account details for Pat",
+        body: "The details are attached.",
+      }),
+    );
+    expect(screen.getByTestId("one-email-draft-cc")).toHaveValue("priya@example.com");
+    expect(screen.queryByText(/12345678/)).not.toBeInTheDocument();
+    expect(onDraftChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cc: "priya@example.com", body: "The details are attached." }),
+    );
+    // Negative control: a replaced draft never reaches delivery by itself.
+    expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
+    expect(EmailDeliveryService.send).not.toHaveBeenCalled();
+    expect(EmailDeliveryService.saveGmailDraft).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId("one-email-draft-send"));
+    await waitFor(() => expect(EmailDeliveryService.send).toHaveBeenCalledTimes(1));
+    expect(EmailDeliveryService.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        draft: expect.objectContaining({ cc: "priya@example.com" }),
+      }),
+    );
   });
 
   it("saves a reviewed local composition to Gmail drafts without sending", async () => {
@@ -610,5 +683,46 @@ describe("EmailDraftCard", () => {
       null,
     );
     expect(onSent).not.toHaveBeenCalled();
+  });
+  it("offers Connect Gmail in the connections drawer when Gmail was never connected", async () => {
+    vi.mocked(EmailDeliveryService.draft).mockRejectedValue(
+      new EmailDeliveryError("Connect Mail before you draft or send mail.", 409, "GMAIL_NOT_CONNECTED"),
+    );
+    const onOpenConnections = vi.fn();
+    const { unmount } = render(
+      <EmailDraftCard
+        initialInstruction="Write a note to Pat"
+        autoDraft
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+        onOpenConnections={onOpenConnections}
+      />,
+    );
+    const connect = await screen.findByTestId("one-email-draft-connect-gmail");
+    expect(connect).toHaveTextContent("Connect Gmail");
+    expect(screen.queryByText("Reconnect Mail")).not.toBeInTheDocument();
+    fireEvent.click(connect);
+    expect(onOpenConnections).toHaveBeenCalledWith("gmail", connect);
+    unmount();
+
+    // A send-permission gap on a connected mailbox stays a reconnect, not a first connect.
+    vi.mocked(EmailDeliveryService.draft).mockRejectedValue(
+      new EmailDeliveryError("Reconnect Mail to grant mail sending permission.", 403, "GMAIL_SEND_PERMISSION_REQUIRED"),
+    );
+    render(
+      <EmailDraftCard
+        initialInstruction="Write a note to Pat"
+        autoDraft
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+        onOpenConnections={onOpenConnections}
+      />,
+    );
+    expect(await screen.findByText("Reconnect Mail")).toBeInTheDocument();
+    expect(screen.queryByTestId("one-email-draft-connect-gmail")).not.toBeInTheDocument();
   });
 });

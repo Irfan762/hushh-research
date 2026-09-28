@@ -158,7 +158,9 @@ def test_route_runs_fixed_bounded_coordinator_and_returns_only_aggregate_status(
             "workers": {
                 "documents": {"ready": 1},
                 "suggestions": {"review_ready": 1, "private_request_id": "not-allowed"},
+                "searches": {"superseded": 1, "private_search_id": "not-allowed"},
                 "permissions": {"succeeded": 1},
+                "bulk_shares": {"succeeded": 2, "private_file_id": "not-allowed"},
                 "notifications": {"settled": 1},
             },
         }
@@ -185,7 +187,9 @@ def test_route_runs_fixed_bounded_coordinator_and_returns_only_aggregate_status(
         "workers": {
             "documents": {"ready": 1},
             "suggestions": {"review_ready": 1},
+            "searches": {"superseded": 1},
             "permissions": {"succeeded": 1},
+            "bulk_shares": {"succeeded": 2},
             "notifications": {"settled": 1},
         },
     }

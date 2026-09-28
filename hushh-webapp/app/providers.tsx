@@ -70,6 +70,7 @@ import {
   useRouteTransition,
 } from "@/lib/morphy-ux/hooks/use-route-transition";
 import { PostAuthOnboardingSyncBridge } from "@/components/onboarding/PostAuthOnboardingSyncBridge";
+import { LegalAcceptanceGate } from "@/components/onboarding/LegalAcceptanceGate";
 import { OnboardingJourneyGuard } from "@/components/onboarding/onboarding-journey-guard";
 import { KaiCommandBarGlobal } from "@/components/kai/kai-command-bar-global";
 import { useScrollReset } from "@/lib/navigation/use-scroll-reset";
@@ -101,6 +102,8 @@ import { RiaSurfaceScopeSync } from "@/components/ria/ria-surface-scope-sync";
 import { NativeTestBootstrap } from "@/components/app-ui/native-test-bootstrap";
 import { NativeTestRouteStatus } from "@/components/app-ui/native-test-route-status";
 import { InteractionRuntime } from "@/components/app-ui/interaction-runtime";
+import { AgentChatTurnNotifier } from "@/components/agent/agent-chat-turn-notifier";
+import { AgentConsentContinuationNotifier } from "@/components/agent/agent-consent-continuation-notifier";
 import { RenderPerfProbe } from "@/components/app-ui/render-perf-probe";
 import { RenderPerfProfiler } from "@/components/app-ui/render-perf-profiler";
 import {
@@ -226,10 +229,12 @@ function AppShellFrame({ children }: ProvidersProps) {
       searchParams?.get("action") ?? null,
       searchParams?.get("circleId") ?? null,
     );
-  // Focused query-scoped Location flows clear the bottom command/navigation
-  // stack while keeping the top shell route context.
+  // Focused tasks clear the bottom command/navigation stack while keeping the
+  // top shell route context. Setup pages own their bottom completion actions.
   const bottomChromeHidden =
     hidesPersistentChrome ||
+    routeLayout.route === ROUTES.ONE_SETUP ||
+    routeLayout.route === ROUTES.ONE_SETUP_CONNECTIONS ||
     focusedLocationBottomTask ||
     focusedConnectCircleChromeFlow;
   const effectiveHideCommandBar =
@@ -623,6 +628,11 @@ function AppShellFrame({ children }: ProvidersProps) {
                   <NativeTestBootstrap />
                   <NativeTestRouteStatus />
                   <InteractionRuntime />
+                  {/* One turns outlive the screen that started them: reattach,
+                      and say "One replied" when the person is elsewhere. */}
+                  <AgentChatTurnNotifier />
+                  {/* A request sent from chat continues once it is answered. */}
+                  <AgentConsentContinuationNotifier />
                   <RenderPerfProbe />
                   <FoundationPublicAmbient />
                   {!hidesPersistentChrome ? (
@@ -647,6 +657,8 @@ function AppShellFrame({ children }: ProvidersProps) {
                 app. Keeping it outside the route Suspense boundary prevents
                 fallback/resolved remounts from launching the same sync twice. */}
                   <PostAuthOnboardingSyncBridge />
+                  {/* Terms and Privacy Policy acceptance, recorded per version. */}
+                  <LegalAcceptanceGate />
                   <LocationBusAccountBridge />
                   <ContactInvitationSessionProvider>
                     {/* Keep persistent top chrome outside the route Suspense

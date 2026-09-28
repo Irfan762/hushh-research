@@ -195,7 +195,7 @@ describe("PhoneVerificationFlow country selector", () => {
     ["India", "IN", "+91", "🇮🇳"],
     ["Angola", "AO", "+244", "🇦🇴"],
     ["Brazil", "BR", "+55", "🇧🇷"],
-  ])("keeps compact country selection synchronized for %s", async (name, iso, code) => {
+  ])("keeps compact country selection synchronized for %s", async (name, iso, code, flag) => {
     renderPhoneVerificationFlow({ phonePresentation: "compact" });
     const phone = screen.getByRole("textbox", { name: "Phone number" });
     fireEvent.change(phone, { target: { value: "12345" } });
@@ -205,7 +205,7 @@ describe("PhoneVerificationFlow country selector", () => {
     fireEvent.click(screen.getByRole("button", { name: `${name} (${code})`, exact: true }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(screen.getByRole("button", { name: `Country code: ${name} (${code})` })).toBeTruthy();
-    expect(document.querySelector(`[data-country-code="${iso}"]`)?.textContent).toBe(iso);
+    expect(document.querySelector(`[data-country-code="${iso}"]`)?.textContent).toBe(flag);
     expect((phone as HTMLInputElement).value).toBe("12345");
   });
 
@@ -393,7 +393,7 @@ describe("PhoneVerificationFlow country selector", () => {
       screen.getByRole("button", { name: "Send verification code" }),
     );
 
-    expect(await screen.findByText("•••••• 2372")).toBeTruthy();
+    expect(await screen.findByText("••••••2372")).toBeTruthy();
     expect(screen.queryByText(/\+91/)).toBeNull();
     expect(screen.getByRole("textbox", { name: "One-time code" })).toBeTruthy();
   });

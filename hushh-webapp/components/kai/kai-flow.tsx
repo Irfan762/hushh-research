@@ -1074,9 +1074,19 @@ export function KaiFlow({
     activeImportCursorRef.current = snapshot.latestCursor;
     setStreaming(snapshot.streaming);
 
+    // setState changes identity with every ?stage= navigation, so this
+    // restore re-runs whenever the person opens (or reopens) a review --
+    // including one that has nothing to do with this stale snapshot, e.g.
+    // "Load sample brokerage" after an earlier real import attempt was
+    // abandoned mid-stream or failed without being dismissed. Supplying the
+    // snapshot's own data is idempotent; forcing the stage away from a
+    // review the person is already looking at is not, on every branch here,
+    // not just "completed".
     if (snapshot.status === "running") {
       setError(null);
-      setState("importing");
+      if (stateRef.current !== "reviewing") {
+        setState("importing");
+      }
       return;
     }
 
@@ -1086,14 +1096,18 @@ export function KaiFlow({
         parsedPortfolio: snapshot.parsedPortfolio,
       }));
       setError(null);
-      setState("import_complete");
+      if (stateRef.current !== "reviewing") {
+        setState("import_complete");
+      }
       return;
     }
 
     if (snapshot.status === "failed" && snapshot.errorMessage) {
       setError(snapshot.errorMessage);
-      toast.error(snapshot.errorMessage);
-      setState("import_required");
+      if (stateRef.current !== "reviewing") {
+        toast.error(snapshot.errorMessage);
+        setState("import_required");
+      }
     }
   }, [mode, setState, userId]);
 
@@ -1116,7 +1130,9 @@ export function KaiFlow({
           parsedPortfolio: snapshot.parsedPortfolio,
         }));
         setError(null);
-        setState("import_complete");
+        if (stateRef.current !== "reviewing") {
+          setState("import_complete");
+        }
         return;
       }
 
@@ -1124,12 +1140,14 @@ export function KaiFlow({
         const message =
           snapshot.errorMessage || "Import failed. Please try again.";
         setError(message);
-        toast.error(message);
-        setState("import_required");
+        if (stateRef.current !== "reviewing") {
+          toast.error(message);
+          setState("import_required");
+        }
         return;
       }
 
-      if (snapshot.status === "running") {
+      if (snapshot.status === "running" && stateRef.current !== "reviewing") {
         setState("importing");
       }
     }, 700);
@@ -3152,6 +3170,29 @@ export function KaiFlow({
     effectiveVaultOwnerToken,
   ]);
 
+  // Drop a finished (or abandoned) extraction: the stored snapshot, its
+  // background task, and the parsed result. Without this the snapshot restore
+  // brings the same "import complete" card back on the next render or visit.
+  const discardImportResult = useCallback(() => {
+    const snapshot = loadImportBackgroundSnapshot(userId);
+    if (snapshot?.taskId) {
+      AppBackgroundTaskService.dismissTask(snapshot.taskId);
+    }
+    clearImportBackgroundSnapshot(userId);
+    importResumeAppliedRef.current = false;
+    importSnapshotUpdatedAtRef.current = null;
+    activeImportTaskIdRef.current = null;
+    activeImportRunIdRef.current = null;
+    activeImportCursorRef.current = 0;
+    lastImportFileRef.current = null;
+    setStreaming(createInitialStreamingState());
+    setError(null);
+    setFlowData((prev) => ({
+      ...prev,
+      parsedPortfolio: undefined,
+    }));
+  }, [userId]);
+
   // Handle cancel import
   const handleCancelImport = useCallback(() => {
     userRequestedImportCancelRef.current = true;
@@ -3227,7 +3268,22 @@ export function KaiFlow({
 
   const handleBackToDashboardFromImport = useCallback(async () => {
     if (mode === "import") {
-      if (await finishFinanceSetupIfActive("later")) return;
+      // Cancel on the finished card discards the extraction and shows the
+      // source chooser at once. Finance setup keeps this flow mounted, so a
+      // settled "later" must leave the person there to upload again or finish
+      // setup from the footer; returning with the card still up was the bug.
+      discardImportResult();
+      setState("import_required");
+      const handledBySetup = await finishFinanceSetupIfActive("later").catch(
+        (settleError: unknown) => {
+          console.warn(
+            "[KaiFlow] Could not settle Finance setup after cancel:",
+            settleError,
+          );
+          return true;
+        },
+      );
+      if (handledBySetup) return;
       setOnboardingFlowActiveCookie(false);
       router.push(ROUTES.KAI_DASHBOARD);
       return;
@@ -3238,6 +3294,7 @@ export function KaiFlow({
       setState("import_required");
     }
   }, [
+    discardImportResult,
     finishFinanceSetupIfActive,
     flowData.portfolioData,
     mode,
@@ -3629,34 +3686,25 @@ export function KaiFlow({
 
   // Handle re-import (upload new statement)
   const handleReimport = useCallback(() => {
-    const snapshot = loadImportBackgroundSnapshot(userId);
-    if (snapshot?.taskId) {
-      AppBackgroundTaskService.dismissTask(snapshot.taskId);
-    }
-    clearImportBackgroundSnapshot(userId);
-    importResumeAppliedRef.current = false;
-    importSnapshotUpdatedAtRef.current = null;
-    activeImportTaskIdRef.current = null;
-    activeImportRunIdRef.current = null;
-    activeImportCursorRef.current = 0;
-    lastImportFileRef.current = null;
-    setStreaming(createInitialStreamingState());
-    setError(null);
-    setFlowData((prev) => ({
-      ...prev,
-      parsedPortfolio: undefined,
-    }));
-
+    discardImportResult();
     if (mode === "dashboard") {
       router.push(ROUTES.KAI_IMPORT);
       return;
     }
     setState("import_required");
-  }, [mode, router, setState, userId]);
+  }, [discardImportResult, mode, router, setState]);
 
   const handlePreloadSchema = useCallback(async () => {
     if (isPreloadingSchema) return;
 
+    // Loading sample data is a deliberate switch away from any earlier real
+    // import attempt. Discard its background snapshot up front so a stale
+    // "running"/"failed" one left over from that attempt can't be restored
+    // over the sample review a moment later (the restore effects guard
+    // against clobbering an open review, but a snapshot with nothing to
+    // clobber yet -- because this hasn't set state to "reviewing" yet --
+    // would otherwise still win the race).
+    discardImportResult();
     setIsPreloadingSchema(true);
     setError(null);
 
@@ -3684,6 +3732,7 @@ export function KaiFlow({
       setIsPreloadingSchema(false);
     }
   }, [
+    discardImportResult,
     effectiveVaultOwnerToken,
     isPreloadingSchema,
     setState,
@@ -3940,6 +3989,13 @@ export function KaiFlow({
             plaidLocalDualEnvironmentEnabled={
               plaidStatus?.local_dual_environment_enabled ?? false
             }
+            // This is the dashboard's own empty-state picker, not a setup
+            // flow -- there's nothing to defer "until later" (the person
+            // already finished setup, or skipped it, and just opened the
+            // Portfolio tab). "I'll link this later" doesn't fit here, and
+            // handleSkipImport is a no-op in dashboard mode besides (it only
+            // resets state the empty-state condition already implies).
+            showSkip={false}
           />
         )}
 

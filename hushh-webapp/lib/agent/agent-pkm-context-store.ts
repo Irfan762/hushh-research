@@ -85,6 +85,21 @@ const COVERAGE_FOOTER_RESERVE_CHARS = 180;
 const MAX_INVENTORY_FACTS = 10000;
 const MAX_INVENTORY_PATH_DEPTH = 16;
 
+// The device-computed finance summaries (`financial.derived_v1`: monthly cash
+// flow, recurring bills, net worth). They are totals over every imported
+// transaction, so they go into the packet before the raw rows: a spending answer
+// must read a real total, not a sum over whichever transactions fit the budget.
+// Measured 2026-09-27: round-robin reached only the first few shallow derived
+// facts, and no monthly_cash_flow row, once thousands of transactions competed.
+const DERIVED_SUMMARY_DOMAIN = "financial";
+const DERIVED_SUMMARY_BRANCH = "derived_v1";
+// Summaries may take at most this share of the budget, so a large summary can
+// never crowd a small domain (an allergy, a budget) out of the owner's turn.
+const DERIVED_SUMMARY_BUDGET_SHARE = 0.5;
+// Every derived fact repeats the top-level computed_at and lists the Plaid item
+// ids it came from. Neither helps an answer; both spend the budget.
+const DERIVED_SUMMARY_NOISE_KEYS = new Set(["computed_at", "source_item_ids"]);
+
 const workingSets = new Map<string, AgentPkmWorkingSet>();
 const workingSetLoads = new Map<string, Promise<AgentPkmWorkingSet | null>>();
 const workingSetGenerations = new Map<string, number>();
@@ -159,6 +174,23 @@ function normalizedMemoryValue(value: string): string {
   return compactWhitespace(value).toLowerCase();
 }
 
+function isDerivedSummaryPath(domain: string, path: readonly string[]): boolean {
+  return domain === DERIVED_SUMMARY_DOMAIN && path[0] === DERIVED_SUMMARY_BRANCH;
+}
+
+/** One summary row (a month of cash flow, one recurring bill), as a single line. */
+function flatRowText(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const cells: string[] = [];
+  for (const [key, cell] of Object.entries(value)) {
+    if (cell === null || cell === undefined) continue;
+    if (!isPrimitive(cell)) return null;
+    const text = compactWhitespace(cell);
+    if (text) cells.push(`${titleize(key)}: ${text}`);
+  }
+  return cells.length ? cells.join("; ") : null;
+}
+
 function buildPkmInventory(fullBlob: Record<string, unknown>): PkmInventory {
   const facts: PkmInventoryFact[] = [];
   const domainFactCounts = new Map<string, number>();
@@ -199,15 +231,42 @@ function buildPkmInventory(fullBlob: Record<string, unknown>): PkmInventory {
     if (!value || typeof value !== "object") return;
     if (seen.has(value)) return;
     seen.add(value);
+    const derivedSummary = isDerivedSummaryPath(domain, path);
     if (Array.isArray(value)) {
-      value.forEach((item, index) => visit(domain, item, [...path, String(index)]));
+      value.forEach((item, index) => {
+        // A summary row stays one line; split into cells, a month's income and
+        // spend would print apart and could no longer be read together.
+        const row = derivedSummary ? flatRowText(item) : null;
+        if (row !== null && facts.length < MAX_INVENTORY_FACTS) {
+          const rowPath = [...path, String(index)];
+          facts.push({
+            domain,
+            path: rowPath,
+            value: row,
+            restrictedDisclosure:
+              isPkmAgentRestrictedDisclosureKey(domain) ||
+              rowPath.some((segment) => isPkmAgentRestrictedDisclosureKey(segment)),
+          });
+          domainFactCounts.set(domain, (domainFactCounts.get(domain) ?? 0) + 1);
+          return;
+        }
+        visit(domain, item, [...path, String(index)]);
+      });
       return;
     }
-    for (const [key, child] of Object.entries(value)) {
+    const entries = Object.entries(value);
+    // Visit the summaries before the raw rows: Plaid's first assemble writes
+    // derived_v1 after transactions_v1, and a large import would otherwise use
+    // up MAX_INVENTORY_FACTS before the summaries were ever read.
+    if (domain === DERIVED_SUMMARY_DOMAIN && path.length === 0) {
+      entries.sort(([left], [right]) => Number(right === DERIVED_SUMMARY_BRANCH) - Number(left === DERIVED_SUMMARY_BRANCH));
+    }
+    for (const [key, child] of entries) {
       if (shouldSkipPkmAgentContextKey(key)) {
         skippedFactCount += 1;
         continue;
       }
+      if (derivedSummary && path.length > 1 && DERIVED_SUMMARY_NOISE_KEYS.has(key)) continue;
       visit(domain, child, [...path, key]);
     }
   };
@@ -246,6 +305,54 @@ function appendWithinBudget(
   return nextLength;
 }
 
+function factCost(fact: PkmInventoryFact): number {
+  return `- ${formatFactPath(fact)}: ${fact.value}`.length + 1;
+}
+
+function byDepthThenPath(left: PkmInventoryFact, right: PkmInventoryFact): number {
+  return left.path.length - right.path.length || formatFactPath(left).localeCompare(formatFactPath(right));
+}
+
+/**
+ * The device-computed finance summaries first, within their share of the
+ * budget; then round-robin across sections (domain plus first path segment),
+ * shallow facts first within each, until the budget is spent. Deterministic
+ * and structural: it never reads the question, so nothing is chosen by keywords.
+ */
+function selectFactsWithinBudget(facts: PkmInventoryFact[], budgetChars: number): Set<PkmInventoryFact> {
+  const selected = new Set<PkmInventoryFact>();
+  let used = 0;
+  const summaryBudget = Math.floor(budgetChars * DERIVED_SUMMARY_BUDGET_SHARE);
+  const summaries = facts.filter((fact) => isDerivedSummaryPath(fact.domain, fact.path)).sort(byDepthThenPath);
+  for (const fact of summaries) {
+    const cost = factCost(fact);
+    if (used + cost > summaryBudget) continue;
+    used += cost;
+    selected.add(fact);
+  }
+
+  const sections = new Map<string, PkmInventoryFact[]>();
+  for (const fact of facts) {
+    if (selected.has(fact)) continue;
+    const key = `${fact.domain}\u0000${fact.path[0] ?? ""}`;
+    const bucket = sections.get(key);
+    if (bucket) bucket.push(fact);
+    else sections.set(key, [fact]);
+  }
+  const queues = [...sections.values()].map((bucket) => [...bucket].sort(byDepthThenPath));
+  for (let round = 0; queues.some((queue) => round < queue.length); round += 1) {
+    for (const queue of queues) {
+      const fact = queue[round];
+      if (!fact) continue;
+      const cost = factCost(fact);
+      if (used + cost > budgetChars) continue;
+      used += cost;
+      selected.add(fact);
+    }
+  }
+  return selected;
+}
+
 function buildContextText(params: {
   workingSet: AgentPkmWorkingSet;
   maxChars: number;
@@ -271,10 +378,21 @@ function buildContextText(params: {
     "Profile facts:",
   ].filter((line): line is string => Boolean(line));
 
+  // Choose what fits fairly, then print it in reading order. Filling the budget
+  // alphabetically let one large domain (thousands of imported transactions
+  // under Financial) crowd every later domain out of the owner's own turn:
+  // measured 2026-09-27, 88 of 9,049 facts sent and Health absent, so One could
+  // not tell its owner their own allergy. Every section now gets a turn, and a
+  // section's shallow facts (a budget, an allergy) come before its deep rows.
+  const selected = selectFactsWithinBudget(
+    facts,
+    maxChars - COVERAGE_FOOTER_RESERVE_CHARS - lines.join("\n").length - 1,
+  );
   let selectedFactCount = 0;
   const selectedDomains = new Set<string>();
   let currentLength = lines.join("\n").length;
   for (const fact of facts) {
+    if (!selected.has(fact)) continue;
     const nextLength = appendWithinBudget(
       lines,
       `- ${fact.restrictedDisclosure ? "[Restricted owner field] " : ""}${formatFactPath(fact)}: ${fact.value}`,

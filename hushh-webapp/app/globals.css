@@ -2065,22 +2065,25 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
   color: #ffffff !important;
 }
 
-/* Preserve a clean, unboxed treatment for any genuinely branded capability
- * icon added to Profile later. The primary Profile menu intentionally uses
- * semantic coloured tiles, matching its Account and Vault detail screens. */
+/* The primary Profile menu uses the /one launcher treatment (founder
+ * direction, 2026-09-27): the authored duotone glyph in its own vivid colour,
+ * with no tile behind it. The glyph is the /one list-row size (28px, the
+ * AgentSectionIcon "roster" glyph); the well keeps the 32px footprint the
+ * tiles had, so titles and separators stay where they were. The coloured
+ * tiles above remain for Account and Vault detail rows. */
 .profile-home-content [data-icon-tone="capability"],
 .profile-home-content [data-icon-tone="transparent"] {
   background: transparent !important;
   border-radius: 0 !important;
   box-shadow: none !important;
-  height: 28px !important;
-  width: 28px !important;
+  height: 32px !important;
+  width: 32px !important;
 }
 
 .profile-home-content [data-icon-tone="capability"] svg,
 .profile-home-content [data-icon-tone="transparent"] svg {
-  height: 22px !important;
-  width: 22px !important;
+  height: 28px !important;
+  width: 28px !important;
 }
 
 .profile-home-content [data-slot="settings-row-title"] {
@@ -2831,9 +2834,10 @@ body:has([data-location-hub]) [data-app-shell-top-spacer="true"] {
 
 /* Anchor clearance: hash-targeted elements must clear the fixed top shell.
    Against the VISIBLE height, not the reserved one -- the mask is solid to
-   --top-shell-reserved-height and then dissolves over --top-fade-active, so
-   reserving only the solid part landed every jumped-to heading inside the
-   dissolve. See safe-changes R21. */
+   --top-shell-reserved-height and keeps a --top-fade-active clearance band
+   below it (a painted fade until 2026-09-27, now unpainted), so reserving only
+   the solid part landed every jumped-to heading inside that band. See
+   safe-changes R21. */
 [id]:target,
 [data-page-primary][id],
 [data-section-header][id] {
@@ -4202,11 +4206,10 @@ body:has([data-testid="one-location-onboarding"])
   --app-bg-start: oklch(0.146 0.004 285.9);
   --app-bg-mid: oklch(0.146 0.004 285.9);
   --app-bg-end: oklch(0.146 0.004 285.9);
-  --app-layout-surface: color-mix(
-    in oklab,
-    var(--background) 92%,
-    var(--app-accent) 8%
-  );
+  /* Same base as the page body, exactly as in light. An 8% accent mix here
+     painted the top chrome as a lighter band (#1c1a18 over a #0e0e10 page
+     with the gold accent); chrome must recede into the page, not tint it. */
+  --app-layout-surface: var(--app-grouped-background);
 
   --glass1: #ffffff40 !important;
   --glass2: #6464643b !important;
@@ -4781,7 +4784,8 @@ md-ripple.morphy-md-ripple {
   contain: paint;
 }
 
-/* Ambient chrome is the only persistent top/bottom fade. The engine samples
+/* Ambient chrome owns the persistent top/bottom edges: a solid top surface
+ * and the only bottom fade. The engine samples
  * the painted content beneath each edge and publishes these tokens; fallbacks
  * keep first paint theme-correct when no sample exists yet. */
 :root {
@@ -4816,8 +4820,9 @@ html[data-perf-experiment*="ambient-mask-off"] .ambient-chrome-mask {
   --ambient-chrome-backdrop-filter: blur(var(--ambient-chrome-mask-blur))
     saturate(1.3);
   --ambient-chrome-wash: 58%;
-  /* One feather profile drives both chrome edges. Edge classes may choose
-     geometry, never their own opacity curve. */
+  /* One feather profile drives the bottom edge's dissolve. The top edge is
+     solid with no feather. Edge classes may choose geometry, never their own
+     opacity curve. */
   --ambient-chrome-fade-solid: 100%;
   --ambient-chrome-fade-dense: 91%;
   --ambient-chrome-fade-mid: 72%;
@@ -4840,12 +4845,15 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
 
 .ambient-chrome-mask--top {
   --ambient-chrome-bg: var(--ambient-chrome-material-bg);
-  /* The top edge stays fully opaque across the reserved bar height so scrolled
-     page headings dissolve behind solid chrome instead of slicing through a
-     translucent strip. The eased fade tail below only softens the edge. */
+  /* The top edge is a plain, fully opaque surface across the solid bar height
+     and stops there with no fade band (founder direction, 2026-09-27). Scrolled
+     page content passes under a solid header instead of dissolving through a
+     gradient tail. The element still spans --top-shell-mask-visible-height so
+     layout clearance and ambient sampling geometry are unchanged; the mask
+     simply clips everything below the solid edge, including the backdrop
+     blur. */
   --ambient-chrome-wash: var(--ambient-chrome-fade-solid);
   --ambient-chrome-top-solid-height: var(--top-shell-mask-solid-height);
-  --ambient-chrome-top-visible-height: var(--top-shell-mask-visible-height);
   background-color: color-mix(
     in srgb,
     var(--ambient-chrome-bg) var(--ambient-chrome-wash),
@@ -4853,47 +4861,13 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
   );
   -webkit-mask-image: linear-gradient(
     to bottom,
-    #000 0,
     #000 var(--ambient-chrome-top-solid-height),
-    #000
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.16
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-mid))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.38
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-soft))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.64
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-trace))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.84
-      ),
-    transparent var(--ambient-chrome-top-visible-height)
+    transparent var(--ambient-chrome-top-solid-height)
   );
   mask-image: linear-gradient(
     to bottom,
-    #000 0,
     #000 var(--ambient-chrome-top-solid-height),
-    #000
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.16
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-mid))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.38
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-soft))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.64
-      ),
-    rgba(0, 0, 0, var(--ambient-chrome-fade-mask-trace))
-      calc(
-        var(--ambient-chrome-top-solid-height) + var(--top-fade-active) * 0.84
-      ),
-    transparent var(--ambient-chrome-top-visible-height)
+    transparent var(--ambient-chrome-top-solid-height)
   );
 }
 
@@ -6389,6 +6363,42 @@ html[data-accent="gold"].dark {
   animation-timing-function: var(--motion-sheet-exit-ease);
 }
 
+/* The sheet surface slides on transform and opacity only. tw-animate's shared
+ * `enter`/`exit` keyframes also animate `filter: blur(...)` (0 for every
+ * sheet), which takes the whole sheet, and everything drawn inside it, off
+ * the transform-only path for the full slide. These keyframes read the same
+ * slide/fade variables the side utilities set, so each side's direction and
+ * the shared timing above are unchanged. */
+[data-slot="sheet-content"][data-state="open"] {
+  animation-name: sheet-surface-enter;
+}
+
+[data-slot="sheet-content"][data-state="closed"] {
+  animation-name: sheet-surface-exit;
+}
+
+@keyframes sheet-surface-enter {
+  from {
+    opacity: var(--tw-enter-opacity, 1);
+    transform: translate3d(
+      var(--tw-enter-translate-x, 0),
+      var(--tw-enter-translate-y, 0),
+      0
+    );
+  }
+}
+
+@keyframes sheet-surface-exit {
+  to {
+    opacity: var(--tw-exit-opacity, 1);
+    transform: translate3d(
+      var(--tw-exit-translate-x, 0),
+      var(--tw-exit-translate-y, 0),
+      0
+    );
+  }
+}
+
 @media (pointer: coarse) {
   :root {
     --app-scrim-color: rgb(0 0 0 / 0.4);
@@ -7297,4 +7307,16 @@ body[data-persona-surface="ria"] {
   .one-voice-level-fill {
     transition: none !important;
   }
+}
+.agent-connections-dialog:has([data-connection-compact]) {
+  height: auto;
+}
+
+.agent-connections-dialog:has([data-connection-compact]) [data-connector-host],
+.agent-connections-dialog:has([data-connection-compact]) [data-connections-panel] {
+  height: auto;
+}
+
+.agent-connections-dialog:has([data-connection-compact]) [data-connections-panel] {
+  max-height: min(42rem, calc(100dvh - 2rem));
 }

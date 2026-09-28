@@ -196,6 +196,30 @@ test.beforeEach(async ({ page }) => {
   await awaitProductFont(page);
 });
 
+for (const width of [390, 1440])
+  test(`Profile Connectors page keeps the reading width at ${width}px`, async ({ page }) => {
+    // Founder report: the settings page spanned the whole desktop window
+    // (width="standard" is 90rem, i.e. 1440px). It now shares Profile's measure.
+    await page.setViewportSize({ width, height: 820 });
+    await page.evaluate(() => (window as unknown as { __renderConnectorsSettingsPage: () => void }).__renderConnectorsSettingsPage());
+    const shell = page.locator('main[data-app-shell-width]');
+    const panel = shell.locator('[data-surface="settings"]');
+    await expect(panel.getByRole("heading", { name: "Connected" })).toBeVisible();
+    const readingMeasure = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--app-shell-reading")) *
+      parseFloat(getComputedStyle(document.documentElement).fontSize));
+    expect(readingMeasure).toBeGreaterThan(0);
+    const box = (await shell.boundingBox())!;
+    if (width > readingMeasure) {
+      expect(box.width).toBeLessThanOrEqual(readingMeasure + 1);
+      expect(Math.abs(box.x + box.width / 2 - width / 2)).toBeLessThan(2);
+    } else {
+      expect(Math.abs(box.x)).toBeLessThan(1);
+      expect(Math.abs(box.width - width)).toBeLessThan(1);
+    }
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+
 for (const width of [390, 768])
   test(`chat sidebar keeps Connectors in a visible footer at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 640 });
@@ -211,7 +235,76 @@ for (const width of [390, 768])
     expect(connectorBox.y).toBeGreaterThan(searchBox.y + searchBox.height);
     expect(connectorBox.y + connectorBox.height).toBeLessThanOrEqual(drawerBox.y + drawerBox.height + 1);
     expect(await chats.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
-    expect(await chats.locator("aside").evaluate((element) => getComputedStyle(element).borderTopRightRadius)).toBe("28px");
+    // A floating, Apple-style panel: every corner rounds, not just the right edge.
+    const corners = await chats.locator("aside").evaluate((element) => {
+      const style = getComputedStyle(element);
+      return [style.borderTopLeftRadius, style.borderTopRightRadius, style.borderBottomRightRadius, style.borderBottomLeftRadius];
+    });
+    expect(corners).toEqual(["24px", "24px", "24px", "24px"]);
+  });
+
+for (const width of [390, 768, 1440])
+  test(`chat sidebar floats inset with no tinted band at ${width}px`, async ({ page }) => {
+    // The old dim layer stopped at the header and at the bottom bar, so both stayed
+    // bright around a grey band: a white strip above the panel and a patch below.
+    const barHeight = 88;
+    await page.setViewportSize({ width, height: 720 });
+    await page.evaluate((height) => {
+      document.documentElement.style.setProperty("--app-bottom-shell-height", `${height}px`);
+    }, barHeight);
+    await page.getByRole("button", { name: "Open drawer", exact: true }).click();
+    const chats = page.getByRole("dialog", { name: "Agent chat history", exact: true });
+    const panel = chats.locator("aside");
+    await expect(panel).toBeVisible();
+    // Let the slide-in settle before measuring geometry.
+    await expect.poll(async () => (await panel.boundingBox())!.x).toBeGreaterThanOrEqual(7);
+    const scrim = page.locator("[data-agent-history-scrim]");
+    const scrimStyle = await scrim.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return { background: style.backgroundColor, filter: style.backdropFilter, pointer: style.pointerEvents };
+    });
+    expect(scrimStyle.background).toBe("rgba(0, 0, 0, 0)");
+    expect(scrimStyle.filter === "none" || scrimStyle.filter === "").toBe(true);
+    expect(scrimStyle.pointer).toBe("auto");
+    const box = (await panel.boundingBox())!;
+    const barTop = 720 - barHeight;
+    expect(box.x).toBeGreaterThanOrEqual(7);
+    expect(box.x).toBeLessThanOrEqual(9);
+    expect(box.y).toBeGreaterThanOrEqual(56 + 7);
+    expect(barTop - (box.y + box.height)).toBeGreaterThanOrEqual(7);
+    expect(box.x + box.width).toBeLessThan(width);
+    // A tap just outside the panel, inside its 8px inset margin, still closes it.
+    await page.mouse.click(box.x + box.width + 4, box.y + box.height / 2);
+    await expect(page.getByRole("dialog", { name: "Agent chat history", exact: true })).toHaveCount(0);
+    // Closed, the panel and its shadow sit fully off-screen.
+    await expect
+      .poll(async () => {
+        const closed = await page.locator("[aria-label='Agent chat history'][role='dialog']").boundingBox();
+        return closed ? closed.x + closed.width : 0;
+      })
+      .toBeLessThanOrEqual(-24);
+  });
+
+for (const width of [390, 768])
+  test(`chat sidebar ends above the fixed bottom bar at ${width}px`, async ({ page }) => {
+    // The app's bottom bar is fixed in its own stacking context, so the drawer
+    // cannot out-z it; it must end where the bar begins or the list hides under it.
+    const barHeight = 88;
+    await page.setViewportSize({ width, height: 640 });
+    await page.evaluate((height) => {
+      document.documentElement.style.setProperty("--app-bottom-shell-height", `${height}px`);
+    }, barHeight);
+    await page.getByRole("button", { name: "Open drawer", exact: true }).click();
+    const chats = page.getByRole("dialog", { name: "Agent chat history", exact: true });
+    const connectors = chats.getByRole("button", { name: "Open Connectors" });
+    await expect(connectors).toBeVisible();
+    const barTop = 640 - barHeight;
+    const drawerBox = (await chats.boundingBox())!;
+    const connectorBox = (await connectors.boundingBox())!;
+    expect(Math.abs(drawerBox.y + drawerBox.height - barTop)).toBeLessThanOrEqual(1);
+    expect(connectorBox.y + connectorBox.height).toBeLessThanOrEqual(barTop + 1);
+    const panelBox = (await chats.locator("aside").boundingBox())!;
+    expect(barTop - (panelBox.y + panelBox.height)).toBeGreaterThanOrEqual(7);
   });
 
 for (const width of [320, 390, 768, 1440])
@@ -289,12 +382,18 @@ for (const width of [320, 390, 768, 1440])
     await drawer.getByRole("searchbox", { name: "Search connectors" }).clear();
     for (const [connector, account, names] of [
       ["Gmail", "mail-owner@synthetic.invalid", ["Disconnect Mail"]],
-      ["Google Drive", "drive-owner@synthetic.invalid", ["Disconnect Drive", "Choose files", "Retry Drive"]],
+      ["Google Drive", "drive-owner@synthetic.invalid", ["Disconnect Drive", "Choose files"]],
     ] as const) {
       await drawer.getByRole("button", { name: connector, exact: true }).click();
       await expect(drawer.getByRole("button", { name: "Back to connectors" })).toBeFocused();
       await expect(drawer.getByText(account)).toBeVisible();
       if (connector === "Google Drive") {
+        await expect(drawer.getByRole("button", { name: "Retry Drive" })).toHaveCount(0);
+        if (width === 1440) expect((await drawer.boundingBox())!.height).toBeLessThan(600);
+        if (width === 1440) await testInfo.attach("Drive connected details", {
+          body: await page.screenshot({ path: testInfo.outputPath("drive-connected-details.png") }),
+          contentType: "image/png",
+        });
         await expect(drawer.getByRole("button", { name: "Choose files", exact: true })).not.toBeVisible();
         await drawer.getByText("Previously added files", { exact: true }).click();
       }
@@ -466,9 +565,9 @@ test("background processing needs explicit consent and can be paused without rem
     await page.getByRole("button", { name: "Pick synthetic file" }).click();
   };
   await selectFile();
-  const consent = page.getByRole("checkbox", { name: /Allow Hushh to process these files on its servers/ });
-  await expect(page.getByText(/Relevant excerpts may be sent to Gemini to prepare suggestions/)).toBeVisible();
-  await expect(page.getByText(/encrypted file index is held by Hushh, not your vault/)).toBeVisible();
+  const consent = page.getByRole("checkbox", { name: /Prepare these files while the app is closed/ });
+  await expect(page.getByText(/Relevant excerpts may be sent to Gemini/)).toBeVisible();
+  await expect(page.getByText(/Prepared file information is stored outside your vault/)).toBeVisible();
   await expect(consent).not.toBeChecked();
   await consent.check();
   expect(writes).toHaveLength(0);
@@ -480,7 +579,16 @@ test("background processing needs explicit consent and can be paused without rem
   await page.getByRole("button", { name: "Add selected files" }).click();
   const processing = page.getByRole("checkbox", { name: /^Background processing for / });
   await expect(processing).toBeChecked();
-  await expect(page.getByText(/Turning this off stops new processing but keeps the index until you remove the file/)).toBeVisible();
+  await expect(page.getByText(/Turning this off stops new preparation; remove the file to clear what was prepared/)).toBeVisible();
+  await page.setViewportSize({ width: 1440, height: 440 });
+  const dialog = page.getByRole("dialog", { name: "Connectors", exact: true });
+  const remove = dialog.getByRole("button", { name: /^Remove .+$/ });
+  await remove.scrollIntoViewIfNeeded();
+  const removeBox = (await remove.boundingBox())!;
+  const dialogBox = (await dialog.boundingBox())!;
+  expect(removeBox.y).toBeGreaterThanOrEqual(dialogBox.y);
+  expect(removeBox.y + removeBox.height).toBeLessThanOrEqual(dialogBox.y + dialogBox.height + 1);
+  await page.setViewportSize({ width: 1280, height: 720 });
   expect(writes[0].body.processingConsent).toBe("selected-files-background-v1");
   await expect(page.getByRole("button", { name: /^Sync .+ now$/ })).toBeVisible();
   await processing.click();

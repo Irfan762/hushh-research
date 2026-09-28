@@ -200,6 +200,7 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
     assert executed_sql.index("INSERT INTO account_deletion_tombstones") < first_delete_offset
     expected_fragments = [
         "DELETE FROM contact_sync_lookup_budgets",
+        "DELETE FROM account_legal_acceptances",
         "DELETE FROM kai_gmail_receipts",
         "DELETE FROM kai_gmail_sync_runs",
         "DELETE FROM kai_gmail_connections",
@@ -881,6 +882,8 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
         "DELETE FROM runtime_persona_state",
         "DELETE FROM vault_key_wrappers",
         "DELETE FROM vault_keys",
+        # The account and the agreement it accepted survive a reset.
+        "DELETE FROM account_legal_acceptances",
     ]
     for fragment in spine_fragments:
         assert fragment not in executed_sql
@@ -1379,3 +1382,36 @@ async def test_private_mcp_and_parent_scoped_rows_are_erased(monkeypatch):
         "webauthn_credentials",
     ):
         assert f"DELETE FROM {table} WHERE user_id = :user_id" in executed_sql
+
+
+class _FakePostgresError(Exception):
+    pgcode = "55000"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("message", "expected_code"),
+    [
+        (
+            "account deletion is temporarily unavailable during a lifecycle release",
+            "ACCOUNT_DELETION_PAUSED",
+        ),
+        ("generated account identity columns require an explicit deletion guard", None),
+    ],
+)
+async def test_release_fence_refusal_is_reported_as_paused(monkeypatch, message, expected_code):
+    service = _erasure_ready_service(monkeypatch)
+    conn = MagicMock()
+    conn.execute.side_effect = _FakePostgresError(message)
+    release = MagicMock()
+    monkeypatch.setattr(
+        "hushh_mcp.services.account_service.release_provider_grants_after_erasure", release
+    )
+
+    with patch("hushh_mcp.services.account_service.get_db_connection", return_value=_db(conn)):
+        result = await service._delete_full_account("user_delete_123", requested_target="both")
+
+    assert result["success"] is False
+    assert result["account_deleted"] is False
+    assert result["error_code"] == expected_code
+    release.assert_not_called()

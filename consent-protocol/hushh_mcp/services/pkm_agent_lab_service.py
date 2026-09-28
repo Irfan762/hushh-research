@@ -25,8 +25,10 @@ from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
     DYNAMIC_DOMAIN_CONTRACT_VERSION,
+    FINANCIAL_SOURCE_MANAGED_BRANCHES,
     validate_dynamic_top_level_domain,
 )
+from hushh_mcp.services.generated_contracts import shared_config_path
 from hushh_mcp.services.pkm_preview_continuation import PreviewContinuation, contract_fingerprint
 
 logger = logging.getLogger(__name__)
@@ -34,9 +36,7 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MEMORY_INTENT_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "memory_intent" / "agent.yaml"
 _PKM_STRUCTURE_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "pkm_structure" / "agent.yaml"
-_KYC_IDENTITY_PROFILE_CONTRACT_PATH = (
-    _REPO_ROOT.parent / "config" / "pkm" / "kyc-identity-profile.v1.json"
-)
+_KYC_IDENTITY_PROFILE_CONTRACT_PATH = shared_config_path("pkm", "kyc-identity-profile.v1.json")
 _MEMORY_MERGE_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "memory_merge" / "agent.yaml"
 _MEMORY_SEGMENTATION_MANIFEST_PATH = (
     _REPO_ROOT / "hushh_mcp" / "agents" / "memory_segmentation" / "agent.yaml"
@@ -3598,6 +3598,14 @@ class PKMAgentLabService:
         return any(token in serialized for token in _FINANCIAL_PAYLOAD_HINTS)
 
     @classmethod
+    def _touches_source_managed_financial_branch(cls, payload: dict[str, Any]) -> bool:
+        # Any `*_v1` branch is a versioned lane record, named or not yet named.
+        return any(
+            segment in FINANCIAL_SOURCE_MANAGED_BRANCHES or segment.endswith("_v1")
+            for segment in (cls._normalize_segment(str(key)) for key in (payload or {}).keys())
+        )
+
+    @classmethod
     def _payload_has_financial_shape(cls, payload: dict[str, Any]) -> bool:
         top_level_keys = {
             cls._normalize_segment(str(key))
@@ -4249,6 +4257,15 @@ class PKMAgentLabService:
         if write_mode == "can_save" and requires_review_for_auto_save:
             write_mode = "confirm_first"
             validation_hints.append("auto_save_requires_review")
+        if target_domain == "financial" and cls._touches_source_managed_financial_branch(
+            candidate_payload
+        ):
+            # Authority, not meaning: the bank-connection lane rebuilds these
+            # branches whole, so a memory written into one would be silently
+            # erased on the next refresh. Last, so no later rule can reopen it.
+            # Recorded, never substituted.
+            write_mode = "do_not_save"
+            validation_hints.append("source_managed_branch_blocked")
 
         if write_mode == "confirm_first":
             intent_frame["requires_confirmation"] = True
@@ -5262,6 +5279,7 @@ class PKMAgentLabService:
             "- candidate_payload must align with target_domain and the intent frame.\n"
             "- Choose the action that names this person's information most honestly.\n"
             "- A domain is a SUBJECT AREA of a person's life, not a container of convenience. Before reusing one, ask whether a person would genuinely say this belongs there.\n"
+            "- The three actions: match_existing_domain means an offered domain already fits; extend_domain means an offered domain fits but needs a new subtree; create_domain means naming a new domain.\n"
             "- create_domain is a normal, expected outcome. A person is not a fixed list of categories. If a statement is about a distinct part of who they are, name a new domain for it.\n"
             "- Do not stretch an existing domain to absorb something it is not about. Measured: the wording this replaced produced zero new domains across ten statements and filed someone's communication style under ria, the financial-advisor domain.\n"
             "- You may propose a new safe lowercase snake_case top-level domain when no existing domain is semantically accurate.\n"
@@ -5278,7 +5296,7 @@ class PKMAgentLabService:
             "- primary_json_path must identify the main path inside the domain payload. Use a top-level path when a broad root-domain write is enough; use a deeper nested path only when the subtree is clearly stable.\n"
             "- target_entity_scope should point to the stable subtree being written or changed.\n"
             "- If Financial Guard says sanctioned_financial_memory, the only valid target_domain is financial.\n"
-            "- For sanctioned financial memory, use an existing guarded financial subtree such as events, profile, goals, or runtime rather than inventing a new financial schema.\n"
+            "- For sanctioned financial memory, follow the Finance hierarchy in your system instruction: profile, goals, or events. Never target a source-managed branch.\n"
             "- Gibberish or opaque input must return write_mode=do_not_save.\n"
             "- Never use the domain key general.\n"
             f"{small_model_rules}"

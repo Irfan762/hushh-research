@@ -11,15 +11,18 @@ user id, the thread id, the state projection or any message text.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import contextvars
+import itertools
 import json
 import logging
 import os
 import re
+import threading
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, cast
 from uuid import uuid4
 
@@ -33,6 +36,7 @@ from ag_ui.core import (
     ToolMessage,
 )
 from ag_ui_adk import ADKAgent
+from google.adk.models.llm_response import LlmResponse
 
 from hushh_mcp.one_adk.drive_result_privacy import (
     ConfirmationWireProjection,
@@ -47,6 +51,15 @@ from hushh_mcp.one_adk.output_privacy import (
     drop_empty_history_parts,
     public_event,
 )
+from hushh_mcp.one_adk.run_errors import (
+    MODEL_CAPACITY_CODE,
+    MODEL_UNAVAILABLE_CODE,
+    SERVER_RESTARTING_CODE,
+    server_is_draining,
+    transient_model_error_for_exception,
+    transient_model_run_error,
+)
+from hushh_mcp.one_adk.text_attachments import render_text_attachments_for_model
 from hushh_mcp.services.chat_key import (
     CHAT_KEY_ERROR_MESSAGES,
     CHAT_KEY_ERRORS,
@@ -154,6 +167,7 @@ HEAD_UNLABELED = "unlabeled"
 OUTCOME_FINISHED = "finished"
 OUTCOME_ERROR = "error"
 OUTCOME_CLIENT_DISCONNECT = "client_disconnect"
+OUTCOME_SERVER_RESTARTING = "server_restarting"
 
 _FIRST_VISIBLE_EVENT_TYPES = frozenset(
     {EventType.TEXT_MESSAGE_CONTENT, EventType.TOOL_CALL_START, EventType.CUSTOM}
@@ -164,6 +178,45 @@ _DETAILED_TIMING_ENV = "HUSHH_ONE_CHAT_TIMING_DETAIL"
 _MODEL_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$")
 _CURRENT_TURN: contextvars.ContextVar[TurnTiming | None] = contextvars.ContextVar(
     "one_chat_turn_timing", default=None
+)
+_ANONYMOUS_OWNER_PREFIX = "anonymous:"
+# Process-local turn counter and warmup flag. A worker's first turn pays one-time
+# setup that later turns do not (measured 2026-09-27: 3.6-41 s before the first
+# model call against 94 ms warm), so the timing line says which kind it was.
+_PROCESS_TURNS = itertools.count(1)
+_TURN_PATH_WARMED = threading.Event()
+# The detached-turn hook reads the sealed session and sends one bare push. It is
+# bounded so a slow store or provider can never hold the retained chat key long.
+DETACHED_TURN_HOOK_TIMEOUT_SECONDS = 20.0
+# The background run can settle while its answer still sits in the unbounded
+# queue; the reader then decides, by delivering it or leaving. Wait this long.
+CONSUMER_SETTLE_GRACE_SECONDS = 5.0
+# Only a client that asks for it gets the push: the native app. A web tab's
+# closed stream must not wake the person's phone.
+NOTIFY_ON_DETACH_PROP = "notifyOnDetach"
+
+DetachedTurnHook = Callable[[str, str], Awaitable[None]]
+
+
+@dataclass
+class DetachWatch:
+    """Whether the stream consumer left before the bridge's background run settled.
+
+    The bridge runs the ADK turn in its own task and keeps it running after the
+    client disconnects, so the turn still finishes and persists. This records
+    only what the completion notice needs: the owner and the conversation id. It
+    never holds message text, state or a key.
+    """
+
+    owner_id: str
+    conversation_id: str
+    consumer_detached: bool = False
+    # Set once the reader either handed on the terminal event or left.
+    resolved: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+_CURRENT_DETACH: contextvars.ContextVar[DetachWatch | None] = contextvars.ContextVar(
+    "one_chat_detach_watch", default=None
 )
 
 
@@ -188,8 +241,10 @@ def _error_class(code: Any) -> str:
         return "database"
     if code.startswith("AGENT_RUNTIME_"):
         return "runtime"
-    if code in {"MODEL_ERROR", "RESOURCE_EXHAUSTED"}:
+    if code in {"MODEL_ERROR", MODEL_CAPACITY_CODE, MODEL_UNAVAILABLE_CODE}:
         return "model"
+    if code == SERVER_RESTARTING_CODE:
+        return "shutdown"
     return "other"
 
 
@@ -210,6 +265,14 @@ class TurnTiming:
     model_calls: int = 0
     model_call_total_ms: float = 0.0
     first_model_call_ms: float | None = None
+    first_model_call_at: float | None = None
+    # Set when ADK starts the root agent: the session is loaded, the bridge has
+    # synced state and the person's message is appended.
+    agent_started_at: float | None = None
+    instruction_ms: float = 0.0
+    connector_discovery_ms: float = 0.0
+    process_turn: int = 0
+    path_warmed: bool = False
     model_id: str = "unavailable"
     thinking_level: str = "unavailable"
     pending_model_call_starts: list[float] | None = None
@@ -220,10 +283,15 @@ class TurnTiming:
     error_class: str = "none"
     terminal_observed: bool = False
 
+    def begin_agent(self) -> None:
+        if self.agent_started_at is None:
+            self.agent_started_at = time.perf_counter()
+
     def begin_model_call(self, request: Any) -> None:
         now = time.perf_counter()
         if self.first_model_call_ms is None:
             self.first_model_call_ms = _ms_since(self.started_at, now)
+            self.first_model_call_at = now
         self.model_calls += 1
         if self.model_id == "unavailable":
             candidate_model_id = str(getattr(request, "model", "") or "").strip()
@@ -292,11 +360,19 @@ class TurnTiming:
         if tool_name.startswith(_SPECIALIST_TOOL_PREFIX):
             self.specialist_calls += 1
 
+    def request_build_ms(self) -> int | None:
+        """Agent start to first model call: instruction, history, tools, discovery."""
+        if self.agent_started_at is None or self.first_model_call_at is None:
+            return None
+        return _ms_since(self.agent_started_at, self.first_model_call_at)
+
     def log(self) -> None:
         logger.info(
             "one_agent_chat_turn_complete head=%s run=%s first_visible_ms=%s "
             "first_activity_ms=%s first_answer_token_ms=%s first_tool_call_ms=%s elapsed_ms=%s "
-            "first_model_call_ms=%s model_calls=%s model_call_total_ms=%s "
+            "first_model_call_ms=%s session_ms=%s request_build_ms=%s instruction_ms=%s "
+            "connector_discovery_ms=%s process_turn=%s path_warmed=%s "
+            "model_calls=%s model_call_total_ms=%s "
             "model_id=%s thinking_level=%s "
             "prompt_chars_peak=%s tool_schema_chars_peak=%s history_items_peak=%s "
             "events=%s tool_calls=%s specialist_calls=%s outcome=%s error_class=%s",
@@ -308,6 +384,12 @@ class TurnTiming:
             _ms_since(self.started_at, self.first_tool_call_at),
             _ms_since(self.started_at, time.perf_counter()),
             self.first_model_call_ms,
+            _ms_since(self.started_at, self.agent_started_at),
+            self.request_build_ms(),
+            round(self.instruction_ms),
+            round(self.connector_discovery_ms),
+            self.process_turn,
+            str(self.path_warmed).lower(),
             self.model_calls,
             round(self.model_call_total_ms),
             self.model_id,
@@ -384,6 +466,22 @@ class TimedADKAgent(ADKAgent):
     """``ADKAgent`` that logs one timing line per run for the labelled head."""
 
     head: str = HEAD_UNLABELED
+    # Called once, from the background run, when a turn whose client had already
+    # disconnected settles. Only authenticated One turns are watched.
+    detached_turn_hook: DetachedTurnHook | None = None
+
+    def _detach_watch(self, input: RunAgentInput) -> DetachWatch | None:
+        if self.head != HEAD_ONE or self.detached_turn_hook is None:
+            return None
+        forwarded = input.forwarded_props if isinstance(input.forwarded_props, dict) else {}
+        if forwarded.get(NOTIFY_ON_DETACH_PROP) is not True:
+            return None
+        state = input.state if isinstance(input.state, dict) else {}
+        owner_id = str(state.get("hussh:user_id") or "").strip()
+        conversation_id = str(input.thread_id or "").strip()
+        if not owner_id or owner_id.startswith(_ANONYMOUS_OWNER_PREFIX) or not conversation_id:
+            return None
+        return DetachWatch(owner_id=owner_id, conversation_id=conversation_id)
 
     def _default_run_config(self, input: RunAgentInput):
         from hushh_mcp.hushh_adk.telemetry import private_telemetry
@@ -405,8 +503,18 @@ class TimedADKAgent(ADKAgent):
         return instance
 
     async def run(self, input: RunAgentInput) -> AsyncGenerator[BaseEvent, None]:
-        timing = TurnTiming(head=self.head, run=run_label(input), started_at=time.perf_counter())
+        timing = TurnTiming(
+            head=self.head,
+            run=run_label(input),
+            started_at=time.perf_counter(),
+            process_turn=next(_PROCESS_TURNS),
+            path_warmed=_TURN_PATH_WARMED.is_set(),
+        )
         timing_context = _CURRENT_TURN.set(timing)
+        # Set before the bridge starts its background task, which copies this
+        # context and so shares the same watch object.
+        detach_watch = self._detach_watch(input)
+        detach_context = _CURRENT_DETACH.set(detach_watch)
         interrupted = False
         private_call_ids: set[str] = set()
         confirmations = ConfirmationWireProjection()
@@ -431,13 +539,15 @@ class TimedADKAgent(ADKAgent):
                 aclosing(super().run(input)) as run,
             ):
                 async for event in run:
-                    if (
-                        getattr(event, "type", None) == EventType.RUN_ERROR
-                        and getattr(event, "message", None) in CHAT_KEY_ERROR_MESSAGES
-                    ):
-                        # ag_ui_adk stringifies a background failure into a generic
-                        # run error; keep a chat-key refusal recognisable.
-                        event = CHAT_KEY_RUN_ERROR
+                    if getattr(event, "type", None) == EventType.RUN_ERROR:
+                        if getattr(event, "message", None) in CHAT_KEY_ERROR_MESSAGES:
+                            # ag_ui_adk stringifies a background failure into a
+                            # generic run error; keep a chat-key refusal recognisable.
+                            event = CHAT_KEY_RUN_ERROR
+                        else:
+                            # A 429/5xx after the first chunk is not failed over;
+                            # end with a retryable code, never the provider text.
+                            event = transient_model_run_error(event) or event
                     events = confirmations.project(event) if self.head == HEAD_ONE else [event]
                     for event in events:
                         if self.head == HEAD_ONE:
@@ -446,6 +556,8 @@ class TimedADKAgent(ADKAgent):
                             if event is None:
                                 continue
                         timing.observe(event)
+                        if timing.terminal_observed and detach_watch is not None:
+                            detach_watch.resolved.set()
                         projected = (
                             public_event(event, allow_thought_summary=self.head == HEAD_ONE)
                             if self.head in (HEAD_ONE, HEAD_INTRO)
@@ -467,8 +579,16 @@ class TimedADKAgent(ADKAgent):
             # Consumers commonly close immediately after the terminal event.
             # observe() runs before yield so that normal closure cannot replace
             # an emitted finish or error with a disconnect diagnosis.
-            if not timing.terminal_observed:
+            if not timing.terminal_observed and server_is_draining():
+                # The stream guard sends the terminal event; this is not a
+                # person leaving, so no detached-turn notice is due.
+                timing.outcome = OUTCOME_SERVER_RESTARTING
+            elif not timing.terminal_observed:
                 timing.outcome = OUTCOME_CLIENT_DISCONNECT
+                if detach_watch is not None:
+                    detach_watch.consumer_detached = True
+            if detach_watch is not None:
+                detach_watch.resolved.set()
             raise
         except Exception as exc:
             timing.outcome = OUTCOME_ERROR
@@ -478,7 +598,8 @@ class TimedADKAgent(ADKAgent):
             safe_error = (
                 CHAT_KEY_RUN_ERROR
                 if isinstance(exc, CHAT_KEY_ERRORS)
-                else RunErrorEvent(
+                else transient_model_error_for_exception(exc)
+                or RunErrorEvent(
                     message="One couldn't finish that request. Please try again.",
                     code="AGENT_ERROR",
                 )
@@ -490,7 +611,14 @@ class TimedADKAgent(ADKAgent):
             if interrupted or timing.outcome in (OUTCOME_ERROR, OUTCOME_CLIENT_DISCONNECT):
                 await self._release_execution(input)
             timing.log()
-            _CURRENT_TURN.reset(timing_context)
+            if detach_watch is not None:
+                detach_watch.resolved.set()
+            # A finalizer may close this generator from another Context; one
+            # failed reset must not skip the other.
+            with contextlib.suppress(ValueError):
+                _CURRENT_DETACH.reset(detach_context)
+            with contextlib.suppress(ValueError):
+                _CURRENT_TURN.reset(timing_context)
 
     async def _run_adk_in_background(self, *args: Any, **kwargs: Any) -> Any:
         """Keep the request's chat key alive until this background run settles.
@@ -501,7 +629,36 @@ class TimedADKAgent(ADKAgent):
         write would fail. The binding still has a hard ceiling in ``chat_key``.
         """
         with retain_request_chat_key():
-            return await super()._run_adk_in_background(*args, **kwargs)
+            result = await super()._run_adk_in_background(*args, **kwargs)
+            # Still inside the retained binding: the hook reads the sealed
+            # session with the key this turn received and never stores it.
+            await self._settle_detached_turn()
+            return result
+
+    async def _settle_detached_turn(self) -> None:
+        """Hand a turn that finished after its client left to the completion hook.
+
+        A consumer that is still attached receives the terminal event itself, so
+        only a detached turn is handed over. The hook never raises into the run.
+        """
+        watch = _CURRENT_DETACH.get()
+        hook = self.detached_turn_hook
+        if watch is None or hook is None:
+            return
+        if not watch.resolved.is_set():
+            # Settled first: let the reader deliver the answer or leave.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(CONSUMER_SETTLE_GRACE_SECONDS):
+                    await watch.resolved.wait()
+        if not watch.consumer_detached:
+            return
+        try:
+            async with asyncio.timeout(DETACHED_TURN_HOOK_TIMEOUT_SECONDS):
+                await hook(watch.owner_id, watch.conversation_id)
+        except Exception as exc:  # noqa: BLE001 - a notice never fails the turn
+            logger.warning(
+                "one.detached_turn_hook_failed kind=%s", _bridge_failure_kind((type(exc),))
+            )
 
     async def _release_execution(self, input: RunAgentInput) -> None:
         """Drop the bridge's execution entry for a run that ended in error or disconnect.
@@ -545,13 +702,44 @@ def _request_text(value: Any) -> str:
     )
 
 
-def timed_one_before_model(callback_context: Any, llm_request: Any) -> None:
+def mark_turn_path_warmed() -> None:
+    """Record that this process already ran the One turn path once at startup."""
+    _TURN_PATH_WARMED.set()
+
+
+def record_instruction_build(elapsed_ms: float) -> None:
+    """Add one runtime-instruction build to the current turn's timing line."""
+    timing = _CURRENT_TURN.get()
+    if timing is not None:
+        timing.instruction_ms += max(0.0, elapsed_ms)
+
+
+def timed_one_before_agent(callback_context: Any) -> None:
+    """Mark when ADK starts One: session loaded and the new message appended."""
+    del callback_context
+    timing = _CURRENT_TURN.get()
+    if timing is not None:
+        timing.begin_agent()
+
+
+def record_connector_discovery(elapsed_ms: float) -> None:
+    """Add one connector-catalog discovery to the current turn's timing line."""
+    timing = _CURRENT_TURN.get()
+    if timing is not None:
+        timing.connector_discovery_ms += max(0.0, elapsed_ms)
+
+
+def timed_one_before_model(callback_context: Any, llm_request: Any) -> LlmResponse | None:
     """Preserve the external-read barrier and record privacy-safe request sizes."""
     drop_empty_history_parts(llm_request)
-    before_external_read_model(callback_context, llm_request)
+    render_text_attachments_for_model(llm_request)
+    guarded_response = before_external_read_model(callback_context, llm_request)
+    if guarded_response is not None:
+        return guarded_response
     timing = _CURRENT_TURN.get()
     if timing is not None:
         timing.begin_model_call(llm_request)
+    return None
 
 
 def timed_one_after_model(_callback_context: Any, _llm_response: Any) -> None:

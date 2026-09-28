@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -17,11 +18,13 @@ def _worker(result):
     return type("Worker", (), {"run": AsyncMock(return_value=result)})()
 
 
-def _drain(workers):
+def _drain(workers, search_worker=None, bulk_share_worker=None):
     return DriveWorkDrain(
         document_worker=workers[0],
         suggestion_worker=workers[1],
+        search_worker=search_worker or _worker({"outcomes": {"completed": 1}}),
         permission_worker=workers[2],
+        bulk_share_worker=bulk_share_worker or _worker({"outcomes": {"not_claimed": 1}}),
         notification_worker=workers[3],
     )
 
@@ -42,7 +45,9 @@ async def test_document_stage_is_exclusive_bounded_and_aggregate_only():
         "workers": {
             "documents": {"ready": 1},
             "suggestions": {"deferred": 1},
+            "searches": {"deferred": 1},
             "permissions": {"deferred": 1},
+            "bulk_shares": {"deferred": 1},
             "notifications": {"deferred": 1},
         },
     }
@@ -56,7 +61,9 @@ async def test_document_stage_is_exclusive_bounded_and_aggregate_only():
 async def test_suggestion_stage_does_not_claim_document_or_sharing_work():
     workers = [_worker({"outcomes": {"review_ready": 1}}) for _ in range(4)]
 
-    result = await _drain(workers).run(stage="suggestions")
+    search = _worker({"outcomes": {"completed": 1}})
+    result = await _drain(workers, search).run(stage="suggestions")
+    search.run.assert_awaited_once_with(max_jobs=1, deadline_seconds=90)
 
     workers[1].run.assert_awaited_once_with(max_jobs=1, deadline_seconds=175)
     for index in (0, 2, 3):
@@ -64,7 +71,9 @@ async def test_suggestion_stage_does_not_claim_document_or_sharing_work():
     assert result["workers"] == {
         "documents": {"deferred": 1},
         "suggestions": {"review_ready": 1},
+        "searches": {"completed": 1},
         "permissions": {"deferred": 1},
+        "bulk_shares": {"deferred": 1},
         "notifications": {"deferred": 1},
     }
 
@@ -75,16 +84,20 @@ async def test_sharing_stage_continues_notification_after_permission_failure():
     workers[2].run.side_effect = RuntimeError("private file and recipient")
     workers[3].run.return_value = {"outcomes": {"settled": 1, "recipient": 1}}
 
-    result = await _drain(workers).run(stage="sharing")
+    bulk = _worker({"outcomes": {"not_claimed": 1}})
+    result = await _drain(workers, bulk_share_worker=bulk).run(stage="sharing")
 
     workers[0].run.assert_not_awaited()
     workers[1].run.assert_not_awaited()
-    workers[2].run.assert_awaited_once_with(max_jobs=20, deadline_seconds=80)
-    workers[3].run.assert_awaited_once_with(max_jobs=20, deadline_seconds=45)
+    workers[2].run.assert_awaited_once_with(max_jobs=20, deadline_seconds=75)
+    bulk.run.assert_awaited_once_with(max_jobs=400, deadline_seconds=80)
+    workers[3].run.assert_awaited_once_with(max_jobs=20, deadline_seconds=35)
     assert result["workers"] == {
         "documents": {"deferred": 1},
         "suggestions": {"deferred": 1},
+        "searches": {"deferred": 1},
         "permissions": {"unavailable": 1},
+        "bulk_shares": {"not_claimed": 1},
         "notifications": {"settled": 1},
     }
     assert "private" not in str(result)
@@ -249,3 +262,52 @@ async def test_sharing_notification_budget_is_shared_across_both_outboxes(
         assert questions.claim.await_count > before
     dispatched = [call.args[0]["event_id"] for call in notifications._dispatch.await_args_list]
     assert len(dispatched) == len(set(dispatched)) == share_count + question_count
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_name", ["suggestions", "searches"])
+async def test_search_and_preparation_start_independently_without_starving_each_other(blocked_name):
+    started = asyncio.Event()
+    release = asyncio.Event()
+    fast_finished = asyncio.Event()
+
+    async def blocked(**kwargs):
+        started.set()
+        await release.wait()
+        return {"outcomes": {"review_ready" if blocked_name == "suggestions" else "completed": 1}}
+
+    async def fast(**kwargs):
+        await started.wait()
+        fast_finished.set()
+        return {"outcomes": {"superseded" if blocked_name == "suggestions" else "review_ready": 1}}
+
+    workers = [_worker({"outcomes": {}}) for _ in range(4)]
+    search = _worker({"outcomes": {}})
+    workers[1].run.side_effect = blocked if blocked_name == "suggestions" else fast
+    search.run.side_effect = blocked if blocked_name == "searches" else fast
+    run = asyncio.create_task(_drain(workers, search).run(stage="suggestions"))
+    try:
+        await asyncio.wait_for(fast_finished.wait(), timeout=1)
+        assert not run.done()
+        workers[1].run.assert_awaited_once_with(max_jobs=1, deadline_seconds=175)
+        search.run.assert_awaited_once_with(max_jobs=1, deadline_seconds=90)
+    finally:
+        release.set()
+        result = await asyncio.wait_for(run, timeout=1)
+    assert result["workers"]["suggestions"] == {"review_ready": 1}
+    assert result["workers"]["searches"] == {
+        "superseded" if blocked_name == "suggestions" else "completed": 1
+    }
+    for index in (0, 2, 3):
+        workers[index].run.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_search_failure_does_not_erase_the_preparation_result():
+    workers = [_worker({"outcomes": {"review_ready": 1}}) for _ in range(4)]
+    search = _worker({"outcomes": {}})
+    search.run.side_effect = RuntimeError("private query and owner")
+    result = await _drain(workers, search).run(stage="suggestions")
+    assert result["workers"]["suggestions"] == {"review_ready": 1}
+    assert result["workers"]["searches"] == {"unavailable": 1}
+    assert "private" not in str(result)

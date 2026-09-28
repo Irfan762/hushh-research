@@ -49,6 +49,13 @@ type EmailDraftCardProps = {
   sourceBoundReply?: SourceBoundEmailReplyAdapter | null;
   /** Owner-visible, server-derived envelope for a source-bound reply. */
   sourceBoundEnvelope?: { to: string; subject: string } | null;
+  /**
+   * Reports the draft as it is on screen, including the person's own edits,
+   * so a follow-up chat turn can revise it. Observing only; never sends.
+   */
+  onDraftChange?: (draft: EmailDraft) => void;
+  /** Opens the existing connections drawer on Gmail for a never-connected mailbox. */
+  onOpenConnections?: (provider: "gmail", trigger: HTMLButtonElement) => void;
 };
 
 const EMPTY_DRAFT: EmailDraft = {
@@ -78,6 +85,8 @@ export function EmailDraftCard({
   onSendFailed,
   sourceBoundReply = null,
   sourceBoundEnvelope = null,
+  onDraftChange,
+  onOpenConnections,
 }: EmailDraftCardProps) {
   const idPrefix = useId();
   const [draft, setDraft] = useState<EmailDraft>(() => {
@@ -107,6 +116,10 @@ export function EmailDraftCard({
   const attachmentIdempotencyKeyRef = useRef<string | null>(null);
   const autoDraftStartedRef = useRef(false);
   const sendStartedRef = useRef(false);
+
+  useEffect(() => {
+    onDraftChange?.(draft);
+  }, [draft, onDraftChange]);
 
   useEffect(() => {
     let active = true;
@@ -630,6 +643,22 @@ export function EmailDraftCard({
                   <Link className="font-medium underline" href="/one/gmail">
                     Reconnect Mail
                   </Link>
+                ) : null}
+                {error.needsGmailConnect ? (
+                  onOpenConnections ? (
+                    <button
+                      type="button"
+                      className="font-medium underline"
+                      data-testid="one-email-draft-connect-gmail"
+                      onClick={(event) => onOpenConnections("gmail", event.currentTarget)}
+                    >
+                      Connect Gmail
+                    </button>
+                  ) : (
+                    <Link className="font-medium underline" href="/one/gmail">
+                      Connect Gmail
+                    </Link>
+                  )
                 ) : null}
               </span>
               {autoDraft && !sourceBoundReply ? (

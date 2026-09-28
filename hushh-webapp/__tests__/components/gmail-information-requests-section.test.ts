@@ -69,6 +69,23 @@ describe("personal Gmail information-request scope boundary", () => {
     });
   });
 
+  it("loads only on first activation and keeps the warm workspace across tab switches", async () => {
+    const props = {
+      userId: "owner", vaultKey: null, vaultOwnerToken: null, isConnected: true,
+      idTokenProvider: () => Promise.resolve("firebase-token"),
+      onRequestVaultUnlock: vi.fn(),
+    };
+    const view = render(createElement(GmailInformationRequestsSection, { ...props, active: false }));
+    expect(gmailServiceMocks.getPreference).not.toHaveBeenCalled();
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: true }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Unlock to start" })).toBeEnabled());
+    expect(gmailServiceMocks.getPreference).toHaveBeenCalledTimes(1);
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: false }));
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: true }));
+    expect(screen.getByRole("button", { name: "Unlock to start" })).toBeEnabled();
+    expect(gmailServiceMocks.getPreference).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts only one manifest-backed exact leaf segment", () => {
     expect(
       isExactDraftCandidate({
@@ -211,6 +228,85 @@ describe("personal Gmail information-request scope boundary", () => {
     );
   });
 
+  it("closes the confirm dialog as soon as the preference saves, without waiting for the scan", async () => {
+    // Regression: setMonitoring(true) used to await the whole inbox scan
+    // (30-message classification, 40-60s) before resolving, and the confirm
+    // dialog's .finally(() => setShowEnableConfirm(false)) was chained onto
+    // that same promise -- so the dialog sat open with a static "Starting…"
+    // label and no spinner for the entire scan, looking hung. The preference
+    // save is fast; the scan is owned by the existing auto-scan effect and
+    // has its own "Scanning emails: N" progress panel (used correctly by
+    // "Check now"). The dialog must close the moment the preference saves.
+    gmailServiceMocks.getPreference.mockResolvedValue({
+      user_id: "owner",
+      monitoring_enabled: false,
+      retention: "metadata_only",
+    });
+    gmailServiceMocks.setPreference.mockResolvedValue({
+      user_id: "owner",
+      monitoring_enabled: true,
+      retention: "metadata_only",
+    });
+    gmailServiceMocks.list.mockResolvedValue({
+      workflows: [],
+      next_offset: null,
+      total_count: 0,
+    });
+    let resolveScan!: (value: unknown) => void;
+    gmailServiceMocks.scanStream.mockImplementation(
+      ({
+        handlers,
+      }: {
+        handlers: { onProgress: (count: number) => void };
+      }) =>
+        new Promise((resolve) => {
+          handlers.onProgress(1);
+          resolveScan = resolve;
+        }),
+    );
+
+    render(
+      createElement(GmailInformationRequestsSection, {
+        userId: "owner",
+        vaultKey: "vault-key",
+        vaultOwnerToken: "vault-owner-token",
+        isConnected: true,
+        idTokenProvider: () => Promise.resolve("firebase-token"),
+        onRequestVaultUnlock: vi.fn(),
+      }),
+    );
+
+    const start = await screen.findByRole("button", {
+      name: "Start monitoring",
+    });
+    await waitFor(() => expect(start).not.toBeDisabled());
+    fireEvent.click(start);
+
+    expect(await screen.findByText("Start monitoring?")).toBeVisible();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Start monitoring" }),
+    );
+
+    // The preference PATCH resolves quickly; the dialog closes on that
+    // alone, not on the still-pending scan.
+    await waitFor(() =>
+      expect(screen.queryByText("Start monitoring?")).not.toBeInTheDocument(),
+    );
+    // The scan is still in flight here (resolveScan not called yet) -- its
+    // progress panel, not a frozen dialog, is what the person now sees.
+    expect(await screen.findByText("Scanning emails: 1")).toBeVisible();
+
+    resolveScan({
+      accepted: true,
+      scanned_count: 1,
+      unchanged_count: 0,
+      matched_count: 0,
+      failed_count: 0,
+      workflow_ids: [],
+    });
+    expect(await screen.findByText("Gmail monitoring is on")).toBeVisible();
+  });
+
   it("opens the private vault instead of issuing an invalid monitor opt-in", async () => {
     const onRequestVaultUnlock = vi.fn();
     render(
@@ -235,6 +331,26 @@ describe("personal Gmail information-request scope boundary", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Open your private vault before changing KYC monitoring.",
     );
+  });
+
+  it("retries an interrupted scan on return without repeating a completed scan", async () => {
+    gmailServiceMocks.getPreference.mockResolvedValue({ user_id: "owner", monitoring_enabled: true });
+    gmailServiceMocks.list.mockResolvedValue({ workflows: [], next_offset: null, total_count: 0 });
+    gmailServiceMocks.scanStream.mockImplementationOnce(({ signal }: { signal: AbortSignal }) =>
+      new Promise((_, reject) => signal.addEventListener("abort", () => reject(new DOMException("Cancelled", "AbortError")), { once: true })),
+    ).mockResolvedValue({ accepted: true, scanned_count: 0, matched_count: 0, unchanged_count: 0, failed_count: 0, workflow_ids: [] });
+    const props = { userId: "owner", vaultKey: "vault-key", vaultOwnerToken: "owner-token", isConnected: true,
+      idTokenProvider: () => Promise.resolve("firebase-token"), onRequestVaultUnlock: vi.fn() };
+    const view = render(createElement(GmailInformationRequestsSection, { ...props, active: true }));
+    await waitFor(() => expect(gmailServiceMocks.scanStream).toHaveBeenCalledTimes(1));
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: false }));
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: true }));
+    await waitFor(() => expect(gmailServiceMocks.scanStream).toHaveBeenCalledTimes(2));
+    await screen.findByText("Emails checked");
+    expect(screen.queryByText("Cancelled")).not.toBeInTheDocument();
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: false }));
+    view.rerender(createElement(GmailInformationRequestsSection, { ...props, active: true }));
+    expect(gmailServiceMocks.scanStream).toHaveBeenCalledTimes(2);
   });
 
   it("starts an incremental KYC scan when the unlocked KYC workspace opens", async () => {

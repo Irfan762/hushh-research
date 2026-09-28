@@ -29,6 +29,7 @@ describe("agent chat prompt queue", () => {
           ...second,
           deferPkmContext: true,
           gmailInformationRequestWorkflowId: "workflow-1",
+          driveSearchSelection: { jobId: "saved-search", position: 1 },
         },
         third,
       ],
@@ -39,6 +40,7 @@ describe("agent chat prompt queue", () => {
     expect(queue[1].text).toBe("Updated");
     expect(queue[1].deferPkmContext).toBe(true);
     expect(queue[1].gmailInformationRequestWorkflowId).toBe("workflow-1");
+    expect(queue[1].driveSearchSelection).toBeUndefined();
   });
 
   it("removes a pending prompt without affecting the remaining order", () => {

@@ -13,33 +13,63 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+from hushh_mcp.services.drive_bulk_share_worker import DriveBulkShareWorker
 from hushh_mcp.services.drive_document_worker import DriveDocumentWorker
+from hushh_mcp.services.drive_owner_search_worker import DriveOwnerSearchWorker
 from hushh_mcp.services.drive_permission_worker import DrivePermissionWorker
 from hushh_mcp.services.drive_share_notification_worker import DriveShareNotificationWorker
 from hushh_mcp.services.drive_suggestion_worker import DriveSuggestionWorker
 
 MAX_JOBS_PER_WORKER = 20
-WORKER_JOB_LIMITS = {"documents": 1, "suggestions": 1, "permissions": 20, "notifications": 20}
+WORKER_JOB_LIMITS = {
+    "documents": 1,
+    "suggestions": 1,
+    "searches": 1,
+    "permissions": 20,
+    "bulk_shares": 400,
+    "notifications": 20,
+}
 STAGE_WORKERS = {
     "documents": frozenset({"documents"}),
-    "suggestions": frozenset({"suggestions"}),
-    "sharing": frozenset({"permissions", "notifications"}),
+    "suggestions": frozenset({"suggestions", "searches"}),
+    "sharing": frozenset({"permissions", "bulk_shares", "notifications"}),
 }
 STAGE_MAX_SECONDS = {
     "documents": 180,
     "suggestions": 175,
-    "permissions": 80,
-    "notifications": 45,
+    "searches": 90,
+    "permissions": 75,
+    "bulk_shares": 80,
+    "notifications": 35,
 }
 STAGE_MIN_SECONDS = {
     "documents": 160,
     "suggestions": 150,
+    "searches": 20,
     "permissions": 75,
+    "bulk_shares": 75,
     "notifications": 35,
 }
-MAX_OUTCOME_COUNT = 100
+MAX_OUTCOME_COUNT = 500
 
 _WORKER_ALLOWED_OUTCOMES = {
+    "searches": frozenset(
+        {
+            "queued",
+            "running",
+            "completed",
+            "partial",
+            "stopped",
+            "failed",
+            "limited",
+            "not_claimed",
+            "unavailable",
+            "disabled",
+            "deadline",
+            "deferred",
+            "superseded",
+        }
+    ),
     "documents": frozenset(
         {
             "ready",
@@ -79,6 +109,27 @@ _WORKER_ALLOWED_OUTCOMES = {
             "disabled",
             "deadline",
             "deferred",
+        }
+    ),
+    "bulk_shares": frozenset(
+        {
+            "succeeded",
+            "preexisting",
+            "queued",
+            "unknown",
+            "failed",
+            "skipped",
+            "present_unattributed",
+            "absent",
+            "not_claimed",
+            "unavailable",
+            "disabled",
+            "deadline",
+            "deferred",
+            "notification_settled",
+            "notification_queued",
+            "notification_unavailable",
+            "notification_not_claimed",
         }
     ),
     "notifications": frozenset(
@@ -141,7 +192,9 @@ class DriveWorkDrain:
         *,
         document_worker: DriveDocumentWorker | None = None,
         suggestion_worker: DriveSuggestionWorker | None = None,
+        search_worker: DriveOwnerSearchWorker | None = None,
         permission_worker: DrivePermissionWorker | None = None,
+        bulk_share_worker: DriveBulkShareWorker | None = None,
         notification_worker: DriveShareNotificationWorker | None = None,
     ) -> None:
         # Sharing permissions precede notifications in the same stage. Other
@@ -149,7 +202,9 @@ class DriveWorkDrain:
         self._workers = (
             ("documents", document_worker or DriveDocumentWorker()),
             ("suggestions", suggestion_worker or DriveSuggestionWorker()),
+            ("searches", search_worker or DriveOwnerSearchWorker()),
             ("permissions", permission_worker or DrivePermissionWorker()),
+            ("bulk_shares", bulk_share_worker or DriveBulkShareWorker()),
             ("notifications", notification_worker or DriveShareNotificationWorker()),
         )
 
@@ -172,19 +227,22 @@ class DriveWorkDrain:
 
         deadline = self._now() + deadline_seconds
         summaries: dict[str, dict[str, int]] = {}
-        for name, worker in self._workers:
+
+        async def run_worker(name, worker):
             if name not in STAGE_WORKERS[stage]:
                 summaries[name] = {"deferred": 1}
-                continue
+                return
             remaining = deadline - self._now()
             budget = min(STAGE_MAX_SECONDS[name], int(remaining))
             if budget < STAGE_MIN_SECONDS[name]:
                 summaries[name] = {"deadline": 1}
-                continue
+                return
             try:
                 async with asyncio.timeout(budget):
                     result = await worker.run(
-                        max_jobs=min(max_jobs_per_worker, WORKER_JOB_LIMITS[name]),
+                        max_jobs=WORKER_JOB_LIMITS[name]
+                        if name == "bulk_shares"
+                        else min(max_jobs_per_worker, WORKER_JOB_LIMITS[name]),
                         deadline_seconds=budget,
                     )
             except TimeoutError:
@@ -193,6 +251,15 @@ class DriveWorkDrain:
                 summaries[name] = {"unavailable": 1}
             else:
                 summaries[name] = _safe_outcomes(name, result)
+
+        if stage == "suggestions":
+            # Independent read-only leases each get a bounded slice. A slow
+            # preparation cannot starve metadata searches (or vice versa).
+            # The sharing stage below retains permissions-before-notifications.
+            await asyncio.gather(*(run_worker(name, worker) for name, worker in self._workers))
+        else:
+            for name, worker in self._workers:
+                await run_worker(name, worker)
 
         return safe_work_drain_result(
             {"schema_version": "drive.work_drain.v1", "workers": summaries}

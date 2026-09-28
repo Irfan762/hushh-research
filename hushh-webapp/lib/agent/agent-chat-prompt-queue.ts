@@ -1,6 +1,11 @@
+import type { AgentTextAttachment } from "@/lib/agent/large-text-attachment";
+import type { DriveSearchSelection } from "@/lib/services/drive-search-service";
+
 export type QueuedAgentPrompt = {
   id: string;
   text: string;
+  /** Pasted text queued with this turn; sent as its own part, shown as a chip. */
+  attachments?: AgentTextAttachment[];
   createdAtMs: number;
   /**
    * An opaque, owner-selected Gmail information-request reference. It is
@@ -15,6 +20,8 @@ export type QueuedAgentPrompt = {
    * decrypted inventory to hydrate.
    */
   deferPkmContext?: boolean;
+  /** One selected saved Drive result. Owner authorization is rechecked at chat ingress. */
+  driveSearchSelection?: DriveSearchSelection;
 };
 
 export function enqueueAgentPrompt(
@@ -29,7 +36,11 @@ export function editQueuedAgentPrompt(
   id: string,
   text: string,
 ): QueuedAgentPrompt[] {
-  return queue.map((prompt) => (prompt.id === id ? { ...prompt, text } : prompt));
+  // Editing a queued message changes its intent. The old file choice must be
+  // made explicitly again instead of silently following the revised text.
+  return queue.map((prompt) =>
+    prompt.id === id ? { ...prompt, text, driveSearchSelection: undefined } : prompt,
+  );
 }
 
 export function removeQueuedAgentPrompt(

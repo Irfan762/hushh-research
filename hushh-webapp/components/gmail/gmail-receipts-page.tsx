@@ -10,7 +10,7 @@ import {
   Mail,
   PenLine,
   RefreshCw,
-  ShoppingBag,
+  Receipt,
   Trash2,
 } from "@/components/icons";
 import { toast } from "sonner";
@@ -390,6 +390,8 @@ export type GmailReceiptsPageProps = {
   voicePublisherRole?: VoiceSurfacePublisherRole;
   /** The normal Gmail route owns lightweight local workspace selection. */
   initialWorkspace?: GmailWorkspace;
+  /** Explicit Feed navigation takes precedence over the last session tab. */
+  forceWorkspace?: GmailWorkspace;
 };
 
 export default function GmailReceiptsPage({
@@ -401,6 +403,7 @@ export default function GmailReceiptsPage({
   skippingSetup = false,
   voicePublisherRole = "route",
   initialWorkspace = "overview",
+  forceWorkspace,
 }: GmailReceiptsPageProps) {
   // This component is hosted on both /one/gmail and /one/setup/gmail, so the
   // origin handed to the agent has to be the live path, not a route constant.
@@ -433,6 +436,7 @@ export default function GmailReceiptsPage({
   const [gmailPopupAttempt, setGmailPopupAttempt] =
     useState<GmailOAuthPopupAttempt | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
+  const [showMailManagement, setShowMailManagement] = useState(false);
   const receiptsRef = useRef<ReceiptListItem[]>([]);
   const pageRef = useRef(1);
   const pendingSyncFeedbackRef = useRef(false);
@@ -444,18 +448,17 @@ export default function GmailReceiptsPage({
   const resolvedInitialWorkspace =
     journeyVariant === "onboarding"
       ? "receipts"
-      : getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace);
+      : forceWorkspace ??
+        getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace);
   const [workspace, setWorkspaceState] = useState<GmailWorkspace>(
     resolvedInitialWorkspace,
   );
-  // KYC request metadata is intentionally memory-only, but the live panel
-  // must survive a workspace-tab change. Once opened in this Mail session, it
-  // stays mounted (and hidden while inactive) so an in-flight scan and the
-  // already rendered queue are not discarded and restarted on return.
-  const [hasVisitedKyc, setHasVisitedKyc] = useState(
-    resolvedInitialWorkspace === "kyc",
+  const [kycVisitedOwner, setKycVisitedOwner] = useState<string | null>(
+    resolvedInitialWorkspace === "kyc" ? user?.uid ?? null : null,
   );
-  const kycPanelOwnerRef = useRef<string | null>(user?.uid || null);
+  useEffect(() => {
+    if (workspace === "kyc" && user?.uid) setKycVisitedOwner(user.uid);
+  }, [workspace, user?.uid]);
   const setWorkspace = useCallback(
     (nextWorkspace: GmailWorkspace) => {
       setWorkspaceState(nextWorkspace);
@@ -470,18 +473,10 @@ export default function GmailReceiptsPage({
     setWorkspaceState(
       journeyVariant === "onboarding"
         ? "receipts"
-        : getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace),
+        : forceWorkspace ??
+          getGmailWorkspaceSession(user?.uid, pathname, initialWorkspace),
     );
-  }, [initialWorkspace, journeyVariant, pathname, user?.uid]);
-  useEffect(() => {
-    const ownerId = user?.uid || null;
-    if (kycPanelOwnerRef.current === ownerId) return;
-    kycPanelOwnerRef.current = ownerId;
-    setHasVisitedKyc(workspace === "kyc");
-  }, [user?.uid, workspace]);
-  useEffect(() => {
-    if (workspace === "kyc") setHasVisitedKyc(true);
-  }, [workspace]);
+  }, [forceWorkspace, initialWorkspace, journeyVariant, pathname, user?.uid]);
   // This is intentionally memory-only. A KYC summary can be
   // sensitive, so workspace navigation must not write unfinished text to
   // browser storage just to preserve it.
@@ -927,6 +922,7 @@ export default function GmailReceiptsPage({
     onConnectionStateChange?.(isConnected);
   }, [isConnected, onConnectionStateChange]);
 
+  const preserveGmailModify = gmail.status?.modify_permission_granted === true;
   const handleConnectGmail = useCallback((purpose: "read" | "send" = "read"): Promise<boolean> => {
     if (!user?.uid || gmailActionBusy !== null) return Promise.resolve(false);
 
@@ -966,6 +962,7 @@ export default function GmailReceiptsPage({
             ({ serverAuthCode } = await HushhAuth.connectGmail({
               serverClientId: nativeStart.server_client_id,
               purpose: nativeStart.purpose,
+              preserveModify: preserveGmailModify,
             }));
           } catch (error) {
             GmailReceiptsService.recordConsentFailure(error, user.uid);
@@ -1123,7 +1120,7 @@ export default function GmailReceiptsPage({
         return false;
       }
     })();
-  }, [gmailActionBusy, journeyVariant, refreshGmailStatus, user]);
+  }, [gmailActionBusy, journeyVariant, preserveGmailModify, refreshGmailStatus, user]);
 
   const handleEnableGmailSend = useCallback(() => {
     void handleConnectGmail("send");
@@ -1890,6 +1887,10 @@ export default function GmailReceiptsPage({
           // routes that render this page says "Gmail", and the setup checklist
           // row that leads here says "Connect Gmail".
           title="Mail"
+          // On /one/gmail the top bar's trail already says "Mail" beside the
+          // back arrow, so the workspace does not draw it again. The setup
+          // step keeps its visible title: setup has no trail.
+          titleVisuallyHidden={journeyVariant === "workspace"}
           description={pageTitle}
           actions={
             isConnected && journeyVariant === "onboarding" ? (
@@ -1938,9 +1939,32 @@ export default function GmailReceiptsPage({
             />
           ) : null}
 
+          {journeyVariant === "workspace" && isConnected && workspace === "overview" ? (
+            <div className="flex items-center justify-between gap-4 border-y border-border/60 py-2">
+              <p className="flex items-center gap-2.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
+                <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
+                Connected
+              </p>
+              <Button
+                type="button"
+                variant="none"
+                effect="fade"
+                aria-expanded={showMailManagement}
+                aria-controls="mail-management-panel"
+                onClick={() => setShowMailManagement((open) => !open)}
+                className="min-h-11 px-2 text-[17px] font-normal !text-[color:var(--app-accent)]"
+              >
+                {showMailManagement ? "Done" : "Manage"}
+              </Button>
+            </div>
+          ) : null}
+
+          <div id="mail-management-panel" className="contents">
           {journeyVariant === "onboarding" ||
           !isConnected ||
-          workspace === "overview" ? (
+          (workspace === "overview" &&
+            (showMailManagement || loadingStatus || statusSummary.tone === "error" ||
+              isSyncingState || hasStaleBackgroundSync)) ? (
             <SurfaceInset
               className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
             >
@@ -2088,15 +2112,16 @@ export default function GmailReceiptsPage({
               {isConnected &&
               journeyVariant === "workspace" &&
               workspace === "overview" &&
+              showMailManagement &&
               !loadingStatus ? (
-                <div className="flex w-full flex-row items-center gap-2 flex-nowrap pt-2">
+                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-row">
                   <Button
                     type="button"
                     variant="destructive"
                     effect="fade"
                     onClick={() => setShowDisconnectConfirm(true)}
                     disabled={gmailActionBusy !== null}
-                    className="flex-1 min-w-0 px-2 sm:px-4"
+                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
                   >
                     <Trash2 className="mr-1.5 h-4 w-4 shrink-0" />
                     <span className="truncate">Disconnect Mail</span>
@@ -2106,7 +2131,7 @@ export default function GmailReceiptsPage({
                     variant="muted"
                     onClick={() => void handleConnectGmail()}
                     disabled={gmailActionBusy !== null}
-                    className="flex-1 min-w-0 px-2 sm:px-4"
+                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
                   >
                     <RefreshCw className="mr-1.5 h-4 w-4 shrink-0" />
                     <span className="truncate">Reconnect Mail</span>
@@ -2115,6 +2140,8 @@ export default function GmailReceiptsPage({
               ) : null}
             </SurfaceInset>
           ) : null}
+
+          </div>
 
           {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
             <SetupCompletionFooter
@@ -2144,93 +2171,84 @@ export default function GmailReceiptsPage({
           {/* Stable Tab Content Container with Min-Height & Smooth Fade Transition */}
           <div className="min-h-[340px] w-full space-y-4 transition-opacity duration-150 animate-in fade-in">
             {isConnected && workspace === "overview" ? (
-            <SurfaceInset className="space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-indigo-500/10 p-2.5 text-indigo-600 dark:bg-indigo-400/15 dark:text-indigo-400 shrink-0 mt-0.5">
-                  <PenLine className="h-5 w-5" />
-                </div>
-                <div className="space-y-1 min-w-0 flex-1">
-                  <h2 className="text-lg font-semibold tracking-tight text-foreground">Draft with One</h2>
-                  <p className="text-sm leading-relaxed text-muted-foreground">
-                    Draft, reply, or follow up with One. Nothing sends without your approval.
-                  </p>
-                </div>
+            <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
+              <div aria-hidden="true" className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-[22px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
+                <Mail className="h-10 w-10" />
+                <PenLine className="absolute bottom-4 right-3 h-5 w-5 rounded bg-[color:var(--app-accent-surface)]" />
               </div>
-              <div className="flex justify-center w-full pt-1">
-                <AskOneButton
-                  onClick={handleOpenOneChat}
-                  showIcon={false}
-                  className="w-40 h-10 justify-center text-sm font-semibold rounded-full"
-                >
-                  Chat with One
-                </AskOneButton>
-              </div>
-            </SurfaceInset>
+              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Draft with One</h2>
+              <p className="mt-2 max-w-xs text-base leading-relaxed text-muted-foreground">
+                Draft, reply, or follow up. You approve before sending.
+              </p>
+              <AskOneButton
+                onClick={handleOpenOneChat}
+                showIcon={false}
+                size="prominent"
+                className="mt-6 w-full max-w-xs justify-center sm:w-full"
+              >
+                Chat with One
+              </AskOneButton>
+            </section>
           ) : null}
 
-          {isConnected && (workspace === "kyc" || hasVisitedKyc) ? (
-            <div hidden={workspace !== "kyc"}>
+          {isConnected && (kycVisitedOwner === user?.uid || workspace === "kyc") ? (
+            <div hidden={workspace !== "kyc"} key={`${user?.uid ?? "guest"}:${Boolean(vaultKey && vaultOwnerToken)}`}>
               <GmailVerificationOnboarding
+              userId={user?.uid || null}
+              vaultKey={vaultKey}
+              vaultOwnerToken={vaultOwnerToken}
+              onRequestVaultUnlock={requestVaultUnlock}
+              deferred={verificationDeferred}
+              onDeferredChange={setVerificationDeferred}
+              details={verificationDraft}
+              onDetailsChange={setVerificationDraft}
+            >
+              <GmailInformationRequestsSection
+                active={workspace === "kyc"}
                 userId={user?.uid || null}
                 vaultKey={vaultKey}
                 vaultOwnerToken={vaultOwnerToken}
+                isConnected
+                idTokenProvider={user?.getIdToken ? idTokenProvider : null}
                 onRequestVaultUnlock={requestVaultUnlock}
-                deferred={verificationDeferred}
-                onDeferredChange={setVerificationDeferred}
-                details={verificationDraft}
-                onDetailsChange={setVerificationDraft}
-              >
-                <GmailInformationRequestsSection
-                  userId={user?.uid || null}
-                  vaultKey={vaultKey}
-                  vaultOwnerToken={vaultOwnerToken}
-                  isConnected
-                  idTokenProvider={user?.getIdToken ? idTokenProvider : null}
-                  onRequestVaultUnlock={requestVaultUnlock}
-                  onEnableGmailSend={handleEnableGmailSend}
-                />
-              </GmailVerificationOnboarding>
+                onEnableGmailSend={handleEnableGmailSend}
+              />
+            </GmailVerificationOnboarding>
             </div>
           ) : null}
 
           {showReceiptOnboarding ? (
-            <SurfaceInset className="space-y-4 px-4 py-5 text-sm sm:px-5">
-              <div className="flex items-start gap-3">
-                <div className="rounded-xl bg-primary/10 p-2 text-primary">
-                  <ShoppingBag className="h-5 w-5" />
-                </div>
-                <div className="space-y-1">
-                  <h2 className="text-base font-semibold text-foreground">
-                    Receipts
-                  </h2>
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    One syncs purchase receipts into a private shopping summary.
-                    It does not scan KYC requests here.
-                  </p>
-                </div>
+            <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
+              <div aria-hidden="true" className="mb-5 flex size-16 items-center justify-center rounded-[20px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
+                <Receipt className="size-9" />
               </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
+              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Receipts</h2>
+              <p className="mt-2 max-w-xs text-[15px] leading-[22px] text-muted-foreground">
+                One organizes your email receipts into a shopping summary.
+              </p>
+              <div className="mt-6 flex w-full max-w-xs flex-col items-center gap-1">
                 <Button
                   type="button"
+                  size="prominent"
                   onClick={() => {
                     completeReceiptOnboarding();
                     void handleSyncNow();
                   }}
-                  className="w-full sm:w-auto"
+                  className="w-full justify-center"
                 >
-                  <RefreshCw className="mr-2 h-4 w-4" />
                   Start receipt sync
                 </Button>
                 <Button
                   type="button"
-                  variant="muted"
+                  variant="none"
+                  effect="fade"
                   onClick={completeReceiptOnboarding}
-                  className="w-full sm:w-auto"
+                  className="min-h-11 px-4 text-[15px] font-normal !text-[color:var(--app-accent)]"
                 >
                   Explore receipts
                 </Button>
               </div>
-            </SurfaceInset>
+            </section>
           ) : null}
 
           {isConnected && receiptsContentActive ? (
