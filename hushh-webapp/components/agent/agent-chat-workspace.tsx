@@ -366,16 +366,15 @@ import {
   composeTurnSourceText,
   createAgentTextAttachment,
   createPendingTextAttachment,
-  getTextAttachmentTitle,
   mergePastedText,
   parseStoredTextAttachments,
-  PASTED_TEXT_ATTACHMENT_NAME,
+  replaceTextAttachmentForResend,
   shouldCaptureLargePaste,
   type AgentTextAttachment,
   type PendingTextAttachment,
 } from "@/lib/agent/large-text-attachment";
 import { AgentMessageAttachments } from "@/components/agent/agent-message-attachments";
-import { AgentTextAttachmentViewButton } from "@/components/agent/agent-text-attachment-viewer";
+import { AgentComposerTextAttachment } from "@/components/agent/agent-text-attachment-editor";
 import {
   findPendingAssistantTurn,
   measureTranscriptReveal,
@@ -1748,6 +1747,7 @@ export function AgentBubble({
   onReport,
   gmailInformationRequestAttachment,
   driveMemoryReview,
+  onResendAttachment,
 }: {
   message: AgentMessage;
   onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
@@ -1773,6 +1773,8 @@ export function AgentBubble({
   onReport?: (reason: AgentResponseReportReason) => Promise<void>;
   gmailInformationRequestAttachment?: ReactNode;
   driveMemoryReview?: ReactNode;
+  /** "Edit and send again" on a sent paste: a new turn, never an edit of this one. */
+  onResendAttachment?: (index: number, editedText: string) => boolean | void;
 }) {
   const [copied, setCopied] = useState(false);
   // The rating is owned by the workspace so it survives a reload; the bubble
@@ -1979,7 +1981,10 @@ export function AgentBubble({
               ) : null}
               {message.attachments?.length ? (
                 <div className={cn(message.text && "mt-2")}>
-                  <AgentMessageAttachments attachments={message.attachments} />
+                  <AgentMessageAttachments
+                    attachments={message.attachments}
+                    onResend={onResendAttachment}
+                  />
                 </div>
               ) : null}
               {gmailInformationRequestAttachment}
@@ -7224,21 +7229,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     generatedDriveSearchDraftRef.current = false;
     setLongPromptAttachment(null);
     setComposerExpanded(false);
+    enqueueGuardedTurn({
+      typedText,
+      // The paste leaves as its own attachment part: a chip in the transcript
+      // and a separate document for One, never text folded into the message.
+      attachments: attachmentText?.trim()
+        ? [createAgentTextAttachment(attachmentText.trimEnd())]
+        : [],
+      fromPaste: attachment !== null,
+      driveSearchSelection,
+    });
+  };
+
+  /**
+   * The card-number guard and the queue, shared by the composer and by
+   * "Edit and send again" on a sent paste, so an edited copy is screened
+   * exactly like a fresh one.
+   */
+  const enqueueGuardedTurn = ({
+    typedText,
+    attachments,
+    fromPaste,
+    driveSearchSelection,
+  }: {
+    typedText: string;
+    attachments: AgentTextAttachment[];
+    fromPaste: boolean;
+    driveSearchSelection?: AgentRunTurnOptions["driveSearchSelection"];
+  }) => {
     // A large paste is a dedicated browser-memory import lane. Redact payment
     // card numbers before the text can enter Chat, history, telemetry, or the
     // guarded background PKM proposal flow; ordinary typed PAN input remains a
     // hard block and is routed to the secure card form.
     const redactPaste =
-      attachment !== null &&
-      detectLikelyPan(`${typedText}\n\n${attachmentText ?? ""}`);
+      fromPaste &&
+      detectLikelyPan([typedText, ...attachments.map((item) => item.text)].join("\n\n"));
     const submittedText = redactPaste ? redactLikelyPans(typedText) : typedText;
-    const submittedAttachmentText =
-      attachmentText && redactPaste ? redactLikelyPans(attachmentText) : attachmentText;
-    // The paste leaves as its own attachment part: a chip in the transcript
-    // and a separate document for One, never text folded into the message.
-    const submittedAttachments = submittedAttachmentText?.trim()
-      ? [createAgentTextAttachment(submittedAttachmentText.trimEnd())]
-      : [];
+    const submittedAttachments = redactPaste
+      ? attachments.map((item) => createAgentTextAttachment(redactLikelyPans(item.text), item.name))
+      : attachments;
     if (
       detectLikelyPan(submittedText) ||
       submittedAttachments.some((item) => detectLikelyPan(item.text))
@@ -7260,10 +7289,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       return;
     }
     enqueuePrompt(submittedText, undefined, {
-      deferPkmContext: attachment !== null,
+      deferPkmContext: fromPaste,
       driveSearchSelection,
       attachments: submittedAttachments,
     });
+  };
+
+  /** A sent message stays as it was; its edited paste goes out as a new turn. */
+  const resendTextAttachment = (message: AgentMessage, index: number, editedText: string) => {
+    if (isVoiceConnecting || voiceActive) return false;
+    const attachments = replaceTextAttachmentForResend(message.attachments ?? [], index, editedText);
+    if (!attachments) return false;
+    transcriptUserScrollRef.current = false;
+    scrollToSubmittedTurnRef.current = true;
+    enqueueGuardedTurn({ typedText: message.text, attachments, fromPaste: true });
+    return true;
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -7298,17 +7338,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     setComposerExpanded(false);
   };
 
-  const openLongPromptAttachment = () => {
-    const attachment = longPromptAttachment;
-    if (!attachment) return;
-    const text = combineAttachmentAndComposerText({
-      attachmentText: attachment.text,
-      composerText: input,
-    });
-    setInput(text);
-    setLongPromptAttachment(createPendingTextAttachment(text, true));
-    setComposerExpanded(true);
-    requestAnimationFrame(() => composerTextareaRef.current?.focus());
+  const editLongPromptAttachment = (text: string) => {
+    // An edit that empties the paste removes it; the typed message stays.
+    if (!text.trim()) {
+      setLongPromptAttachment(null);
+      return;
+    }
+    setLongPromptAttachment(createPendingTextAttachment(text));
   };
 
   const collapseComposer = () => {
@@ -8377,6 +8413,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                     <AgentBubble
                       message={message}
                       driveMemoryReview={renderDriveMemoryReview(message)}
+                      onResendAttachment={
+                        message.role === "user" && message.attachments?.length
+                          ? (index, editedText) => resendTextAttachment(message, index, editedText)
+                          : undefined
+                      }
                       onInformationRequestSubmitted={async (activityId, receipt) => {
                         const ownerUid = user?.uid;
                         const threadId = conversationIdRef.current;
@@ -9641,61 +9682,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                     </div>
                   ) : null}
                   {longPromptAttachment ? (
-                    <div
-                      className={cn(
-                        "relative mb-2 rounded-[18px] border border-foreground/[0.12] bg-foreground/[0.045] p-3 text-sm",
-                        longPromptAttachment.isExpanded ? "pr-11" : "pr-20",
-                      )}
-                      data-testid="agent-chat-text-attachment"
-                    >
-                      <button
-                        type="button"
-                        className="flex w-full min-w-0 items-center gap-2 text-left outline-none focus-visible:rounded-lg focus-visible:ring-2 focus-visible:ring-[color:var(--app-focus-ring)]"
-                        aria-expanded={longPromptAttachment.isExpanded}
-                        aria-label={
-                          longPromptAttachment.isExpanded
-                            ? "Text attachment open for editing"
-                            : "Open text attachment to view and edit"
-                        }
-                        onClick={() => {
-                          if (longPromptAttachment.isExpanded) {
-                            collapseComposer();
-                            return;
-                          }
-                          openLongPromptAttachment();
-                        }}
-                      >
-                        <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-medium">
-                            {getTextAttachmentTitle(longPromptAttachment.text)}
-                          </span>
-                          <span className="block text-xs text-muted-foreground">
-                            Pasted text · {(longPromptAttachment.byteSize / 1024).toFixed(1)} KB{longPromptAttachment.isExpanded ? " · editing" : ""}
-                          </span>
-                        </span>
-                      </button>
-                      {/* Read the paste before sending without opening it for
-                        * editing. Hidden while it is open in the editor, which
-                        * already shows the live text. */}
-                      {!longPromptAttachment.isExpanded ? (
-                        <AgentTextAttachmentViewButton
-                          name={PASTED_TEXT_ATTACHMENT_NAME}
-                          text={longPromptAttachment.text}
-                          className="absolute right-10 top-2 h-8 w-8"
-                        />
-                      ) : null}
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="absolute right-2 top-2 h-8 w-8"
-                        aria-label="Remove text attachment"
-                        onClick={removeLongPromptAttachment}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
+                    <AgentComposerTextAttachment
+                      attachment={longPromptAttachment}
+                      onChange={editLongPromptAttachment}
+                      onRemove={removeLongPromptAttachment}
+                      onCollapse={collapseComposer}
+                    />
                   ) : null}
                   {/* One composer, two sizes. The compact pill and the expanded
                    * editor used to be separate text boxes in separate trees, so
