@@ -25,6 +25,7 @@ import {
 } from "@/lib/consent/location-consent";
 import { isMarketplaceConsent } from "@/lib/consent/marketplace-consent";
 import {
+  consentEntryInformationLabel,
   consentInformationLabel,
   consentRequestHeadline,
   parseConsentInstant,
@@ -137,10 +138,7 @@ function buildRequest(
     new Set(
       members.length
         ? members.map((member) =>
-            consentInformationLabel({
-              scope: member.scope,
-              label: member.scope_description,
-            }),
+            consentEntryInformationLabel(member),
           )
         : fallbackLabels,
     ),
@@ -323,4 +321,98 @@ export function consentEntryToPendingConsent(
     durationHours,
     metadata: entry.metadata || undefined,
   };
+}
+
+/** Grants written within this window for one person read as one request. */
+export const ACTIVE_REQUEST_WINDOW_MS = 2 * 60 * 1000;
+
+export type ActiveConsentRow =
+  | { kind: "single"; entry: ConsentCenterEntry }
+  | {
+      kind: "request";
+      /** `bundle:<id>`, or `window:<counterpart>:<first grant ms>` without one. */
+      key: string;
+      bundleId: string | null;
+      /** "Food preferences and Dietary constraints" (the server's), else "Food preferences and 1 more". */
+      label: string;
+      /** Every field's own grant: each one stays separately revocable. */
+      members: ConsentCenterEntry[];
+    };
+
+/** A person's information grant; location, Drive, Mail and marketplace keep their own rows. */
+function isPersonGrant(entry: ConsentCenterEntry): boolean {
+  if (entry.counterpart_type !== "person" || !entry.scope || !entry.counterpart_id) return false;
+  if (isDriveSharingEntry(entry)) return false;
+  if (isLocationConsent(entry.metadata, entry.scope)) return false;
+  if (isCircleMemberInviteConsent(entry.metadata)) return false;
+  if (isEmailHelperConsent(entry.metadata)) return false;
+  return !isMarketplaceConsent(entry.metadata, entry.scope);
+}
+
+function requestLabel(members: ConsentCenterEntry[]): string {
+  const fromServer = members.map((member) => String(member.bundle_label || "").trim()).find(Boolean);
+  if (fromServer) return fromServer;
+  const labels = [...new Set(members.map((member) =>
+    consentEntryInformationLabel(member)))];
+  if (labels.length <= 1) return labels[0] ?? "";
+  return `${labels[0]} and ${labels.length - 1} more`;
+}
+
+/**
+ * Fold the Active list into one row per request.
+ *
+ * The server keeps one grant per field, correctly: each is its own revocable
+ * decision. But the owner allowed one request, and the Active tab showed one
+ * row per field ("Food preferences kind", "Health dietary constraints
+ * observations"). Entries sharing a `bundle_id` become one row named by the
+ * server's `bundle_label`. Without a bundle id, a person's grants written
+ * within ACTIVE_REQUEST_WINDOW_MS of each other are the same request. Order
+ * follows the input; a group that ends with one member stays a plain row.
+ */
+export function groupActiveConsentEntries(entries: ConsentCenterEntry[]): ActiveConsentRow[] {
+  const order: string[] = [];
+  const groups = new Map<string, { bundleId: string | null; members: ConsentCenterEntry[] }>();
+  const windows: Array<{ key: string; counterpart: string; anchorMs: number }> = [];
+  entries.forEach((entry, index) => {
+    if (!isPersonGrant(entry)) {
+      const key = `single:${index}`;
+      order.push(key);
+      groups.set(key, { bundleId: null, members: [entry] });
+      return;
+    }
+    const bundleId = bundleIdOf(entry);
+    let key: string;
+    if (bundleId) {
+      key = `bundle:${bundleId}`;
+    } else {
+      const counterpart = String(entry.counterpart_id);
+      const grantedMs = parseConsentInstant(entry.issued_at);
+      const window = grantedMs === null ? undefined : windows.find((candidate) =>
+        candidate.counterpart === counterpart && Math.abs(candidate.anchorMs - grantedMs) <= ACTIVE_REQUEST_WINDOW_MS);
+      if (window) key = window.key;
+      else if (grantedMs === null) key = `single:${index}`;
+      else {
+        key = `window:${counterpart}:${grantedMs}`;
+        windows.push({ key, counterpart, anchorMs: grantedMs });
+      }
+    }
+    const existing = groups.get(key);
+    if (existing) {
+      existing.members.push(entry);
+      return;
+    }
+    order.push(key);
+    groups.set(key, { bundleId, members: [entry] });
+  });
+  return order.map((key) => {
+    const group = groups.get(key)!;
+    if (group.members.length === 1) return { kind: "single" as const, entry: group.members[0]! };
+    return {
+      kind: "request" as const,
+      key,
+      bundleId: group.bundleId,
+      label: requestLabel(group.members),
+      members: group.members,
+    };
+  });
 }

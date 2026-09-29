@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -1518,6 +1519,50 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(mocks.handleDeny).toHaveBeenCalledTimes(1);
     expect(mocks.handleDeny).toHaveBeenCalledWith("req_deep");
     expect(denyButton).toHaveTextContent("Don't allow");
+  });
+
+  // Regression (localhost run 2026-09-28): one allowed request showed as one
+  // Active row per field ("Food preferences kind", "Health dietary ...").
+  it("shows one Active row per request, named by the server, each field still its own access", async () => {
+    mocks.search = "tab=active";
+    const grant = (id: string, scope: string, label: string) => ({
+      id, request_id: `req_${id}`, kind: "active_grant", status: "active", action: "CONSENT_GRANTED",
+      counterpart_type: "person", counterpart_id: "user-kushal", counterpart_label: "Kushal Trivedi",
+      counterpart_email: "kushal@example.com", scope, scope_description: label,
+      issued_at: "2026-09-28T23:20:00.000Z", expires_at: "2026-10-05T23:20:00.000Z",
+      bundle_id: "bundle-dinner", bundle_labels: ["Food preferences", "Dietary constraints"],
+      bundle_label: "Food preferences and Dietary constraints",
+      metadata: { bundle_id: "bundle-dinner", request_source: "one_person_profile" },
+    });
+    mocks.listEntries.mockResolvedValue({
+      ...emptyListResponse(), surface: "active", total: 2,
+      items: [grant("g1", "attr.food.preferences.*", "Food preferences"), grant("g2", "attr.health.dietary.*", "Dietary constraints")],
+    });
+    render(<ConsentCenterPage />);
+    const rows = await screen.findAllByTestId("consent-active-request-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("Food preferences and Dietary constraints");
+    expect(screen.queryAllByTestId("consent-entry-row")).toHaveLength(0);
+    fireEvent.click(within(rows[0]!).getByRole("button", { name: /Show Food preferences and Dietary constraints/ }));
+    const items = within(rows[0]!).getAllByTestId("consent-active-request-item");
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Food preferences"), expect.stringContaining("Dietary constraints"),
+    ]);
+  });
+
+  it("names what they'll see at once, then fills in the counts", async () => {
+    mocks.search = "tab=requests&requestId=req_food";
+    mocks.sharePreviewState = { status: "loading", labels: ["Food preferences"] };
+    mocks.listEntries.mockResolvedValue(pendingListResponse(foodRequestEntry()));
+    const { rerender } = render(<ConsentCenterPage />);
+    const preview = await screen.findByTestId("consent-share-preview");
+    expect(preview).toHaveTextContent("Food preferences");
+    expect(preview).not.toHaveTextContent(/Checking/);
+    mocks.sharePreviewState = { status: "ready", preview: { total: 2, groups: [
+      { label: "Food preferences", count: 2, names: ["Favorite restaurants"] }] } };
+    rerender(<ConsentCenterPage />);
+    expect(screen.getByTestId("consent-share-preview")).toHaveTextContent("Food preferences · 2 items");
+    expect(screen.getByTestId("consent-share-preview")).toHaveTextContent("Favorite restaurants");
   });
 
   it("confirms Stop sharing through an alert dialog before revoking", async () => {

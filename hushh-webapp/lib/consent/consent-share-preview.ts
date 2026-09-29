@@ -19,7 +19,16 @@ import {
 } from "@/lib/consent/export-builder";
 import { toSentenceCase } from "@/lib/consent/consent-owner-copy";
 
-export type ConsentSharePreviewGroup = { label: string; count: number };
+export type ConsentSharePreviewGroup = {
+  label: string;
+  count: number;
+  /**
+   * Names of the things inside, read on this device from the owner's own
+   * memory keys ("Favorite restaurants"). Names only, never values, and never
+   * a word the label already says ("Preferences" under "Food preferences").
+   */
+  names?: string[];
+};
 
 export type ConsentSharePreview = {
   total: number;
@@ -140,20 +149,53 @@ export function mergeConsentSharePreviews(
   previews: ConsentSharePreview[],
 ): ConsentSharePreview {
   const groups = new Map<string, number>();
+  const names = new Map<string, string[]>();
   for (const preview of previews) {
-    for (const group of preview.groups) addGroup(groups, group.label, group.count);
+    for (const group of preview.groups) {
+      addGroup(groups, group.label, group.count);
+      if (group.names?.length) {
+        names.set(group.label, [...new Set([...(names.get(group.label) ?? []), ...group.names])]);
+      }
+    }
   }
-  const list = [...groups.entries()].map(([label, count]) => ({ label, count }));
+  const list = [...groups.entries()].map(([label, count]) => ({
+    label,
+    count,
+    ...(names.get(label)?.length ? { names: names.get(label) } : {}),
+  }));
   return {
     total: list.reduce((sum, group) => sum + group.count, 0),
     groups: list,
   };
 }
 
+/**
+ * One requested item as the owner reads it: the request's own human label
+ * (the server's, e.g. "Food preferences"), its count, and the names inside
+ * it. Headings never come from this device's key walk, which named the same
+ * item "Preferences".
+ */
+export function requestedItemPreview(
+  itemLabel: string,
+  summary: ConsentSharePreview,
+): ConsentSharePreview {
+  const label = itemLabel.trim() || "Details";
+  const lowered = label.toLowerCase();
+  const names = summary.groups
+    .map((group) => group.label)
+    .filter((name) => name !== "Details" && !lowered.includes(name.toLowerCase()));
+  if (summary.total <= 0) return { total: 0, groups: [] };
+  return {
+    total: summary.total,
+    groups: [{ label, count: summary.total, ...(names.length ? { names } : {}) }],
+  };
+}
+
 export type ConsentSharePreviewState =
   | { status: "idle" }
   | { status: "locked" }
-  | { status: "loading" }
+  /** Counting on this device; the requested labels show meanwhile. */
+  | { status: "loading"; labels: string[] }
   | { status: "ready"; preview: ConsentSharePreview }
   | { status: "empty" }
   | { status: "unavailable" };
@@ -198,7 +240,7 @@ export function useConsentSharePreview(input: {
       return;
     }
     let cancelled = false;
-    setState({ status: "loading" });
+    setState({ status: "loading", labels: [...new Set(items.map((item) => item.label))] });
     void (async () => {
       const previews: ConsentSharePreview[] = [];
       let unavailable = false;
@@ -210,7 +252,7 @@ export function useConsentSharePreview(input: {
             vaultKey,
             vaultOwnerToken,
           });
-          previews.push(summarizeConsentExportPayload(built.payload, item.label));
+          previews.push(requestedItemPreview(item.label, summarizeConsentExportPayload(built.payload, item.label)));
         } catch (error) {
           if (!(error instanceof ConsentExportNoDataError)) unavailable = true;
         }

@@ -708,36 +708,6 @@ function FeedPageSession({
               </div>
             ) : null}
 
-            {canClear ? (
-              <div className="flex w-full justify-end pt-3" aria-live="polite">
-                <StockButton
-                  type="button"
-                  variant="secondary"
-                  size="compact"
-                  onClick={() => {
-                    if (!clearArmed) {
-                      setClearArmed(true);
-                      return;
-                    }
-                    void handleClearAll();
-                  }}
-                  disabled={clearing}
-                  aria-label={
-                    clearArmed
-                      ? "Confirm clear feed notifications on this device"
-                      : "Clear feed notifications on this device"
-                  }
-                  className="w-auto max-w-full whitespace-nowrap bg-destructive/10 px-4 text-destructive hover:bg-destructive/15"
-                >
-                  {clearing
-                    ? "Clearing…"
-                    : clearArmed
-                      ? "Confirm clear"
-                      : "Clear on this device"}
-                </StockButton>
-              </div>
-            ) : null}
-
             {hasHistory
               ? dayGroups.map((group) => (
                   <section key={group.label} aria-label={group.label}>
@@ -779,6 +749,43 @@ function FeedPageSession({
                       ? "Retry"
                       : "Load more"}
                 </Button>
+              </div>
+            ) : null}
+            {/* Clearing is housekeeping, not a task: it sits quietly after the
+                history, never under a "Needs you" row where it read as a
+                reply to that request. It turns destructive only once armed. */}
+            {canClear ? (
+              <div className="flex w-full justify-center pt-4" aria-live="polite">
+                <StockButton
+                  type="button"
+                  variant="secondary"
+                  size="compact"
+                  onClick={() => {
+                    if (!clearArmed) {
+                      setClearArmed(true);
+                      return;
+                    }
+                    void handleClearAll();
+                  }}
+                  disabled={clearing}
+                  aria-label={
+                    clearArmed
+                      ? "Confirm clear feed notifications on this device"
+                      : "Clear feed notifications on this device"
+                  }
+                  data-testid="feed-clear-on-device"
+                  className={
+                    clearArmed
+                      ? "w-auto max-w-full whitespace-nowrap bg-destructive/10 px-4 text-destructive hover:bg-destructive/15"
+                      : "w-auto max-w-full whitespace-nowrap bg-transparent px-4 text-[color:var(--app-secondary-label)] hover:bg-foreground/[0.04]"
+                  }
+                >
+                  {clearing
+                    ? "Clearing…"
+                    : clearArmed
+                      ? "Confirm clear"
+                      : "Clear on this device"}
+                </StockButton>
               </div>
             ) : null}
           </AppPageContentRegion>

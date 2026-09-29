@@ -43,6 +43,10 @@ export interface ConsentCenterEntry {
   request_id?: string | null;
   /** Owner-scoped presentation group; decisions still use each item's entry. */
   bundle_id?: string | null;
+  /** Active person requests: the request's human labels, in order. */
+  bundle_labels?: string[] | null;
+  /** Active person requests: "Food preferences and Dietary constraints". */
+  bundle_label?: string | null;
   bundle_complete?: boolean;
   bundle_items?: Array<{
     request_id: string;

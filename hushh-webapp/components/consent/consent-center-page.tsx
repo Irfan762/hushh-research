@@ -111,6 +111,7 @@ import {
 } from "@/lib/consent/consent-sheet-route";
 import { isConnectionRequestEntry } from "@/components/consent/connection-request-entry";
 import {
+  consentEntryInformationLabel,
   consentInformationLabel,
   countItems,
   formatConsentDuration,
@@ -121,6 +122,7 @@ import {
 } from "@/lib/consent/consent-owner-copy";
 import {
   consentEntryToPendingConsent,
+  groupActiveConsentEntries,
   groupPendingConsentRequests,
   isInlineDecidableConsentEntry,
 } from "@/lib/consent/owner-consent-request";
@@ -782,10 +784,7 @@ function ConsentEntryRow({
   const counterpartSubtitle =
     entry.counterpart_email || entry.counterpart_secondary_label || null;
   const scopeLabel = entry.scope
-    ? consentInformationLabel({
-        scope: entry.scope,
-        label: entry.scope_description,
-      })
+    ? consentEntryInformationLabel(entry)
     : null;
   const supportingCopy = isIdentifierHistory
     ? entrySummary(entry)
@@ -862,7 +861,9 @@ function ConsentBundleRow({
   const isExpanded = expanded;
   const pendingCount = items.filter((item) => item.status === "pending").length;
   const itemLabels = items.map((item) =>
-    consentInformationLabel({ scope: item.entry?.scope, label: item.label }),
+    item.entry
+      ? consentEntryInformationLabel({ ...item.entry, scope_description: item.label || item.entry.scope_description })
+      : consentInformationLabel({ label: item.label }),
   );
   // One item names itself; several say how many and how many still wait.
   const summary = !entry.bundle_complete
@@ -899,6 +900,78 @@ function ConsentBundleRow({
               chevron={Boolean(item.entry)}
               onClick={item.entry ? () => onSelectItem(item.entry!) : undefined}
               testId="consent-bundle-item"
+            />
+          ))}
+        </SettingsGroup>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * One Active row per request ("Food preferences and Dietary constraints").
+ * Each field stays its own revocable access, so opening the row lists them,
+ * and each opens the same sheet a single row does.
+ */
+function ConsentActiveRequestRow({
+  label,
+  members,
+  selectedEntry,
+  selectedId,
+  onSelectEntry,
+}: {
+  label: string;
+  members: ConsentCenterEntry[];
+  selectedEntry: ConsentCenterEntry | null;
+  selectedId: string | null;
+  onSelectEntry: (entry: ConsentCenterEntry) => void;
+}) {
+  const head = members[0]!;
+  const isSelected = (entry: ConsentCenterEntry) =>
+    Boolean(selectedEntry && (selectedEntry.id === entry.id
+      || (selectedEntry.request_id && selectedEntry.request_id === entry.request_id)))
+    || Boolean(selectedId && consentEntryMatchesSelectedId(entry, selectedId));
+  const holdsSelection = members.some(isSelected);
+  const [expanded, setExpanded] = useState(holdsSelection);
+  useEffect(() => {
+    if (holdsSelection) setExpanded(true);
+  }, [holdsSelection]);
+  const counterpartSubtitle = head.counterpart_email || head.counterpart_secondary_label || null;
+  return (
+    <div data-testid="consent-active-request-row">
+      <SettingsRow
+        leading={<ConsentCounterpartAvatar entry={head} />}
+        title={resolveCounterpartLabel(head)}
+        description={
+          <span className="line-clamp-2">
+            <span>{label}</span>
+            {counterpartSubtitle ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span>{counterpartSubtitle}</span>
+              </>
+            ) : null}
+          </span>
+        }
+        trailing={
+          <Badge className={cn("shrink-0 capitalize", badgeClassName(head.status))}>
+            {formatStatus(head.status)}
+          </Badge>
+        }
+        onClick={() => setExpanded((value) => !value)}
+        ariaLabel={`${expanded ? "Hide" : "Show"} ${label} from ${resolveCounterpartLabel(head)}`}
+      />
+      {expanded ? (
+        <SettingsGroup embedded separatorInset>
+          {members.map((member) => (
+            <SettingsRow
+              key={member.request_id || member.id}
+              title={consentEntryInformationLabel(member)}
+              description="Shared"
+              chevron
+              onClick={() => onSelectEntry(member)}
+              className={isSelected(member) ? "bg-accent-surface" : undefined}
+              testId="consent-active-request-item"
             />
           ))}
         </SettingsGroup>
@@ -1036,8 +1109,10 @@ function ConsentHistoryLifecycleDetails({
 
 /**
  * "What they'll see": the items an Allow would hand over, counted on this
- * device from the owner's own encrypted memory. Labels and counts only; the
- * values stay out of the sheet, and nothing here is sent anywhere.
+ * device from the owner's own encrypted memory. The request's own labels show
+ * at once; the counts (and the names inside each item) fill in when this
+ * device has read them. Values stay out of the sheet, and nothing here is
+ * sent anywhere.
  */
 function ConsentSharePreviewRow({
   state,
@@ -1045,6 +1120,11 @@ function ConsentSharePreviewRow({
   state: ReturnType<typeof useConsentSharePreview>;
 }) {
   if (state.status === "idle" || state.status === "unavailable") return null;
+  const rows = state.status === "ready"
+    ? state.preview.groups
+    : state.status === "loading"
+      ? state.labels.map((label) => ({ label, count: null as number | null, names: undefined }))
+      : [];
   return (
     <div
       className="min-w-0 space-y-1 sm:col-span-2"
@@ -1053,10 +1133,8 @@ function ConsentSharePreviewRow({
       <dt className="text-[13px] font-normal leading-[18px] tracking-normal text-muted-foreground">
         What they&apos;ll see
       </dt>
-      <dd className="text-sm leading-5 text-foreground">
-        {state.status === "loading" ? (
-          <span className="text-muted-foreground">Checking on this device...</span>
-        ) : state.status === "locked" ? (
+      <dd className="text-sm leading-5 text-foreground" aria-busy={state.status === "loading"}>
+        {state.status === "locked" ? (
           <span className="text-muted-foreground">
             Unlock to see exactly what would be shared.
           </span>
@@ -1064,11 +1142,19 @@ function ConsentSharePreviewRow({
           <span>Nothing is saved for this yet, so nothing would be shared.</span>
         ) : (
           <>
-            <span>{countItems(state.preview.total)}</span>
-            <ul className="mt-1 space-y-0.5 text-muted-foreground">
-              {state.preview.groups.map((group) => (
+            {state.status === "ready" && rows.length > 1 ? (
+              <span>{countItems(state.preview.total)}</span>
+            ) : null}
+            <ul className="space-y-0.5">
+              {rows.map((group) => (
                 <li key={group.label} className="[overflow-wrap:anywhere]">
-                  {group.label} · {group.count}
+                  <span>{group.label}</span>
+                  {group.count !== null ? (
+                    <span className="text-muted-foreground"> · {countItems(group.count)}</span>
+                  ) : null}
+                  {group.names?.length ? (
+                    <span className="block text-xs text-muted-foreground">{group.names.join(", ")}</span>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -1214,10 +1300,7 @@ function ConsentEntryDetail({
     items: previewEnabled
       ? previewEntries.map((member) => ({
           scope: member.scope || "",
-          label: consentInformationLabel({
-            scope: member.scope,
-            label: member.scope_description,
-          }),
+          label: consentEntryInformationLabel(member),
         }))
       : [],
     enabled: previewEnabled,
@@ -1376,16 +1459,10 @@ function ConsentEntryDetail({
   // so "Food preferences" here is "Food preferences" in Active and History.
   const decisionLabels = isBundleDecision
     ? bundleMembers.map((member) =>
-        consentInformationLabel({
-          scope: member.scope,
-          label: member.scope_description,
-        }),
+        consentEntryInformationLabel(member),
       )
     : [
-        consentInformationLabel({
-          scope: entry.scope,
-          label: entry.scope_description,
-        }),
+        consentEntryInformationLabel(entry),
       ];
   const accessValue = isConnectionDecision
     ? entry.scope_description || "Trusted connection"
@@ -1772,6 +1849,7 @@ function ConsentSurfaceListSection({
   selectedBundleId,
   onSelectEntry,
   pagination,
+  groupByRequest = false,
 }: {
   loading: boolean;
   emptyMessage: string;
@@ -1780,6 +1858,8 @@ function ConsentSurfaceListSection({
   selectedId: string | null;
   selectedBundleId?: string | null;
   onSelectEntry: (entry: ConsentCenterEntry) => void;
+  /** Active access: one row per request, not one per field. */
+  groupByRequest?: boolean;
   pagination: {
     page: number;
     limit: number;
@@ -1804,7 +1884,33 @@ function ConsentSurfaceListSection({
             className="py-3 min-h-[64px]"
           />
         ) : null}
-        {items.map((entry, index) =>
+        {groupByRequest ? groupActiveConsentEntries(items).map((row, index) =>
+          row.kind === "request" ? (
+            <ConsentActiveRequestRow
+              key={row.key}
+              label={row.label}
+              members={row.members}
+              selectedEntry={selectedEntry}
+              selectedId={selectedId}
+              onSelectEntry={onSelectEntry}
+            />
+          ) : (
+            <ConsentEntryRow
+              key={`${row.entry.kind}-${row.entry.id}-${row.entry.request_id || "no-request"}-${index}`}
+              entry={row.entry}
+              selected={
+                Boolean(
+                  selectedEntry &&
+                  (selectedEntry.id === row.entry.id ||
+                    (selectedEntry.request_id &&
+                      selectedEntry.request_id === row.entry.request_id)),
+                ) ||
+                Boolean(selectedId && consentEntryMatchesSelectedId(row.entry, selectedId))
+              }
+              onSelect={() => onSelectEntry(row.entry)}
+            />
+          ),
+        ) : items.map((entry, index) =>
           entry.bundle_items ? (
             <ConsentBundleRow
               key={entry.id}
@@ -2333,10 +2439,7 @@ export function ConsentCenterPage() {
         head.counterpart_type === "person",
       );
       const labels = members.map((member) =>
-        consentInformationLabel({
-          scope: member.scope,
-          label: member.scope_description,
-        }),
+        consentEntryInformationLabel(member),
       );
       for (const member of members) recordApprovalInFlight(member, durationHours);
       void handleApproveBundle(
@@ -2385,10 +2488,7 @@ export function ConsentCenterPage() {
         resolveCounterpartLabel(entry),
         entry.counterpart_type === "person",
       );
-      const label = consentInformationLabel({
-        scope: entry.scope,
-        label: entry.scope_description,
-      });
+      const label = consentEntryInformationLabel(entry);
       setLocallyGrantedEntries((current) =>
         current.filter((row) => row.scope !== entry.scope),
       );
@@ -3440,6 +3540,7 @@ export function ConsentCenterPage() {
                         setParam({ requestId: driveSharingSelectionId(entry) })
                       }
                       pagination={activePagination}
+                      groupByRequest
                     />
                     <ConsentSurfaceListSection
                       loading={previousResource.loading}

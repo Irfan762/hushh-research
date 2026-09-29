@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { groupPendingConsentRequests } from "@/lib/consent/owner-consent-request";
+import { groupActiveConsentEntries, groupPendingConsentRequests } from "@/lib/consent/owner-consent-request";
 import { collapseConsentBundleRows } from "@/lib/feed/feed-consent-grouping";
 import { presentFeedItem } from "@/lib/feed/feed-item-renderers";
 import { ownerConsentRequestActionable } from "@/lib/feed/use-feed-actionables";
@@ -218,5 +218,47 @@ describe("consent history rows", () => {
     const alone = historyRow("40", "attr.food.preferences.*");
     const [row] = collapseConsentBundleRows([alone]);
     expect(row).toBe(alone);
+  });
+});
+
+describe("Active: one row per request", () => {
+  const grant = (id: string, scope: string, label: string, overrides: Partial<ConsentCenterEntry> = {}): ConsentCenterEntry => ({
+    id, request_id: `req-${id}`, kind: "active_grant", status: "active", action: "CONSENT_GRANTED",
+    scope, scope_description: label, counterpart_type: "person", counterpart_id: "user-kushal",
+    counterpart_label: "Kushal Trivedi", issued_at: "2026-09-28T23:20:00.000Z",
+    metadata: { request_source: "one_person_profile" }, ...overrides,
+  });
+
+  it("groups on bundle_id and names the row with the server's bundle_label", () => {
+    const rows = groupActiveConsentEntries([
+      grant("a", "attr.food.preferences.kind", "Food preferences", { bundle_id: "b1", bundle_label: "Food preferences and Dietary constraints" }),
+      grant("b", "attr.health.dietary.observations", "Dietary constraints", { bundle_id: "b1", bundle_label: "Food preferences and Dietary constraints" }),
+      grant("c", "attr.travel.*", "Travel", { counterpart_id: "user-sam", bundle_id: "b2" }),
+    ]);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ kind: "request", bundleId: "b1", label: "Food preferences and Dietary constraints" });
+    expect(rows[0]!.kind === "request" && rows[0]!.members.map((member) => member.id)).toEqual(["a", "b"]);
+    expect(rows[1]).toMatchObject({ kind: "single" });
+  });
+
+  it("without a bundle id, groups one person's grants written together, and says how many more", () => {
+    const rows = groupActiveConsentEntries([
+      grant("a", "attr.food.*", "Food preferences", { metadata: {} }),
+      grant("b", "attr.health.*", "Dietary constraints", { metadata: {}, issued_at: "2026-09-28T23:20:40.000Z" }),
+      // A day later: another request.
+      grant("c", "attr.travel.*", "Travel", { metadata: {}, issued_at: "2026-09-29T23:20:00.000Z" }),
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual(["request", "single"]);
+    // Key-derived without the server's person-request label: the older wording, counted.
+    expect(rows[0]).toMatchObject({ label: "Food data and 1 more" });
+  });
+
+  it("negative control: other people's grants and non-person access never merge", () => {
+    const rows = groupActiveConsentEntries([
+      grant("a", "attr.food.*", "Food", { metadata: {} }),
+      grant("b", "attr.food.*", "Food", { metadata: {}, counterpart_id: "user-sam" }),
+      grant("c", "attr.food.*", "Food", { metadata: {}, counterpart_type: "developer" }),
+    ]);
+    expect(rows.map((row) => row.kind)).toEqual(["single", "single", "single"]);
   });
 });

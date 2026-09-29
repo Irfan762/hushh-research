@@ -162,6 +162,31 @@ export function consentInformationLabel(input: {
 }
 
 /**
+ * The human name for one consent entry's information.
+ *
+ * A request a person made from their Profile or One's ask card carries the
+ * server's human label (`human_scope_label`) as its description on every
+ * list: the request, the access it becomes, and its history. That label wins
+ * for those entries; deriving it from a leaf key read "Food preferences kind"
+ * where the person had asked for "Food preferences". Every other entry keeps
+ * the key-first rule above.
+ */
+export function consentEntryInformationLabel(entry: {
+  scope?: string | null;
+  scope_description?: string | null;
+  metadata?: unknown;
+}): string {
+  const metadata = entry.metadata && typeof entry.metadata === "object"
+    ? (entry.metadata as Record<string, unknown>)
+    : {};
+  const described = String(entry.scope_description || "").trim();
+  if (metadata.request_source === "one_person_profile" && described) {
+    return consentInformationLabel({ label: described });
+  }
+  return consentInformationLabel({ scope: entry.scope, label: entry.scope_description });
+}
+
+/**
  * Names in a sentence: "a", "a and b", "a, b and c", and past three,
  * "a, b and 3 more", so a headline never runs to a paragraph.
  */
