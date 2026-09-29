@@ -61,6 +61,10 @@ const requestSearch = (): DriveSearchStatus => ({
   pagesScanned: 6, incompleteSearch: false, unshareableCount: 5,
   canStop: false, createdAt: "2026-09-28T00:00:00Z",
   updatedAt: "2026-09-28T00:01:00Z", expiresAt: "2026-09-29T00:00:00Z", errorCode: null,
+  coverage: { corpora: ["user"], fileKind: "document", requestedPeriod: null,
+    dateBasis: "title_date_then_created_or_modified", contentPeriodVerified: false,
+    providerRowsScanned: 525, excludedByDateCount: 0, deduplicatedCount: 0,
+    unavailableShortcutCount: 0, providerPagesExhausted: true, shareabilityVerified: true },
 });
 const requestBulk = () => ({
   shareId: "33333333-3333-4333-8333-333333333333", searchJobId: documentId,
@@ -195,6 +199,9 @@ describe("private sharing transport", () => {
     const search = { ...requestSearch(), status: "limited" } as const;
     await expect(DriveSharingService.prepareRequestBulk("vault", requestId, search, [], guard))
       .rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(DriveSharingService.prepareRequestBulk("vault", requestId, {
+      ...requestSearch(), coverage: { ...requestSearch().coverage!, shareabilityVerified: false },
+    }, [], guard)).rejects.toMatchObject({ code: "invalid_selection" });
     expect(fetcher).not.toHaveBeenCalled();
     fetcher.mockResolvedValueOnce(reply({ ...requestBulk(), fileCount: 525 }));
     await expect(DriveSharingService.prepareRequestBulk("vault", requestId, requestSearch(), [1, 26], guard))
@@ -213,6 +220,56 @@ describe("private sharing transport", () => {
     expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({
       revision: 1, reviewDigest: "b".repeat(64), confirmed: true,
     });
+  });
+  it("freezes only 25 committed positions while Drive search continues and preserves claimed positions", async () => {
+    const running = { ...requestSearch(), status: "running" as const,
+      coverage: { ...requestSearch().coverage!, providerPagesExhausted: false } };
+    const batch = { ...requestBulk(), fileCount: 2, positions: [1, 25],
+      counts: { ...requestBulk().counts, total: 2, pending: 2 } };
+    fetcher.mockResolvedValueOnce(reply({ ...rawReview(), durableAvailable: true,
+      search: running, bulkShare: batch, batches: [batch], batchCount: 1,
+      claimedPositions: [1, 25], progressiveAllowed: true,
+      aggregateCounts: { ...batch.counts } }));
+    const current = await DriveSharingService.review("vault", requestId, guard);
+    expect(current.claimedPositions).toEqual([1, 25]);
+    expect(current.batches?.[0].positions).toEqual([1, 25]);
+    expect(current.aggregateCounts?.total).toBe(2);
+
+    fetcher.mockResolvedValueOnce(reply(batch));
+    const prepared = await DriveSharingService.prepareRequestBatch("vault", requestId, running, [25, 1], guard);
+    expect(prepared.fileCount).toBe(2);
+    expect(JSON.parse(fetcher.mock.calls[1][1].body)).toEqual({ positions: [1, 25] });
+    expect(fetcher.mock.calls[1][0]).toBe(`/api/connectors/google_drive/sharing/requests/${requestId}/bulk`);
+    await expect(DriveSharingService.prepareRequestBatch("vault", requestId, running, [], guard))
+      .rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(DriveSharingService.prepareRequestBatch("vault", requestId, running, [1, 1], guard))
+      .rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(DriveSharingService.prepareRequestBatch("vault", requestId, running,
+      Array.from({ length: 26 }, (_, index) => index + 1), guard))
+      .rejects.toMatchObject({ code: "invalid_selection" });
+    await expect(DriveSharingService.prepareRequestBatch("vault", requestId, running,
+      [running.matched + 1], guard)).rejects.toMatchObject({ code: "invalid_selection" });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+  it("accepts only previously claimed positions as explicit manual recovery candidates", async () => {
+    const running = { ...requestSearch(), status: "running" as const,
+      coverage: { ...requestSearch().coverage!, providerPagesExhausted: false } };
+    const candidate = { ...rawReview(), durableAvailable: true, trustedAuto: false,
+      search: running, bulkShare: null, batches: [], batchCount: 0,
+      claimedPositions: [2], recoverablePositions: [2], progressiveAllowed: true };
+    fetcher.mockResolvedValueOnce(reply(candidate));
+    expect((await DriveSharingService.review("vault", requestId, guard)).recoverablePositions).toEqual([2]);
+    fetcher.mockResolvedValueOnce(reply({ ...candidate, recoverablePositions: [3] }));
+    await expect(DriveSharingService.review("vault", requestId, guard))
+      .rejects.toMatchObject({ code: "invalid_response" });
+  });
+  it("keeps a historical frozen share larger than 25 files on the legacy review path", async () => {
+    fetcher.mockResolvedValueOnce(reply({ ...rawReview(), durableAvailable: true,
+      search: requestSearch(), bulkShare: requestBulk(), batches: [requestBulk()],
+      batchCount: 1, progressiveAllowed: false }));
+    const current = await DriveSharingService.review("vault", requestId, guard);
+    expect(current.bulkShare?.fileCount).toBe(518);
+    expect(current.progressiveAllowed).toBeUndefined();
   });
   it("creates a request with separate Firebase identity and vault authority, without a Drive token", async () => {
     fetcher.mockResolvedValueOnce(

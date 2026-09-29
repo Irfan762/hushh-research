@@ -28,8 +28,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = (ROOT / "db/migrations/259_consent_outcome_delivery.sql").read_text()
-ROLLBACK = (ROOT / "db/migrations/rollback/259_consent_outcome_delivery.rollback.sql").read_text()
+MIGRATION = (ROOT / "db/migrations/260_consent_outcome_delivery.sql").read_text()
+ROLLBACK = (ROOT / "db/migrations/rollback/260_consent_outcome_delivery.rollback.sql").read_text()
 OWNER = "delivery-owner"
 BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100"
 WORKERS = 8
@@ -242,7 +242,7 @@ def test_consent_outcome_delivery_on_postgres(monkeypatch) -> None:
             assert sends.await_count == WORKERS
 
             # --- Rollback refuses while claims are recent, then applies. -----
-            with pytest.raises(asyncpg.RaiseError, match="migration_259_rollback_refused"):
+            with pytest.raises(asyncpg.RaiseError, match="migration_260_rollback_refused"):
                 await pool.execute(ROLLBACK)
             await pool.execute(
                 "UPDATE consent_event_deliveries SET claimed_at = NOW() - INTERVAL '2 days'"

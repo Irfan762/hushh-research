@@ -18,7 +18,7 @@ BEGIN
       INTO has_recent;
     IF has_recent THEN
       RAISE EXCEPTION
-        'migration_259_rollback_refused_recent_claims:consent_event_deliveries';
+        'migration_260_rollback_refused_recent_claims:consent_event_deliveries';
     END IF;
   END IF;
 END
