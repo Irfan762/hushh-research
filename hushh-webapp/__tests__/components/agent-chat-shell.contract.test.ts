@@ -76,7 +76,8 @@ describe("private-agent chat shell contract", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
 
     expect(workspace).toContain("drainOperationQueue");
-    expect(workspace).toContain("agent-chat-prompt-queue");
+    expect(workspace).toContain("<AgentQueuedStack");
+    expect(read("components/agent/agent-queued-stack.tsx")).toContain("agent-chat-prompt-queue");
     expect(workspace).toContain("enqueueCalendarDirective");
     // Calendar and reviewed Gmail changes share one serialized runner.
     expect(workspace).toContain('pendingText: "Scheduling…"');

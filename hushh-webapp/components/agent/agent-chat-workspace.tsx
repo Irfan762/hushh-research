@@ -73,12 +73,11 @@ import {
   LogIn,
   Mail,
   Mic,
-  Pencil,
   RotateCcw,
   Send,
+  StopSquare,
   ThumbsDown,
   ThumbsUp,
-  Trash2,
   User,
   X,
 } from "@/components/icons";
@@ -267,6 +266,7 @@ import {
 import {
   AGENT_CHAT_STREAM_LOST_ERROR,
   AgentChatStreamLostError,
+  createQueuedInputPorts,
   deleteAgentChatConversation,
   getAgentChatConsentOutcomes,
   getLostAgentTurnOutcome,
@@ -357,11 +357,16 @@ import {
 } from "@/lib/agent/one-conversation-session";
 import { dedupeAdjacentAgentMessages } from "@/lib/agent/agent-chat-turn-safety";
 import {
+  canJoinAgentTurn,
+  combineQueuedPromptText,
   editQueuedAgentPrompt,
   removeQueuedAgentPrompt,
   SerialAgentOperationQueue,
+  takeJoinableRun,
   type QueuedAgentPrompt,
 } from "@/lib/agent/agent-chat-prompt-queue";
+import { LiveTurnQueue } from "@/lib/agent/agent-chat-live-turn-queue";
+import { AgentQueuedStack, QueuedJoinedCaption } from "@/components/agent/agent-queued-stack";
 import {
   combineAttachmentAndComposerText,
   composeTurnSourceText,
@@ -425,6 +430,8 @@ type AgentMessage = {
   ephemeral?: boolean;
   memoryCapture?: AgentPkmCaptureStatus;
   kind?: "selection";
+  /** Sent while One was working and taken into that reply at its next step. */
+  queuedPlacement?: "joined";
   /** Session-only source handle for the owner-selected Gmail KYC request. */
   gmailInformationRequestWorkflowId?: string;
   // Calendar proposal status is already a bounded confirmation/result. Keep
@@ -562,7 +569,8 @@ type AgentDebugEvent = {
 type QueuedWorkspaceOperation = {
   id: string;
   prompt?: QueuedAgentPrompt;
-  run: () => Promise<void>;
+  /** Receives the operation as it is when dequeued, so an edited prompt sends its edit. */
+  run: (current: QueuedWorkspaceOperation) => Promise<void>;
 };
 
 function upsertVisibleStreamEvent(
@@ -657,6 +665,11 @@ type AgentRunTurnOptions = {
   deferPkmContext?: boolean;
   /** Pasted text sent as separate document parts beside the typed text. */
   attachments?: AgentTextAttachment[];
+  /**
+   * Queued messages sent together as this one turn, in order. Each shows as
+   * its own bubble; the first one's id identifies the turn's message.
+   */
+  queuedPrompts?: QueuedAgentPrompt[];
 };
 
 type ConsentRequiredDirectivePayload = {
@@ -2036,6 +2049,7 @@ export function AgentBubble({
             </p>
           ) : null}
         </div>
+        {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
         {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
         {showResponseActions ? (
@@ -2252,6 +2266,9 @@ export function storedMessageToAgentMessage(
     ...(message.metadata?.consentBundleId ? { consentBundleId: message.metadata.consentBundleId } : {}),
     ...(message.metadata?.consentAccessEnded ? { consentAccessEnded: true } : {}),
     ...(message.metadata?.consentAccess ? { consentAccess: message.metadata.consentAccess } : {}),
+    ...(message.role === "user" && message.metadata?.queuedInput === "joined"
+      ? { queuedPlacement: "joined" as const }
+      : {}),
   };
 }
 
@@ -2528,6 +2545,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const [modelPreference, setModelPreference] = useState<ModelPreference | null>(null);
   const [composerExpanded, setComposerExpandedState] = useState(false);
   const [queuedPrompts, setQueuedPrompts] = useState<QueuedAgentPrompt[]>([]);
+  // A typed turn is running that Stop can end at its next step.
+  const [stoppableTurn, setStoppableTurn] = useState(false);
   const [editingQueuedPromptId, setEditingQueuedPromptId] = useState<
     string | null
   >(null);
@@ -2801,6 +2820,19 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const operationQueueRef = useRef(
     new SerialAgentOperationQueue<QueuedWorkspaceOperation>(),
   );
+  // Messages sent while One works: offered to the running turn in queue
+  // order (one chain), settled from the server's record before the next turn.
+  const vaultOwnerTokenGetterRef = useRef(getVaultOwnerToken);
+  vaultOwnerTokenGetterRef.current = getVaultOwnerToken;
+  const liveTurnQueueRef = useRef<LiveTurnQueue | null>(null);
+  if (liveTurnQueueRef.current === null) {
+    liveTurnQueueRef.current = new LiveTurnQueue(
+      createQueuedInputPorts(() => vaultOwnerTokenGetterRef.current()),
+    );
+  }
+  const queuedOfferChainRef = useRef<Promise<void>>(Promise.resolve());
+  const liveAssistantMessageIdRef = useRef<string | null>(null);
+  const stopActiveTurnRef = useRef<(() => Promise<void>) | null>(null);
   const calendarActionIdsRef = useRef<Set<string>>(new Set());
   const handoffPromptSubmitRef = useRef<
     ((prompt: string) => Promise<void>) | null
@@ -5638,6 +5670,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       sentAtMs,
       gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
     };
+    // Queued messages sent together keep one bubble each, in the order sent.
+    const userMessages: AgentMessage[] = options.queuedPrompts?.length
+      ? options.queuedPrompts.map((prompt, index) => ({
+          ...userMessage,
+          id: `msg-${turnId}-user-${index}`,
+          text: prompt.text,
+        }))
+      : [userMessage];
     const assistantMessage: AgentMessage = {
       id: assistantMessageId,
       role: "assistant",
@@ -5672,11 +5712,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       }
       return [
         ...current,
-        ...(appendUserMessage ? [userMessage] : []),
+        ...(appendUserMessage ? userMessages : []),
         assistantMessage,
       ];
     });
     latestVisibleTurnIdRef.current = debugTurnId;
+    liveAssistantMessageIdRef.current = assistantMessageId;
     setActiveToolCalls([]);
     setIsChatLoading(true);
     setIsStreaming(true);
@@ -5861,11 +5902,35 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         });
       }
 
+      // Stop: settle the bubble now, ask the running turn to end at its next
+      // step, and keep reading quietly until it does. Anything it held comes
+      // back to the queue and is sent next, as after any interrupt.
+      let turnStopped = false;
+      const stopThisTurn = async () => {
+        if (turnStopped || streamAbortController.signal.aborted) return;
+        turnStopped = true;
+        flushAssistantDelta();
+        updateMessage(assistantMessageId, (message) => ({
+          ...message,
+          text: message.text || "Stopped.",
+          status: "done",
+          streamEvents: settleVisibleStreamEvents(message.streamEvents, "blocked"),
+        }));
+        setIsChatLoading(false);
+        setIsStreaming(false);
+        setStoppableTurn(false);
+        const result = await liveTurnQueueRef.current?.stop();
+        if (result?.waiting.length) setQueuedPlacement(result.waiting, "waiting");
+        // No server process runs this turn for us to stop: stop reading it.
+        if (!result?.stopped) streamAbortController.abort();
+      };
+
       performance.mark("hushh:agent-chat:dispatch-start");
       const streamResult = await streamAgentChat({
         userId,
         message: text,
         attachments,
+        messageId: options.queuedPrompts?.[0]?.id,
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -5920,7 +5985,19 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             if (nextConversationId) {
               updateConversationId(nextConversationId);
+              // The turn is running: messages sent now can join it.
+              liveTurnQueueRef.current?.begin(nextConversationId);
+              stopActiveTurnRef.current = stopThisTurn;
+              if (!turnStopped) setStoppableTurn(true);
+              offerQueuedPromptsToLiveTurn();
             }
+          },
+          onQueuedInput: (notice) => {
+            if (streamAbortController.signal.aborted) return;
+            const settled = liveTurnQueueRef.current?.apply(notice);
+            if (!settled) return;
+            landJoinedPrompts(settled.joined);
+            if (settled.waiting.length) setQueuedPlacement(settled.waiting, "waiting");
           },
           onToolStart: (toolEvent) => {
             if (streamAbortController.signal.aborted) return;
@@ -5993,7 +6070,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             upsertTurnStreamEvent(visibleEvent);
           },
           onToken: (delta) => {
-            if (streamAbortController.signal.aborted) return;
+            if (streamAbortController.signal.aborted || turnStopped) return;
             queueAssistantDelta(delta);
           },
           onSources: (sources) => {
@@ -6171,6 +6248,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (streamAbortControllerRef.current === streamAbortController) {
         streamAbortControllerRef.current = null;
       }
+      // Before the next queued turn may start, every message this turn held is
+      // resolved from the server's record: joined, or back in the queue.
+      await settleLiveTurn();
     }
   };
 
@@ -6650,7 +6730,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const drainOperationQueue = async () => {
     await operationQueueRef.current.drain(async (operation) => {
       syncQueuedPrompts();
-      await operation.run();
+      await operation.run(operation);
     });
   };
 
@@ -6658,6 +6738,85 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     operationQueueRef.current.enqueue(operation);
     syncQueuedPrompts();
     void drainOperationQueue();
+  };
+
+  // ── Messages sent while One works ──────────────────────────────────────
+  const updateQueuedPrompt = (
+    id: string,
+    update: (prompt: QueuedAgentPrompt) => QueuedAgentPrompt,
+  ) => {
+    operationQueueRef.current.replace(
+      operationQueueRef.current.snapshot().map((operation) =>
+        operation.prompt?.id === id
+          ? { ...operation, prompt: update(operation.prompt) }
+          : operation,
+      ),
+    );
+    syncQueuedPrompts();
+  };
+
+  const setQueuedPlacement = (ids: readonly string[], placement: "waiting" | "joining") => {
+    for (const id of ids) updateQueuedPrompt(id, (prompt) => ({ ...prompt, placement }));
+  };
+
+  /** Joined messages leave the queue and show above the reply they joined. */
+  const landJoinedPrompts = (ids: readonly string[]) => {
+    if (ids.length === 0) return;
+    const wanted = new Set(ids);
+    const landed = operationQueueRef.current
+      .snapshot()
+      .flatMap((operation) =>
+        operation.prompt && wanted.has(operation.prompt.id) ? [operation.prompt] : [],
+      );
+    operationQueueRef.current.replace(
+      operationQueueRef.current
+        .snapshot()
+        .filter((operation) => !operation.prompt || !wanted.has(operation.prompt.id)),
+    );
+    syncQueuedPrompts();
+    if (editingQueuedPromptId && wanted.has(editingQueuedPromptId)) {
+      setEditingQueuedPromptId(null);
+      setEditingQueuedPromptText("");
+    }
+    if (landed.length === 0) return;
+    const anchorId = liveAssistantMessageIdRef.current;
+    const bubbles: AgentMessage[] = landed.map((prompt) => ({
+      id: `msg-queued-${prompt.id}`,
+      role: "user",
+      text: prompt.text,
+      ...stampNow(),
+      status: "done",
+      queuedPlacement: "joined",
+    }));
+    setMessages((current) => {
+      const index = anchorId ? current.findIndex((message) => message.id === anchorId) : -1;
+      return index < 0
+        ? [...current, ...bubbles]
+        : [...current.slice(0, index), ...bubbles, ...current.slice(index)];
+    });
+  };
+
+  /**
+   * Offer waiting messages to the running turn, oldest first, one request at a
+   * time so the server receives them in queue order. A message may join only
+   * when every message ahead of it is joining too; otherwise it would overtake
+   * one that must wait for its own turn.
+   */
+  const offerQueuedPromptsToLiveTurn = () => {
+    const queue = liveTurnQueueRef.current;
+    if (!queue) return;
+    queuedOfferChainRef.current = queuedOfferChainRef.current.then(async () => {
+      for (const operation of [...operationQueueRef.current.snapshot()]) {
+        const prompt = operation.prompt;
+        if (!prompt) return;
+        if (prompt.placement === "joining") continue;
+        if (!canJoinAgentTurn(prompt) || queue.liveConversationId === null) return;
+        if (queue.liveConversationId !== conversationIdRef.current) return;
+        const placement = await queue.offer(prompt.id, prompt.text);
+        if (placement !== "joining") return;
+        setQueuedPlacement([prompt.id], "joining");
+      }
+    }).catch(() => undefined);
   };
 
   const enqueuePrompt = (
@@ -6684,63 +6843,119 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       // instead ("remove the account number"), so it confirms no save.
       kycInformationSaveConfirmed:
         Boolean(gmailKycReplyRequest?.workflow_id) && !emailDraftOpen,
+      // Plain typed text only; a picker choice carries its own authority.
+      joinable: hasChatAccess && !personSelectionHandle,
+      placement: "waiting",
     };
     const operation: QueuedWorkspaceOperation = {
       id: prompt.id,
       prompt,
-      run: async () => {
+      run: async (dequeued) => {
+        const current = dequeued.prompt ?? prompt;
         if (hasChatAccess) {
           // One is still finishing a turn the app left: queue behind it and its
           // reload rather than start a second run in the same conversation.
           await waitForWatchedAgentTurn(user?.uid, conversationIdRef.current);
           await reattachRestoreRef.current;
-          await runAgentTurn(operation.prompt?.text ?? "", {
+          // This prompt and any plain messages queued right behind it go out
+          // together as one turn, in order.
+          const head = operationQueueRef.current.snapshot();
+          if (canJoinAgentTurn(current)) {
+            const { taken, rest } = takeJoinableRun(head);
+            operationQueueRef.current.replace(rest);
+            syncQueuedPrompts();
+            const together = [current, ...taken.flatMap((item) => (item.prompt ? [item.prompt] : []))];
+            await runAgentTurn(combineQueuedPromptText(together), {
+              source: "typed",
+              deferPkmContext: together.some((item) => item.deferPkmContext),
+              ...(together.length > 1 ? { queuedPrompts: together } : {}),
+            });
+            return;
+          }
+          await runAgentTurn(current.text, {
             source: "typed",
             personSelectionHandle,
-            attachments: operation.prompt?.attachments,
-            deferPkmContext: operation.prompt?.deferPkmContext,
-            driveSearchSelection: operation.prompt?.driveSearchSelection,
-            gmailInformationRequestWorkflowId:
-              operation.prompt?.gmailInformationRequestWorkflowId,
-            kycInformationSaveConfirmed:
-              operation.prompt?.kycInformationSaveConfirmed,
+            attachments: current.attachments,
+            deferPkmContext: current.deferPkmContext,
+            driveSearchSelection: current.driveSearchSelection,
+            gmailInformationRequestWorkflowId: current.gmailInformationRequestWorkflowId,
+            kycInformationSaveConfirmed: current.kycInformationSaveConfirmed,
           });
           return;
         }
         // The pre-vault intro tier has no attachment channel; it reads the
         // whole turn as text, exactly as before.
         await runIntroTurn(
-          composeTurnSourceText(
-            operation.prompt?.text ?? "",
-            operation.prompt?.attachments ?? [],
-          ),
+          composeTurnSourceText(current.text, current.attachments ?? []),
         );
       },
     };
     enqueueWorkspaceOperation(operation);
+    offerQueuedPromptsToLiveTurn();
   };
 
-  const editQueuedPrompt = (id: string, textInput: string) => {
+  /** The turn ended: resolve what it held, exactly once, before anything else is sent. */
+  const settleLiveTurn = async () => {
+    const queue = liveTurnQueueRef.current;
+    stopActiveTurnRef.current = null;
+    setStoppableTurn(false);
+    if (!queue) return;
+    queue.stopAccepting();
+    await queuedOfferChainRef.current;
+    const { joined, waiting } = await queue.settle();
+    landJoinedPrompts(joined);
+    if (waiting.length) setQueuedPlacement(waiting, "waiting");
+  };
+
+  /** Take a message back from the running turn before it joins. */
+  const reclaimQueuedPrompt = async (id: string): Promise<boolean> => {
+    const queue = liveTurnQueueRef.current;
+    if (!queue?.holds(id)) return true;
+    const outcome = await queue.withdraw(id);
+    if (outcome === "joined") {
+      landJoinedPrompts([id]);
+      return false;
+    }
+    return outcome === "withdrawn";
+  };
+
+  const editQueuedPrompt = async (id: string, textInput: string) => {
     const text = textInput.trim();
     if (!text) return;
+    const held = liveTurnQueueRef.current?.holds(id) ?? false;
+    if (!(await reclaimQueuedPrompt(id))) return;
+    // A withdrawn id is spent on the server, so the edited message is new.
+    const nextId = held ? crypto.randomUUID() : id;
     operationQueueRef.current.replace(
-      operationQueueRef.current
-        .snapshot()
-        .map((operation) =>
-          operation.prompt?.id === id
-            ? {
-                ...operation,
-                prompt: { ...operation.prompt, text, driveSearchSelection: undefined },
-              }
-            : operation,
-        ),
+      operationQueueRef.current.snapshot().map((operation) =>
+        operation.prompt?.id === id
+          ? {
+              ...operation,
+              id: nextId,
+              prompt: {
+                ...operation.prompt,
+                id: nextId,
+                text,
+                // As editQueuedAgentPrompt: a revised intent re-picks its file.
+                driveSearchSelection: undefined,
+                placement: "waiting" as const,
+              },
+            }
+          : operation,
+      ),
     );
-    setQueuedPrompts((current) => editQueuedAgentPrompt(current, id, text));
+    setQueuedPrompts((current) =>
+      editQueuedAgentPrompt(current, id, text).map((prompt) =>
+        prompt.id === id ? { ...prompt, id: nextId } : prompt,
+      ),
+    );
     setEditingQueuedPromptId(null);
     setEditingQueuedPromptText("");
+    offerQueuedPromptsToLiveTurn();
   };
 
-  const removeQueuedPrompt = (id: string) => {
+  const removeQueuedPrompt = async (id: string) => {
+    if (!(await reclaimQueuedPrompt(id))) return;
     operationQueueRef.current.replace(
       operationQueueRef.current
         .snapshot()
@@ -7887,6 +8102,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           <Mic className="h-4 w-4" />
         </ShellActionSurface>
       ) : null}
+      {stoppableTurn && !canSend ? (
+        // While One works, an empty composer offers Stop in Send's place; any
+        // text turns it back into Send, which queues the message.
+        <ShellActionSurface
+          type="button"
+          rippleEffect="fill"
+          data-testid="agent-chat-stop-turn"
+          className="border-transparent bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent-hover)]"
+          aria-label="Stop One"
+          title="Stop One"
+          onClick={() => {
+            void stopActiveTurnRef.current?.();
+          }}
+        >
+          <StopSquare className="h-3.5 w-3.5" />
+        </ShellActionSurface>
+      ) : (
       <ShellActionSurface
         type="submit"
         rippleEffect="fill"
@@ -7905,6 +8137,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       >
         <Send className="h-4 w-4" />
       </ShellActionSurface>
+      )}
     </>
   );
 
@@ -9561,104 +9794,26 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   : "max-w-3xl",
               )}
             >
-              {queuedPrompts.length > 0 ? (
-                <div
-                  className="mb-2 rounded-[18px] bg-foreground/[0.045] px-3 py-2"
-                  data-testid="agent-chat-prompt-queue"
-                  aria-live="polite"
-                >
-                  <div className="flex items-center justify-between gap-3 text-xs font-medium text-muted-foreground">
-                    <span>
-                      {queuedPrompts.length}{" "}
-                      {queuedPrompts.length === 1 ? "message" : "messages"}{" "}
-                      queued
-                    </span>
-                    <span>One will send these in order.</span>
-                  </div>
-                  <div className="mt-1.5 space-y-1.5">
-                    {queuedPrompts.map((prompt, index) => (
-                      <div
-                        key={prompt.id}
-                        className="flex min-w-0 items-center gap-2 rounded-xl bg-background/75 px-2 py-1.5 text-sm"
-                      >
-                        <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                          {index + 1}
-                        </span>
-                        {editingQueuedPromptId === prompt.id ? (
-                          <input
-                            autoFocus
-                            aria-label="Edit queued message"
-                            className="min-w-0 flex-1 bg-transparent outline-none"
-                            value={editingQueuedPromptText}
-                            onChange={(event) =>
-                              setEditingQueuedPromptText(event.target.value)
-                            }
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter") {
-                                event.preventDefault();
-                                editQueuedPrompt(
-                                  prompt.id,
-                                  editingQueuedPromptText,
-                                );
-                              }
-                              if (event.key === "Escape") {
-                                setEditingQueuedPromptId(null);
-                                setEditingQueuedPromptText("");
-                              }
-                            }}
-                          />
-                        ) : (
-                          <span className="min-w-0 flex-1 truncate">
-                            {prompt.text || prompt.attachments?.[0]?.name}
-                          </span>
-                        )}
-                        {prompt.text && prompt.attachments?.[0] ? <span className="shrink-0 text-xs text-muted-foreground">{prompt.attachments[0].name}</span> : null}
-                        {prompt.driveSearchSelection ? <span className="shrink-0 text-xs text-muted-foreground">Drive file selected</span> : null}
-                        {editingQueuedPromptId === prompt.id ? (
-                          <Button
-                            type="button"
-                            size="sm"
-                            variant="ghost"
-                            className="h-7 px-2 text-xs"
-                            onClick={() =>
-                              editQueuedPrompt(
-                                prompt.id,
-                                editingQueuedPromptText,
-                              )
-                            }
-                          >
-                            Save
-                          </Button>
-                        ) : (
-                          <Button
-                            type="button"
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7"
-                            aria-label={`Edit queued message ${index + 1}`}
-                            onClick={() => {
-                              setEditingQueuedPromptId(prompt.id);
-                              setEditingQueuedPromptText(prompt.text);
-                            }}
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                        )}
-                        <Button
-                          type="button"
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-muted-foreground hover:text-destructive"
-                          aria-label={`Remove queued message ${index + 1}`}
-                          onClick={() => removeQueuedPrompt(prompt.id)}
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+              <AgentQueuedStack
+                prompts={queuedPrompts}
+                editingId={editingQueuedPromptId}
+                editingText={editingQueuedPromptText}
+                onEditStart={(prompt) => {
+                  setEditingQueuedPromptId(prompt.id);
+                  setEditingQueuedPromptText(prompt.text);
+                }}
+                onEditChange={setEditingQueuedPromptText}
+                onEditSave={(id) => {
+                  void editQueuedPrompt(id, editingQueuedPromptText);
+                }}
+                onEditCancel={() => {
+                  setEditingQueuedPromptId(null);
+                  setEditingQueuedPromptText("");
+                }}
+                onRemove={(id) => {
+                  void removeQueuedPrompt(id);
+                }}
+              />
               {voiceActive ? (
                 <div className="rounded-[22px] bg-foreground/[0.045] p-2 shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]">
                   <AgentVoiceWaveInput

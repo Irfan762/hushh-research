@@ -17,6 +17,14 @@ import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent }
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
 import { resolveTurnLocation } from "@/lib/agent/turn-location";
 import {
+  QUEUED_INPUT_EVENT,
+  parseQueuedInputNotice,
+  parseQueuedInputStatus,
+  type QueuedInputNotice,
+  type QueuedInputPorts,
+  type QueuedInputStatus,
+} from "@/lib/agent/agent-chat-live-turn-queue";
+import {
   ChatKeyUnavailableError,
   chatKeyRefusalCode,
   noteChatKeyAccepted,
@@ -61,6 +69,8 @@ export type AgentChatMessage = {
     turnActivity?: { activityType?: string; content?: unknown } | null;
     /** Pasted text sent with a user turn, restored as a chip (never as message text). */
     attachments?: AgentTextAttachment[];
+    /** A message sent while One was working, which joined that reply. */
+    queuedInput?: "joined";
     /** The information request this outcome chip or continuation answer belongs to. */
     consentBundleId?: string;
     /** The server hid this answer because sharing it relied on has ended. */
@@ -233,6 +243,8 @@ export type AgentChatStreamHandlers = {
    * be joined to the turn, or matched after a reload (history uses event ids).
    */
   onServerMessageId?: (serverMessageId: string) => void;
+  /** Where messages queued during this turn landed, by client id only. */
+  onQueuedInput?: (notice: QueuedInputNotice) => void;
 };
 
 /** The last assistant message with content in a messages snapshot: this turn's answer. */
@@ -1092,6 +1104,8 @@ export type PendingEmailDraftContext = {
 export async function streamAgentChat(input: {
   userId: string;
   message: string;
+  /** Stable id for this turn's user message, so a resend is recognised as the same one. */
+  messageId?: string;
   /** Pasted text sent as separate document parts, never folded into `message`. */
   attachments?: readonly AgentTextAttachment[];
   conversationId?: string | null;
@@ -1212,7 +1226,7 @@ export async function streamAgentChat(input: {
     threadId,
     headers: { Authorization: `Bearer ${input.vaultOwnerToken}`, ...chatKeyHeaders },
     initialMessages: [{
-      id: crypto.randomUUID(),
+      id: input.messageId || crypto.randomUUID(),
       role: "user",
       content: buildAgentUserMessageContent(input.message, input.attachments),
     }],
@@ -1382,6 +1396,11 @@ export async function streamAgentChat(input: {
     onTextMessageContentEvent: ({ event }) => {
       text += event.delta;
       handlers.onToken?.(event.delta);
+    },
+    onCustomEvent: ({ event }) => {
+      if (event.name !== QUEUED_INPUT_EVENT) return;
+      const notice = parseQueuedInputNotice(event.value);
+      if (notice) handlers.onQueuedInput?.(notice);
     },
     onToolCallStartEvent: ({ event }) => {
       toolNames.set(event.toolCallId, event.toolCallName);
@@ -1969,6 +1988,60 @@ export async function streamAgentIntro(input: {
   if (!runTerminal) loseStream();
   if (failure) throw failure;
   return { conversationId: threadId, model: null, text };
+}
+
+/**
+ * The live-turn queue's transport. Owner-bound by the vault-owner token; no chat
+ * key, because nothing sealed is read. The text is sent once, to the running
+ * turn, and is never written to storage or logged on this device.
+ */
+export function createQueuedInputPorts(getVaultOwnerToken: () => string | null): QueuedInputPorts {
+  const call = async (path: string, init: RequestInit = {}): Promise<Record<string, unknown>> => {
+    const token = getVaultOwnerToken();
+    if (!token) throw new Error("Vault access expired.");
+    const response = await ApiService.apiFetch(path, {
+      ...init,
+      cache: "no-store",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+      },
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    return ((await response.json()) ?? {}) as Record<string, unknown>;
+  };
+  const base = (conversationId: string) =>
+    `/api/one/agent-chat/runs/${encodeURIComponent(conversationId)}`;
+  return {
+    enqueue: async (conversationId, clientMessageId, text) =>
+      parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
+        method: "POST",
+        body: JSON.stringify({ client_message_id: clientMessageId, text }),
+      })).status),
+    withdraw: async (conversationId, clientMessageId) =>
+      parseQueuedInputStatus((await call(
+        `${base(conversationId)}/queue/${encodeURIComponent(clientMessageId)}`,
+        { method: "DELETE" },
+      )).status),
+    status: async (conversationId, clientMessageIds) => {
+      const query = clientMessageIds.map((id) => `ids=${encodeURIComponent(id)}`).join("&");
+      const payload = await call(`${base(conversationId)}/queue?${query}`);
+      const statuses: Record<string, QueuedInputStatus> = {};
+      for (const receipt of Array.isArray(payload.receipts) ? payload.receipts : []) {
+        const record = asRecord(receipt);
+        const id = record ? readString(record, "clientMessageId") : "";
+        if (id) statuses[id] = parseQueuedInputStatus(record?.status);
+      }
+      return statuses;
+    },
+    stop: async (conversationId) => {
+      const payload = await call(`${base(conversationId)}/stop`, { method: "POST" });
+      const returned = Array.isArray(payload.returned)
+        ? payload.returned.filter((id): id is string => typeof id === "string")
+        : [];
+      return { stopped: payload.stopped === true, returned };
+    },
+  };
 }
 
 export async function listAgentChatConversations(input: {
