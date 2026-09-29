@@ -41,6 +41,8 @@ BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100"
         # immigration branches, not under the words above (2026-09-29).
         "attr.career.compensation.*",
         "attr.career.compensation.base_pay",
+        "attr.career.annual_bonus",
+        "attr.career.equity_grant",
         "attr.ria.*",
         "attr.wallet.summary.*",
         # Identity or government id

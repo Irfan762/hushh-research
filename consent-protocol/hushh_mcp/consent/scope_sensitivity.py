@@ -37,7 +37,11 @@ from collections.abc import Iterable
 from itertools import pairwise
 from typing import Literal
 
-from hushh_mcp.consent.field_sensitivity import field_key_is_sensitive
+from hushh_mcp.consent.field_sensitivity import (
+    field_key_is_sensitive,
+    sensitive_topic_phrases,
+    sensitive_topic_words,
+)
 from hushh_mcp.consent.internal_path_keys import is_secret_shaped_key
 from hushh_mcp.consent.segment_labels import humanize_segment
 from hushh_mcp.services.domain_contracts import (
@@ -56,103 +60,15 @@ SENSITIVE_DOMAINS: frozenset[str] = frozenset(
     {"financial", "health", "identity", "ria", "wallet", *INTERNAL_ONLY_DOMAIN_SLUGS}
 )
 
-# Single words that mark a sensitive domain or path, grouped by the founder's
-# five categories. Matched as whole words (after camelCase and separator
-# splitting), with a trailing plural "s" folded, so "taxes" and "medications"
-# match while "attaxis" or "syntax" do not.
-_TAX_WORDS = frozenset({"tax", "taxe", "irs", "w2", "w9", "1040", "1099", "agi"})
-_FINANCIAL_WORDS = frozenset(
-    {
-        "bank",
-        "banking",
-        "brokerage",
-        # Pay stated in a pasted context document lands under career or
-        # employment branches named "compensation", never "salary" (2026-09-29).
-        "compensation",
-        "credit",
-        "cvv",
-        "debit",
-        "finance",
-        "financial",
-        "holding",
-        "iban",
-        "income",
-        "investment",
-        "loan",
-        "mortgage",
-        "payroll",
-        "paystub",
-        "plaid",
-        "portfolio",
-        "routing",
-        "salarie",
-        "salary",
-        "wage",
-        "wallet",
-    }
-)
-_IDENTITY_WORDS = frozenset(
-    {
-        "aadhaar",
-        "birthdate",
-        "citizenship",
-        "dob",
-        "ein",
-        "identity",
-        "immigration",
-        "itin",
-        "passport",
-        "ssn",
-        "visa",
-    }
-)
-_HEALTH_WORDS = frozenset(
-    {
-        "allergy",
-        "allergie",
-        "diagnose",
-        "diagnosis",
-        "disability",
-        "health",
-        "hipaa",
-        "medical",
-        "medication",
-        "prescription",
-        "therapy",
-        "vaccination",
-        "vaccine",
-    }
-)
-_CREDENTIAL_WORDS = frozenset(
-    {"credential", "otp", "passcode", "password", "pin", "secret", "token"}
-)
-SENSITIVE_WORDS: frozenset[str] = frozenset(
-    {*_TAX_WORDS, *_FINANCIAL_WORDS, *_IDENTITY_WORDS, *_HEALTH_WORDS, *_CREDENTIAL_WORDS}
-)
-# Two-word phrases whose words are harmless alone ("social", "account").
-SENSITIVE_PHRASES: frozenset[tuple[str, str]] = frozenset(
-    {
-        ("account", "number"),
-        ("birth", "date"),
-        ("date", "birth"),
-        ("driver", "license"),
-        ("drivers", "license"),
-        ("government", "id"),
-        ("green", "card"),
-        ("gov", "id"),
-        ("insurance", "policy"),
-        ("lab", "result"),
-        ("license", "number"),
-        ("mental", "health"),
-        ("national", "id"),
-        ("net", "worth"),
-        ("social", "security"),
-        ("tax", "id"),
-        ("w", "2"),
-        ("w", "9"),
-        ("work", "permit"),
-    }
-)
+# Words and two-word phrases that mark a sensitive domain or path, grouped by
+# topic in the shared truth table `contracts/consent/field-sensitivity.v1.json`
+# (the founder's five categories, plus pay and immigration since 2026-09-29).
+# The client manifest walk reads the same table, so a path the server calls
+# sensitive is the path the device labels. Matched as whole words (after
+# camelCase and separator splitting), with a trailing plural "s" folded, so
+# "taxes" and "medications" match while "attaxis" or "syntax" do not.
+SENSITIVE_WORDS: frozenset[str] = sensitive_topic_words()
+SENSITIVE_PHRASES: frozenset[tuple[str, str]] = sensitive_topic_phrases()
 # PKM sensitivity tags that mean "sensitive". ``sensitivity_label`` on manifest
 # paths uses restricted / confidential; the catalog carries the word itself.
 SENSITIVE_TAGS: frozenset[str] = frozenset({"confidential", "restricted", "secret", "sensitive"})
