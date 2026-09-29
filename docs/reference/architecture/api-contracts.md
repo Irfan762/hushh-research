@@ -236,8 +236,24 @@ later turns until access ends) is recorded against the bundle in sealed session
 state. Before each later model call the server re-reads the bundle as the
 requester; once access has ended (`revoked`, `expired`, or `progress.ended_at`
 set) it replaces those turns' model-side content in the model request with
-`Access to <labels> from <name> ended; do not use or repeat it.` Stored sealed
-events are not modified. In the history response, those turns' assistant
+`Access to <labels> from <name> ended; do not use or repeat it.` Turns are
+located by identity: the person's own messages in the request are aligned in
+order with the sealed session's user events, and everything else between two
+of them belongs to that turn. If a tagged turn cannot be located, that bundle
+fails closed and every model-side content from its first tagged turn onward is
+replaced. A fenced shared block, or a tool payload naming an ended bundle, is
+replaced wherever it appears. Each model call logs
+`one.consent_redaction bundles=… tagged_turns=… replaced=… mode=identity|fail_closed`
+(bundle ids and counts only). Stored sealed events are not modified.
+
+The continuation record (`temp:hussh:consent_continuation`) belongs to its
+answer turn only. The encrypted session store never seals `temp:` state and
+drops any it finds in an older row; a shared continuation record seen in any
+later invocation is refused (`one.consent_continuation_stale`), and a fenced
+shared block is stripped from any other turn's instruction. Measured
+2026-09-28: before this, the sealed record re-rendered the shared block into
+every later turn for its 10-minute lifetime, blocked their tools, and skipped
+the revoke check. In the history response, those turns' assistant
 messages carry `metadata.consentBundleId` and
 `metadata.consentAccess = {bundleId, state: "live"|"ended", outcome, personName, labels}`;
 once ended the message's `content` is `""`, its cards and activity are dropped,
