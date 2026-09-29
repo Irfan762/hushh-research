@@ -131,12 +131,12 @@ function share(active = false) {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
   };
 }
-async function mount(page: Page, dark: boolean, active = false) {
+async function mount(page: Page, dark: boolean, active = false, sidebar = false) {
   const mutations: string[] = [];
   const runtimeErrors: string[] = [];
   page.on("pageerror", error => runtimeErrors.push(error.message));
   await page.route("http://localhost/drive-card.js", route => route.fulfill({ contentType: "application/javascript", body: script }));
-  await page.route("http://localhost/drive-card-fixture", route => route.fulfill({ contentType: "text/html",
+  await page.route("http://localhost/drive-card-fixture**", route => route.fulfill({ contentType: "text/html",
     body: `<!doctype html><html class="${dark ? "dark" : ""}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div><script src="/drive-card.js"></script></body></html>` }));
   await page.route("**/icons/connectors/drive.svg", route => route.fulfill({ contentType: "image/svg+xml",
     body: fs.readFileSync(path.join(process.cwd(), "public/icons/connectors/drive.svg"), "utf8") }));
@@ -150,11 +150,41 @@ async function mount(page: Page, dark: boolean, active = false) {
     }
     return route.fulfill({ contentType: "application/json", body: JSON.stringify(pathname.endsWith("/bulk") ? { shares: [result] } : result) });
   });
-  await page.goto("http://localhost/drive-card-fixture");
+  await page.goto(`http://localhost/drive-card-fixture${sidebar ? "?sidebar=1" : ""}`);
   await awaitProductFont(page);
-  await expect(page.getByRole("region", { name: "Drive sharing", exact: true }), runtimeErrors.join("; ")).toBeVisible();
+  await expect(sidebar ? page.getByRole("region", { name: "Drive sharing activity" }) :
+    page.getByRole("region", { name: "Drive sharing", exact: true }), runtimeErrors.join("; ")).toBeVisible();
   return mutations;
 }
+
+for (const [width, dark] of [[390, false], [1440, true]] as const)
+  test(`Drive updates stay in the left chat bar at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 850 });
+    const mutations = await mount(page, dark, false, true);
+    const sidebar = page.locator("[data-test-drive-sidebar]");
+    const row = sidebar.getByRole("button", { name: "Needs attention. 71 of 72 available. View details" });
+    await expect(row).toBeVisible();
+    await expect(page.getByRole("region", { name: "Drive sharing", exact: true })).toHaveCount(0);
+    const sidebarBox = (await sidebar.boundingBox())!;
+    const rowBox = (await row.boundingBox())!;
+    expect(rowBox.x).toBeGreaterThanOrEqual(sidebarBox.x);
+    expect(rowBox.x + rowBox.width).toBeLessThanOrEqual(sidebarBox.x + sidebarBox.width);
+    await page.screenshot({ path: testInfo.outputPath("drive-sidebar.png"), fullPage: false });
+    await row.click();
+    const dialog = page.getByRole("dialog", { name: "Drive sharing" });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toContainText("71 of 72 files available");
+    await expect(dialog).toContainText("Google Drive was unavailable");
+    await expect(dialog.getByRole("button", { name: "Close Drive sharing card" })).toHaveCount(0);
+    const dialogBox = (await dialog.boundingBox())!;
+    expect(dialogBox.x).toBeGreaterThanOrEqual(0);
+    expect(dialogBox.x + dialogBox.width).toBeLessThanOrEqual(width);
+    await page.screenshot({ path: testInfo.outputPath("drive-sidebar-details.png"), fullPage: false });
+    await dialog.getByRole("button", { name: "Hide this update" }).click();
+    await expect(row).toHaveCount(0);
+    await expect(sidebar.getByRole("textbox", { name: "Search chats" })).toBeFocused();
+    expect(mutations).toEqual([]);
+  });
 
 for (const width of [375, 430, 1440]) for (const dark of [false, true])
   test(`Drive sharing is compact, readable and dismissible at ${width}px in ${dark ? "dark" : "light"}`, async ({ page }, testInfo) => {

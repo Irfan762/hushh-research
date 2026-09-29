@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -46,10 +48,12 @@ import { parseScopeProposal } from "@/lib/agent/scope-proposal";
 import { parseAgentToolResultExperience } from "@/lib/agent/agui-structured-experiences";
 import { DecryptedRecordContent } from "@/components/connections/decrypted-grant-card";
 import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
+import { readInformationRequest } from "@/lib/consent/information-request-reads";
 import { AgentTurnStreamPanel } from "@/components/agent/agent-turn-stream-panel";
 import { AppStreamPanel } from "@/components/app-ui/stream-progress-panel";
 import { SelectionChip } from "@/components/agent/selection-chip";
-import { Check, ShieldOff } from "@/components/icons";
+import { Check, MinusCircle, ShieldOff } from "@/components/icons";
+import { CONSENT_OUTCOME_LABELS, wireOutcomeForSentLabel } from "@/lib/consent/open-granted-person-information";
 
 const ASKED = "2026-09-28T13:49:00Z";
 const ENDS = "2026-10-05T12:00:00Z";
@@ -188,7 +192,7 @@ describe("living requester card body", () => {
 
   // Localhost run 2026-09-28 (screenshot 17): "Kushal stopped sharing Food
   // preferences" still carried the success check.
-  it("marks a stopped-sharing chip with the neutral ended icon, never the check", () => {
+  it("marks a stopped or declined chip with a neutral icon, never the check", () => {
     const svg = (node: ReactNode) => render(<>{node}</>).container.querySelector("svg")!.innerHTML;
     const checkMark = svg(<Check />);
     const endedMark = svg(<ShieldOff />);
@@ -198,10 +202,22 @@ describe("living requester card body", () => {
     expect(chip).toHaveAttribute("data-state", "ended");
     expect(chip.querySelector("svg")!.innerHTML).toBe(endedMark);
     cleanup();
+    // Localhost run 4 (R6): "Kushal declined" carried the check too.
+    const declinedMark = svg(<MinusCircle />);
+    cleanup();
+    render(<SelectionChip label="Kushal declined" outcome="denied" />);
+    expect(screen.getByTestId("selection-chip")).toHaveAttribute("data-state", "declined");
+    expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(declinedMark);
+    cleanup();
     // Negative control: a shared chip keeps its check.
-    render(<SelectionChip label="Kushal shared Food preferences" />);
+    render(<SelectionChip label="Kushal shared Food preferences" outcome="granted" />);
     expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(checkMark);
-    expect(checkMark).not.toBe(endedMark);
+    expect(new Set([checkMark, endedMark, declinedMark]).size).toBe(3);
+    // The chat hands every chip its outcome; without it a decline falls back
+    // to the check. A chip no card claimed reads its outcome from the label.
+    const workspace = readFileSync(path.join(process.cwd(), "components/agent/agent-chat-workspace.tsx"), "utf8");
+    expect(workspace).toContain("outcome={consentChipOutcome(message)}");
+    expect(wireOutcomeForSentLabel(CONSENT_OUTCOME_LABELS.denied)).toBe("denied");
   });
 
   it("words an expiry after sharing as ended on a day", () => {
@@ -287,6 +303,20 @@ describe("human-readable shared details", () => {
     ] }]);
   });
 
+  // Localhost run 4 (S3): a legal entity read "Fein", "Naics code" and "C_CORP".
+  it("names known fields as people write them and reads a stored enum as words", () => {
+    const rows = sharedItemRows([{ requestId: "r1", label: "Legal entity", data: {
+      fein: "12-3456789", naics_code: "541511", trade_name_dba: "Acme Labs", street_1: "1 Main St",
+      entity_type: "C_CORP", filing_status: "MARRIED_FILING_JOINTLY", handle: "kushal_t",
+    } }]);
+    expect(rows[0]!.values).toEqual([
+      "Federal EIN: 12-3456789", "NAICS code: 541511", "Trade name (DBA): Acme Labs", "Street address: 1 Main St",
+      "Entity type: C corporation", "Filing status: Married filing jointly",
+      // Negative control: the person's own value is never rewritten.
+      "Handle: kushal_t",
+    ]);
+  });
+
   it("collapses long values behind Show more", () => {
     const long = "Vegetarian ".repeat(30).trim();
     render(<SharedDetailsList values={[{ requestId: "r1", label: "Diet", data: { diet: long } }]} />);
@@ -363,6 +393,64 @@ describe("InformationRequestReviewView with and without progress", () => {
     expect(screen.getByText("Food preferences from Kushal Trivedi")).toBeInTheDocument();
     expect(screen.getByText("Access ends Oct 5")).toBeInTheDocument();
     expect(card.querySelector("[aria-current='step']")).toHaveAttribute("data-step", "reading");
+  });
+
+  // A5 (localhost run 4): asked again while the request waited, One offered a
+  // fresh ask card with Send. The server now reports it as already waiting;
+  // this is its exact output (test_consent_lifecycle_chat.py, TestPropose).
+  it("renders an already waiting request as its living card, with no Send", async () => {
+    const PERSON_REF = "11111111-1111-4111-8111-111111111111";
+    const BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    const alreadyPending = {
+      status: "already_pending",
+      person: { displayName: "Sarah Chen", personRef: PERSON_REF, profilePath: `/people/${PERSON_REF}` },
+      bundleId: BUNDLE,
+      fields: ["Favorite cuisine"],
+      purpose: "To pick a restaurant for dinner",
+      sentAt: "2026-09-29T06:30:00+00:00",
+      livingCard: {
+        personName: "Sarah Chen", purpose: "To pick a restaurant for dinner", durationLabel: "7 days",
+        status: "pending", direction: "outgoing", phase: "submitted", subjectRef: PERSON_REF, bundleId: BUNDLE,
+        fields: [{ label: "Favorite cuisine", domain: "Information" }],
+      },
+      nextStep: "Say in one short line that your request to Sarah Chen for Favorite cuisine is already waiting on them, and that the request card shows where it stands. Do not ask them to tap Send, do not offer to send it again, and do not call another consent action.",
+    };
+    const experience = parseAgentToolResultExperience("propose_information_request", alreadyPending);
+    expect(experience).toMatchObject({
+      type: "one.information_request_review.v1", direction: "outgoing", phase: "submitted",
+      subjectRef: PERSON_REF, bundleId: BUNDLE, status: "pending",
+    });
+    mocks.getInformationRequest.mockResolvedValue({ ...bundle("pending", true), personRef: PERSON_REF, bundleId: BUNDLE });
+    render(<AgentStructuredExperienceView experience={experience!} />);
+    const card = await screen.findByTestId("requester-progress");
+    expect(card).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /send/i })).toBeNull();
+    // Negative control: without its descriptor nothing renders, never an ask card.
+    expect(parseAgentToolResultExperience("propose_information_request",
+      { ...alreadyPending, livingCard: undefined })).toBeNull();
+  });
+
+  // Run 4 (R1): the chat knew "Reading…" at 19.1s, but the card waited on its
+  // own read of a starved pool and still said "Seen" until 33.5s.
+  it("shows Reading… from the doorbell's reading at once, even while its own reads stall", async () => {
+    mocks.getInformationRequest.mockResolvedValueOnce(bundle("pending", true));
+    let phase: "reading" | null = null;
+    const card = () => (
+      <ConsentCardPhaseContext.Provider value={(id) => id === bundleId ? phase : null}>
+        <AgentStructuredExperienceView experience={restored} />
+      </ConsentCardPhaseContext.Provider>
+    );
+    const view = render(card());
+    expect(await screen.findByTestId("requester-progress")).toHaveAttribute("data-outcome", "pending");
+    // The doorbell reads the approval; every read after it stalls.
+    mocks.getInformationRequest.mockResolvedValueOnce(bundle("granted", true));
+    mocks.getInformationRequest.mockReturnValue(new Promise(() => undefined));
+    await act(async () => { await readInformationRequest({ bundleId, vaultOwnerToken: "test-owner-token" }); });
+    phase = "reading";
+    view.rerender(card());
+    const progress = screen.getByTestId("requester-progress");
+    expect(progress).toHaveAttribute("data-outcome", "granted");
+    expect(within(progress).getByRole("status")).toHaveTextContent("Reading what Kushal shared…");
   });
 
   it("drops revealed values and shows Access ended when the owner revokes", async () => {
@@ -603,6 +691,52 @@ describe("One picks, you confirm", () => {
     expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
     fireEvent.click(whole);
     expect(whole).toHaveAttribute("aria-checked", "true");
+  });
+
+  // Localhost run 4 (A2): "Request all of Kushal's food and dining
+  // information" listed "Food & dining information" and "Food preferences"
+  // flat. The broad item sorts past the viewer's first catalog page, so the
+  // card never knew what it covered.
+  it("nests a broad ask its first catalog page lacks, and Send carries the smallest set", async () => {
+    const food = [
+      { scopeRef: "scope-food-all", label: "Food & dining information", description: null, domain: "food", sensitivity: "standard",
+        wildcard: true, pathSegments: [] },
+      { scopeRef: "scope-food-prefs", label: "Food preferences", description: null, domain: "food", sensitivity: "standard",
+        wildcard: true, pathSegments: ["preferences"] },
+      { scopeRef: "scope-food-diet", label: "Dietary constraints", description: null, domain: "food", sensitivity: "standard",
+        wildcard: false, pathSegments: ["dietary_constraints"] },
+    ];
+    mocks.getViewer.mockResolvedValue({ ...viewer(), requestableScopes: [
+      { scopeRef: "scope-travel", label: "Trips", description: null, domain: "travel", sensitivity: "standard", wildcard: false, pathSegments: ["trips"] },
+    ] });
+    mocks.searchScopeCatalog.mockImplementation(async ({ query }: { query: string }) => ({
+      scopes: query.startsWith("Food") ? food : [], page: 1, hasMore: false, nextPage: null, totalCount: 3,
+    }));
+    const broad = { proposed: [
+      { scopeRef: "scope-food-all", label: "Food & dining information", why: "Matches what you asked for" },
+      { scopeRef: "scope-food-prefs", label: "Food preferences", why: null },
+    ], durationHours: 168, reasonSuggestion: "To view food and dining details" };
+    render(<AgentStructuredExperienceView experience={{ ...discovery, proposal: broad }} />);
+
+    // One group over what it covers, never the parent and child side by side.
+    const group = await screen.findByRole("checkbox", { name: "Food & dining information" });
+    await waitFor(() => expect(group).toHaveAttribute("aria-expanded", "false"));
+    expect(screen.getAllByTestId("ask-proposal-row")).toHaveLength(1);
+    expect(group).toHaveAttribute("aria-checked", "true");
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect(send).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Show what Food & dining information includes" }));
+    const diet = screen.getByRole("checkbox", { name: "Dietary constraints" });
+    fireEvent.click(diet);
+    expect(group).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Food preferences · 7 days");
+    fireEvent.click(diet);
+    expect(group).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(send);
+    // Fully chosen, the group goes as its one broad item.
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ scopeRefs: ["scope-food-all"] })));
   });
 
   it("falls back to the catalog when there is no proposal", async () => {

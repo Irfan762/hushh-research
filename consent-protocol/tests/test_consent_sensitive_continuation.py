@@ -120,12 +120,14 @@ def _everything_the_model_read(llm_request: Any) -> str:
     return f"{instruction or ''}\n{contents}"
 
 
-async def _model_request_for_answer_turn(monkeypatch) -> str:
+async def _model_request_for_answer_turn(
+    monkeypatch, bundle: dict[str, Any] | None = None, shared: str = SHARED
+) -> str:
     async def ledger(_owner_id: str, bundle_id: str) -> dict[str, Any]:
         return {"bundleId": bundle_id, "progress": {"outcome": "granted", "ended_at": None}}
 
     monkeypatch.setattr(agent_tree, "_requester_bundle", ledger)
-    admitted = await _admit(_bundle())
+    admitted = await _admit(bundle or _bundle(), shared)
     model = _RecordingModel()
     agent = agent_tree.build_one_text_agent(model=model)
     agent.tools = []
@@ -237,3 +239,113 @@ def test_all_standard_text_passes_through_untouched() -> None:
         text,
         0,
     )
+
+
+# --- Field level (localhost acceptance run 4, 2026-09-29, S3) ----------------
+# The same EIN was sensitive under "Tax record" and standard as "Fein" under
+# "Legal entity information", so a Legal entity follow-up would have sent it
+# to the model. The item stays standard (One can still say the trade name);
+# the identifier field inside it never reaches the model.
+
+EIN = "12-3456789"
+TRADE_NAME = "Acme Coffee Roasters"
+LEGAL_SHARED = "\n".join(
+    [
+        f"- Legal entity information > entity fein: {EIN}",
+        f"- Legal entity information > trade name dba: {TRADE_NAME}",
+        "- Legal entity information > entity type: C_CORP",
+    ]
+)
+
+
+def _legal_bundle() -> dict[str, Any]:
+    item = {
+        "requestId": "r-legal",
+        "label": "Legal entity information",
+        "sensitivity": "standard",
+        "status": "granted",
+    }
+    return {
+        "bundleId": BUNDLE,
+        "personRef": "person-ref",
+        "cancelled": False,
+        "items": [item],
+        "progress": {"outcome": "granted", "fields": [dict(item)]},
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_ein_inside_a_standard_legal_entity_item_never_reaches_the_model(
+    monkeypatch,
+) -> None:
+    read = await _model_request_for_answer_turn(monkeypatch, _legal_bundle(), LEGAL_SHARED)
+
+    assert EIN not in read
+    # The rest of the standard item still reaches the model.
+    assert TRADE_NAME in read
+    # The model knows the field exists, by its human name, and where it is shown.
+    assert "Legal entity information: sensitive field (Federal EIN)" in read
+    assert "Legal entity information (Federal EIN)" in read
+
+
+@pytest.mark.asyncio
+async def test_negative_control_without_the_field_rule_the_ein_arrives(monkeypatch) -> None:
+    monkeypatch.setattr(consent_continuation, "field_sensitivity", lambda *_a, **_k: "standard")
+    read = await _model_request_for_answer_turn(monkeypatch, _legal_bundle(), LEGAL_SHARED)
+    assert EIN in read
+
+
+def test_an_identifier_shaped_value_is_stripped_under_any_key() -> None:
+    text = "\n".join(
+        [
+            "- Food preferences > note: SSN 123-45-6789 for the reservation",
+            f"- Food preferences > favorite restaurant: {RESTAURANT}",
+        ]
+    )
+    out, count = strip_sensitive_shared_information(text, {"Food preferences": "standard"})
+    assert count == 1
+    assert "123-45-6789" not in out
+    assert f"favorite restaurant: {RESTAURANT}" in out
+
+
+# --- R4: mixed standard plus sensitive (localhost acceptance run 4) ----------
+# One answered "No 2025 federal tax refund information was shared" while the
+# tax item sat in the secure card. The instruction the model reads must name
+# the sensitive items as shared-but-hidden and forbid "was not shared".
+
+
+@pytest.mark.asyncio
+async def test_a_mixed_answer_names_the_hidden_items_as_shared_in_the_secure_card(
+    monkeypatch,
+) -> None:
+    read = await _model_request_for_answer_turn(monkeypatch)
+
+    assert (
+        "Shared with the person but hidden from you, with values only in the secure card "
+        "above: Tax record (Filing year, Adjusted gross income, Filing status)."
+    ) in read
+    assert "Never say that information was not shared" in read
+    assert AGI not in read and FILING_STATUS not in read
+    assert RESTAURANT in read
+
+
+@pytest.mark.asyncio
+async def test_an_all_standard_answer_names_nothing_as_hidden(monkeypatch) -> None:
+    food = {
+        "requestId": "r-food",
+        "label": "Food preferences",
+        "sensitivity": "standard",
+        "status": "granted",
+    }
+    bundle = {
+        "bundleId": BUNDLE,
+        "personRef": "person-ref",
+        "cancelled": False,
+        "items": [food],
+        "progress": {"outcome": "granted", "fields": [dict(food)]},
+    }
+    read = await _model_request_for_answer_turn(
+        monkeypatch, bundle, f"- Food preferences > favorite restaurant: {RESTAURANT}"
+    )
+    assert "hidden from you" not in read
+    assert RESTAURANT in read

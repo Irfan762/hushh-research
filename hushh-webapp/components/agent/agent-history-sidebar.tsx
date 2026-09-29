@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Unplug as PlugIcon,
   CheckIcon as Check,
@@ -70,6 +70,8 @@ type AgentHistorySidebarProps = {
   onGetApp?: (trigger: HTMLButtonElement) => void;
   /** Whether the Get the app prompt is showing, for its control's state. */
   getAppOpen?: boolean;
+  /** Feed-style background activity, kept separate from conversation search. */
+  driveActivity?: ReactNode;
   onCreateNew: () => void;
   onSelectConversation: (conversationId: string) => void;
   onRenameConversation: (conversationId: string, title: string) => Promise<void> | void;
@@ -180,6 +182,7 @@ export function AgentHistorySidebar({
   onOpenConnectors,
   onGetApp,
   getAppOpen = false,
+  driveActivity,
   onCreateNew,
   onSelectConversation,
   onRenameConversation,
@@ -610,6 +613,8 @@ export function AgentHistorySidebar({
 
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2.5 pb-3 pt-0.5 scrollbar-thin scrollbar-thumb-black/10 dark:scrollbar-thumb-white/10 scrollbar-track-transparent">
           {railMode ? <div className="h-2" aria-hidden="true" /> : null}
+
+          {!railMode && surface === "one" ? driveActivity : null}
 
           {loading ? (
             <div className="space-y-2 py-2" aria-label="Loading chats" role="status">

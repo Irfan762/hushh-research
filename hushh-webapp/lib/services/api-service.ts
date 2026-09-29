@@ -55,6 +55,7 @@ import type {
   ConsentPendingLoadSurface,
 } from "@/lib/observability/events";
 import { resolveRouteId } from "@/lib/observability/route-map";
+import { resolveAppEnvironment } from "@/lib/app-env";
 import { resolveRuntimeBackendUrl } from "@/lib/runtime/settings";
 import { shouldSkipFirstWelcomeForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
@@ -1480,8 +1481,13 @@ export class ApiService {
    *
    * Web: hits Next.js proxy route `/api/app-config/review-mode`
    * Native: hits backend directly (API_BASE points at backend)
+   *
+   * A production build never asks. Review mode on production is backend-only:
+   * the App Store reviewer signs in like anyone else with a dedicated account,
+   * so no reviewer affordance may render and the backend refuses regardless.
    */
   static async getAppReviewModeConfig(): Promise<{ enabled: boolean }> {
+    if (resolveAppEnvironment() === "production") return { enabled: false };
     try {
       const response = await apiFetch("/api/app-config/review-mode", {
         method: "GET",
@@ -1661,12 +1667,16 @@ export class ApiService {
 
   /**
    * Request a backend-minted Firebase custom token for reviewer login.
-   * Only available when app-review mode is enabled server-side.
+   * Only available when app-review mode is enabled server-side, and never
+   * from a production build (the backend refuses there too).
    */
   static async createAppReviewModeSession(
     subject: "reviewer" = "reviewer",
     options?: { smokePassphrase?: string | null; reviewerUid?: string | null },
   ): Promise<{ token: string }> {
+    if (resolveAppEnvironment() === "production") {
+      throw new Error("Reviewer login unavailable");
+    }
     const identityKey = `${subject}:${options?.reviewerUid ?? "default"}`;
     const existing = this.appReviewModeSessions.get(identityKey);
     if (existing) return existing;

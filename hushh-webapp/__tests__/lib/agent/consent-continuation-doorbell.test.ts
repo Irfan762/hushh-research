@@ -23,7 +23,6 @@ vi.mock("@/lib/services/one-kyc-client-zk-service", () => ({ OneKycClientZkServi
 } }));
 
 import {
-  accessWatchDelayMs,
   claimConsentContinuation,
   clearSentInformationRequests,
   collectOutgoingRequestCards,
@@ -34,7 +33,6 @@ import {
   markConsentContinuationUnavailable,
   mergeServerRedactionFlags,
   prepareConsentContinuation,
-  startAccessEndedWatch,
   tagAnswersFromLiveAccess,
   informationRequestPhase,
   isConsentContinuationArmed,
@@ -60,6 +58,19 @@ import {
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
 import { parseConsentAccess } from "@/lib/services/agent-chat-client";
+import {
+  CONSENT_READ_CONCURRENCY,
+  CONSENT_READ_SLOT_TIMEOUT_MS,
+  readInformationRequest,
+  subscribeInformationRequest,
+} from "@/lib/consent/information-request-reads";
+import {
+  LIVE_ACCESS_FAST_WINDOW_MS,
+  liveAccessDelayMs,
+  liveAccessWatchSnapshot,
+  wakeLiveAccessWatch,
+  watchLiveAccess,
+} from "@/lib/consent/live-access-watch";
 
 const OWNER = "owner-1";
 const BUNDLE_A = "0f0e0d0c-0b0a-4908-8706-050403020100";
@@ -518,6 +529,53 @@ describe("continuation answers and access ended", () => {
     expect(tagAnswersFromLiveAccess({ messages: tagged, bundleId: BUNDLE_A, tags })).toBe(tagged);
   });
 
+  // Run 4 (P1c): stopping Food blanked a still-live Events request card and
+  // its answers in the same chat, all labelled "Food preferences".
+  it("with two requests in one chat, hides only what came from the one that ended", () => {
+    const askCard = (id: string) => ({ id, role: "assistant" as const, text: "I'll ask Kushal. Here's what I'd request:",
+      structuredExperiences: [{ experience: { type: "one.scope_discovery.v1" as const } }] });
+    const messages = [
+      cardMessage(BUNDLE_A),
+      { id: "chip-a", role: "user" as const, kind: "selection" as const, text: "Consent approved", consentBundleId: BUNDLE_A },
+      { id: "answer-a", role: "assistant" as const, text: "Nopa", consentBundleId: BUNDLE_A },
+      { id: "ask-a", role: "user" as const, text: "And dessert?" },
+      { id: "follow-up-a", role: "assistant" as const, text: "Tartine, after Nopa" },
+      { id: "ask-events", role: "user" as const, text: "What events is Kushal going to?" },
+      askCard("events-ask-card"),
+      cardMessage(BUNDLE_B),
+      { id: "chip-b", role: "user" as const, kind: "selection" as const, text: "Consent approved", consentBundleId: BUNDLE_B },
+      { id: "answer-b", role: "assistant" as const, text: "The jazz night on Friday" },
+      { id: "ask-b", role: "user" as const, text: "What time?" },
+      { id: "follow-up-b", role: "assistant" as const, text: "8pm" },
+    ];
+    const continued = { [BUNDLE_A]: "granted", [BUNDLE_B]: "granted" };
+    const tagsOf = (list: typeof messages) =>
+      tagConsentContinuationMessages({ messages: list, cards: collectOutgoingRequestCards(list), continued });
+
+    // Food stops while Events is still live.
+    const tagged = tagAnswersFromLiveAccess({
+      messages, bundleId: BUNDLE_A, tags: tagsOf(messages), liveOutcomes: { [BUNDLE_A]: "revoked", [BUNDLE_B]: "granted" },
+    });
+    const tags = tagsOf(tagged);
+    const hidden = redactedConsentAnswers({ tags, liveOutcomes: { [BUNDLE_A]: "revoked", [BUNDLE_B]: "granted" } });
+    expect([...hidden].sort()).toEqual(["answer-a", "follow-up-a"]);
+    // Events' ask card, its request card and every Events answer stay, untouched.
+    for (const id of ["events-ask-card", `card-${BUNDLE_B}`, "answer-b", "follow-up-b"]) {
+      expect(tagged.find((message) => message.id === id)?.consentBundleId).not.toBe(BUNDLE_A);
+    }
+    // The hidden answers carry Food's own tag, so they read Food's labels.
+    expect([...hidden].map((id) => tags.get(id)?.bundleId)).toEqual([BUNDLE_A, BUNDLE_A]);
+
+    // Control: with Events ended too, nothing live bounds Food's window any
+    // more, so the untagged Events follow-ups hide as well.
+    const bothEnded = tagAnswersFromLiveAccess({
+      messages, bundleId: BUNDLE_A, tags: tagsOf(messages), liveOutcomes: { [BUNDLE_A]: "revoked", [BUNDLE_B]: "revoked" },
+    });
+    expect(bothEnded.find((message) => message.id === "follow-up-b")?.consentBundleId).toBe(BUNDLE_A);
+    // Even then a request card is never taken for an answer.
+    expect(bothEnded.find((message) => message.id === "events-ask-card")?.consentBundleId).toBeUndefined();
+  });
+
   it("wires the access watch to hide every answer and re-read the server's flags when sharing ends", () => {
     const workspace = readFileSync(path.join(process.cwd(), "components/agent/agent-chat-workspace.tsx"), "utf8");
     expect(workspace).toContain("if (isAccessEndedOutcome(outcome)) hideAnswersFromEndedAccess(bundleId, token);");
@@ -689,55 +747,124 @@ describe("a request whose receipt was not recorded", () => {
   });
 });
 
-describe("watching live access for its end", () => {
+describe("watching live access for its end: one shared watch", () => {
+  const bundleFor = (bundleId: string, status: "granted" | "revoked" = "granted") => ({
+    bundleId, personRef: "person-kushal", purpose: "Plan dinner", durationSeconds: 604_800, cancelled: false,
+    items: [{ requestId: `r-${bundleId}`, scopeRef: "s1", label: "Food preferences", sensitivity: "standard", status }],
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-09-28T10:00:00Z"));
+    services.getInformationRequest.mockReset();
+    services.getInformationRequest.mockImplementation(async ({ bundleId }: { bundleId: string }) => bundleFor(bundleId));
   });
-  afterEach(() => vi.useRealTimers());
+  afterEach(() => {
+    clearSentInformationRequests(null);
+    vi.useRealTimers();
+  });
 
-  it("checks about every 10s for as long as it is visible, with no backoff", () => {
+  /** Seconds (from start) at which `bundleId` was read over the first `untilMs`. */
+  async function readTimes(bundleId: string, untilMs: number, startedAt: number): Promise<number[]> {
     const times: number[] = [];
+    services.getInformationRequest.mockImplementation(async (input: { bundleId: string }) => {
+      if (input.bundleId === bundleId) times.push((Date.now() - startedAt) / 1000);
+      return bundleFor(input.bundleId);
+    });
+    await vi.advanceTimersByTimeAsync(untilMs);
+    return times;
+  }
+
+  // Run 4 (P1a): the request card took 20-26s to read "Access ended".
+  it("checks about every 5s for the first minute after an answer, then every 10s", async () => {
     const startedAt = Date.now();
-    const watch = startAccessEndedWatch({ check: () => times.push((Date.now() - startedAt) / 1000), isVisible: () => true, listen: false });
-    watch.wake();
-    vi.advanceTimersByTime(600_000);
-    watch.stop();
-    expect(times.slice(0, 4)).toEqual([0, 10, 20, 30]);
-    const gaps = times.slice(1).map((t, index) => t - times[index]!);
-    expect(new Set(gaps)).toEqual(new Set([10]));
-    expect(times).toHaveLength(61);
-    expect(accessWatchDelayMs()).toBe(10_000);
+    const release = watchLiveAccess({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" });
+    const times = await readTimes(BUNDLE_A, 120_000, startedAt);
+    release();
+    expect(times.filter((t) => t <= 60)).toEqual([5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]);
+    expect(times.filter((t) => t > 60)).toEqual([70, 80, 90, 100, 110, 120]);
+    expect(liveAccessDelayMs(0)).toBe(5_000);
+    expect(liveAccessDelayMs(LIVE_ACCESS_FAST_WINDOW_MS)).toBe(10_000);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("negative control: the old one-minute fast window then 60s backoff misses a stop by a minute", () => {
-    // The previous schedule: six 10s checks after a wake, then 20s, 30s, 60s.
-    // Measured 2026-09-28, a stop about 100s after the answer took 60s to show.
-    const oldDelay = (checks: number) => checks < 6 ? 10_000 : [20_000, 30_000, 60_000][Math.min(checks - 6, 2)]!;
-    const times: number[] = [0];
-    for (let checks = 0; times.at(-1)! < 600; checks += 1) times.push(times.at(-1)! + oldDelay(checks) / 1000);
-    const gaps = times.slice(1).map((t, index) => t - times[index]!);
-    expect(Math.max(...gaps)).toBe(60);
-    expect(() => expect(new Set(gaps)).toEqual(new Set([10]))).toThrow();
+  // Run 4 (R3): the same bundle was read two to four times per tick, once by
+  // each surface that showed it.
+  it("reads each bundle once per tick however many surfaces watch it", async () => {
+    const startedAt = Date.now();
+    const releases = [
+      watchLiveAccess({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" }), // the chat
+      watchLiveAccess({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" }), // the request card
+      watchLiveAccess({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" }), // the secure card
+      watchLiveAccess({ bundleId: BUNDLE_B, vaultOwnerToken: "owner-token" }),
+    ];
+    const heard: string[] = [];
+    const unsubscribe = subscribeInformationRequest(BUNDLE_A, (bundle) => heard.push(bundle.bundleId));
+    const times = await readTimes(BUNDLE_A, 60_000, startedAt);
+    expect(times).toHaveLength(12);
+    const calls = services.getInformationRequest.mock.calls.map(([input]) => (input as { bundleId: string }).bundleId);
+    expect(calls.filter((id) => id === BUNDLE_B)).toHaveLength(12);
+    // Every surface hears every reading.
+    expect(heard).toHaveLength(12);
+    // Releasing two of three holders keeps the bundle watched; the last one stops it.
+    releases[0]!(); releases[1]!();
+    expect(liveAccessWatchSnapshot().bundles).toContain(BUNDLE_A);
+    releases[2]!(); releases[3]!();
+    expect(liveAccessWatchSnapshot().bundles).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    unsubscribe();
   });
 
-  it("pauses while hidden and checks at once when a push or event wakes it", () => {
-    let visible = true;
-    const check = vi.fn();
-    const watch = startAccessEndedWatch({ check, isVisible: () => visible, listen: false });
-    watch.wake();
-    expect(check).toHaveBeenCalledTimes(1);
-    visible = false;
-    vi.advanceTimersByTime(600_000);
-    expect(check).toHaveBeenCalledTimes(1);
-    visible = true;
-    watch.wake();
-    expect(check).toHaveBeenCalledTimes(2);
-    vi.advanceTimersByTime(10_000);
-    expect(check).toHaveBeenCalledTimes(3);
-    watch.stop();
-    vi.advanceTimersByTime(600_000);
-    expect(check).toHaveBeenCalledTimes(3);
+  it("negative control: one watch per surface reads the same bundle three times per tick", async () => {
+    // What each surface did on its own before: a private 10s timer and read.
+    const ids = [1, 2, 3].map(() => setInterval(() => {
+      void services.getInformationRequest({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" });
+    }, 10_000));
+    await vi.advanceTimersByTimeAsync(60_000);
+    ids.forEach(clearInterval);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(18);
+  });
+
+  it("pauses while hidden and checks at once when woken", async () => {
+    let visibility: DocumentVisibilityState = "visible";
+    const spy = vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
+    const release = watchLiveAccess({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token" });
+    visibility = "hidden";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(services.getInformationRequest).not.toHaveBeenCalled();
+    visibility = "visible";
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(1);
+    // A push or live event wakes it; its listeners share the one read.
+    services.getInformationRequest.mockImplementation(() => new Promise(() => undefined));
+    wakeLiveAccessWatch();
+    void readInformationRequest({ bundleId: BUNDLE_A, vaultOwnerToken: "owner-token", joinWithinMs: 250 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(2);
+    release();
+    spy.mockRestore();
+  });
+
+  it("caps reads app-wide and gives a hung read's slot back", async () => {
+    const pending: Array<(value: unknown) => void> = [];
+    services.getInformationRequest.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+    const bundles = ["a", "b", "c", "d"].map((letter) => `${letter}0000000-0000-4000-8000-000000000000`);
+    for (const bundleId of bundles) void readInformationRequest({ bundleId, vaultOwnerToken: "owner-token" }).catch(() => undefined);
+    // The same bundle twice: one request.
+    void readInformationRequest({ bundleId: bundles[0]!, vaultOwnerToken: "owner-token" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(CONSENT_READ_CONCURRENCY);
+    pending[0]!(bundleFor(bundles[0]!));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(3);
+    // The second read hangs: after the slot timeout the last one still starts.
+    await vi.advanceTimersByTimeAsync(CONSENT_READ_SLOT_TIMEOUT_MS);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(4);
+    // A re-check after decrypting never shares a read already on the wire.
+    void readInformationRequest({ bundleId: bundles[3]!, vaultOwnerToken: "owner-token", fresh: true }).catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(CONSENT_READ_SLOT_TIMEOUT_MS);
+    expect(services.getInformationRequest).toHaveBeenCalledTimes(5);
   });
 
   it("words the shared chip in its ended form", () => {
@@ -830,5 +957,34 @@ describe("sensitive information never reaches the model (CONTRACT-2 C7)", () => 
     ]);
     expect(text).not.toContain("85000");
     expect(text).toContain("Dinner notes: 4 fields");
+  });
+
+  // Localhost run 4 (S3): the EIN was standard as "Fein" under "Legal entity",
+  // so a Legal entity follow-up sent it to the model. Field level, it leaves
+  // as its name only, in the exact line the server's strip writes and reads back.
+  it("sends an identifier field inside a standard item as its name only", () => {
+    const text = formatSharedInformationForAgent([{
+      requestId: "r1", label: "Legal entity", sensitivity: "standard",
+      data: { entity: { fein: "12-3456789", trade_name_dba: "Acme Coffee", notes: "Card 4111 1111 1111 1111 on file" } },
+    }]);
+    expect(text).not.toContain("12-3456789");
+    expect(text).not.toContain("4111");
+    expect(text).toContain("- Legal entity > entity > trade name dba: Acme Coffee");
+    expect(text).toContain("- Legal entity: sensitive fields (Federal EIN, Notes). Shown to the person in "
+      + "the secure card on their device; the values are not shared with you.");
+  });
+
+  it("withholds a field the server's fields[] names sensitive, even when the rule would not", () => {
+    const data = { registered_agent: "Jordan Lee", trade_name: "Acme Coffee" };
+    const marked = formatSharedInformationForAgent([{
+      requestId: "r1", label: "Legal entity", sensitivity: "standard", data,
+      fields: [{ name: "Registered agent", sensitivity: "sensitive" }, { name: "Trade name", sensitivity: "standard" }],
+    }]);
+    expect(marked).not.toContain("Jordan Lee");
+    expect(marked).toContain("- Legal entity: sensitive field (Registered agent).");
+    expect(marked).toContain("Acme Coffee");
+    // Negative control: without fields[], an ordinary field is sent as before.
+    expect(formatSharedInformationForAgent([{ requestId: "r1", label: "Legal entity", sensitivity: "standard", data }]))
+      .toContain("Jordan Lee");
   });
 });

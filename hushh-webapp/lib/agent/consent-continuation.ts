@@ -21,6 +21,8 @@ import {
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
 import type { AgentStructuredExperience } from "@/lib/agent/agui-structured-experiences";
+import { resetInformationRequestReads } from "@/lib/consent/information-request-reads";
+import { resetLiveAccessWatch } from "@/lib/consent/live-access-watch";
 import {
   getAgentChatConsentOutcomes,
   type AgentChatConsentContinuation,
@@ -184,6 +186,11 @@ export function clearSentInformationRequests(keepOwnerId?: string | null): void 
   }
   for (const key of [...phases.keys()]) {
     if (!keepOwnerId || !key.startsWith(`${keepOwnerId}:`)) phases.delete(key);
+  }
+  if (!keepOwnerId) {
+    // Signed out: nothing is read or watched for anyone any more.
+    resetInformationRequestReads();
+    resetLiveAccessWatch();
   }
   emit();
   emitPhase();
@@ -534,6 +541,14 @@ export function redactedConsentAnswers(input: {
   return hidden;
 }
 
+/** A message that carries a request card (an ask, or a sent request) belongs to that request. */
+function carriesRequestCard(message: TranscriptMessage): boolean {
+  return (message.structuredExperiences ?? []).some((entry) => {
+    const type = (entry.experience as { type?: string }).type;
+    return type === "one.information_request_review.v1" || type === "one.scope_discovery.v1";
+  });
+}
+
 /**
  * When shared access ends, every answer One gave while it was live is derived
  * from it, including a later follow-up the person typed themselves ("What's
@@ -541,26 +556,37 @@ export function redactedConsentAnswers(input: {
  * and a reload hides them; a live chat never received that tag, so the
  * follow-up kept the shared value on screen until a reload (2026-09-28, run 2).
  *
- * This tags, in place, every assistant message after the bundle's shared chip
- * that has no bundle of its own, stopping at a later chip for the same bundle
- * (its "Access ended" continuation, after which nothing was shared). The same
- * rule the server applies, so the live chat and a reload agree.
+ * This tags, in place, the untagged assistant messages after the bundle's
+ * shared chip, and only up to the next boundary:
+ *   * a later chip for the same bundle (its "Access ended" continuation, after
+ *     which nothing was shared);
+ *   * the shared chip of a DIFFERENT bundle whose access is still live: from
+ *     there on the chat answers from that request, not this one.
+ * A message carrying a request card is never tagged: it is the other
+ * request's own card. Measured 2026-09-29 (run 4, P1c): without these bounds,
+ * stopping Food blanked a still-live Events request card and its answers, all
+ * labelled "Food preferences".
  */
 export function tagAnswersFromLiveAccess<T extends TranscriptMessage>(input: {
   messages: T[];
   bundleId: string;
   tags: ReadonlyMap<string, ConsentTranscriptTag>;
+  /** Live outcomes by bundle; a bundle not listed is live while its chip says shared. */
+  liveOutcomes?: Readonly<Record<string, ConsentOutcome | null | undefined>>;
 }): T[] {
   const bundleId = input.bundleId.toLowerCase();
   let inside = false;
   let changed = false;
   const out = input.messages.map((message) => {
     const tag = input.tags.get(message.id);
-    if (tag?.role === "chip" && tag.bundleId === bundleId) {
-      inside = isSharedOutcome(tag.continuedOutcome);
+    if (tag?.role === "chip") {
+      if (tag.bundleId === bundleId) inside = isSharedOutcome(tag.continuedOutcome);
+      else if (isSharedOutcome(tag.continuedOutcome) && !isAccessEndedOutcome(input.liveOutcomes?.[tag.bundleId])) {
+        inside = false;
+      }
       return message;
     }
-    if (!inside || message.role !== "assistant" || message.consentBundleId) return message;
+    if (!inside || message.role !== "assistant" || message.consentBundleId || carriesRequestCard(message)) return message;
     changed = true;
     return { ...message, consentBundleId: bundleId };
   });
@@ -706,83 +732,9 @@ export function foldSubmittedRequestReceipts<T extends FoldableMessage>(messages
   return changed ? out.filter((_, index) => !dropped.has(index)) : messages;
 }
 
-// --- Watching live access for its end ---------------------------------------
-
-/**
- * About every 10s for as long as the access is live and the chat is visible,
- * with no backoff: a stop to sharing must reach the chat within seconds
- * (measured 2026-09-28: a 60s backoff made it take 60s). Hidden is paused.
- */
-export const ACCESS_WATCH_INTERVAL_MS = 10_000;
-
-/** The wait before the next check while the chat is visible. */
-export function accessWatchDelayMs(): number {
-  return ACCESS_WATCH_INTERVAL_MS;
-}
-
-export type AccessEndedWatch = {
-  /** Check now and restart the 10s cadence from here (a push, a live event). */
-  wake: () => void;
-  stop: () => void;
-};
-
-/**
- * Re-reads live shared access about every 10s while the chat is visible, so a
- * stop to sharing reaches the chat in seconds, not at the next page event.
- * Paused (no timer at all) while hidden; becoming visible or focused checks at
- * once. Only the cadence lives here; `check` is the caller's ledger read.
- */
-export function startAccessEndedWatch(input: {
-  check: () => void;
-  isVisible: () => boolean;
-  /** Listen to the page's own visibility and focus. Defaults to true. */
-  listen?: boolean;
-}): AccessEndedWatch {
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let stopped = false;
-  const clear = () => {
-    if (timer !== null) clearTimeout(timer);
-    timer = null;
-  };
-  const schedule = () => {
-    clear();
-    if (stopped || !input.isVisible()) return;
-    timer = setTimeout(tick, accessWatchDelayMs());
-  };
-  function tick() {
-    timer = null;
-    if (stopped || !input.isVisible()) return;
-    input.check();
-    schedule();
-  }
-  const wake = () => {
-    if (stopped) return;
-    if (input.isVisible()) input.check();
-    schedule();
-  };
-  const onVisibility = () => {
-    if (stopped) return;
-    if (input.isVisible()) wake();
-    else clear();
-  };
-  const listen = input.listen ?? true;
-  if (listen && typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", onVisibility);
-  }
-  schedule();
-  return {
-    wake,
-    stop: () => {
-      stopped = true;
-      clear();
-      if (listen && typeof document !== "undefined") {
-        document.removeEventListener("visibilitychange", onVisibility);
-        window.removeEventListener("focus", onVisibility);
-      }
-    },
-  };
-}
+// Watching live access for its end lives in `lib/consent/live-access-watch.ts`:
+// one app-wide timer that the chat, the request card and the secure card all
+// share, so a bundle is read once per tick however many surfaces show it.
 
 // --- The follow-up turn -----------------------------------------------------
 

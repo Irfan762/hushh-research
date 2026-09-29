@@ -6,6 +6,7 @@ const state = vi.hoisted(() => ({
   user: { uid: "owner-a", getIdToken: vi.fn() },
   token: "synthetic-owner-token" as string | null,
   overview: vi.fn(),
+  startOAuthConnect: vi.fn(),
   documents: vi.fn(),
   liveBackground: vi.fn(),
   setLiveBackground: vi.fn(),
@@ -50,6 +51,7 @@ vi.mock("@/lib/profile/gmail-connector-store", () => ({
 vi.mock("@/lib/services/external-connector-service", () => ({
   ExternalConnectorService: {
     overview: state.overview,
+    startOAuthConnect: state.startOAuthConnect,
     documents: state.documents,
     liveBackground: state.liveBackground,
     setLiveBackground: state.setLiveBackground,
@@ -103,6 +105,7 @@ describe("supported connector catalog", () => {
     state.user.uid = "owner-a";
     state.token = "synthetic-owner-token";
     state.overview.mockReset().mockResolvedValue(overview());
+    state.startOAuthConnect.mockReset();
     state.documents.mockReset().mockResolvedValue([]);
     state.liveBackground.mockReset().mockResolvedValue(false);
     state.setLiveBackground.mockReset().mockResolvedValue(undefined);
@@ -192,6 +195,49 @@ describe("supported connector catalog", () => {
     expect(screen.getByRole("button", { name: "Connect Drive" })).toBeEnabled();
     expect(screen.getByText("You can choose files after connecting. One cannot search your entire Drive with this access.")).toBeInTheDocument();
     expect(screen.queryByText("Drive sign-in is not configured here. Try again later.")).not.toBeInTheDocument();
+  });
+
+  it("cancels a pending web Drive OAuth start and closes the blank popup", async () => {
+    state.overview.mockResolvedValue({
+      connectors: [{ ...catalogItem, connectorId: "google_drive", available: true }],
+      features: {
+        connections_panel_v2: true,
+        google_drive_connection: true,
+        google_drive_picker: true,
+      },
+    });
+    const popupClosed = vi.fn();
+    const popup = {
+      closed: false,
+      close: popupClosed,
+      document: { title: "", body: { textContent: "" } },
+      location: { replace: vi.fn() },
+      sessionStorage: window.sessionStorage,
+    } as unknown as Window;
+    vi.spyOn(window, "open").mockReturnValue(popup);
+    let startSignal: AbortSignal | undefined;
+    state.startOAuthConnect.mockImplementation(
+      ({ signal }: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          startSignal = signal;
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+
+    render(panel());
+    fireEvent.click(await screen.findByRole("button", { name: "Google Drive" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Drive" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel sign-in" }));
+
+    expect(startSignal?.aborted).toBe(true);
+    expect(popupClosed).toHaveBeenCalled();
+    expect(popup.location.replace).not.toHaveBeenCalled();
+    expect(await screen.findByText("Drive connection cancelled.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
   });
 
   it("omits unsupported catalog placeholders even when the registry returns them", async () => {

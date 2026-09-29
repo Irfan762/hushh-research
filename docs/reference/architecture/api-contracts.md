@@ -231,9 +231,29 @@ it again before the text is stored: each line of an item whose
 `sensitivity` is `sensitive` (or missing) becomes
 `- <label>: N fields (<names>). Sensitive: shown to the person in the secure card on their device; the values are not shared with you.`,
 built from key names only, and a line no `standard` item claims is dropped.
+**Field level (2026-09-29).** A `standard` item is checked line by line with
+`hushh_mcp/consent/field_sensitivity.py` `field_sensitivity(key_path, value)`:
+an identifier-class key on the line's path (SSN, SIN, national id, tax id, TIN,
+EIN, FEIN, ITIN, passport, driver license, account or routing number, IBAN, card
+number, CVV, date of birth, government id numbers, security answers, anything
+secret-shaped) or an identifier-shaped value (an SSN, an EIN, a Luhn-valid card
+number, an IBAN, a credential string) removes that line and names the field in
+`- <label>: sensitive field(s) (<names>). Shown to the person in the secure card on their device; the values are not shared with you.`
+The rest of the item still reaches the model. Unknown keys in a standard item
+stay standard. The words, phrases and value patterns live in
+`contracts/consent/field-sensitivity.v1.json` (backend copy under
+`consent-protocol/contracts/consent/`), so the client applies the same rule
+before it builds `sharedInformation`. Measured cause: in localhost acceptance
+run 4 the same EIN was sensitive under "Tax record" and standard as "Fein" under
+"Legal entity information".
 It logs `one.consent_sensitive_stripped count=<lines>` (a count only). The
 turn's instruction names those items and tells One the values are in the secure
-card above, never to guess or restate them.
+card above, never to guess or restate them. Every outline the model's block
+carries is also listed in the instruction as shared but hidden
+(`Shared with the person but hidden from you, with values only in the secure card above: Tax record (Filing year, Refund).`),
+and One is told to answer the rest from the values and say those parts are in
+the secure card, never that they were not shared. A declined request's turn
+offers exactly one concrete alternative (a narrower item, or asking later).
 `GET /api/one/agent-chat/history/{conversation_id}` returns `consentOutcomes`
 (`{bundleId: outcome}` for bundles already continued), `consentAccessEnded`
 (`{bundleId: "revoked"|"expired"}`), and restores the follow-up message as a
@@ -272,7 +292,14 @@ per turn. The status chip carries `consentBundleId` (and `consentAccessEnded`).
 #### Request progress (CONTRACT C1)
 
 `GET /api/one/information-requests/{bundle_id}` (VAULT_OWNER, requester-bound)
-keeps `bundleId, personRef, purpose, durationSeconds, cancelled, items` and adds:
+is polled while a request is open, so it reads three indexed queries whatever
+the item count: the bundle joined with its items, the items' state transitions
+(each item's status is its latest transition, the same rows `progress` is built
+from), and the owner-scoped delivery records (`internal_access_events` by
+`(user_id, action)`). It loads no catalog, profile or export. Measured
+2026-09-29 against UAT through the local proxy: 5 to 6 round trips (growing with
+item count) and 1.29 s to 1.73 s median before; 3 round trips and 0.84 s after.
+It keeps `bundleId, personRef, purpose, durationSeconds, cancelled, items` and adds:
 
 ```json
 "progress": {
@@ -303,8 +330,22 @@ It is `sensitive` for the tax, financial or banking, identity or government-id,
 health or medical, and credentials domains (by registry key or by the words of
 a dynamic domain or path), for any scope a PKM tag (`restricted`,
 `confidential`, `sensitive`) marks, including a wildcard over a tagged branch,
+for any scope whose path holds an identifier-class key (`attr.legal_entity.entity.fein`),
 and for anything that is not a well-formed `attr.<domain>` scope. Everything
 else is `standard`. A stored `standard` never downgrades it.
+
+Labels: a stored label that is mechanical ("Tax Record Domain", "Fein",
+"Naics code") is replaced. A whole dynamic domain whose name is already a
+specific thing reads as that thing ("Tax record", "Legal entity"); a registry
+domain reads "Food & dining information". Field keys and enum values with a
+fixed human name ("Federal EIN", "Industry code (NAICS)", "C corporation") come
+from `contracts/consent/field-labels.v1.json`, which the secure card should
+read too. The requester-facing catalog drops record-keeping rows ("Schema",
+"Last updated", "Holdings is editable", "Connection count") the way it drops a
+record's schema fields, and "tax", "tax return", "refund", "irs" and "filing"
+reach a tax record by synonym; a question that says any of them never reaches
+a financial row by synonym alone (a tax question proposes the tax record, never
+Portfolio).
 
 #### Outcome doorbell: `information_request_updated` (CONTRACT C2)
 
@@ -365,7 +406,15 @@ history restores the message as a `selection` chip.
 current approvals other people gave this person: display names, item labels,
 bundle and request ids, purpose and expiry, plus `grantRef` (the request id),
 `sensitivity`, `fieldOutline` (field names from the owner's catalog, never
-values), `sharedAt`, `accessEndsAt` and `decryptable`. The consent ledger decides
+values), `fields` (`[{name, sensitivity}]`: every field of a sensitive item is
+sensitive, and an identifier field such as "Federal EIN" is sensitive inside a
+standard item), `sharedAt`, `accessEndsAt` and `decryptable`. A grant whose
+scope another live, openable grant from the same person covers is not listed
+separately (a request that asked for `attr.legal_entity.*` and
+`attr.legal_entity.entity.*` lists one item), and items sort by person, then
+label, then when shared, the same order the person page's `grants` use. The
+outline leaves out a record's schema fields ("Events kind") and record-keeping
+rows. The consent ledger decides
 what is current, so an item approved before its request was withdrawn is still
 listed, and an active grant that no request row names is swept in from the
 ledger with `bundleId: null, decryptable: false` (no existing path can open it).
@@ -381,8 +430,9 @@ person's own device.
   "kind": "one.shared_with_me_card.v1",
   "person": {"personRef": "...", "displayName": "Manish Sainani", "profilePath": "/people/<ref>"},
   "items": [{"grantRef": "<request id>", "requestId": "<request id>", "bundleId": "<uuid>|null",
-             "label": "Tax record information", "sensitivity": "sensitive|standard",
-             "fieldOutline": ["Filing year", "Refund"], "sharedAt": "iso|null",
+             "label": "Tax record", "sensitivity": "sensitive|standard",
+             "fieldOutline": ["Filing year", "Refund"],
+             "fields": [{"name": "Filing year", "sensitivity": "sensitive"}], "sharedAt": "iso|null",
              "accessEndsAt": "iso|null", "purpose": "...", "decryptable": true}],
   "decryptVia": "information_request_exports"
 }
@@ -405,8 +455,10 @@ continuation value from `nextCursor`. Invalid or cross-person cursors return
 `400`; out-of-range limits return `422`. Results order by bundle creation time
 descending, then bundle UUID descending, so tied timestamps remain stable.
 Each response has `bundles` and `nextCursor` (`null` at the end). A bundle has
-`bundleId`, `purpose`, `durationSeconds`, `createdAt`, `cancelled`, and
-`itemCount`. The count covers all stored items in that bundle, including bundles
+`bundleId`, `purpose`, `durationSeconds`, `createdAt`, `cancelled`,
+`itemCount`, and `itemLabels` (the items' human labels in request order, so the
+page names what was asked for instead of "2 information items"). The viewer
+profile's `requestHistory[].label` is the same human label. The count covers all stored items in that bundle, including bundles
 with more than 100 items. This is request correlation metadata, not consent or
 grant authority; individual grant status remains governed by the consent ledger.
 Concurrent inserts can appear ahead of an existing cursor and require a fresh

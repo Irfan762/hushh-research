@@ -2,9 +2,19 @@ import { isCurrentPersonExport } from "@/lib/consent/person-export-binding";
 import { projectGrantPayload } from "@/lib/consent/project-grant-payload";
 import { OneKycClientZkService } from "@/lib/services/one-kyc-client-zk-service";
 import {
-  PersonProfileService,
-  type InformationRequestBundle,
-} from "@/lib/services/person-profile-service";
+  readInformationRequest,
+  readInformationRequestExports,
+  readSharedWithMe,
+} from "@/lib/consent/information-request-reads";
+import type { InformationRequestBundle } from "@/lib/services/person-profile-service";
+import {
+  fieldSensitivity,
+  isNamedSensitiveField,
+  parseSharedFieldSensitivities,
+  sensitiveFieldNameSet,
+  type SharedFieldSensitivity,
+} from "@/lib/consent/field-sensitivity";
+import { knownFieldLabel } from "@/lib/consent/field-labels";
 
 /**
  * Contract C7. `sensitive` values are opened and shown on this device only;
@@ -18,6 +28,12 @@ export type OpenedPersonInformation = {
   data: Record<string, unknown>;
   /** Absent on a value built elsewhere; the label deny-list still applies. */
   sensitivity?: SharedSensitivity;
+  /**
+   * The server's per-field reading (C7, `fields[]`), when it sent one: an
+   * identifier field inside a standard item is sensitive. Without it the
+   * contract's key and value rules still apply to every field.
+   */
+  fields?: SharedFieldSensitivity[];
 };
 
 /**
@@ -117,7 +133,9 @@ export async function openGrantedPersonInformation(input: {
   isCurrent?: () => boolean;
 }): Promise<{ values: OpenedPersonInformation[]; expiresAtMs: number; endedRequestIds: string[] } | null> {
   const current = input.isCurrent ?? (() => true);
-  const bundle = await PersonProfileService.getInformationRequest({
+  // Shares a read already on the wire (the doorbell's, the access watch's):
+  // the re-check after decrypting below is the one that must be fresh.
+  const bundle = await readInformationRequest({
     bundleId: input.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
   });
@@ -142,7 +160,7 @@ export async function openGrantedPersonInformation(input: {
   });
   if (!current()) return null;
   if (!connector) throw new Error("Connection unavailable");
-  const exports = await PersonProfileService.getInformationRequestExports({
+  const exports = await readInformationRequestExports({
     bundleId: bundle.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
   });
@@ -165,17 +183,20 @@ export async function openGrantedPersonInformation(input: {
     });
     if (!current()) return null;
     const domain = input.domainFor?.(item.requestId);
+    const fields = parseSharedFieldSensitivities((item as { fields?: unknown }).fields);
     values.push({
       requestId: item.requestId,
       label: item.label,
       data: projectGrantPayload(payload, domain),
       sensitivity: itemSensitivity(bundle, item, domain),
+      ...(fields.length ? { fields } : {}),
     });
     expiresAtMs = Math.min(expiresAtMs, exact.encryptedExport.export_envelope.aad.expires_at_ms);
   }
-  const latest = await PersonProfileService.getInformationRequest({
+  const latest = await readInformationRequest({
     bundleId: bundle.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
+    fresh: true,
   });
   if (!current()) return null;
   if (
@@ -201,9 +222,13 @@ export type SharedItemRef = {
   domain?: string | null;
 };
 
+/**
+ * `bundleId` and `requestId` name what the item resolved to, so the card can
+ * watch that access for its end even when the item named no bundle itself.
+ */
 export type SharedItemOpenResult =
-  | { key: string; state: "open"; value: OpenedPersonInformation; expiresAtMs: number }
-  | { key: string; state: "ended" }
+  | { key: string; state: "open"; value: OpenedPersonInformation; expiresAtMs: number; bundleId: string; requestId: string }
+  | { key: string; state: "ended"; bundleId?: string; requestId?: string }
   | { key: string; state: "unavailable" };
 
 /**
@@ -229,7 +254,7 @@ export async function openSharedItems(input: {
     else unresolved.push(item);
   }
   if (unresolved.length) {
-    const shares = (await PersonProfileService.listSharedWithMe({ vaultOwnerToken: input.vaultOwnerToken }))
+    const shares = (await readSharedWithMe({ vaultOwnerToken: input.vaultOwnerToken }))
       .filter((share) => share.personRef === input.subjectRef);
     if (!current()) return null;
     for (const item of unresolved) {
@@ -263,9 +288,9 @@ export async function openSharedItems(input: {
         const requestId = requestIdFor(item);
         const value = opened.values.find((entry) => entry.requestId === requestId);
         results.set(item.key, value
-          ? { key: item.key, state: "open", value, expiresAtMs: opened.expiresAtMs }
+          ? { key: item.key, state: "open", value, expiresAtMs: opened.expiresAtMs, bundleId, requestId }
           : opened.endedRequestIds.includes(requestId)
-            ? { key: item.key, state: "ended" }
+            ? { key: item.key, state: "ended", bundleId, requestId }
             : { key: item.key, state: "unavailable" });
       }
     } catch {
@@ -282,26 +307,72 @@ function humanKey(key: string): string {
   return key.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function appendLines(lines: string[], value: unknown, path: string[]): void {
+/**
+ * "Label > path: value" lines for one standard item. A field whose key (or a
+ * key above it) is identifier-class, whose value is identifier-shaped, or
+ * that the server's `fields[]` names sensitive, is withheld and its name
+ * collected instead (C7, field level): the EIN inside "Legal entity" never
+ * leaves this device, while "Trade name" still reaches One.
+ */
+function appendLines(
+  lines: string[],
+  value: unknown,
+  path: string[],
+  keys: string[],
+  withheld: { names: ReadonlySet<string>; hidden: string[] },
+): void {
   if (value === null || value === undefined || value === "") return;
+  const leaf = (text: string) => {
+    const field = [...keys].reverse().find((key) => !/^\d+$/.test(key)) ?? "";
+    if (fieldSensitivity(keys, text) === "standard" && !isNamedSensitiveField(withheld.names, field, humanKey(field))) {
+      lines.push(`- ${path.join(" > ")}: ${text}`);
+      return;
+    }
+    withheld.hidden.push(withheldFieldName(field));
+  };
   if (Array.isArray(value)) {
     const scalars = value.filter((entry) => typeof entry !== "object" || entry === null);
     if (scalars.length === value.length) {
-      lines.push(`- ${path.join(" > ")}: ${scalars.map(String).join(", ")}`);
+      leaf(scalars.map(String).join(", "));
       return;
     }
-    value.forEach((entry, index) => appendLines(lines, entry, [...path, String(index + 1)]));
+    value.forEach((entry, index) => appendLines(lines, entry, [...path, String(index + 1)], [...keys, String(index + 1)], withheld));
     return;
   }
   if (typeof value === "object") {
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
       // Internal bookkeeping keys are not part of what was shared.
       if (key.startsWith("_")) continue;
-      appendLines(lines, entry, [...path, humanKey(key)]);
+      appendLines(lines, entry, [...path, humanKey(key)], [...keys, key], withheld);
     }
     return;
   }
-  lines.push(`- ${path.join(" > ")}: ${String(value)}`);
+  leaf(String(value));
+}
+
+/** The server's outline-name shape (`_OUTLINE_NAME`); anything else goes unnamed. */
+const OUTLINE_NAME = /^[A-Za-z][A-Za-z &/-]{0,39}$/;
+
+/** `_field_name` in consent_continuation.py: the fixed label, else the key, capitalised. */
+function withheldFieldName(key: string): string {
+  const leaf = humanKey(key);
+  const name = knownFieldLabel(leaf) ?? (leaf ? leaf[0]!.toUpperCase() + leaf.slice(1) : "");
+  return OUTLINE_NAME.test(name) ? name : "";
+}
+
+/**
+ * The model's view of a standard item's identifier fields: names, never
+ * values. Byte-for-byte `sensitive_fields_line` in consent_continuation.py,
+ * so the server reads it back as the outline it would have written itself.
+ */
+export function sensitiveFieldsLine(label: string, names: readonly string[]): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, MAX_OUTLINE_NAMES);
+  const more = unique.length - shown.length;
+  const listing = shown.join(", ") + (more > 0 ? ` and ${more} more` : "");
+  const plural = unique.length !== 1 ? "s" : "";
+  return `- ${label}: sensitive field${plural} (${listing || "unnamed"}). Shown to the person in `
+    + "the secure card on their device; the values are not shared with you.";
 }
 
 /** Bookkeeping keys that name the record's structure, not a field in it. */
@@ -388,8 +459,13 @@ export function isSensitiveSharedValue(value: Pick<OpenedPersonInformation, "lab
 export function formatSharedInformationForAgent(values: OpenedPersonInformation[]): string {
   const lines: string[] = [];
   for (const value of values) {
-    if (isSensitiveSharedValue(value)) lines.push(sensitiveSharedOutline(value));
-    else appendLines(lines, value.data, [value.label]);
+    if (isSensitiveSharedValue(value)) {
+      lines.push(sensitiveSharedOutline(value));
+      continue;
+    }
+    const withheld = { names: sensitiveFieldNameSet(value.fields), hidden: [] as string[] };
+    appendLines(lines, value.data, [value.label], [], withheld);
+    if (withheld.hidden.length) lines.push(sensitiveFieldsLine(value.label, withheld.hidden));
   }
   let text = "";
   for (const line of lines) {

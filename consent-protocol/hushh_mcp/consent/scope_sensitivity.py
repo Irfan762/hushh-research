@@ -15,11 +15,17 @@ The rule, in order:
 2. The tax, financial or banking, identity or government-id, health or medical
    and credentials domains are sensitive, by registry key or by the words in a
    dynamic domain or path (``tax_record``, ``medical_history.medications``).
-3. A PKM sensitivity tag (``restricted``, ``confidential``, ``sensitive``)
+3. An identifier-class key anywhere on the path (``fein``, ``tax_id``,
+   ``passport_number``, ``date_of_birth``) is sensitive in ANY domain, by the
+   field-level rule in ``field_sensitivity``: the same EIN must not be
+   sensitive under "Tax record" and standard under "Legal entity" (localhost
+   acceptance run 4, 2026-09-29).
+4. A PKM sensitivity tag (``restricted``, ``confidential``, ``sensitive``)
    on the scope, or on any branch a wildcard covers, makes it sensitive. Tags
    only ever escalate; ``standard`` or ``public`` never downgrades rule 2.
-4. Everything else ("Food preferences") is standard, and may reach the model
-   through the existing continuation path.
+5. Everything else ("Food preferences") is standard, and may reach the model
+   through the existing continuation path. A standard item can still hold an
+   identifier-class FIELD; ``field_sensitivity`` decides that per field.
 
 Pure: no database, no network, no model. A pod can import it.
 """
@@ -31,6 +37,7 @@ from collections.abc import Iterable
 from itertools import pairwise
 from typing import Literal
 
+from hushh_mcp.consent.field_sensitivity import field_key_is_sensitive
 from hushh_mcp.consent.internal_path_keys import is_secret_shaped_key
 from hushh_mcp.consent.segment_labels import humanize_segment
 from hushh_mcp.services.domain_contracts import (
@@ -187,6 +194,9 @@ def scope_sensitivity(scope: str | None, pkm_tags: Iterable[object] = ()) -> Sen
         return SENSITIVE
     segments = parts[1:]
     if any(words_are_sensitive(segment) for segment in segments):
+        return SENSITIVE
+    # Field level: an identifier key is sensitive in any domain.
+    if field_key_is_sensitive(segments[1:]):
         return SENSITIVE
     # A phrase can straddle two segments ("social.security_number").
     joined: list[str] = [word for segment in segments for word in _words(segment)]

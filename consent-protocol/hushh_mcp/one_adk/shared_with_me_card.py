@@ -4,7 +4,8 @@ Founder decision 2026-09-28: when a person asks about information that is
 already shared with them, One replies in one short line and the chat renders
 this card at once, decrypted on their device. The card payload carries no
 values. It names what was shared in human words, says whether each item is
-sensitive (C7), outlines its fields by name, and carries the refs the device
+sensitive (C7), outlines its fields by name with each field's own sensitivity
+(an identifier field inside a standard item is sensitive), and carries the refs the device
 opens it by: ``bundleId`` and ``grantRef`` (the request id the existing
 ``GET /api/one/information-requests/{bundleId}/exports`` response is keyed by).
 
@@ -47,6 +48,16 @@ def _matching(value: Any, pattern: re.Pattern[str], limit: int = 128) -> str | N
     return text if text and pattern.fullmatch(text) else None
 
 
+def _fields(raw: Any) -> list[dict[str, str]]:
+    fields: list[dict[str, str]] = []
+    for entry in (raw if isinstance(raw, list) else [])[:MAX_OUTLINE_NAMES]:
+        if not isinstance(entry, Mapping) or not (name := _text(entry.get("name"), 80)):
+            continue
+        sensitivity = "standard" if entry.get("sensitivity") == "standard" else "sensitive"
+        fields.append({"name": name, "sensitivity": sensitivity})
+    return fields
+
+
 def _item(raw: Mapping[str, Any]) -> dict[str, Any] | None:
     grant_ref = _matching(raw.get("grantRef") or raw.get("requestId"), _REQUEST_ID)
     label = _text(raw.get("label"), 120)
@@ -66,6 +77,9 @@ def _item(raw: Mapping[str, Any]) -> dict[str, Any] | None:
             for value in (outline if isinstance(outline, list) else [])[:MAX_OUTLINE_NAMES]
             if (name := _text(value, 80))
         ],
+        # C7 per field: in a standard item an identifier field (an EIN under
+        # "Legal entity") is still sensitive; deny by default when unknown.
+        "fields": _fields(raw.get("fields")),
         "sharedAt": _matching(raw.get("sharedAt"), _ISO, 64),
         "accessEndsAt": _matching(raw.get("accessEndsAt"), _ISO, 64),
         "purpose": _text(raw.get("purpose"), 500),

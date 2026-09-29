@@ -13,13 +13,17 @@
 //     the conversation in the person's own sealed history and opens it, where
 //     the card continues.
 //
-// The doorbell checks only requests that are waiting (sent in this tab, or
-// rebuilt from the open conversation's history after a reload): about every
-// 2s while the app is visible, backing off after 2 minutes to 4s, 8s, then
-// 15s, paused while hidden, and at once on focus, a push, or a live event. It
-// reads ledger status (never values) and holds identifiers only. Shared
-// information is decrypted on this device just before the follow-up turn and
-// never stored.
+// The doorbell is the one app-wide scheduler for requests that are waiting
+// (sent in this tab, or rebuilt from the open conversation's history after a
+// reload): about every 2s for five minutes while the app is visible, then 5s,
+// then 15s, paused while hidden, and at once on focus, a push, or a live
+// event. Each tick reads each waiting bundle once, through the shared reader
+// (`readInformationRequest`), so a card showing the same request never adds a
+// read of its own: it takes the published reading. The moment a request is
+// answered it leaves the doorbell; the live-access watch (about 5s, then 10s)
+// takes over for as long as that sharing is live. It reads ledger status
+// (never values) and holds identifiers only. Shared information is decrypted
+// on this device just before the follow-up turn and never stored.
 
 import { useEffect, useRef } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -53,7 +57,8 @@ import {
   type SentInformationRequest,
 } from "@/lib/agent/consent-continuation";
 import { rememberInAppChat } from "@/lib/agent/in-app-chat-selection";
-import { CONSENT_STATE_CHANGED_EVENT, dispatchConsentStateChanged } from "@/lib/consent/consent-events";
+import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
+import { readInformationRequest } from "@/lib/consent/information-request-reads";
 import {
   consentOutcomeDisplayText,
   informationRequestOutcome,
@@ -66,10 +71,7 @@ import {
   findInformationRequestConversation,
   streamAgentChat,
 } from "@/lib/services/agent-chat-client";
-import {
-  PersonProfileService,
-  type InformationRequestBundle,
-} from "@/lib/services/person-profile-service";
+import type { InformationRequestBundle } from "@/lib/services/person-profile-service";
 import { useVault } from "@/lib/vault/vault-context";
 
 /** Query parameter an answer push uses to name the request at `/`. */
@@ -77,15 +79,6 @@ export const INFORMATION_REQUEST_QUERY = "informationRequest";
 export const CONSENT_ANSWER_NOTICE_TITLE = "Your information request has an answer";
 const BUNDLE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const TERMINAL_ACTIONS = new Set(["CONSENT_GRANTED", "CONSENT_DENIED", "TIMEOUT", "CONSENT_REVOKED", "REVOKED"]);
-const LEDGER_ACTION: Record<ConsentOutcome, string> = {
-  granted: "CONSENT_GRANTED",
-  partially_granted: "CONSENT_GRANTED",
-  denied: "CONSENT_DENIED",
-  expired: "TIMEOUT",
-  revoked: "CONSENT_REVOKED",
-};
-/** A mounted card is nudged once per answer, not on every doorbell check. */
-const CARD_NUDGE_INTERVAL_MS = 10_000;
 
 function appIsActive(): boolean {
   return appInteractionCoordinator.getLifecycleSnapshot().state === "active";
@@ -120,7 +113,6 @@ export function AgentConsentContinuationNotifier(): null {
       return undefined;
     }
     const inFlight = new Set<string>();
-    const nudgedAt = new Map<string, number>();
 
     const continueInBackground = async (
       request: SentInformationRequest,
@@ -198,24 +190,17 @@ export function AgentConsentContinuationNotifier(): null {
         return;
       }
       if (isInformationRequestCardMounted(ownerId, request.bundleId)) {
-        // The card on screen owns this; show it reading, and tell it the
-        // ledger moved so it continues in place.
-        const lastNudge = nudgedAt.get(request.bundleId) ?? 0;
-        if (Date.now() - lastNudge < CARD_NUDGE_INTERVAL_MS) return;
-        nudgedAt.set(request.bundleId, Date.now());
+        // The card on screen owns this. It already has this very reading
+        // (the shared reader published it), so it shows "Reading…" now and
+        // continues in place. The request stops waiting: answered means no
+        // more fast checks (measured 2026-09-29: an answered request left
+        // waiting was polled 166 times in 18 minutes, plus a card-wide
+        // refresh event every 10s). The card may still continue it.
+        armConsentContinuation(ownerId, request.bundleId);
+        unwatchSentInformationRequest(ownerId, request.bundleId);
         setInformationRequestPhase(ownerId, request.bundleId, "reading");
-        dispatchConsentStateChanged({
-          source: "information_request_updated",
-          bundleId: request.bundleId,
-          requestId: bundle.items[0]?.requestId ?? "",
-          action: LEDGER_ACTION[outcome],
-        });
-        // No receipt, so no follow-up turn: the card shows the answer and
-        // this request stops waiting.
-        if (isConsentContinuationUnavailable(ownerId, request.bundleId)) {
-          unwatchSentInformationRequest(ownerId, request.bundleId);
-          return;
-        }
+        // No receipt, so no follow-up turn: the card shows the answer.
+        if (isConsentContinuationUnavailable(ownerId, request.bundleId)) return;
         // Continued on another device already: the card settles as answered
         // and this one stops waiting; nothing here is an error.
         const token = getVaultOwnerToken();
@@ -229,7 +214,6 @@ export function AgentConsentContinuationNotifier(): null {
             // This tab's own continuation also leaves the marker; only
             // another device's answer settles the card from here.
             if (!done || isConsentContinuationClaimed(ownerId, request.bundleId)) return;
-            unwatchSentInformationRequest(ownerId, request.bundleId);
             setInformationRequestPhase(ownerId, request.bundleId, "answered");
           });
         }
@@ -244,14 +228,15 @@ export function AgentConsentContinuationNotifier(): null {
       if (token) void continueInBackground(request, outcome, sharedItemLabels(bundle), token);
     };
 
-    // The only server call: GET /api/one/information-requests/{bundle}.
+    // The only server call: GET /api/one/information-requests/{bundle}, one
+    // per waiting bundle per tick, shared with any other reader of it.
     const poll = () => {
       const token = getVaultOwnerToken();
       if (!token) return;
       for (const request of listSentInformationRequests(ownerId)) {
         if (inFlight.has(request.bundleId)) continue;
         inFlight.add(request.bundleId);
-        void PersonProfileService.getInformationRequest({
+        void readInformationRequest({
           bundleId: request.bundleId,
           vaultOwnerToken: token,
         })
