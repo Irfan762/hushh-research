@@ -42967,14 +42967,10 @@
   "semantic_diff": {
     "added": [],
     "breaking": [],
-    "changed": [
-      "actions:consent.revoke"
-    ],
+    "changed": [],
     "compatible": [],
-    "deprecated": [
-      "actions:consent.revoke"
-    ],
-    "from_revision": "cccecbbc8438b3aa",
+    "deprecated": [],
+    "from_revision": "04ed9dcd1e9c89ae",
     "migrated": [],
     "removed": []
   },
@@ -45467,6 +45463,7 @@
     "workflows": [
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45529,6 +45526,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45591,6 +45589,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45653,6 +45652,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45715,6 +45715,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45777,6 +45778,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
@@ -45839,6 +45841,7 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
