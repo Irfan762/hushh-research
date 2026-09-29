@@ -127,7 +127,8 @@ for (const [width, height] of [[393, 852], [1440, 900]] as const)
     await expect(page.locator("[data-state='partial']")).toContainText("Access ends Oct 5");
     await expect(page.locator("[data-state='access-ended']"))
       .toContainText("Kushal stopped sharing Food preferences. One no longer uses it.");
-    await expect(page.getByTestId("ask-sentence")).toHaveText("Ask Kushal for Food preferences · 7 days · for dinner planning");
+    await expect(page.getByTestId("ask-sentence")).toHaveText("Ask Kushal for Food preferences · 7 days");
+    await expect(page.getByTestId("ask-reason")).toHaveText("To plan dinner together");
     await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
 
     const details = page.locator("[data-state='shared-details']");

@@ -39,7 +39,7 @@ vi.mock("@/components/consent/consent-scope-nested-list", () => ({
 import { AgentStructuredExperienceView, AgentTranscriptRevealContext } from "@/components/agent/agent-structured-experience";
 import { ConsentCardPhaseContext, RequesterProgressBody } from "@/components/agent/consent/requester-consent-card";
 import { AccessEndedNotice } from "@/components/agent/consent/access-ended-notice";
-import { SharedDetailsList, humanSharedDetails } from "@/components/agent/consent/shared-details";
+import { SharedDetailsList, humanSharedDetails, sharedItemRows } from "@/components/agent/consent/shared-details";
 import { parseRequestProgress, progressHeadline, timelineFor, type RequestProgress } from "@/components/agent/consent/request-progress";
 import { askSentence } from "@/components/agent/consent/ask-proposal-card";
 import { parseScopeProposal } from "@/lib/agent/scope-proposal";
@@ -203,6 +203,19 @@ describe("human-readable shared details", () => {
     expect(() => assertNoInternalIds(view.container)).not.toThrow();
   });
 
+  // Regression (localhost run 2026-09-28): one shared item read as two rows,
+  // "Food preferences" and "Preferences", from the memory tree's own keys.
+  it("heads each shared item with the server's label only, never a key from the tree", () => {
+    const rows = sharedItemRows([{ requestId: "r1", label: "Food preferences", data: MEMORY_TREE }]);
+    expect(rows).toEqual([{ key: "r1", label: "Food preferences", values: [
+      "My favorite cuisine is Neapolitan pizza and I prefer vegetarian toppings.",
+      "Favorite restaurant is Nopa in San Francisco.",
+    ] }]);
+    render(<SharedDetailsList values={[{ requestId: "r1", label: "Food preferences", data: MEMORY_TREE }]} />);
+    const headings = [...screen.getByTestId("chat-shared-information").querySelectorAll("dt")].map((node) => node.textContent);
+    expect(headings).toEqual(["Food preferences"]);
+  });
+
   it("negative control: the same check fails on the raw tree renderer", () => {
     const raw = render(<DecryptedRecordContent data={MEMORY_TREE} />);
     expect(() => assertNoInternalIds(raw.container)).toThrow(/internal detail rendered/);
@@ -364,8 +377,8 @@ describe("One picks, you confirm", () => {
     const parsed = parseScopeProposal({ person: "kushal", proposed: [{ scope: "scope-food", label: "Food preferences", why: "x" }],
       duration_default: "7d", reason_suggestion: "dinner planning" });
     expect(parsed).toEqual({ proposed: [{ scopeRef: "scope-food", label: "Food preferences", why: "x" }], durationHours: 168, reasonSuggestion: "dinner planning" });
-    expect(askSentence("Kushal Trivedi", ["Food preferences"], 168, "dinner planning"))
-      .toBe("Ask Kushal for Food preferences · 7 days · for dinner planning");
+    expect(askSentence("Kushal Trivedi", ["Food preferences"], 168))
+      .toBe("Ask Kushal for Food preferences · 7 days");
     expect(parseScopeProposal({ proposed: [] })).toBeNull();
     const experience = parseAgentToolResultExperience("propose_information_request", {
       status: "ok", person: discovery.person, requestableScopes: [],
@@ -411,7 +424,10 @@ describe("One picks, you confirm", () => {
   it("sends One's pick through the existing send path", async () => {
     const onSubmitted = vi.fn(async () => undefined);
     render(<AgentStructuredExperienceView experience={{ ...discovery, proposal }} onInformationRequestSubmitted={onSubmitted} />);
-    expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Food preferences · 7 days · for dinner planning");
+    expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Food preferences · 7 days");
+    // The server's reason is its own line, as given; never glued on with "for".
+    expect(screen.getByTestId("ask-reason")).toHaveTextContent("dinner planning");
+    expect(screen.getByTestId("ask-sentence")).not.toHaveTextContent("for dinner planning");
     const send = await screen.findByRole("button", { name: "Send" });
     await waitFor(() => expect(send).toBeEnabled());
     fireEvent.click(send);

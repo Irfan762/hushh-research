@@ -4,8 +4,8 @@
  * "One picks, you confirm" (contract C4).
  *
  * One has already chosen the best matching information from the question, so
- * the ask is one sentence: "Ask Kushal for Food preferences · 7 days · for
- * dinner planning", with Send and Change. The full catalog appears only
+ * the ask is one sentence, "Ask Kushal for Food preferences · 7 days", with
+ * the reason on its own line, and Send and Change. The full catalog appears only
  * behind Change, searched on the server (`searchCatalog`), with human labels.
  *
  * This component never submits by itself: `onSend` is the caller's existing
@@ -45,10 +45,6 @@ export type AskProposalCardProps = {
 const SEARCH_DEBOUNCE_MS = 200;
 const MIN_REASON = 8;
 
-function reasonPhrase(reason: string): string {
-  return reason.trim().replace(/^for\s+/i, "");
-}
-
 function proposedScopes(proposal: ScopeProposal): RequestablePersonScope[] {
   return proposal.proposed.map((item) => ({
     scopeRef: item.scopeRef, label: item.label, description: null,
@@ -56,12 +52,14 @@ function proposedScopes(proposal: ScopeProposal): RequestablePersonScope[] {
   }));
 }
 
-/** "Ask Kushal for Food preferences · 7 days · for dinner planning". */
-export function askSentence(personName: string, labels: string[], durationHours: number, reason: string): string {
-  const parts = [`Ask ${firstName(personName)} for ${joinLabels(labels)}`, proposalDurationLabel(durationHours)];
-  const why = reasonPhrase(reason);
-  if (why) parts.push(`for ${why}`);
-  return parts.join(" · ");
+/**
+ * "Ask Kushal for Food preferences · 7 days". The reason is its own line
+ * under this sentence: the server words it as a standalone phrase ("To pick
+ * a restaurant for dinner"), so gluing "for" in front of it read as "for I'd
+ * like to know your kind".
+ */
+export function askSentence(personName: string, labels: string[], durationHours: number): string {
+  return [`Ask ${firstName(personName)} for ${joinLabels(labels)}`, proposalDurationLabel(durationHours)].join(" · ");
 }
 
 function CatalogPicker({ personName, selected, onToggle, searchCatalog }: {
@@ -176,8 +174,13 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-base font-semibold leading-6 tracking-[-0.015em] text-foreground [overflow-wrap:anywhere]" data-testid="ask-sentence">
-            {askSentence(personName, labels, durationHours, reason)}
+            {askSentence(personName, labels, durationHours)}
           </p>
+          {reason.trim() ? (
+            <p className="mt-1 text-sm leading-5 text-foreground/80 [overflow-wrap:anywhere]" data-testid="ask-reason">
+              {reason.trim()}
+            </p>
+          ) : null}
           <p className="mt-1 text-xs leading-5 text-muted-foreground">
             {why ?? `${firstName(personName)} decides what to share, and can stop any time.`}
           </p>
@@ -201,7 +204,7 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
             <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
               What it is for
               <Input value={reason} disabled={sending} maxLength={500} data-testid="ask-proposal-reason"
-                onChange={(event) => setReason(event.target.value)} placeholder="dinner planning" />
+                onChange={(event) => setReason(event.target.value)} placeholder="To plan dinner together" />
             </label>
           </div>
         </div>

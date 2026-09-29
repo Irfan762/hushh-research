@@ -108,14 +108,38 @@ function DetailValue({ value }: { value: string }) {
   );
 }
 
+/**
+ * One row per shared item, headed by the server's human label for it
+ * ("Food preferences"). Headings are never derived from the memory tree's own
+ * keys on this device: that produced a "Preferences" row beside "Food
+ * preferences" for the same item.
+ */
+export function sharedItemRows(
+  values: Array<{ requestId: string; label: string; data: Record<string, unknown> }>,
+): Array<SharedDetailRow & { key: string }> {
+  return values.flatMap((value) => {
+    const label = value.label.trim() || "Shared";
+    const rowValues = humanSharedDetails(value.data, label).flatMap((row) => row.values);
+    return rowValues.length ? [{ key: value.requestId, label, values: rowValues }] : [];
+  });
+}
+
 export function SharedDetailsList({ values }: {
   values: Array<{ requestId: string; label: string; data: Record<string, unknown> }>;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const rows = values.flatMap((value) =>
-    humanSharedDetails(value.data, value.label).map((row) => ({ ...row, key: `${value.requestId}:${row.label}` })));
-  const visible = showAll ? rows : rows.slice(0, VISIBLE_ROWS);
-  if (!rows.length) {
+  const allRows = sharedItemRows(values);
+  const total = allRows.reduce((sum, row) => sum + row.values.length, 0);
+  // At most VISIBLE_ROWS values before "Show all", across items in order.
+  let budget = VISIBLE_ROWS;
+  const rows = showAll ? allRows : allRows.flatMap((row) => {
+    if (budget <= 0) return [];
+    const shown = row.values.slice(0, budget);
+    budget -= shown.length;
+    return [{ ...row, values: shown }];
+  });
+  const visible = rows;
+  if (!allRows.length) {
     return <p className="text-sm text-muted-foreground" data-testid="chat-shared-information">Nothing readable was shared yet.</p>;
   }
   return (
@@ -130,10 +154,10 @@ export function SharedDetailsList({ values }: {
           </div>
         ))}
       </dl>
-      {rows.length > VISIBLE_ROWS ? (
+      {total > VISIBLE_ROWS ? (
         <button type="button" onClick={() => setShowAll((current) => !current)}
           className="flex min-h-11 w-full cursor-pointer items-center justify-center border-t border-border/50 text-xs font-medium text-accent-strong">
-          {showAll ? "Show fewer" : `Show all ${rows.length}`}
+          {showAll ? "Show fewer" : `Show all ${total}`}
         </button>
       ) : null}
     </div>

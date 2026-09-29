@@ -32,7 +32,7 @@ const discovery: ScopeDiscoveryExperience = {
   domainFilter: null, scopes: [],
   proposal: {
     proposed: [{ scopeRef: "scope-food", label: "Food preferences", why: "You asked where to take Kushal for dinner." }],
-    durationHours: 168, reasonSuggestion: "dinner planning",
+    durationHours: 168, reasonSuggestion: "To plan dinner together",
   },
 };
 
