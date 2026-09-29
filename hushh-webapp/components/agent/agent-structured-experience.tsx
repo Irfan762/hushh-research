@@ -68,6 +68,7 @@ import type {
 } from "@/lib/agent/agui-structured-experiences";
 import { parseAgentActivityExperience } from "@/lib/agent/agui-structured-experiences";
 import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 
 export const AgentPersonSelectionContext = createContext<
   ((handle: string, name: string, sourceTool: PersonSelectionSourceTool) => void) | null
@@ -139,10 +140,11 @@ export function AgentStructuredExperienceView({
         <div className="flex flex-col gap-2">
           {experience.candidates.map((candidate) => <div key={candidate.selectionHandle} className="flex items-center gap-2">
             <button type="button" disabled={!selectPerson}
-            className="min-h-11 cursor-pointer rounded-xl px-3 py-2 text-left hover:bg-accent disabled:cursor-default disabled:opacity-50"
+            className="relative min-h-11 cursor-pointer rounded-xl px-3 py-2 text-left hover:bg-accent disabled:cursor-default disabled:opacity-50"
             onClick={() => selectPerson?.(candidate.selectionHandle, candidate.displayName, experience.sourceTool)}>
             <span className="block font-medium">{candidate.displayName}</span>
             {candidate.detail ? <span className="block text-sm text-muted-foreground">{candidate.detail}</span> : null}
+            <MaterialRipple variant="none" effect="glass" disabled={!selectPerson} />
           </button>
           <Link className="ml-auto inline-flex min-h-11 shrink-0 items-center text-sm text-primary underline-offset-4 hover:underline"
             href={candidate.profilePath} aria-label={`View ${candidate.displayName}'s profile`}>View profile</Link>

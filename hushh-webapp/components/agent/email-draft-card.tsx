@@ -19,6 +19,7 @@ import {
   ConnectionsService,
   type ConnectionSummaryEntry,
 } from "@/lib/services/connections-service";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 
 export type SourceBoundEmailReplyAdapter = {
   /** Keeps reply routing server-derived from the source message/thread. */
@@ -219,7 +220,7 @@ export function EmailDraftCard({
               }}
               className={`flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors ${
                 hasEmail
-                  ? "hover:bg-accent cursor-pointer"
+                  ? "relative hover:bg-accent cursor-pointer"
                   : "opacity-50 cursor-not-allowed"
               }`}
             >
@@ -239,6 +240,7 @@ export function EmailDraftCard({
                   {hasEmail ? conn.email : "No mail on file (non-selectable)"}
                 </div>
               </div>
+              <MaterialRipple variant="none" effect="glass" disabled={!hasEmail} />
             </button>
           );
         })}
@@ -459,10 +461,11 @@ export function EmailDraftCard({
         <button
           type="button"
           onClick={onDismiss}
-          className="rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none"
+          className="relative rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none"
           aria-label="Dismiss draft"
         >
           <X className="h-4 w-4" />
+          <MaterialRipple variant="none" effect="glass" />
         </button>
       </div>
 

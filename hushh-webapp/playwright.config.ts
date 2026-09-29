@@ -119,6 +119,9 @@ export default defineConfig({
       // own document.
       testMatch: [
         /chat-onboarding\.layout\.spec\.ts/,
+        // press-ripple: the md-ripple on pointerdown, no press scale, and the
+        // reduced-motion layer are felt on an iPhone first; own document.
+        /press-ripple\.layout\.spec\.ts/,
         /settings-row-surface\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,

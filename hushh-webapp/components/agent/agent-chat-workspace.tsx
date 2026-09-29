@@ -245,6 +245,7 @@ import {
 } from "@/lib/agent/agent-chat-turn-watch";
 import { dispatchAgentChatHistoryInvalidated } from "@/lib/agent/agent-chat-history-events";
 import { morphyToast as toast } from "@/lib/morphy-ux/morphy";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { isRiaAdvisoryAccessReady } from "@/lib/ria/ria-profile-view-model";
 import { CacheService, CACHE_KEYS } from "@/lib/services/cache-service";
@@ -1439,13 +1440,14 @@ function AgentPromptSuggestions({
           type="button"
           disabled={disabled}
           onClick={() => onPromptSelect(prompt)}
-          className="group relative inline-flex !h-auto !min-h-11 max-w-full items-center !justify-between gap-2.5 !rounded-2xl border border-[color:var(--app-glass-border)] bg-[color:var(--app-glass-surface)] !px-4 !py-2.5 text-left text-sm font-medium text-foreground shadow-[var(--app-glass-shadow)] transition-colors duration-150 hover:bg-[color:var(--app-shell-surface-bg-hover)] active:opacity-90 disabled:pointer-events-none disabled:opacity-60"
+          className="group relative inline-flex !h-auto !min-h-11 max-w-full items-center !justify-between gap-2.5 overflow-hidden !rounded-2xl border border-[color:var(--app-glass-border)] bg-[color:var(--app-glass-surface)] !px-4 !py-2.5 text-left text-sm font-medium text-foreground shadow-[var(--app-glass-shadow)] transition-colors duration-150 hover:bg-[color:var(--app-shell-surface-bg-hover)] active:opacity-90 disabled:pointer-events-none disabled:opacity-60"
         >
           <span className="min-w-0 whitespace-normal leading-5">{prompt}</span>
           <ChevronRight
             className="h-4 w-4 shrink-0 text-[color:var(--app-accent-deep)]"
             aria-hidden
           />
+          <MaterialRipple variant="none" effect="glass" disabled={disabled} />
         </button>
       ))}
     </div>
@@ -1639,8 +1641,9 @@ export function GmailInformationRequestAttachment({
         onClick={() => void toggle()}
         aria-expanded={open}
         aria-controls={open ? previewId : undefined}
-        className="group flex min-h-14 w-full items-center gap-3 px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70"
+        className="group relative flex min-h-14 w-full items-center gap-3 rounded-[inherit] px-3 py-2.5 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70"
       >
+        <MaterialRipple variant="none" effect="fill" />
         <span className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-black/[0.12] text-white shadow-sm">
           <Mail className="h-[18px] w-[18px]" aria-hidden="true" />
         </span>
@@ -1926,7 +1929,7 @@ export function AgentBubble({
               <button
                 type="button"
                 onClick={handleCopy}
-                className="grid h-7 w-7 place-items-center rounded-md border border-transparent text-[rgba(0,0,0,0.46)] transition hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+                className="relative grid h-7 w-7 place-items-center rounded-md border border-transparent text-[rgba(0,0,0,0.46)] transition hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
                 aria-label={copied ? "Response copied" : "Copy response"}
                 title={copied ? "Copied" : "Copy response"}
               >
@@ -1935,12 +1938,13 @@ export function AgentBubble({
                 ) : (
                   <Copy className="h-3.5 w-3.5" />
                 )}
+                <MaterialRipple variant="none" effect="glass" />
               </button>
               <button
                 type="button"
                 onClick={() => onRate?.(liked ? null : "up")}
                 className={cn(
-                  "grid h-7 w-7 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+                  "relative grid h-7 w-7 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
                   liked
                     ? "border-transparent bg-[color:var(--app-accent)]/10 text-[color:var(--app-accent)]"
                     : "border-transparent text-[rgba(0,0,0,0.46)] hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200",
@@ -1950,12 +1954,13 @@ export function AgentBubble({
                 title="Like response"
               >
                 <ThumbsUp className="h-3.5 w-3.5" weight={liked ? "fill" : "regular"} />
+                <MaterialRipple variant="none" effect="glass" />
               </button>
               <button
                 type="button"
                 onClick={() => onRate?.(disliked ? null : "down")}
                 className={cn(
-                  "grid h-7 w-7 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
+                  "relative grid h-7 w-7 place-items-center rounded-md border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60",
                   disliked
                     ? "border-transparent bg-[color:var(--app-accent)]/10 text-[color:var(--app-accent)]"
                     : "border-transparent text-[rgba(0,0,0,0.46)] hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200",
@@ -1965,6 +1970,7 @@ export function AgentBubble({
                 title="Dislike response"
               >
                 <ThumbsDown className="h-3.5 w-3.5" weight={disliked ? "fill" : "regular"} />
+                <MaterialRipple variant="none" effect="glass" />
               </button>
               {onReport && isAndroid() ? (
                 // Google Play AI-Generated Content policy. Android only for
@@ -1978,12 +1984,13 @@ export function AgentBubble({
                   type="button"
                   onClick={onRetry}
                   disabled={retryDisabled}
-                  className="ml-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[rgba(0,0,0,0.46)] transition hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-45 dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
+                  className="relative ml-1 inline-flex h-7 items-center gap-1.5 rounded-md border border-transparent px-2 text-xs font-medium text-[rgba(0,0,0,0.46)] transition hover:border-black/10 hover:bg-black/[0.04] hover:text-[#1d1d1f] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-not-allowed disabled:opacity-45 dark:text-zinc-500 dark:hover:border-white/10 dark:hover:bg-white/[0.06] dark:hover:text-zinc-200"
                   aria-label="Try again"
                   title="Try again"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
                   <span className="hidden sm:inline">Try again</span>
+                  <MaterialRipple variant="none" effect="glass" disabled={retryDisabled} />
                 </button>
               ) : null}
             </div>
@@ -7575,6 +7582,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       ) : null}
       <ShellActionSurface
         type="submit"
+        rippleEffect="fill"
         className="border-transparent bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent-hover)] disabled:bg-black/[0.06] disabled:text-[rgba(0,0,0,0.36)] dark:disabled:bg-white/[0.08] dark:disabled:text-zinc-500"
         disabled={!canSend}
         aria-label="Send message"

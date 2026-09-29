@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Progress } from "@/components/ui/progress";
 import { HelperText } from "@/components/app-ui/typography";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 import { StreamingCursor } from "@/lib/morphy-ux/streaming-cursor";
 import { cn } from "@/lib/utils";
 
@@ -149,7 +150,7 @@ export function AppStreamSection({
         <CollapsibleTrigger asChild>
           <button
             type="button"
-            className="ui-text-section-label group flex w-full items-center justify-between gap-3 px-[6px] py-2 text-left transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
+            className="ui-text-section-label group relative flex w-full items-center justify-between gap-3 rounded-[inherit] px-[6px] py-2 text-left transition hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/70"
           >
             <span className="inline-flex min-w-0 items-center gap-2">
               <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -166,6 +167,7 @@ export function AppStreamSection({
                 aria-hidden="true"
               />
             </span>
+            <MaterialRipple variant="none" effect="glass" />
           </button>
         </CollapsibleTrigger>
         <CollapsibleContent>

@@ -73,19 +73,21 @@ export function SpecialistDirectiveCard({
           type="button"
           onClick={onConfirm}
           disabled={busy}
-          className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          className="relative rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
           data-testid="specialist-directive-confirm"
         >
           {busy ? busyLabel ?? "Working…" : confirmLabel}
+          <MaterialRipple variant="none" effect="fill" disabled={busy} />
         </button>
         <button
           type="button"
           onClick={onCancel}
           disabled={busy && !cancelWhileBusy}
-          className="rounded-full bg-black/5 px-4 py-1.5 text-sm dark:bg-white/10"
+          className="relative rounded-full bg-black/5 px-4 py-1.5 text-sm dark:bg-white/10"
           data-testid="specialist-directive-cancel"
         >
           Cancel
+          <MaterialRipple variant="none" effect="glass" disabled={busy && !cancelWhileBusy} />
         </button>
       </div>
     </div>
@@ -438,6 +440,7 @@ import {
   requesterShortName,
 } from "@/lib/consent/consent-owner-copy";
 import { useArmedAction } from "@/lib/ui/use-armed-action";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 
 export type PendingConsentCardStatus =
   | "pending" | "approved" | "denied" | "cancelled"

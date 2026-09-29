@@ -1,6 +1,7 @@
 "use client";
 
 import { ChevronRight } from "@/components/icons";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 
 type FollowUpMessage = {
   id: string;
@@ -27,6 +28,9 @@ export function visibleFollowUps(
 /**
  * Tapping a follow-up fills the composer, exactly like the welcome chips: the
  * person can read, edit, or discard it before anything is sent.
+ *
+ * Each chip is a plain button, so it carries the shared ripple itself and
+ * `relative overflow-hidden` gives that ripple a box to fill and clip to.
  */
 export function AgentFollowUpSuggestions({
   suggestions,
@@ -48,13 +52,14 @@ export function AgentFollowUpSuggestions({
           key={suggestion}
           type="button"
           onClick={() => onSelect(suggestion)}
-          className="inline-flex !h-auto !min-h-11 max-w-full items-center gap-2 !rounded-2xl border border-[color:var(--app-glass-border)] bg-[color:var(--app-glass-surface)] !px-3.5 !py-2 text-left text-sm font-medium text-foreground shadow-[var(--app-glass-shadow)] transition-colors duration-150 hover:bg-[color:var(--app-shell-surface-bg-hover)] active:opacity-90"
+          className="relative inline-flex !h-auto !min-h-11 max-w-full items-center gap-2 overflow-hidden !rounded-2xl border border-[color:var(--app-glass-border)] bg-[color:var(--app-glass-surface)] !px-3.5 !py-2 text-left text-sm font-medium text-foreground shadow-[var(--app-glass-shadow)] transition-colors duration-150 hover:bg-[color:var(--app-shell-surface-bg-hover)] active:opacity-90"
         >
           <span className="min-w-0 whitespace-normal leading-5">{suggestion}</span>
           <ChevronRight
             className="h-4 w-4 shrink-0 text-[color:var(--app-accent-deep)]"
             aria-hidden
           />
+          <MaterialRipple variant="none" effect="glass" />
         </button>
       ))}
     </div>

@@ -965,10 +965,13 @@ textarea {
   --motion-ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
   --motion-ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
 
-  /* Press physics: the system-wide active/pressed state is a uniform scale
-     shrink layered over the md-ripple. One value everywhere so every control
-     carries the same tactile weight; consumed by the .press-scale utility. */
-  --motion-press-scale: 0.97;
+  /* Press physics: a press is FLAT. The pressed state is a colour/opacity
+     change plus the md-ripple, never a scale, spring, or bounce. The scale
+     token stays at 1 (identity) for any consumer still reading it; the
+     .press-scale utility no longer transforms at all. Guarded by
+     __tests__/components/press-ripple.contract.test.tsx. */
+  --motion-press-scale: 1;
+  --motion-press-opacity: 0.8;
   --motion-press-duration: 80ms;
 
   --motion-page-enter-duration: var(--motion-duration-xl);
@@ -1887,7 +1890,7 @@ body:has([data-profile-account-preview-root]) nextjs-portal {
 }
 
 .profile-home-screen [data-profile-avatar-camera="true"]:active {
-  transform: scale(0.94);
+  opacity: var(--motion-press-opacity, 0.8);
 }
 
 .profile-home-screen [data-profile-avatar-frame="true"] [data-slot="avatar"],
@@ -5611,32 +5614,18 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
 
 /* Standard interaction transitions for buttons, cards, links */
 @layer utilities {
-  /* System-wide press physics: uniform scale shrink on active, layered over
-     the md-ripple. Apply to buttons, chips, segmented tabs, and any control
-     that should carry tactile press weight. The utility owns ONLY the active
-     transform; each consumer keeps `transform` in its own transition list so
-     color/opacity fades are never clobbered. GPU-composited; stands down
-     under prefers-reduced-motion. */
+  /* System-wide press physics, kept under its historical name for the
+     feature controls that carry it. A press is FLAT: an immediate opacity
+     dim, no transform, no spring, no bounce. Core primitives (Button,
+     segmented controls, tabs, cards) no longer carry this class; they get
+     their pressed state from the md-ripple instead. The utility sets no
+     transition-property, so each consumer's own colour fades survive. */
   .press-scale {
-    transition-property: transform;
-    transition-duration: var(--motion-press-duration, 80ms);
-    transition-timing-function: var(
-      --motion-ease-emphasized,
-      cubic-bezier(0.2, 0, 0, 1)
-    );
     -webkit-tap-highlight-color: transparent;
     touch-action: manipulation;
   }
   .press-scale:active:not(:disabled) {
-    transform: scale(var(--motion-press-scale, 0.97));
-    transition-duration: 50ms;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .press-scale,
-    .press-scale:active:not(:disabled) {
-      transform: none;
-      transition: none;
-    }
+    opacity: var(--motion-press-opacity, 0.8);
   }
 
   .morphy-transition {
@@ -6704,7 +6693,6 @@ body[data-persona-surface="ria"] .ria-cta {
     opacity 0.15s ease;
 }
 body[data-persona-surface="ria"] .ria-cta:active {
-  transform: scale(0.985);
   opacity: 0.92;
 }
 body[data-persona-surface="ria"] .ria-cta:disabled {
@@ -6727,7 +6715,6 @@ body[data-persona-surface="ria"] .ria-secondary {
     opacity 0.15s ease;
 }
 body[data-persona-surface="ria"] .ria-secondary:active {
-  transform: scale(0.985);
   opacity: 0.92;
 }
 

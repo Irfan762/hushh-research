@@ -485,7 +485,7 @@ export function AgentHistorySidebar({
               variant="outline"
               size="sm"
               data-chat-new-button
-              className="mt-3 flex h-10 w-full items-center justify-between rounded-[12px] border-transparent bg-foreground/[0.05] px-3 text-[14px] font-medium text-foreground shadow-none transition-[transform,background-color] motion-reduce:transition-none duration-150 hover:bg-foreground/[0.08] active:scale-[0.98] dark:border-transparent dark:bg-white/[0.07] dark:hover:bg-white/[0.1]"
+              className="mt-3 flex h-10 w-full items-center justify-between rounded-[12px] border-transparent bg-foreground/[0.05] px-3 text-[14px] font-medium text-foreground shadow-none transition-[transform,background-color] motion-reduce:transition-none duration-150 hover:bg-foreground/[0.08] dark:border-transparent dark:bg-white/[0.07] dark:hover:bg-white/[0.1]"
               onClick={onCreateNew}
               disabled={disabled}
               aria-label="Create new chat"
@@ -573,7 +573,7 @@ export function AgentHistorySidebar({
                   variant="outline"
                   size="sm"
                   data-chat-new-button
-                  className="group relative flex h-9 w-full items-center justify-between rounded-xl border-black/[0.08] bg-foreground/[0.035] px-3 text-[13px] font-medium text-foreground transition-[transform,opacity] motion-reduce:transition-none duration-150 hover:border-black/15 hover:bg-foreground/[0.06] hover:shadow-xs active:scale-[0.98] dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20 dark:hover:bg-white/[0.07]"
+                  className="group relative flex h-9 w-full items-center justify-between rounded-xl border-black/[0.08] bg-foreground/[0.035] px-3 text-[13px] font-medium text-foreground transition-[transform,opacity] motion-reduce:transition-none duration-150 hover:border-black/15 hover:bg-foreground/[0.06] hover:shadow-xs dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20 dark:hover:bg-white/[0.07]"
                   onClick={onCreateNew}
                   disabled={disabled}
                   aria-label="Create new chat"
@@ -719,7 +719,6 @@ export function AgentHistorySidebar({
           <ShellActionSurface
             variant="pill"
             type="button"
-            pressScale={false}
             wrapperClassName="w-full shrink-0 border-t border-black/[0.06] px-3 py-2 dark:border-white/[0.08]"
             className={cn(
               "h-11 min-h-11 w-full justify-start rounded-xl px-3 text-[13px] font-medium text-foreground",
