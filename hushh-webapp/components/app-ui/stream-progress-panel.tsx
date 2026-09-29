@@ -198,6 +198,12 @@ export type AppStreamPanelProps = {
   /** Presentation override for the nested reasoning section. */
   thinkingClassName?: string;
   structuredContent?: ReactNode;
+  /**
+   * Where cards sit relative to the answer. "before" (the default) suits a card
+   * the answer then summarizes; "after" suits a lead-in the card completes
+   * ("Here's what I'd request:" then the ask), so text reads before the card.
+   */
+  structuredContentPlacement?: "before" | "after";
   response?: ReactNode;
   responseText?: string;
   /** App-owned state shown while the model has not emitted response text yet. */
@@ -221,6 +227,7 @@ export function AppStreamPanel({
   evidenceTitle = "Consulted specialists",
   thinkingClassName,
   structuredContent,
+  structuredContentPlacement = "before",
   response,
   responseText = "",
   responsePendingLabel,
@@ -313,7 +320,7 @@ export function AppStreamPanel({
           />
         ) : null}
 
-        {structuredContent ? <div>{structuredContent}</div> : null}
+        {structuredContent && structuredContentPlacement === "before" ? <div>{structuredContent}</div> : null}
 
         {showResponsePending ? (
           <div
@@ -349,6 +356,8 @@ export function AppStreamPanel({
             ) : null}
           </div>
         ) : null}
+
+        {structuredContent && structuredContentPlacement === "after" ? <div>{structuredContent}</div> : null}
       </div>
     </section>
   );

@@ -17,6 +17,9 @@ const META_KEYS = new Set([
   "schema", "schema_version", "hash", "revision", "scope", "scope_ref", "scoperef", "domain",
   "sensitivity", "embedding", "vector", "provenance", "tags", "weight", "score", "salience",
   "entity_id", "memory_id", "segment_id", "path", "key", "ref", "uri", "checksum",
+  // The export envelope's own bookkeeping (lib/consent/export-builder.ts).
+  "source_domain", "manifest_version", "approved_paths", "approved_segment_ids", "segment_ids",
+  "export_timestamp", "available_domains", "paths",
 ]);
 /** Keys that only group values; their children keep the parent's label. */
 const PASS_THROUGH_KEYS = new Set([
@@ -27,6 +30,10 @@ const PASS_THROUGH_KEYS = new Set([
 const HEX_ID = /^[0-9a-f]{8,}$/i;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+/** A key path such as "preferences.entities._entities.kind": structure, not information. */
+const KEY_PATH = /^(?:[a-z0-9_]+\.){2,}[a-z0-9_]+$/;
+/** Counts and positions ("2", "item_count"): numbers about the record, not in it. */
+const COUNT_KEY = /(^|_)(count|counts|total|totals|index|position|rank|order|size|length|num)$|^(n|num|number_of)_/;
 
 /** Memory ids ("mem_65725402299c"), uuids, hex digests and *_id keys. */
 export function isInternalKey(key: string): boolean {
@@ -39,7 +46,13 @@ export function isInternalKey(key: string): boolean {
 function isInternalValue(value: string): boolean {
   const v = value.trim();
   return !v || UUID.test(v) || (HEX_ID.test(v) && v.length >= 12) || ISO_TIME.test(v)
-    || /^(mem|ent|seg|obs|rec)[_-][0-9a-f]{6,}$/i.test(v);
+    || /^(mem|ent|seg|obs|rec)[_-][0-9a-f]{6,}$/i.test(v)
+    || (!/\s/.test(v) && (v.startsWith("_") || v.includes("._") || KEY_PATH.test(v)));
+}
+
+/** A sentence reads on its own; a short value needs its field ("Diet: vegetarian"). */
+function readsOnItsOwn(value: string): boolean {
+  return /[.!?]$/.test(value) || value.length > 60;
 }
 
 /** "food_preferences" and "foodPreferences" read as "Food preferences". */
@@ -51,7 +64,16 @@ export function humanizeKey(key: string): string {
 const MAX_ROWS = 40;
 const MAX_DEPTH = 8;
 
+/**
+ * Label and value rows from a decrypted record, as a person would read them.
+ *
+ * Only information survives: the export envelope's `__` keys, `_entities` and
+ * `_items` structure, key paths, ids, times, counts and a bare number with no
+ * field are dropped. A short value keeps its field ("Favorite cuisine:
+ * Neapolitan pizza"); a sentence stands alone.
+ */
 export function humanSharedDetails(data: unknown, fallbackLabel: string): SharedDetailRow[] {
+  const heading = fallbackLabel || "Shared";
   const rows = new Map<string, string[]>();
   const seenValues = new Set<string>();
   const push = (label: string, raw: string) => {
@@ -63,29 +85,48 @@ export function humanSharedDetails(data: unknown, fallbackLabel: string): Shared
     list.push(value);
     rows.set(label, list);
   };
-  const walk = (node: unknown, label: string, depth: number) => {
+  // `field` is the nearest human key above a value, or null when there is none.
+  const pushScalar = (label: string, field: string | null, value: string, prose: boolean) => {
+    // The item's own heading already names it; a field adds only when it differs.
+    const named = field && field.toLowerCase() !== heading.toLowerCase() ? field : null;
+    if (prose && readsOnItsOwn(value)) return push(label, value);
+    if (!named) {
+      if (prose) push(label, value);
+      return; // A bare number or yes/no with no field says nothing.
+    }
+    if (!isInternalValue(value)) push(label, `${named}: ${value}`);
+  };
+  const walk = (node: unknown, label: string, field: string | null, depth: number) => {
     if (depth > MAX_DEPTH || node === null || node === undefined) return;
-    if (typeof node === "string") return push(label, node);
-    if (typeof node === "number" && Number.isFinite(node)) return push(label, String(node));
-    if (typeof node === "boolean") return push(label, node ? "Yes" : "No");
+    if (typeof node === "string") return pushScalar(label, field, node.trim(), true);
+    if (typeof node === "number" && Number.isFinite(node)) return pushScalar(label, field, String(node), false);
+    if (typeof node === "boolean") return pushScalar(label, field, node ? "Yes" : "No", false);
     if (Array.isArray(node)) {
-      node.slice(0, 50).forEach((entry) => walk(entry, label, depth + 1));
+      node.slice(0, 50).forEach((entry) => walk(entry, label, field, depth + 1));
       return;
     }
     if (typeof node !== "object") return;
     for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
       const lower = key.trim().toLowerCase();
-      if (META_KEYS.has(lower)) continue;
+      // The envelope's metadata ("__export_metadata") is never information.
+      if (lower.startsWith("__") || META_KEYS.has(lower)) continue;
+      if (COUNT_KEY.test(lower) && (typeof value === "number" || typeof value === "string")) continue;
       if (lower === "label" || lower === "title" || lower === "name") {
         // A display name on a record is a value of that record, not a heading.
         if (typeof value === "string") push(label, value);
         continue;
       }
-      if (isInternalKey(key) || PASS_THROUGH_KEYS.has(lower)) walk(value, label, depth + 1);
-      else walk(value, humanizeKey(key), depth + 1);
+      // `_entities` and `_items` are the record's structure; their children
+      // belong to the field above them.
+      if (lower.startsWith("_") || isInternalKey(key) || PASS_THROUGH_KEYS.has(lower)) {
+        walk(value, label, field, depth + 1);
+      } else {
+        const human = humanizeKey(key);
+        walk(value, human, human, depth + 1);
+      }
     }
   };
-  walk(data, fallbackLabel || "Shared", 0);
+  walk(data, heading, null, 0);
   return [...rows.entries()].map(([label, values]) => ({ label, values }));
 }
 

@@ -46,6 +46,10 @@ import { parseScopeProposal } from "@/lib/agent/scope-proposal";
 import { parseAgentToolResultExperience } from "@/lib/agent/agui-structured-experiences";
 import { DecryptedRecordContent } from "@/components/connections/decrypted-grant-card";
 import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
+import { AgentTurnStreamPanel } from "@/components/agent/agent-turn-stream-panel";
+import { AppStreamPanel } from "@/components/app-ui/stream-progress-panel";
+import { SelectionChip } from "@/components/agent/selection-chip";
+import { Check, ShieldOff } from "@/components/icons";
 
 const ASKED = "2026-09-28T13:49:00Z";
 const ENDS = "2026-10-05T12:00:00Z";
@@ -182,6 +186,24 @@ describe("living requester card body", () => {
     expect(document.body.textContent).not.toContain("Nopa");
   });
 
+  // Localhost run 2026-09-28 (screenshot 17): "Kushal stopped sharing Food
+  // preferences" still carried the success check.
+  it("marks a stopped-sharing chip with the neutral ended icon, never the check", () => {
+    const svg = (node: ReactNode) => render(<>{node}</>).container.querySelector("svg")!.innerHTML;
+    const checkMark = svg(<Check />);
+    const endedMark = svg(<ShieldOff />);
+    cleanup();
+    render(<SelectionChip label="Kushal stopped sharing Food preferences" ended />);
+    const chip = screen.getByTestId("selection-chip");
+    expect(chip).toHaveAttribute("data-state", "ended");
+    expect(chip.querySelector("svg")!.innerHTML).toBe(endedMark);
+    cleanup();
+    // Negative control: a shared chip keeps its check.
+    render(<SelectionChip label="Kushal shared Food preferences" />);
+    expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(checkMark);
+    expect(checkMark).not.toBe(endedMark);
+  });
+
   it("words an expiry after sharing as ended on a day", () => {
     render(<AccessEndedNotice personName="Kushal Trivedi" labels={["Food preferences"]} reason="expired" endedAt={ENDS} />);
     expect(screen.getByTestId("access-ended-notice"))
@@ -219,6 +241,50 @@ describe("human-readable shared details", () => {
   it("negative control: the same check fails on the raw tree renderer", () => {
     const raw = render(<DecryptedRecordContent data={MEMORY_TREE} />);
     expect(() => assertNoInternalIds(raw.container)).toThrow(/internal detail rendered/);
+  });
+
+  // Regression (localhost run 2026-09-28, screenshot 09): the decrypted export
+  // is the owner's envelope, `{ [domain]: record, __export_metadata }`. Its
+  // bookkeeping rendered as values under "Food preferences": "food", "2",
+  // "preferences.entities._entities.kind", "..._items", and "Show all 9".
+  it("shows only readable lines from a real export envelope, never its bookkeeping", () => {
+    const EXPORT_ENVELOPE = {
+      food: { preferences: { entities: { _entities: [{
+        kind: "preference",
+        observations: { _items: [
+          "My favorite cuisine is Neapolitan pizza and I prefer vegetarian toppings.",
+          "My favorite restaurant is Nopa in San Francisco.",
+        ] },
+        observation_count: 2,
+      }] } } },
+      __export_metadata: {
+        scope: "attr.food.preferences.*",
+        source_domain: "food",
+        manifest_version: 2,
+        approved_paths: ["preferences.entities._entities.kind", "preferences.entities._entities.observations._items"],
+        approved_segment_ids: ["preferences"],
+        export_timestamp: "2026-09-29T00:21:40.000Z",
+      },
+    };
+    expect(sharedItemRows([{ requestId: "r1", label: "Food preferences", data: EXPORT_ENVELOPE }])).toEqual([{
+      key: "r1", label: "Food preferences", values: [
+        "My favorite cuisine is Neapolitan pizza and I prefer vegetarian toppings.",
+        "My favorite restaurant is Nopa in San Francisco.",
+      ],
+    }]);
+    render(<SharedDetailsList values={[{ requestId: "r1", label: "Food preferences", data: EXPORT_ENVELOPE }]} />);
+    const text = screen.getByTestId("chat-shared-information").textContent ?? "";
+    expect(text).not.toMatch(/_entities|_items|\.entities\.|\bfood\b|\b2\b|Show all/);
+    expect(screen.queryByRole("button", { name: /Show all/ })).toBeNull();
+  });
+
+  it("reads a short field as a labelled line and drops counts and bare numbers", () => {
+    const rows = sharedItemRows([{ requestId: "r1", label: "Food preferences", data: {
+      favorite_cuisine: "Neapolitan pizza", spice_level: 3, item_count: 4, vegetarian: true, _items: [7],
+    } }]);
+    expect(rows).toEqual([{ key: "r1", label: "Food preferences", values: [
+      "Favorite cuisine: Neapolitan pizza", "Spice level: 3", "Vegetarian: Yes",
+    ] }]);
   });
 
   it("collapses long values behind Show more", () => {
@@ -259,6 +325,25 @@ describe("InformationRequestReviewView with and without progress", () => {
     mocks.unlocked = true;
   });
   afterEach(cleanup);
+
+  // Localhost run 2026-09-28 (screenshot 02): "I'll ask Kushal Trivedi. Here's
+  // what I'd request:" rendered below the card it introduces.
+  it("reads One's lead-in before the ask card it introduces", async () => {
+    mocks.getInformationRequest.mockResolvedValue(bundle("pending", false));
+    const lead = "I'll ask Kushal Trivedi. Here's what I'd request:";
+    render(<AgentTurnStreamPanel streamEvents={[]} responseText={lead} response={<p>{lead}</p>}
+      isStreaming={false} structuredExperiences={[{ id: "card", experience: restored }]} />);
+    const card = await screen.findByText("Waiting for Kushal Trivedi's approval");
+    const text = screen.getByText(lead);
+    expect(text.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("negative control: any other card keeps its place above the answer it precedes", () => {
+    render(<AppStreamPanel responseText="Here is the summary." structuredContent={<div>Evidence card</div>} />);
+    const card = screen.getByText("Evidence card");
+    const text = screen.getByText("Here is the summary.");
+    expect(card.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
 
   it("falls back to today's card when the server sends no progress", async () => {
     mocks.getInformationRequest.mockResolvedValue(bundle("pending", false));

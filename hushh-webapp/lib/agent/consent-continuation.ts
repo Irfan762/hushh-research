@@ -263,17 +263,25 @@ export function useInformationRequestPhaseReader(
 
 // --- Doorbell: an adaptive check while a request waits and the chat shows --
 
-/** About 2s while a request waits and the chat is visible. */
+/**
+ * About 2s for the first five minutes after a send while the chat is visible.
+ * Most people answer inside that window, and an approval should read as
+ * "Reading…" within a few seconds (measured 2026-09-28: a 15s backoff after two
+ * minutes made Allow take 25s to reach the requester).
+ */
 export const DOORBELL_FAST_INTERVAL_MS = 2_000;
-/** How long the fast cadence lasts after the newest request started waiting. */
-export const DOORBELL_FAST_WINDOW_MS = 120_000;
-/** After the fast window: 4s, 8s, then every 15s. */
-export const DOORBELL_BACKOFF_MS = [4_000, 8_000, 15_000] as const;
+export const DOORBELL_FAST_WINDOW_MS = 5 * 60_000;
+/** Then about 5s until the request has waited thirty minutes. */
+export const DOORBELL_STEADY_INTERVAL_MS = 5_000;
+export const DOORBELL_STEADY_WINDOW_MS = 30 * 60_000;
+/** Then every 15s. Hidden is always paused; a push, event or focus checks at once. */
+export const DOORBELL_SLOW_INTERVAL_MS = 15_000;
 
 /** The wait before the next check, given how long the newest request has waited. */
-export function doorbellDelayMs(waitedMs: number, backoffStep: number): number {
+export function doorbellDelayMs(waitedMs: number): number {
   if (waitedMs < DOORBELL_FAST_WINDOW_MS) return DOORBELL_FAST_INTERVAL_MS;
-  return DOORBELL_BACKOFF_MS[Math.min(Math.max(0, backoffStep), DOORBELL_BACKOFF_MS.length - 1)]!;
+  if (waitedMs < DOORBELL_STEADY_WINDOW_MS) return DOORBELL_STEADY_INTERVAL_MS;
+  return DOORBELL_SLOW_INTERVAL_MS;
 }
 
 export type InformationRequestDoorbell = {
@@ -302,8 +310,6 @@ export function startInformationRequestDoorbell(input: {
   const now = input.now ?? (() => Date.now());
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  let backoffStep = 0;
-  let anchor: number | null = null;
 
   const clear = () => {
     if (timer !== null) clearTimeout(timer);
@@ -313,15 +319,10 @@ export function startInformationRequestDoorbell(input: {
   const schedule = () => {
     clear();
     if (stopped || !input.hasWaiting() || !input.isVisible()) return;
+    // The newest request's wait sets the pace, so a new send is fast again.
     const since = input.waitingSinceMs();
-    if (since !== anchor) {
-      anchor = since;
-      backoffStep = 0;
-    }
-    const waited = since === null ? DOORBELL_FAST_WINDOW_MS : now() - since;
-    const delay = doorbellDelayMs(waited, backoffStep);
-    if (waited >= DOORBELL_FAST_WINDOW_MS) backoffStep += 1;
-    timer = setTimeout(tick, delay);
+    const waited = since === null ? DOORBELL_STEADY_WINDOW_MS : now() - since;
+    timer = setTimeout(tick, doorbellDelayMs(waited));
   };
 
   function tick() {
@@ -533,6 +534,79 @@ export function redactedConsentAnswers(input: {
   return hidden;
 }
 
+/**
+ * When shared access ends, every answer One gave while it was live is derived
+ * from it, including a later follow-up the person typed themselves ("What's
+ * Kushal's favorite restaurant?"). The server tags each of those invocations
+ * and a reload hides them; a live chat never received that tag, so the
+ * follow-up kept the shared value on screen until a reload (2026-09-28, run 2).
+ *
+ * This tags, in place, every assistant message after the bundle's shared chip
+ * that has no bundle of its own, stopping at a later chip for the same bundle
+ * (its "Access ended" continuation, after which nothing was shared). The same
+ * rule the server applies, so the live chat and a reload agree.
+ */
+export function tagAnswersFromLiveAccess<T extends TranscriptMessage>(input: {
+  messages: T[];
+  bundleId: string;
+  tags: ReadonlyMap<string, ConsentTranscriptTag>;
+}): T[] {
+  const bundleId = input.bundleId.toLowerCase();
+  let inside = false;
+  let changed = false;
+  const out = input.messages.map((message) => {
+    const tag = input.tags.get(message.id);
+    if (tag?.role === "chip" && tag.bundleId === bundleId) {
+      inside = isSharedOutcome(tag.continuedOutcome);
+      return message;
+    }
+    if (!inside || message.role !== "assistant" || message.consentBundleId) return message;
+    changed = true;
+    return { ...message, consentBundleId: bundleId };
+  });
+  return changed ? out : input.messages;
+}
+
+type RedactionFlagged = {
+  id: string;
+  serverMessageId?: string;
+  consentBundleId?: string;
+  consentAccessEnded?: boolean;
+  consentAccess?: { bundleId: string; state: "live" | "ended" };
+};
+
+/**
+ * Bring the server's redaction flags onto the live transcript, matched by the
+ * server's message id, without replacing any text, card or scroll position.
+ * Flags only ever add hiding: a message the server does not mark is left as it
+ * is.
+ */
+export function mergeServerRedactionFlags<T extends RedactionFlagged>(
+  messages: T[],
+  server: ReadonlyArray<Pick<T, "id" | "consentBundleId" | "consentAccessEnded" | "consentAccess">>,
+): T[] {
+  const byId = new Map(server
+    .filter((entry) => entry.consentBundleId || entry.consentAccessEnded || entry.consentAccess)
+    .map((entry) => [entry.id, entry]));
+  if (!byId.size) return messages;
+  let changed = false;
+  const out = messages.map((message) => {
+    const flags = byId.get(message.serverMessageId ?? message.id) ?? byId.get(message.id);
+    if (!flags) return message;
+    const next = {
+      ...message,
+      ...(flags.consentBundleId && !message.consentBundleId ? { consentBundleId: flags.consentBundleId.toLowerCase() } : {}),
+      ...(flags.consentAccessEnded ? { consentAccessEnded: true } : {}),
+      ...(flags.consentAccess ? { consentAccess: flags.consentAccess } : {}),
+    };
+    if (next.consentBundleId === message.consentBundleId && next.consentAccessEnded === message.consentAccessEnded
+      && next.consentAccess === message.consentAccess) return message;
+    changed = true;
+    return next;
+  });
+  return changed ? out : messages;
+}
+
 // --- One send affordance per ask, and a sent card restored in place ---------
 
 type ExperienceEntry = { id: string; experience: AgentStructuredExperience | { type: string } };
@@ -634,31 +708,29 @@ export function foldSubmittedRequestReceipts<T extends FoldableMessage>(messages
 
 // --- Watching live access for its end ---------------------------------------
 
-/** About every 10s while the chat is visible, right after a wake. */
-export const ACCESS_WATCH_FAST_MS = 10_000;
-/** Fast checks after a wake before backing off (one minute). */
-export const ACCESS_WATCH_FAST_CHECKS = 6;
-/** Then 20s, 30s, and every 60s from there. */
-export const ACCESS_WATCH_BACKOFF_MS = [20_000, 30_000, 60_000] as const;
+/**
+ * About every 10s for as long as the access is live and the chat is visible,
+ * with no backoff: a stop to sharing must reach the chat within seconds
+ * (measured 2026-09-28: a 60s backoff made it take 60s). Hidden is paused.
+ */
+export const ACCESS_WATCH_INTERVAL_MS = 10_000;
 
-/** The wait before the next check, given the checks since the last wake. */
-export function accessWatchDelayMs(checksSinceWake: number): number {
-  if (checksSinceWake < ACCESS_WATCH_FAST_CHECKS) return ACCESS_WATCH_FAST_MS;
-  const step = Math.min(checksSinceWake - ACCESS_WATCH_FAST_CHECKS, ACCESS_WATCH_BACKOFF_MS.length - 1);
-  return ACCESS_WATCH_BACKOFF_MS[step]!;
+/** The wait before the next check while the chat is visible. */
+export function accessWatchDelayMs(): number {
+  return ACCESS_WATCH_INTERVAL_MS;
 }
 
 export type AccessEndedWatch = {
-  /** Check now and return to the fast cadence (a push, a live event). */
+  /** Check now and restart the 10s cadence from here (a push, a live event). */
   wake: () => void;
   stop: () => void;
 };
 
 /**
- * Re-reads live shared access on a gentle cadence so a stop to sharing reaches
- * the chat in seconds, not at the next page event. Paused (no timer at all)
- * while hidden; becoming visible or focused checks at once. Only the cadence
- * lives here; `check` is the caller's ledger read.
+ * Re-reads live shared access about every 10s while the chat is visible, so a
+ * stop to sharing reaches the chat in seconds, not at the next page event.
+ * Paused (no timer at all) while hidden; becoming visible or focused checks at
+ * once. Only the cadence lives here; `check` is the caller's ledger read.
  */
 export function startAccessEndedWatch(input: {
   check: () => void;
@@ -668,7 +740,6 @@ export function startAccessEndedWatch(input: {
 }): AccessEndedWatch {
   let timer: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
-  let checks = 0;
   const clear = () => {
     if (timer !== null) clearTimeout(timer);
     timer = null;
@@ -676,18 +747,16 @@ export function startAccessEndedWatch(input: {
   const schedule = () => {
     clear();
     if (stopped || !input.isVisible()) return;
-    timer = setTimeout(tick, accessWatchDelayMs(checks));
+    timer = setTimeout(tick, accessWatchDelayMs());
   };
   function tick() {
     timer = null;
     if (stopped || !input.isVisible()) return;
     input.check();
-    checks += 1;
     schedule();
   }
   const wake = () => {
     if (stopped) return;
-    checks = 0;
     if (input.isVisible()) input.check();
     schedule();
   };

@@ -133,7 +133,9 @@ for (const [width, height] of [[393, 852], [1440, 900]] as const)
 
     const details = page.locator("[data-state='shared-details']");
     await expect(details).toContainText("Nopa");
-    expect(await details.textContent()).not.toMatch(/mem[\s_-]?65725402299c|\bkind\b|\bstatus\b|entities/i);
+    expect(await details.textContent()).not.toMatch(/mem[\s_-]?65725402299c|\bkind\b|\bstatus\b|entities|_items|manifest|\b2\b/i);
+    // The envelope's source domain ("food") is bookkeeping; the heading "Food preferences" is not.
+    expect(await details.textContent()).not.toMatch(/\bfood\b/);
 
     for (const state of STATES) {
       const section = page.locator(`[data-state='${state}']`);

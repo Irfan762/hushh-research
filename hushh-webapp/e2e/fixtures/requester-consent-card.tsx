@@ -43,7 +43,14 @@ const SHARED = {
       observations: ["My favorite cuisine is Neapolitan pizza and I prefer vegetarian toppings."] },
     mem_65725402299c: { kind: "preference", status: "active", summary: "Favorite restaurant is Nopa in San Francisco." },
     dining_notes: { summary: "Prefers a quiet table away from the kitchen, books ahead on weekends, and is happy to share small plates. Likes places with a good natural wine list and a vegetarian tasting menu when it is on offer." },
+    _entities: [{ kind: "preference", observations: { _items: ["Books ahead on weekends."] }, observation_count: 1 }],
   } },
+  // The owner's export envelope (lib/consent/export-builder.ts): never shown.
+  __export_metadata: {
+    scope: "attr.food.preferences.*", source_domain: "food", manifest_version: 2,
+    approved_paths: ["preferences.entities._entities.kind", "preferences.entities._entities.observations._items"],
+    approved_segment_ids: ["preferences"], export_timestamp: "2026-09-29T00:21:40.000Z",
+  },
 };
 
 const phases = new Map(STATES.map((entry) => [entry.bundleId, entry.phase]));

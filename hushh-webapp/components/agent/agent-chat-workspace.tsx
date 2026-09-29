@@ -31,6 +31,7 @@ import {
   continuedElsewhere,
   foldSubmittedRequestReceipts,
   markConsentContinuationUnavailable,
+  mergeServerRedactionFlags,
   prepareConsentContinuation,
   rebuildWaitingRequests,
   redactedConsentAnswers,
@@ -38,6 +39,7 @@ import {
   revealConsentContinuationReply,
   setInformationRequestPhase,
   startAccessEndedWatch,
+  tagAnswersFromLiveAccess,
   tagConsentContinuationMessages,
   useInformationRequestPhaseReader,
   watchSentInformationRequest,
@@ -371,6 +373,7 @@ import { AgentTextAttachmentViewButton } from "@/components/agent/agent-text-att
 import {
   findPendingAssistantTurn,
   measureTranscriptReveal,
+  transcriptFollowsLatest,
   transcriptRevealScrollTop,
 } from "@/lib/agent/agent-chat-transcript-scroll";
 import {
@@ -2315,6 +2318,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const transcriptProgrammaticTargetRef = useRef<number | null>(null);
   const transcriptProgrammaticScrollTimeoutRef = useRef<number | null>(null);
   const transcriptUserScrollRef = useRef(false);
+  // The last follow left the latest turn in view; growth keeps following it.
+  const transcriptStuckToEndRef = useRef(true);
   const scrollToSubmittedTurnRef = useRef(false);
 
   const clearTranscriptProgrammaticScroll = useCallback(() => {
@@ -3089,12 +3094,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       transcript.scrollHeight - transcript.clientHeight - transcript.scrollTop;
     // Keep the latest-turn behavior for a fresh/initial conversation, but do
     // not yank a reader back to the bottom after they have started browsing
-    // older messages. The ref is intentionally session-local and does not
-    // add a render to the scroll path.
-    const shouldFollowTranscript =
-      !transcriptUserScrollRef.current &&
-      (scrollToSubmittedTurnRef.current || transcriptProgrammaticScrollRef.current ||
-        oneScrollTopRef.current <= 2 || distanceFromBottom <= 48);
+    // older messages. The refs are intentionally session-local and do not
+    // add a render to the scroll path. "At the end" is measured against the
+    // composer, not the raw scroll bottom, and is sticky once followed, so a
+    // growing answer never slides under the composer and bottom bar.
+    const endBelowBand = transcriptRevealScrollTop(
+      measureTranscriptReveal(transcript, messagesEnd, composerStackRef.current),
+    ) - transcript.scrollTop;
+    const shouldFollowTranscript = transcriptFollowsLatest({
+      userScrolled: transcriptUserScrollRef.current,
+      submittedTurn: scrollToSubmittedTurnRef.current,
+      programmatic: transcriptProgrammaticScrollRef.current,
+      scrollTop: oneScrollTopRef.current,
+      stuckToEnd: transcriptStuckToEndRef.current,
+      distanceFromBottom,
+      endBelowBand,
+    });
+    transcriptStuckToEndRef.current = shouldFollowTranscript;
     if (!shouldFollowTranscript) return;
 
     const submittedTurn = scrollToSubmittedTurnRef.current;
@@ -6762,10 +6778,46 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     .filter((bundleId) => bundleId && !isAccessEndedOutcome(liveBundleOutcomes[bundleId]))
     .join(","), [liveBundleOutcomes, sharedAnswerBundleKey]);
 
+  // Read by the access watch when sharing ends, without re-arming it.
+  const continuedOutcomesRef = useRef(continuedOutcomes);
+  useEffect(() => {
+    continuedOutcomesRef.current = continuedOutcomes;
+  }, [continuedOutcomes]);
+
+  // Sharing ended: hide every answer One gave while it was live, now, not at
+  // the next reload. Tag them here by the server's own rule, then bring the
+  // server's redaction flags in so this chat and a reload agree.
+  const hideAnswersFromEndedAccess = useCallback((bundleId: string, token: string) => {
+    setMessages((current) => tagAnswersFromLiveAccess({
+      messages: current,
+      bundleId,
+      tags: tagConsentContinuationMessages({
+        messages: current,
+        cards: collectOutgoingRequestCards(current),
+        continued: continuedOutcomesRef.current,
+      }),
+    }));
+    const ownerId = user?.uid;
+    const threadId = conversationIdRef.current;
+    const key = vaultKeyRef.current;
+    if (!ownerId || !threadId || !key) return;
+    void loadAgentChatConversationHistory({
+      userId: ownerId,
+      conversationId: threadId,
+      vaultOwnerToken: token,
+      vaultKey: key,
+      force: true,
+    }).then((history) => {
+      if (conversationIdRef.current !== threadId) return;
+      const server = storedMessagesToAgentMessages(history);
+      setMessages((current) => mergeServerRedactionFlags(current, server));
+    }).catch(() => undefined);
+  }, [user?.uid]);
+
   // Answers from shared information: re-read the ledger while that access is
-  // live, about every 10s while the chat is visible and backing off to 60s,
-  // paused while hidden, and at once on a push, a live event or a return to
-  // the app. A stop or a lapse hides the answers and ends the card within
+  // live, about every 10s for as long as the chat is visible, paused while
+  // hidden, and at once on a push, a live event or a return to the app. A
+  // stop or a lapse hides every answer from it and ends the card within
   // seconds. Decrypted information itself is never kept past its turn.
   useEffect(() => {
     const token = vaultOwnerToken;
@@ -6789,6 +6841,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             });
             // The card for this request reads its own status: tell it now,
             // so it turns to "Access ended" with the answers, not later.
+            // Idempotent, and an ended bundle leaves the watch, so this runs
+            // once per stop without depending on when the updater above ran.
+            if (isAccessEndedOutcome(outcome)) hideAnswersFromEndedAccess(bundleId, token);
             if (changed && isAccessEndedOutcome(outcome)) {
               dispatchConsentStateChanged({
                 source: "information_request_updated",
@@ -6822,7 +6877,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       watch.stop();
       window.removeEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
     };
-  }, [hasChatAccess, watchedAccessBundleKey, vaultOwnerToken]);
+  }, [hasChatAccess, hideAnswersFromEndedAccess, watchedAccessBundleKey, vaultOwnerToken]);
 
   // One Send per ask: while an ask card (or the card it became) is on screen
   // for that person, a staged "Request someone's information" bar would be a
@@ -6861,14 +6916,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     };
   };
 
+  // A shared chip whose sharing has since stopped or run out.
+  const consentChipEnded = (message: AgentMessage): boolean => {
+    const tag = consentTags.get(message.id);
+    const live = tag ? liveBundleOutcomes[tag.bundleId] : null;
+    return tag?.role === "chip" && isSharedOutcome(tag.continuedOutcome)
+      && (isAccessEndedOutcome(live) || Boolean(message.consentAccessEnded));
+  };
+
   const consentChipLabel = (message: AgentMessage): string => {
     const tag = consentTags.get(message.id);
     const card = outgoingRequestCardFor(message.id);
     // Once that sharing ends, the chip says so too, beside answers that now
     // read "Access ended" ("Kushal stopped sharing Food preferences").
     const live = tag ? liveBundleOutcomes[tag.bundleId] : null;
-    if (tag?.role === "chip" && isSharedOutcome(tag.continuedOutcome)
-      && (isAccessEndedOutcome(live) || message.consentAccessEnded)) {
+    if (consentChipEnded(message)) {
       return consentAccessEndedChipText({
         reason: live === "expired" ? "expired" : "revoked",
         personName: card?.personName ? personFirstName(card.personName) : null,
@@ -7986,7 +8048,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   {message.role === "assistant" && redactedAnswerIds.has(message.id) ? (
                     <AccessEndedNotice variant="message" {...accessEndedNoticeFor(message)} />
                   ) : message.kind === "selection" ? (
-                    <SelectionChip label={consentChipLabel(message)} />
+                    <SelectionChip label={consentChipLabel(message)} ended={consentChipEnded(message)} />
                   ) : (
                     <AgentBubble
                       message={message}

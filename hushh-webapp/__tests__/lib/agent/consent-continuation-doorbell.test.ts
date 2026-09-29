@@ -13,7 +13,9 @@ import {
   foldSubmittedRequestReceipts,
   isConsentContinuationUnavailable,
   markConsentContinuationUnavailable,
+  mergeServerRedactionFlags,
   startAccessEndedWatch,
+  tagAnswersFromLiveAccess,
   informationRequestPhase,
   isConsentContinuationArmed,
   isStaleRestoredAnswer,
@@ -65,22 +67,48 @@ function checkTimes(
   return times;
 }
 
-/** The contract: about every 2s while waiting, then 4s, 8s and a 15s cap. */
+/**
+ * The contract: about every 2s for the first five minutes after a send, then
+ * 5s until thirty minutes, then 15s (never slower while visible).
+ */
 function expectAdaptiveCadence(times: number[]): void {
-  // Fast window: a check every 2s for the first two minutes.
+  // Fast window: a check every 2s for the first five minutes.
   expect(times.slice(0, 5)).toEqual([2, 4, 6, 8, 10]);
-  expect(times.filter((t) => t <= 120)).toHaveLength(60);
-  // After two minutes: +4s, +8s, then +15s steps, never slower than 15s.
-  const after = times.filter((t) => t >= 120);
-  expect(after.slice(0, 5)).toEqual([120, 124, 132, 147, 162]);
-  const gaps = after.slice(1).map((t, index) => t - after[index]!);
+  expect(times.filter((t) => t <= 300)).toHaveLength(150);
+  // Five to thirty minutes: every 5s.
+  const steady = times.filter((t) => t > 300 && t <= 1_800);
+  expect(steady.slice(0, 3)).toEqual([305, 310, 315]);
+  expect(steady).toHaveLength(300);
+  // After thirty minutes: every 15s, never slower.
+  const slow = times.filter((t) => t > 1_800);
+  expect(slow.slice(0, 3)).toEqual([1_815, 1_830, 1_845]);
+  const gaps = times.slice(1).map((t, index) => t - times[index]!);
   expect(Math.max(...gaps)).toBe(15);
 }
+
+const CADENCE_WINDOW_MS = 1_900_000;
 
 /** A negative control: the old fixed 8s poll, which the contract must reject. */
 function startFlatEightSecondPoll(input: { check: () => void }): { stop: () => void } {
   const id = setInterval(input.check, 8_000);
   return { stop: () => clearInterval(id) };
+}
+
+/**
+ * A negative control: the previous doorbell, 2s for two minutes then 4s, 8s
+ * and 15s. Measured 2026-09-28, it made an Allow at minute three take 25s to
+ * reach the requester.
+ */
+function startTwoMinuteBackoffPoll(input: { check: () => void; waitingSinceMs: () => number | null }): { stop: () => void } {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let step = 0;
+  const schedule = () => {
+    const waited = Date.now() - (input.waitingSinceMs() ?? Date.now());
+    const delay = waited < 120_000 ? 2_000 : [4_000, 8_000, 15_000][Math.min(step++, 2)]!;
+    timer = setTimeout(() => { input.check(); schedule(); }, delay);
+  };
+  schedule();
+  return { stop: () => { if (timer) clearTimeout(timer); } };
 }
 
 describe("information request doorbell", () => {
@@ -93,15 +121,21 @@ describe("information request doorbell", () => {
     clearSentInformationRequests(null);
   });
 
-  it("checks every 2s while a request waits, then backs off to 4s, 8s and a 15s cap", () => {
-    const times = checkTimes((input) => startInformationRequestDoorbell({ ...input, listen: false }), 200_000);
+  it("checks every 2s for five minutes, every 5s to thirty minutes, then every 15s", () => {
+    const times = checkTimes((input) => startInformationRequestDoorbell({ ...input, listen: false }), CADENCE_WINDOW_MS);
     expectAdaptiveCadence(times);
+    // An Allow at minute three is seen within about 2s.
+    const afterThreeMinutes = times.find((t) => t >= 180)!;
+    expect(afterThreeMinutes - 180).toBeLessThanOrEqual(2);
   });
 
-  it("negative control: a flat 8s poll fails the same cadence check", () => {
-    const times = checkTimes(startFlatEightSecondPoll, 200_000);
-    expect(times.slice(0, 3)).toEqual([8, 16, 24]);
-    expect(() => expectAdaptiveCadence(times)).toThrow();
+  it("negative control: a flat 8s poll and the old two-minute backoff both fail the cadence check", () => {
+    const flat = checkTimes(startFlatEightSecondPoll, CADENCE_WINDOW_MS);
+    expect(flat.slice(0, 3)).toEqual([8, 16, 24]);
+    expect(() => expectAdaptiveCadence(flat)).toThrow();
+    const old = checkTimes(startTwoMinuteBackoffPoll, CADENCE_WINDOW_MS);
+    expect(old.filter((t) => t > 120 && t <= 180).length).toBeLessThan(10);
+    expect(() => expectAdaptiveCadence(old)).toThrow();
   });
 
   it("sets no timer at all while nothing waits", () => {
@@ -433,6 +467,59 @@ describe("continuation answers and access ended", () => {
       .toEqual(["answer-1", "answer-2"]);
   });
 
+  // Localhost run 2026-09-28 (screenshot 16): after a stop to sharing, the
+  // follow-up the person typed while access was live ("What's Kushal's
+  // favorite restaurant?") kept "Nopa" on screen until a reload.
+  it("hides a live follow-up answer at once when sharing ends, and nothing after the end", () => {
+    const messages = [
+      cardMessage(BUNDLE_A),
+      cardMessage(BUNDLE_B),
+      { id: "chip", role: "user" as const, kind: "selection" as const, text: "Consent approved", consentBundleId: BUNDLE_A },
+      { id: "answer", role: "assistant" as const, text: "Nopa", consentBundleId: BUNDLE_A },
+      { id: "ask", role: "user" as const, text: "What's Kushal's favorite restaurant?" },
+      { id: "follow-up", role: "assistant" as const, text: "Nopa, again" },
+      { id: "other", role: "assistant" as const, text: "From Priya", consentBundleId: BUNDLE_B },
+      { id: "ended-chip", role: "user" as const, kind: "selection" as const, text: "Access ended", consentBundleId: BUNDLE_A },
+      { id: "after-end", role: "assistant" as const, text: "Kushal stopped sharing." },
+    ];
+    const continued = { [BUNDLE_A]: "granted", [BUNDLE_B]: "granted" };
+    const tagsBefore = tagConsentContinuationMessages({ messages, cards: collectOutgoingRequestCards(messages), continued });
+    // Negative control: without the live tag only the continuation answer hides.
+    expect([...redactedConsentAnswers({ tags: tagsBefore, liveOutcomes: { [BUNDLE_A]: "revoked" } })]).toEqual(["answer"]);
+
+    const tagged = tagAnswersFromLiveAccess({ messages, bundleId: BUNDLE_A, tags: tagsBefore });
+    const tags = tagConsentContinuationMessages({ messages: tagged, cards: collectOutgoingRequestCards(tagged), continued });
+    expect([...redactedConsentAnswers({ tags, liveOutcomes: { [BUNDLE_A]: "revoked" } })].sort())
+      .toEqual(["answer", "follow-up"]);
+    expect(tagged.find((message) => message.id === "other")?.consentBundleId).toBe(BUNDLE_B);
+    expect(tagged.find((message) => message.id === "after-end")?.consentBundleId).toBeUndefined();
+    // Idempotent: a second pass changes nothing.
+    expect(tagAnswersFromLiveAccess({ messages: tagged, bundleId: BUNDLE_A, tags })).toBe(tagged);
+  });
+
+  it("wires the access watch to hide every answer and re-read the server's flags when sharing ends", () => {
+    const workspace = readFileSync(path.join(process.cwd(), "components/agent/agent-chat-workspace.tsx"), "utf8");
+    expect(workspace).toContain("if (isAccessEndedOutcome(outcome)) hideAnswersFromEndedAccess(bundleId, token);");
+    const hide = workspace.slice(workspace.indexOf("const hideAnswersFromEndedAccess"), workspace.indexOf("// Answers from shared information"));
+    expect(hide).toContain("tagAnswersFromLiveAccess({");
+    expect(hide).toContain("force: true,");
+    expect(hide).toContain("mergeServerRedactionFlags(current, server)");
+  });
+
+  it("merges the server's redaction flags by server message id without touching anything else", () => {
+    const live = [
+      { id: "msg-1-assistant", serverMessageId: "srv-9", role: "assistant" as const, text: "Nopa" },
+      { id: "msg-2-assistant", serverMessageId: "srv-10", role: "assistant" as const, text: "Weather" },
+    ];
+    const merged = mergeServerRedactionFlags(live, [
+      { id: "srv-9", consentBundleId: BUNDLE_A.toUpperCase(), consentAccessEnded: true },
+      { id: "srv-10" },
+    ]);
+    expect(merged[0]).toEqual({ ...live[0], consentBundleId: BUNDLE_A, consentAccessEnded: true });
+    expect(merged[1]).toBe(live[1]);
+    expect(mergeServerRedactionFlags(live, [{ id: "srv-10" }])).toBe(live);
+  });
+
   it("reads the server's consentAccess names and labels, with the response map as the reason", () => {
     const access = parseConsentAccess(
       { bundleId: BUNDLE_A, state: "ended", outcome: null, personName: "Kushal Trivedi", labels: ["Food preferences", 7] },
@@ -588,19 +675,29 @@ describe("watching live access for its end", () => {
   });
   afterEach(() => vi.useRealTimers());
 
-  it("checks about every 10s while visible, backs off to 60s, and never slower", () => {
+  it("checks about every 10s for as long as it is visible, with no backoff", () => {
     const times: number[] = [];
     const startedAt = Date.now();
     const watch = startAccessEndedWatch({ check: () => times.push((Date.now() - startedAt) / 1000), isVisible: () => true, listen: false });
     watch.wake();
-    vi.advanceTimersByTime(300_000);
+    vi.advanceTimersByTime(600_000);
     watch.stop();
-    expect(times.slice(0, 7)).toEqual([0, 10, 20, 30, 40, 50, 60]);
-    expect(times.slice(7, 10)).toEqual([80, 110, 170]);
+    expect(times.slice(0, 4)).toEqual([0, 10, 20, 30]);
+    const gaps = times.slice(1).map((t, index) => t - times[index]!);
+    expect(new Set(gaps)).toEqual(new Set([10]));
+    expect(times).toHaveLength(61);
+    expect(accessWatchDelayMs()).toBe(10_000);
+  });
+
+  it("negative control: the old one-minute fast window then 60s backoff misses a stop by a minute", () => {
+    // The previous schedule: six 10s checks after a wake, then 20s, 30s, 60s.
+    // Measured 2026-09-28, a stop about 100s after the answer took 60s to show.
+    const oldDelay = (checks: number) => checks < 6 ? 10_000 : [20_000, 30_000, 60_000][Math.min(checks - 6, 2)]!;
+    const times: number[] = [0];
+    for (let checks = 0; times.at(-1)! < 600; checks += 1) times.push(times.at(-1)! + oldDelay(checks) / 1000);
     const gaps = times.slice(1).map((t, index) => t - times[index]!);
     expect(Math.max(...gaps)).toBe(60);
-    // The observed failure took 76s to notice a stop to sharing; the fast window catches it within 10s.
-    expect(accessWatchDelayMs(0)).toBe(10_000);
+    expect(() => expect(new Set(gaps)).toEqual(new Set([10]))).toThrow();
   });
 
   it("pauses while hidden and checks at once when a push or event wakes it", () => {
