@@ -10,10 +10,12 @@ import pytest
 
 from hushh_mcp.services import drive_owner_search_service as search_module
 from hushh_mcp.services import google_drive_rest_transport as rest
+from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 from hushh_mcp.services.drive_owner_search_service import (
     DriveOwnerSearchService,
     compile_request_queries,
 )
+from hushh_mcp.services.drive_owner_search_store import DriveOwnerSearchStore
 from hushh_mcp.services.drive_request_bulk_service import DriveRequestBulkService
 from hushh_mcp.services.external_mcp_client import ExternalMcpToolResult
 from hushh_mcp.services.google_drive_adapter import (
@@ -23,6 +25,33 @@ from hushh_mcp.services.google_drive_adapter import (
     DriveReadError,
     GoogleDriveAdapter,
 )
+
+
+@pytest.mark.asyncio
+async def test_final_search_page_reconciles_request_after_last_batch_settled(monkeypatch):
+    store = DriveOwnerSearchStore(db=SimpleNamespace())
+    transaction = AsyncMock(return_value={"status": "completed"})
+    refresh = AsyncMock()
+    monkeypatch.setattr(store, "_transaction", transaction)
+    monkeypatch.setattr(DriveBulkShareStore, "refresh_request", refresh)
+    await store.commit_page(
+        {"user_id": "owner"},
+        checkpoint={"request_origin_id": "a9704272-a1aa-469a-bdf9-883e3884adad"},
+        files=[],
+        done=True,
+    )
+    refresh.assert_awaited_once_with(
+        user_id="owner", request_id="a9704272-a1aa-469a-bdf9-883e3884adad"
+    )
+    transaction.return_value = {"status": "running"}
+    refresh.reset_mock()
+    await store.commit_page(
+        {"user_id": "owner"},
+        checkpoint={"request_origin_id": "a9704272-a1aa-469a-bdf9-883e3884adad"},
+        files=[],
+        done=False,
+    )
+    refresh.assert_not_awaited()
 
 
 def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
@@ -161,6 +190,7 @@ async def test_completed_legacy_request_restarts_search_with_shareability_facts(
     store = SimpleNamespace(
         by_client=AsyncMock(return_value={"status": "completed", "jobId": "old-job"}),
         clear_legacy_completed_request=AsyncMock(return_value=True),
+        takeover_request=AsyncMock(return_value=None),
     )
     search = SimpleNamespace(
         store=store,

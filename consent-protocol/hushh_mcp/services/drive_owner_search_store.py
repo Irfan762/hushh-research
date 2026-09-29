@@ -277,6 +277,86 @@ class DriveOwnerSearchStore(DriveLivePreferences):
 
         return await self._transaction(operation)
 
+    async def takeover_request(self, *, user_id, request_id):
+        """Persist an authenticated owner's manual takeover of an auto search.
+
+        The caller must have checked the current owner session. Reuse the same
+        encrypted checkpoint and committed results so previously shared files
+        retain their receipts; changing mode and lease fences the old worker.
+        """
+        request_id = _identity(request_id)
+
+        def operation(connection):
+            current = self._access(connection, user_id)
+            request = self._row(
+                connection,
+                """SELECT * FROM drive_share_requests WHERE request_id=:request
+                  AND user_id=:user FOR UPDATE""",
+                {"request": request_id, "user": user_id},
+            )
+            if request is None or request["status"] != "pending":
+                return None
+            private = self.search_cipher.open(
+                request["request_envelope"],
+                user_id=user_id,
+                resource_id=request_id,
+                purpose="request",
+            )
+            if private.get("trusted_auto") is not True:
+                return None
+            connection.execute(
+                text("""UPDATE drive_share_requests
+                  SET preparation_error_code='manual_search_active',
+                    preparation_next_at=clock_timestamp(),updated_at=clock_timestamp()
+                  WHERE request_id=:request"""),
+                {"request": request_id},
+            )
+            row = self._row(
+                connection,
+                """SELECT * FROM drive_owner_search_jobs
+                  WHERE user_id=:user AND client_request_id=:request
+                    AND expires_at>clock_timestamp() FOR UPDATE""",
+                {"request": request_id, "user": user_id},
+            )
+            if row is None:
+                return None
+            if row["connection_generation"] != current["connection_generation"]:
+                raise DriveReadError("connection_changed")
+            checkpoint = self._checkpoint(row)
+            if (
+                checkpoint.get("request_origin_id") != request_id
+                or checkpoint.get("request_revision") != request["revision"]
+            ):
+                raise DriveReadError("search_superseded")
+            if row["status"] != "completed" and self._row(
+                connection,
+                """SELECT job_id FROM drive_owner_search_jobs
+                  WHERE user_id=:user AND job_id<>:job
+                    AND status IN ('queued','running') LIMIT 1""",
+                {"user": user_id, "job": row["job_id"]},
+            ):
+                raise DriveReadError("search_in_progress")
+            checkpoint["authority_mode"] = "owner"
+            updated = self._row(
+                connection,
+                """UPDATE drive_owner_search_jobs
+                  SET checkpoint_envelope=CAST(:checkpoint AS jsonb),
+                    status=CASE WHEN status='completed' THEN status ELSE 'queued' END,
+                    lease_id=NULL,lease_expires_at=NULL,error_code=NULL,retry_count=0,
+                    next_at=clock_timestamp(),revision=revision+1,
+                    updated_at=clock_timestamp()
+                  WHERE job_id=:job RETURNING *""",
+                {
+                    "job": row["job_id"],
+                    "checkpoint": self._seal(
+                        checkpoint, user_id, str(row["job_id"]), "owner-search-checkpoint"
+                    ),
+                },
+            )
+            return self._view(updated)
+
+        return await self._transaction(operation)
+
     async def clear_terminal_request(self, *, user_id, request_id):
         client = _identity(request_id)
 
@@ -605,11 +685,16 @@ class DriveOwnerSearchStore(DriveLivePreferences):
     def _current(self, connection, job):
         self._access(connection, job["user_id"], job["generation"])
         row = self._owned(connection, job["user_id"], job["job_id"], locked=True)
+        current_mode = self._checkpoint(row).get("authority_mode", "owner")
+        claimed_mode = job["checkpoint"].get("authority_mode", "owner")
+        if current_mode != claimed_mode:
+            raise DriveReadError("search_superseded")
         origin = job["checkpoint"].get("request_origin_id")
         if origin is not None:
             request = self._row(
                 connection,
-                """SELECT status,revision,expires_at,bulk_search_started_at
+                """SELECT status,revision,expires_at,bulk_search_started_at,
+                  preparation_error_code,recipient_user_id,request_envelope
                 FROM drive_share_requests WHERE request_id=:request AND user_id=:user""",
                 {"request": origin, "user": job["user_id"]},
             )
@@ -618,10 +703,39 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 or request["status"] != "pending"
                 or request["revision"] != job["checkpoint"].get("request_revision")
                 or request["bulk_search_started_at"] is None
+                or current_mode == "trusted_auto"
+                and request["preparation_error_code"]
+                in {"trusted_relationship_changed", "manual_search_active"}
                 or request["expires_at"]
                 <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
             ):
                 raise DriveReadError("search_superseded")
+            if current_mode == "trusted_auto":
+                private = self.search_cipher.open(
+                    request["request_envelope"],
+                    user_id=job["user_id"],
+                    resource_id=str(origin),
+                    purpose="request",
+                )
+                if private.get("trusted_auto") is not True:
+                    raise DriveReadError("search_superseded")
+                # A queued automatic request is not an enduring read grant.
+                # Recheck on every page and in the commit transaction, even
+                # if the worker omitted its callback after a future refactor.
+                try:
+                    self.background_current(
+                        connection, user_id=job["user_id"], generation=job["generation"]
+                    )
+                except DriveReadError as error:
+                    if str(error) == "background_preparation_required":
+                        raise
+                    raise DriveReadError("search_superseded") from error
+                from hushh_mcp.services.drive_sharing_store import DriveSharingStore
+
+                if not DriveSharingStore._trusted_recipient_current(
+                    connection, job["user_id"], request["recipient_user_id"]
+                ):
+                    raise DriveReadError("search_superseded")
         now = connection.execute(text("SELECT clock_timestamp()")).scalar_one()
         if (
             row["status"] != "running"
@@ -709,7 +823,17 @@ class DriveOwnerSearchStore(DriveLivePreferences):
             )
             return self._view(updated)
 
-        return await self._transaction(operation)
+        result = await self._transaction(operation)
+        if result["status"] == "completed" and checkpoint.get("request_origin_id"):
+            # The final page may arrive after the last approved batch settled.
+            # Reconcile the request in a separate transaction so the search job
+            # lock and request lock never form a cycle with batch approval.
+            from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
+
+            await DriveBulkShareStore(db=self.db, cipher=self.search_cipher).refresh_request(
+                user_id=job["user_id"], request_id=checkpoint["request_origin_id"]
+            )
+        return result
 
     async def release(self, job, *, error=None, retryable=False):
         # Error/Stop cleanup must remain possible after OAuth revocation. It
@@ -749,5 +873,35 @@ class DriveOwnerSearchStore(DriveLivePreferences):
                 },
             )
             return state
+
+        return await self._transaction(operation)
+
+    async def pause_for_background(self, job):
+        """Keep a trusted search checkpoint dormant until owner setup resumes it."""
+
+        def operation(connection):
+            self._lock(connection, {"user_id": job["user_id"], "connector_id": "google_drive"})
+            row = self._owned(connection, job["user_id"], job["job_id"], locked=True)
+            if row["status"] != "running" or str(row["lease_id"]) != job["lease_id"]:
+                return row["status"]
+            # Enabling background access may have raced with the failed
+            # authority check. The preference row lock makes the decision
+            # atomic with set_background's update in either order.
+            try:
+                self.background_current(
+                    connection, user_id=job["user_id"], generation=job["generation"]
+                )
+                ready = True
+            except DriveReadError:
+                ready = False
+            connection.execute(
+                text("""UPDATE drive_owner_search_jobs
+                  SET status='queued',error_code=NULL,lease_id=NULL,lease_expires_at=NULL,
+                    next_at=CASE WHEN :ready THEN clock_timestamp() ELSE expires_at END,
+                    updated_at=clock_timestamp()
+                  WHERE job_id=:job"""),
+                {"job": job["job_id"], "ready": ready},
+            )
+            return "queued"
 
         return await self._transaction(operation)

@@ -62,10 +62,21 @@ export type SharingReview = {
   canApprove: boolean;
   canTrustFutureRequests: boolean;
   preparationError: SharingPreparationError | null;
+  /** An eligible Trusted-circle request handled without per-request owner approval. */
+  trustedAuto?: boolean;
   durableAvailable?: boolean;
   /** Present on servers with durable, request-bound Drive search. */
   search?: DriveSearchStatus | null;
   bulkShare?: DriveBulkShareView | null;
+  /** Request-bound reviews, newest first. Each batch is at most 25 files. */
+  batches?: DriveBulkShareView[];
+  batchCount?: number;
+  /** All positions already frozen in any batch for this request. */
+  claimedPositions?: number[];
+  /** Skipped automatic positions the owner may explicitly review after manual takeover. */
+  recoverablePositions?: number[];
+  progressiveAllowed?: boolean;
+  aggregateCounts?: DriveBulkShareCounts;
 };
 const SHARING_PREPARATION_ERRORS = [
   "no_relevant_files",
@@ -74,6 +85,8 @@ const SHARING_PREPARATION_ERRORS = [
   "source_changed",
   "preparation_unavailable",
   "trust_revoked",
+  "background_preparation_required",
+  "trusted_relationship_changed",
 ] as const;
 /** Why preparation ended without suggestions. Unknown codes are dropped. */
 export type SharingPreparationError =
@@ -575,6 +588,8 @@ export type DriveBulkShareView = {
   revision: number;
   reviewDigest: string;
   fileCount: number;
+  /** Owner-only positions frozen from the request search for this batch. */
+  positions?: number[];
   recipientCount: number;
   recipients: Array<{ name: string | null; email: string }>;
   excluded: Array<{ name: string | null; reason: DriveCircleExclusion }>;
@@ -677,6 +692,14 @@ function parseBulkShareView(value: RecordValue): DriveBulkShareView {
     throw new DriveSharingError("invalid_response");
   const notifications = record(value.notifications);
   const fileCount = bulkCount(value.fileCount, 10_000);
+  const positions = value.positions === undefined ? undefined : (() => {
+    if (!Array.isArray(value.positions) || value.positions.length !== fileCount || value.positions.length > 25)
+      throw new DriveSharingError("invalid_response");
+    const parsed = value.positions.map(position => bulkCount(position, 10_000));
+    if (parsed.includes(0) || new Set(parsed).size !== parsed.length)
+      throw new DriveSharingError("invalid_response");
+    return parsed;
+  })();
   const recipientCount = bulkCount(value.recipientCount, 10);
   const total = fileCount * recipientCount;
   if (value.canRetry !== undefined && typeof value.canRetry !== "boolean")
@@ -698,6 +721,7 @@ function parseBulkShareView(value: RecordValue): DriveBulkShareView {
     shareId: id(value.shareId), searchJobId: id(value.searchJobId), status,
     revision: revision(value.revision), reviewDigest: digest(value.reviewDigest),
     fileCount, recipientCount,
+    ...(positions === undefined ? {} : { positions }),
     recipients, excluded,
     counts: parseBulkCounts(value.counts, total),
     ...(value.issues === undefined ? {} : { issues: parseBulkIssues(value.issues, total) }),
@@ -993,7 +1017,57 @@ export class DriveSharingService {
     const bulkShare = result.bulkShare == null ? null : parseBulkShareView(record(result.bulkShare));
     if (bulkShare && (!search || bulkShare.searchJobId !== search.jobId || bulkShare.recipientCount !== 1))
       throw new DriveSharingError("invalid_response");
+    const batches = result.batches === undefined ? undefined : (() => {
+      if (!Array.isArray(result.batches) || result.batches.length > 400 || !search)
+        throw new DriveSharingError("invalid_response");
+      const parsed = result.batches.map(item => parseBulkShareView(record(item)));
+      if (parsed.some(batch => batch.searchJobId !== search.jobId || batch.recipientCount !== 1 ||
+        result.progressiveAllowed === true && batch.fileCount > 25) ||
+        new Set(parsed.map(batch => batch.shareId)).size !== parsed.length)
+        throw new DriveSharingError("invalid_response");
+      return parsed;
+    })();
+    const batchCount = result.batchCount === undefined ? undefined : bulkCount(result.batchCount, 400);
+    if (batches && batchCount !== undefined && batchCount < batches.length)
+      throw new DriveSharingError("invalid_response");
+    const claimedPositions = result.claimedPositions === undefined ? undefined : (() => {
+      if (!Array.isArray(result.claimedPositions) || result.claimedPositions.length > 10_000)
+        throw new DriveSharingError("invalid_response");
+      const parsed = result.claimedPositions.map(position => bulkCount(position, 10_000));
+      if (parsed.includes(0) || new Set(parsed).size !== parsed.length ||
+        parsed.some(position => !search || position > search.matched))
+        throw new DriveSharingError("invalid_response");
+      return parsed;
+    })();
+    const recoverablePositions = result.recoverablePositions === undefined ? undefined : (() => {
+      if (!Array.isArray(result.recoverablePositions) || result.recoverablePositions.length > 10_000 ||
+        !search || !claimedPositions)
+        throw new DriveSharingError("invalid_response");
+      const parsed = result.recoverablePositions.map(position => bulkCount(position, 10_000));
+      if (parsed.includes(0) || new Set(parsed).size !== parsed.length ||
+        parsed.some(position => position > search.matched || !claimedPositions.includes(position)))
+        throw new DriveSharingError("invalid_response");
+      return parsed;
+    })();
+    if (result.progressiveAllowed === true && batches && claimedPositions === undefined)
+      throw new DriveSharingError("invalid_response");
+    if (result.progressiveAllowed !== undefined && typeof result.progressiveAllowed !== "boolean")
+      throw new DriveSharingError("invalid_response");
+    if (result.progressiveAllowed === true && (!batches || !search || claimedPositions === undefined))
+      throw new DriveSharingError("invalid_response");
+    if (result.progressiveAllowed === true &&
+      (batches?.some(batch => !batch.positions ||
+        batch.positions.some(position => !claimedPositions?.includes(position))) ||
+        bulkShare && (!bulkShare.positions ||
+          bulkShare.positions.some(position => !claimedPositions?.includes(position)))))
+      throw new DriveSharingError("invalid_response");
+    const aggregateCounts = result.aggregateCounts === undefined ? undefined : (() => {
+      const total = bulkCount(record(result.aggregateCounts).total, 10_000);
+      return parseBulkCounts(result.aggregateCounts, total);
+    })();
     if (result.durableAvailable !== undefined && typeof result.durableAvailable !== "boolean")
+      throw new DriveSharingError("invalid_response");
+    if (result.trustedAuto !== undefined && typeof result.trustedAuto !== "boolean")
       throw new DriveSharingError("invalid_response");
     return {
       revision: revision(result.revision),
@@ -1027,8 +1101,15 @@ export class DriveSharingService {
         !!reviewDigest,
       canTrustFutureRequests: result.canTrustFutureRequests === true,
       preparationError: preparationError(result.preparationError),
+      ...(result.trustedAuto === true ? { trustedAuto: true } : {}),
       ...(result.durableAvailable === true ? { durableAvailable: true } : {}),
       ...(hasDurableSearch ? { search, bulkShare } : {}),
+      ...(batches === undefined ? {} : { batches }),
+      ...(batchCount === undefined ? {} : { batchCount }),
+      ...(claimedPositions === undefined ? {} : { claimedPositions }),
+      ...(recoverablePositions === undefined ? {} : { recoverablePositions }),
+      ...(result.progressiveAllowed === true ? { progressiveAllowed: true } : {}),
+      ...(aggregateCounts === undefined ? {} : { aggregateCounts }),
     };
   }
 
@@ -1068,6 +1149,27 @@ export class DriveSharingService {
     if (result.searchJobId !== search.jobId || result.fileCount <= 0 ||
       result.fileCount > search.matched - excludedPositions.length ||
       result.recipientCount !== 1)
+      throw new DriveSharingError("invalid_response");
+    return result;
+  }
+
+  /** Freeze only the owner's visible, committed search positions. Search may still be running. */
+  static async prepareRequestBatch(
+    token: string, requestId: string, search: DriveSearchStatus,
+    positions: number[], guard: SharingSessionGuard,
+  ): Promise<DriveBulkShareView> {
+    if (!["running", "completed"].includes(search.status) || search.incompleteSearch ||
+      search.coverage?.shareabilityVerified !== true ||
+      positions.length < 1 || positions.length > 25 ||
+      new Set(positions).size !== positions.length ||
+      positions.some(position => !Number.isSafeInteger(position) || position < 1 || position > search.matched))
+      throw new DriveSharingError("invalid_selection");
+    const selected = [...positions].sort((a, b) => a - b);
+    const result = parseBulkShareView(await this.request(token, requestId, guard, "/bulk", { positions: selected }));
+    if (result.searchJobId !== search.jobId || result.fileCount !== selected.length ||
+      result.recipientCount !== 1 || !result.positions ||
+      result.positions.length !== selected.length ||
+      result.positions.some((position, index) => position !== selected[index]))
       throw new DriveSharingError("invalid_response");
     return result;
   }

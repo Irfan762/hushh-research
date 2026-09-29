@@ -6,6 +6,7 @@ import asyncio
 import json
 import re
 from datetime import UTC, datetime
+from uuid import uuid4
 
 from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 from hushh_mcp.services.drive_owner_search_service import DriveOwnerSearchService
@@ -135,8 +136,25 @@ class DriveRequestBulkService:
                 )
         raise DriveReadError("invalid_argument")
 
-    async def start_search(self, *, user_id, request_id, timezone="UTC"):
-        context = await self._context(user_id, request_id, start=True)
+    async def start_search(self, *, user_id, request_id, timezone="UTC", authority_mode="owner"):
+        if authority_mode not in {"owner", "trusted_auto"}:
+            raise DriveSharingError("invalid_argument")
+        context = await self._context(user_id, request_id)
+        if authority_mode == "owner":
+            # This authenticated owner action can explicitly take over an
+            # earlier automatic request. Its exact results and frozen batches
+            # survive; the auto worker loses authority at the mode fence.
+            takeover = await self.search.store.takeover_request(
+                user_id=user_id, request_id=request_id
+            )
+            if takeover is not None:
+                await self._owner()
+                if takeover["status"] == "queued":
+                    await self.wake("suggestions")
+                # Queued auto effects are now fenced. Let the sharing worker
+                # settle them as never-posted skips so owner recovery appears.
+                await self.wake("sharing")
+                return takeover
         existing = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
         if existing is not None and existing["status"] not in {"failed", "limited", "stopped"}:
             if existing[
@@ -146,6 +164,7 @@ class DriveRequestBulkService:
             ):
                 return existing
         plan = await self._plan(user_id=user_id, purpose=context["purpose"], timezone=timezone)
+        context = await self._context(user_id, request_id, start=True)
         await self._owner()
         return await self.search.create_for_request(
             user_id=user_id,
@@ -155,6 +174,7 @@ class DriveRequestBulkService:
             plan=plan.model_dump(mode="json"),
             timezone=timezone,
             require_current=self.require_owner,
+            authority_mode=authority_mode,
         )
 
     async def search_status(self, *, user_id, request_id):
@@ -175,20 +195,49 @@ class DriveRequestBulkService:
     async def review_context(self, *, user_id, request_id):
         context = await self._context(user_id, request_id)
         if not context["searchStarted"]:
-            return {"search": None, "bulkShare": None}
+            return {
+                "search": None,
+                "bulkShare": None,
+                "batches": [],
+                "batchCount": 0,
+                "claimedPositions": [],
+                "recoverablePositions": [],
+                "aggregateCounts": {
+                    "total": 0,
+                    "processed": 0,
+                    "shared": 0,
+                    "alreadyShared": 0,
+                    "skipped": 0,
+                    "failed": 0,
+                    "needsReview": 0,
+                    "unknown": 0,
+                    "pending": 0,
+                },
+                "progressiveAllowed": True,
+            }
         search = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
-        bulk = await self.bulk.by_request(user_id=user_id, request_id=request_id)
+        if search is not None and search["status"] == "completed":
+            await self.bulk.refresh_request(user_id=user_id, request_id=request_id)
+        batches = await self.bulk.batches_by_request(user_id=user_id, request_id=request_id)
         await self._owner()
-        return {"search": search, "bulkShare": bulk}
+        return {
+            "search": search,
+            "bulkShare": batches["batches"][0] if batches["batches"] else None,
+            **batches,
+        }
 
-    async def prepare(self, *, user_id, request_id, excluded_positions=None):
+    async def prepare(self, *, user_id, request_id, excluded_positions=None, positions=None):
         context = await self._context(user_id, request_id)
         if context["status"] not in {"pending", "review_ready"} or not context["searchStarted"]:
             raise DriveSharingError("request_changed")
         state = await self.search.store.by_client(user_id=user_id, client_request_id=request_id)
         if state is None:
             raise DriveSharingError("search_not_found")
-        if state["status"] != "completed" or state["incompleteSearch"]:
+        if (
+            state["status"]
+            not in ({"queued", "running", "completed"} if positions is not None else {"completed"})
+            or state["incompleteSearch"]
+        ):
             raise DriveSharingError("search_incomplete")
         verified = await self.recipient_identity(context["recipientUserId"])
         if (
@@ -202,7 +251,7 @@ class DriveRequestBulkService:
         result = await self.bulk.create_review(
             user_id=user_id,
             search_job_id=state["jobId"],
-            client_request_id=request_id,
+            client_request_id=str(uuid4()) if positions is not None else request_id,
             origin_request_id=request_id,
             recipients=[
                 {
@@ -215,6 +264,7 @@ class DriveRequestBulkService:
             ],
             excluded=[],
             excluded_positions=excluded_positions or [],
+            selected_positions=positions,
         )
         await self._owner()
         return result

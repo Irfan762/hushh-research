@@ -534,8 +534,11 @@ class DriveOwnerSearchService:
         plan,
         require_current,
         timezone="UTC",
+        authority_mode="owner",
     ):
         """Start or resume the owner-approved request's durable metadata search."""
+        if authority_mode not in {"owner", "trusted_auto"}:
+            raise DriveReadError("invalid_argument")
         await require_current()
         query = purpose["purpose"]
         request = self._request(query, timezone)
@@ -558,6 +561,7 @@ class DriveOwnerSearchService:
                 "query_index": 0,
                 "request_origin_id": request_id,
                 "request_revision": request_revision,
+                "authority_mode": authority_mode,
                 "request_shareability_version": 1,
                 "request_file_kind": plan.get("file_kind", "any"),
                 "request_subject_terms": plan.get("terms", []),
@@ -1107,6 +1111,15 @@ class DriveOwnerSearchService:
                 await self.store.release(job, error="provider_unavailable", retryable=True)
             )
         except DriveReadError as error:
+            if str(error) == "background_preparation_required":
+                # The owner can re-enable background Drive access without
+                # losing an already committed search checkpoint or batches.
+                if require_current:
+                    try:
+                        await require_current()
+                    except DriveReadError:
+                        pass
+                return finish(await self.store.pause_for_background(job))
             if str(error) == "search_superseded":
                 await self.store.release(job, error="connection_changed")
                 return finish("superseded")

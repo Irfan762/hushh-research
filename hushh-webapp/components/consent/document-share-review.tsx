@@ -13,6 +13,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
+import { ExternalConnectorService } from "@/lib/services/external-connector-service";
 import {
   isVaultSessionEpochCurrent,
   snapshotVaultSessionEpoch,
@@ -65,6 +66,7 @@ type Activity =
   | "restarting"
   | "preparing_share"
   | "preparing_removal"
+  | "enabling_background"
   | "removing";
 type Kind = "load" | "decide";
 /** Per-run channel; every call is a no-op once the run is stale. */
@@ -121,6 +123,7 @@ const ACTIVITY_LABELS: Record<Exclude<Activity, "idle" | "finding_files">, strin
   restarting: "Starting a new search…",
   preparing_share: "Preparing review…",
   preparing_removal: "Preparing removal…",
+  enabling_background: "Enabling background Drive access…",
   removing: "Removing access…",
 };
 const STAGE_LABELS: Record<PrepareStage, string> = {
@@ -246,6 +249,12 @@ function isDurableReview(review: SharingReview | undefined): boolean {
   return review?.durableAvailable === true;
 }
 
+function isAutomaticSharingActive(review: SharingReview | undefined): boolean {
+  return review?.trustedAuto === true &&
+    review.preparationError !== "trusted_relationship_changed" &&
+    review.preparationError !== "preparation_unavailable";
+}
+
 /** The private agent is still looking for files for this incoming request. */
 function isFinding(snapshot: Snapshot | null): boolean {
   const review = snapshot?.review;
@@ -328,12 +337,15 @@ function UnlockedDocumentReview({
   const [findingSince, setFindingSince] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [trustFuture, setTrustFuture] = useState(false);
+  const [backgroundEnabled, setBackgroundEnabled] = useState(false);
   // Files A left unticked for this review revision; every file starts selected.
   const [unselected, setUnselected] = useState<{ key: string; ids: string[] }>({
     key: "",
     ids: [],
   });
   const [excluded, setExcluded] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
+  // Recovery requires an affirmative tick; fresh unclaimed files retain their default selection.
+  const [recoverySelected, setRecoverySelected] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
   const [unshareableSeen, setUnshareableSeen] = useState<{ jobId: string; positions: number[] }>({ jobId: "", positions: [] });
   const [searchCursor, setSearchCursor] = useState<string | null>(null);
   const [searchPrevious, setSearchPrevious] = useState<(string | null)[]>([]);
@@ -399,6 +411,7 @@ function UnlockedDocumentReview({
       let review = await DriveSharingService.review(token, requestId, guard);
       guard();
       if (isDurableReview(review)) {
+        if (isAutomaticSharingActive(review)) return { status, review };
         const legacyJob = review.search?.status === "completed" &&
           review.search.coverage?.shareabilityVerified !== true ? review.search.jobId : null;
         if ((status.status === "pending" || status.status === "review_ready") &&
@@ -410,10 +423,12 @@ function UnlockedDocumentReview({
             await DriveSharingService.startRequestSearch(token, requestId, guard);
             if (legacyJob) checkedLegacyJob.current = legacyJob;
             searchStartFailed.current = false;
-          } catch (_cause) {
+          } catch (cause) {
             guard();
             searchStartFailed.current = true;
-            setError("Couldn't start the full search. Try again.");
+            setError(cause instanceof DriveSharingError &&
+              ["reconnect_required", "connection_changed"].includes(cause.code)
+              ? errorCopy(cause) : "Couldn't start the full search. Try again.");
             return { status, review };
           }
           guard();
@@ -626,11 +641,17 @@ function UnlockedDocumentReview({
   const removal = snapshot?.revocation;
   const search = review?.search;
   const bulkShare = review?.bulkShare;
+  const automaticSharing = isAutomaticSharingActive(review);
+  const progressive = review?.progressiveAllowed === true;
+  const batches = review?.batches ?? [];
+  const batchCount = review?.batchCount ?? batches.length;
+  const claimedPositions = review?.claimedPositions ?? [];
+  const recoverablePositions = review?.recoverablePositions ?? [];
   const durableReview = isDurableReview(review);
   const legacySearch = search?.status === "completed" && search.coverage?.shareabilityVerified !== true;
   const searchReady = search?.status === "completed" && !search.incompleteSearch &&
     search.coverage?.providerPagesExhausted !== false && search.coverage?.shareabilityVerified === true;
-  const searchJobId = search && !bulkShare && !legacySearch ? search.jobId : null;
+  const searchJobId = search && (!bulkShare || progressive) && !legacySearch ? search.jobId : null;
   const bulkPreviewId = bulkShare?.shareId ?? null;
   const deliveryBulkId = snapshot?.status.direction === "outgoing"
     ? snapshot.delivery?.bulkShareId ?? null : null;
@@ -734,7 +755,9 @@ function UnlockedDocumentReview({
     !!review &&
     snapshot?.status.direction === "incoming" &&
     review.status === "pending" &&
-    !!review.preparationError;
+    !!review.preparationError &&
+    !(automaticSharing && backgroundEnabled) &&
+    !(review.trustedAuto && ["trusted_relationship_changed", "preparation_unavailable"].includes(review.preparationError));
   const pendingOutcomes = !!snapshot?.delivery?.files.some(
     (file) =>
       IN_FLIGHT.has(file.status) || IN_FLIGHT.has(file.revocationStatus ?? ""),
@@ -745,6 +768,8 @@ function UnlockedDocumentReview({
     !retryLater &&
     (durableReview && snapshot.status.direction === "incoming"
       ? ((!search && !searchStartFailed.current) || ["queued", "running"].includes(search?.status ?? "") ||
+          batches.some(batch => ["queued", "running"].includes(batch.status) ||
+            batch.counts.pending > 0 || batch.counts.unknown > 0) ||
           !!bulkShare && (["queued", "running"].includes(bulkShare.status) ||
             bulkShare.status !== "review_ready" &&
               (bulkShare.counts.pending > 0 || bulkShare.counts.unknown > 0)))
@@ -780,9 +805,18 @@ function UnlockedDocumentReview({
     .filter((id) => !unselectedIds.includes(id));
   const allSelected = !!review && selectedIds.length === review.files.length;
   const excludedPositions = search && excluded.jobId === search.jobId ? excluded.positions : [];
+  const selectedRecoveryPositions = search && recoverySelected.jobId === search.jobId ? recoverySelected.positions : [];
   const blockedPositions = search && unshareableSeen.jobId === search.jobId ? unshareableSeen.positions : [];
   const manualExcludedCount = excludedPositions.filter(position => !blockedPositions.includes(position)).length;
-  const selectedCount = search ? Math.max(0, search.matched - (search.unshareableCount ?? 0) - manualExcludedCount) : 0;
+  const selectedPositions = progressive && searchPage && search
+    ? searchPage.files.filter(file => file.shareable === true &&
+        (recoverablePositions.includes(file.position)
+          ? selectedRecoveryPositions.includes(file.position)
+          : !claimedPositions.includes(file.position) && !excludedPositions.includes(file.position)))
+      .map(file => file.position)
+    : [];
+  const selectedCount = progressive ? selectedPositions.length : search
+    ? Math.max(0, search.matched - (search.unshareableCount ?? 0) - manualExcludedCount) : 0;
   const groupSurface =
     surface === "sheet"
       ? {}
@@ -851,7 +885,35 @@ function UnlockedDocumentReview({
     );
   };
 
-  const durableStatus = bulkShare
+  const enableBackground = () => {
+    void run(
+      async (token, guard, report) => {
+        await ExternalConnectorService.setLiveBackground(token, true);
+        guard();
+        setBackgroundEnabled(true);
+        onChanged();
+        report.acknowledged();
+        return load(token, guard, report);
+      },
+      "decide",
+      "enabling_background",
+      true,
+    );
+  };
+
+  const durableStatus = automaticSharing
+    ? review?.preparationError === "background_preparation_required" && !backgroundEnabled
+      ? "Background Drive access needed"
+      : bulkShare && ["queued", "running"].includes(bulkShare.status)
+        ? "Sharing matching files"
+        : search && ["queued", "running"].includes(search.status)
+          ? `Finding matching files · ${search.matched.toLocaleString()} found`
+          : bulkShare ? BULK_STATUS_LABELS[bulkShare.status]
+            : ["completed", "partial"].includes(snapshot?.status.status ?? "") ? "Sharing finished"
+              : "Preparing automatic sharing"
+    : progressive && search && ["queued", "running"].includes(search.status)
+    ? `Searching Drive · ${search.matched.toLocaleString()} found${batchCount ? ` · ${batchCount.toLocaleString()} ${batchCount === 1 ? "batch" : "batches"} started` : ""}`
+    : bulkShare
     ? bulkShare.status === "review_ready"
       ? `Ready to share ${bulkShare.fileCount.toLocaleString()} files`
       : BULK_STATUS_LABELS[bulkShare.status]
@@ -883,6 +945,11 @@ function UnlockedDocumentReview({
               : ACTIVITY_LABELS.loading
             : durableReview && durableStatus
               ? durableStatus
+              : snapshot.status.direction === "outgoing" &&
+                (snapshot.delivery?.sharedCount ?? 0) > 0 &&
+                (UNDECIDED.has(snapshot.status.status) || snapshot.status.status === "approved" ||
+                  ["queued", "running"].includes(snapshot.delivery?.bulkStatus ?? ""))
+                ? `${snapshot.delivery!.sharedCount!.toLocaleString()} files available; more may arrive`
               : snapshot.delivery?.bulkStatus
                 ? BULK_STATUS_LABELS[snapshot.delivery.bulkStatus]
               : stillWorking
@@ -961,8 +1028,37 @@ function UnlockedDocumentReview({
         </div>
       ) : null}
 
-      {review && durableReview && !removal ? (
+      {review && automaticSharing && !removal ? <>
+        <BodyText className="whitespace-pre-wrap [overflow-wrap:anywhere]">“{review.purpose.purpose}”</BodyText>
+        <dl className={HAIRLINES}>
+          <Fact label="Share with" value={review.recipientEmail} />
+          <Fact label="Access" value="Viewer, until removed" />
+        </dl>
+        {review.preparationError === "background_preparation_required" && !backgroundEnabled ? <div className="space-y-3">
+          <BodyText>Enable background Drive access once to handle Trusted-circle document requests automatically.</BodyText>
+          <HelperText>One may read relevant files and send excerpts to Gemini while you&apos;re away. You can turn this off in Connections.</HelperText>
+          <Button size="prominent" disabled={locked} onClick={enableBackground}>Enable background Drive access</Button>
+        </div> : <HelperText>
+          Matching files are found and shared automatically. You can close this window; the requester sees each original only after Google Drive confirms access.
+        </HelperText>}
+        {search ? <HelperText>{search.matched.toLocaleString()} matching files found so far
+          {search.status === "running" ? " · search continues" : ""}</HelperText> : null}
+        {review.aggregateCounts || bulkShare ? <div className="space-y-3">
+          <OutcomeSummary counts={review.aggregateCounts ?? bulkShare!.counts} issues={bulkShare?.issues} />
+          {bulkPage?.files.length ? <SettingsGroup embedded title="Latest files" {...groupSurface}>
+            {bulkPage.files.map(file => <SettingsRow key={file.position} title={file.name}
+              description={file.outcomes?.length ? <FileOutcomes outcomes={file.outcomes} /> : undefined}
+              trailing={file.openUrl ? <OriginalLink url={file.openUrl} googleEmail={googleEmail} /> : undefined} />)}
+          </SettingsGroup> : null}
+        </div> : null}
+      </> : null}
+
+      {review && durableReview && !automaticSharing && !removal ? (
         <>
+          {review.trustedAuto && review.preparationError === "trusted_relationship_changed" ?
+            <BodyText>Trusted Circle changed. Review this request manually before sharing.</BodyText> : null}
+          {review.trustedAuto && review.preparationError === "preparation_unavailable" ?
+            <BodyText>Automatic sharing could not finish. Review and share the files yourself.</BodyText> : null}
           <BodyText className="whitespace-pre-wrap [overflow-wrap:anywhere]">
             “{review.purpose.purpose}”
           </BodyText>
@@ -981,7 +1077,9 @@ function UnlockedDocumentReview({
               ? "All returned Drive pages checked."
               : legacySearch
                 ? "Earlier results need a new sharing permission check."
-              : "Search is not complete. Additional matching files may exist."}</HelperText>
+              : progressive
+                ? "Drive is still finding files. You can share a reviewed batch while it continues."
+                : "Search is not complete. Additional matching files may exist."}</HelperText>
             <HelperText>{search.coverage.corpora.includes("member_shared_drives") ? "Your files and shared drives" : "Your files"}
               {` · ${search.coverage.providerRowsScanned.toLocaleString()} results checked`}</HelperText>
             {search.coverage.excludedByDateCount || search.coverage.deduplicatedCount ? <HelperText>
@@ -996,15 +1094,19 @@ function UnlockedDocumentReview({
             </HelperText> : null}
           </div> : null}
           {search && bulkShare ? <div className="space-y-1">
-            <HelperText>{search.matched.toLocaleString()} matching files found · {bulkShare.fileCount.toLocaleString()} selected for sharing</HelperText>
+            <HelperText>{progressive
+              ? `${search.matched.toLocaleString()} matching files found${search.status === "completed" ? "" : " so far"} · ${batchCount.toLocaleString()} ${batchCount === 1 ? "batch" : "batches"} started`
+              : `${search.matched.toLocaleString()} matching files found · ${bulkShare.fileCount.toLocaleString()} selected for sharing`}</HelperText>
             {(search.unshareableCount ?? 0) > 0 ? <HelperText>
               {search.unshareableCount?.toLocaleString()} unavailable matches were not included.
             </HelperText> : null}
           </div> : null}
 
-          {!bulkShare && search ? (
+          {(!bulkShare || progressive) && search ? (
             <>
-              <HelperText>{searchReady
+              <HelperText>{progressive
+                ? `${search.matched.toLocaleString()} found${search.status === "completed" ? "" : " so far"}. Review and share up to 25 files from this page${search.status === "completed" ? "." : "; more can arrive while you work."}`
+                : searchReady
                 ? `${search.matched.toLocaleString()} matching files. Select the files to share.`
                 : legacySearch
                   ? "Checking this request's Drive files again before sharing."
@@ -1016,34 +1118,55 @@ function UnlockedDocumentReview({
               </HelperText> : null}
               {legacySearch ? <HelperText>Earlier files cannot be selected while the new check runs.</HelperText> :
               <div aria-label="Matching Drive files" aria-busy={searchPageLoading}>
-                <SettingsGroup embedded title="Files" {...groupSurface}>
-                  {searchPage?.files.map(file => (
+                <SettingsGroup embedded title={progressive ? "Files found so far" : "Files"}
+                  description={progressive ? `Choose from this page. Shared and queued files cannot be selected again.${recoverablePositions.length ? " Files skipped by automatic sharing need your selection." : ""}` : undefined}
+                  {...groupSurface}>
+                  {searchPage?.files.map(file => {
+                    const recoverable = progressive && recoverablePositions.includes(file.position);
+                    const alreadyClaimed = progressive && claimedPositions.includes(file.position) && !recoverable;
+                    return (
                     <SettingsRow
                       key={file.position}
                       asChild
                       title={file.name}
                       description={file.shareable === false
                         ? file.unavailableReason ? SEARCH_FILE_UNAVAILABLE[file.unavailableReason] : "Can't share this file"
+                        : recoverable
+                        ? "Automatic sharing stopped before this file was sent. Select it to review and share."
+                        : alreadyClaimed
+                        ? "Already in a sharing batch"
                         : undefined}
-                      disabled={locked || file.shareable === false}
+                      disabled={locked || file.shareable === false || progressive &&
+                        (file.shareable !== true || alreadyClaimed || bulkShare?.status === "review_ready")}
                       trailing={
                         <Checkbox
                           aria-label={file.name}
                           className={CHECKBOX_CLASS}
-                          checked={file.shareable !== false && !excludedPositions.includes(file.position)}
-                          disabled={locked || file.shareable === false}
-                          onCheckedChange={checked => setExcluded({
-                            jobId: search.jobId,
-                            positions: checked === true
-                              ? excludedPositions.filter(position => position !== file.position)
-                              : [...excludedPositions, file.position],
-                          })}
+                          checked={file.shareable !== false && (recoverable
+                            ? selectedRecoveryPositions.includes(file.position)
+                            : !excludedPositions.includes(file.position) && !alreadyClaimed)}
+                          disabled={locked || file.shareable === false || progressive &&
+                            (file.shareable !== true || alreadyClaimed || bulkShare?.status === "review_ready")}
+                          onCheckedChange={checked => {
+                            if (recoverable) {
+                              setRecoverySelected({ jobId: search.jobId,
+                                positions: checked === true
+                                  ? [...new Set([...selectedRecoveryPositions, file.position])]
+                                  : selectedRecoveryPositions.filter(position => position !== file.position) });
+                              return;
+                            }
+                            setExcluded({ jobId: search.jobId,
+                              positions: checked === true
+                                ? excludedPositions.filter(position => position !== file.position)
+                                : [...excludedPositions, file.position] });
+                          }}
                         />
                       }
                     >
                       <label className="cursor-pointer" />
                     </SettingsRow>
-                  ))}
+                    );
+                  })}
                 </SettingsGroup>
               </div>}
               {searchPageLoading ? <HelperText>Loading files…</HelperText> : null}
@@ -1061,18 +1184,32 @@ function UnlockedDocumentReview({
                   </Button>
                 </div>
               ) : null}
+              {progressive && search.status === "running" && !searchPage?.nextCursor ?
+                <HelperText>New pages appear here as Drive finds more files. You can leave and return.</HelperText> : null}
+              {progressive && searchPage?.files.length && selectedCount === 0 ?
+                <HelperText>All available files on this page are already in a batch or were deselected.</HelperText> : null}
               <FlowActionGroup
                 primary={
-                  <Button size="prominent" disabled={locked || !searchReady || !searchPage || searchPageError || selectedCount === 0}
+                  <Button size="prominent" disabled={locked || !searchPage || searchPageError || selectedCount === 0 ||
+                    (progressive
+                      ? legacySearch || bulkShare?.status === "review_ready" ||
+                        !["running", "completed"].includes(search.status) || search.incompleteSearch ||
+                        search.coverage?.shareabilityVerified !== true
+                      : !searchReady)}
                     onClick={() => mutate(
-                      (token, guard) => DriveSharingService.prepareRequestBulk(token, requestId, search, excludedPositions, guard),
+                      (token, guard) => progressive
+                        ? DriveSharingService.prepareRequestBatch(token, requestId, search, selectedPositions, guard)
+                        : DriveSharingService.prepareRequestBulk(token, requestId, search, excludedPositions, guard),
                       "preparing_share",
                     )}>
-                    {searchReady ? `Review ${selectedCount.toLocaleString()} files` : legacySearch ? "Updating file access" :
+                    {progressive && !legacySearch && ["running", "completed"].includes(search.status)
+                      ? bulkShare?.status === "review_ready" ? "Finish this batch" :
+                        `Review ${selectedCount.toLocaleString()} ${selectedCount === 1 ? "file" : "files"}`
+                      : searchReady ? `Review ${selectedCount.toLocaleString()} files` : legacySearch ? "Updating file access" :
                       ["limited", "failed", "stopped"].includes(search.status) ? "Search incomplete" : "Search in progress"}
                   </Button>
                 }
-                secondary={<Button size="standard" variant="none" disabled={locked} onClick={() => decide("decline")}>Decline</Button>}
+                secondary={batchCount === 0 ? <Button size="standard" variant="none" disabled={locked} onClick={() => decide("decline")}>Decline</Button> : undefined}
                 tertiary={(["limited", "failed", "stopped"].includes(search.status) ||
                   legacySearch && activity === "idle" && (searchStartFailed.current || checkedLegacyJob.current === search.jobId)) ?
                   <Button size="standard" variant="none" disabled={locked}
@@ -1105,6 +1242,7 @@ function UnlockedDocumentReview({
           ) : null}
 
           {bulkShare && bulkShare.status !== "review_ready" ? <>
+            {progressive ? <HelperText>Latest batch · {bulkShare.fileCount.toLocaleString()} files</HelperText> : null}
             <OutcomeSummary counts={bulkShare.counts} issues={bulkShare.issues} />
             {bulkShare.status === "partial" && bulkShare.counts.shared > 0 ?
               <HelperText>Review the newly shared originals below. Remove any unintended access in Google Drive.</HelperText> : null}
@@ -1120,7 +1258,7 @@ function UnlockedDocumentReview({
             <>
               {bulkShare.status === "review_ready" ? legacySearch
                 ? <HelperText role="alert">This selection predates the sharing permission check. Ask for a new document request before sharing.</HelperText>
-                : <HelperText>{bulkShare.fileCount.toLocaleString()} files selected. This selection is locked.</HelperText> : null}
+                : <HelperText>{bulkShare.fileCount.toLocaleString()} files selected for this batch. Review the originals, then share.</HelperText> : null}
               <div aria-label={bulkShare.status === "review_ready" ? "Files ready to share" : "Original file outcomes"} aria-busy={bulkPageLoading}>
                 <SettingsGroup embedded title="Original files" description="Originals stay in Drive. The recipient sees later edits." {...groupSurface}>
                   {bulkPage?.files.map(file => <SettingsRow key={file.position} title={file.name}
@@ -1142,16 +1280,24 @@ function UnlockedDocumentReview({
               {bulkShare.status === "review_ready" ? <FlowActionGroup
                 primary={<Button size="prominent" disabled={locked || legacySearch || !bulkPage || bulkPageError || bulkPageLoading}
                   onClick={() => mutate((token, guard) => DriveSharingService.approveBulkShare(token, bulkShare, guard), "sharing")}>
-                  {legacySearch ? "New request needed" : `Share ${bulkShare.fileCount.toLocaleString()} files`}
+                  {legacySearch ? "New request needed" : `Share ${bulkShare.fileCount.toLocaleString()} ${bulkShare.fileCount === 1 ? "file" : "files"}`}
                 </Button>}
-                secondary={<Button size="standard" variant="none" disabled={locked} onClick={() => decide("decline")}>Decline</Button>}
+                secondary={batchCount === 0 ? <Button size="standard" variant="none" disabled={locked} onClick={() => decide("decline")}>Decline</Button> : undefined}
               /> : null}
             </>
           ) : null}
+          {progressive && review.aggregateCounts && batchCount > 1 ? <OutcomeSummary counts={review.aggregateCounts} /> : null}
+          {progressive && batchCount > 1 ? <SettingsGroup embedded title="Sharing batches"
+            description={`${batchCount.toLocaleString()} batches prepared${batchCount > batches.length ? `. Showing the latest ${batches.length}.` : "."}`}
+            {...groupSurface}>
+            {batches.map((batch, index) => <SettingsRow key={batch.shareId}
+              title={`Batch ${(batchCount - index).toLocaleString()} · ${batch.fileCount.toLocaleString()} ${batch.fileCount === 1 ? "file" : "files"}`}
+              description={`${BULK_STATUS_LABELS[batch.status]} · ${(batch.counts.shared + batch.counts.alreadyShared).toLocaleString()} available`} />)}
+          </SettingsGroup> : null}
         </>
       ) : null}
 
-      {review && !durableReview && !removal ? (
+      {review && !durableReview && !automaticSharing && !removal ? (
         <>
           <BodyText className="whitespace-pre-wrap [overflow-wrap:anywhere]">
             “{review.purpose.purpose}”

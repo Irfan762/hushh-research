@@ -257,10 +257,16 @@ class DriveBulkShareWorker:
         )
         if job is None:
             return "not_claimed"
+        if job.get("origin_request_id"):
+            # Progressive request availability is announced by the one
+            # request-level event after a confirmed grant. Older in-flight
+            # bulk notices must not produce a duplicate alert.
+            return await self.store.settle_notification(job, delivered=True)
         # Stable HMAC tag deduplicates presentation across devices and retries;
         # neither owner nor recipient identity is sent in the payload.
         tag = self.store.cipher.digest(
-            "bulk-share-notification", [job["share_id"], job["recipient_user_id"]]
+            "bulk-share-notification",
+            [job.get("origin_request_id") or job["share_id"], job["recipient_user_id"]],
         )
         try:
             attempted = await asyncio.wait_for(
