@@ -143,6 +143,7 @@ import {
 } from "@/lib/services/consent-center-service";
 import { CACHE_KEYS } from "@/lib/services/cache-service";
 import { useStaleResource } from "@/lib/cache/use-stale-resource";
+import { useFeedPendingConsentRefresh } from "@/lib/feed/use-feed-live-refresh";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import { Button } from "@/lib/morphy-ux/button";
 import { useArmedAction } from "@/lib/ui/use-armed-action";
@@ -2805,6 +2806,31 @@ export function ConsentCenterPage() {
     }
   }, [centerResource, listResource, mutationTick, summaryResource, tab]);
 
+  // Requests reach this tab within about 10s while it is on screen, the same
+  // cadence and cached resources the Feed's "Needs you" uses. There is no push
+  // on the web, and this list used to refresh only on a decision made here
+  // (measured 2026-09-29, O1: a new request appeared after more than 120s).
+  // A consent push still refreshes at once (`reconcile`, above). These
+  // background checks are quiet: no spinner every 10s.
+  const [quietRefreshes, setQuietRefreshes] = useState(0);
+  const refreshSummaryResource = summaryResource.refresh;
+  const refreshPendingResource = pendingResource.refresh;
+  const refreshRequestsQuietly = useCallback(async () => {
+    setQuietRefreshes((count) => count + 1);
+    try {
+      await Promise.all([
+        refreshSummaryResource({ force: true }),
+        refreshPendingResource({ force: true }),
+      ]);
+    } finally {
+      setQuietRefreshes((count) => Math.max(0, count - 1));
+    }
+  }, [refreshPendingResource, refreshSummaryResource]);
+  useFeedPendingConsentRefresh(
+    refreshRequestsQuietly,
+    Boolean(user?.uid) && tab === "requests",
+  );
+
   useEffect(() => {
     if (summaryResource.data) {
       setRetainedSummary({ key: summaryCacheKey, data: summaryResource.data });
@@ -3124,13 +3150,15 @@ export function ConsentCenterPage() {
   );
   const visibleSnapshot =
     tab === "connections" ? centerResource.snapshot : listResource!.snapshot;
+  const quietlyRefreshing = quietRefreshes > 0;
   const isConsentActionRefreshing =
-    summaryResource.refreshing ||
-    Boolean(listResource?.refreshing) ||
-    centerResource.refreshing;
+    !quietlyRefreshing &&
+    (summaryResource.refreshing ||
+      Boolean(listResource?.refreshing) ||
+      centerResource.refreshing);
   const accessibilityStatusMessage = activeListLoading
     ? "Consent entries are loading."
-    : activeListRefreshing
+    : activeListRefreshing && !quietlyRefreshing
       ? "Consent entries are refreshing."
       : consentLoadError
         ? "Consent entries failed to refresh."
