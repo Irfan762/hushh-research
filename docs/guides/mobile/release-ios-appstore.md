@@ -301,4 +301,5 @@ build, set its release notes, and attach it for review.
 | Export/upload agreement error | Accept the Apple Program License Agreement in App Store Connect. |
 | Duplicate build number rejected | The ASC builds API lags a just-uploaded build; re-run so the resolver sees the sibling and picks N+1. |
 | Build stuck `PROCESSING` past the timeout | Apple-side processing delay; re-run prepare-only once the build shows in ASC. |
-| dSYM "Upload Symbols Failed" (Firebase/Google frameworks) | Non-fatal warnings; they do not fail the upload. |
+| dSYM "Upload Symbols Failed" (Firebase/Google frameworks, Plaid `LinkKit`) | Non-fatal export warnings for closed-source vendor libraries whose upstream publishes no dSYM; frames inside them will not symbolicate. The **Assert the archive ships our own debug symbols** step allow-lists exactly these by name and fails on anything else. |
+| `Embedded framework <Name> ships with no dSYM and is not an approved exception` | A new embedded framework has no dSYM in the archive. If it is ours, restore `DEBUG_INFORMATION_FORMAT = dwarf-with-dsym` for Release. If it is a closed-source vendor binary, prove upstream ships no dSYM and that the shipped UUID equals the vendor's prebuilt binary, then add it to `ALLOWED_WITHOUT_DSYM` with that evidence (R29 in `.claude/skills/safe-changes/SKILL.md`). |
