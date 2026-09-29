@@ -206,10 +206,18 @@ function ActionButtons({ actions }: { actions: FeedActionButton[] }) {
     );
   }
 
+  // A dense row (the owner's consent request) is sized so its phone actions
+  // fit one line with under 2px to spare at 320px, and Linux text metrics are
+  // about 1.5px wider than a Mac's. Wrapping there dropped Allow onto its own
+  // line and grew the row 52px. On a phone the line never wraps; any excess
+  // spills into the empty stack indent on the left, as the pair branch does.
   return (
     <div
       data-testid="feed-action-buttons"
-      className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto"
+      className={cn(
+        "flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:w-auto",
+        dense && "max-sm:flex-nowrap",
+      )}
     >
       {actions.map((action) => renderAction(action))}
     </div>
