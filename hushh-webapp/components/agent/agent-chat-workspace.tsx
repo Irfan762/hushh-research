@@ -8110,7 +8110,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           <Mic className="h-4 w-4" />
         </ShellActionSurface>
       ) : null}
-      {stoppableTurn && !canSend ? (
+      {stoppableTurn && (isStreaming || isChatLoading) && !canSend ? (
         // While One works, an empty composer offers Stop in Send's place; any
         // text turns it back into Send, which queues the message.
         <ShellActionSurface
