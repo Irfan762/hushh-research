@@ -54,6 +54,23 @@ async def test_final_search_page_reconciles_request_after_last_batch_settled(mon
     refresh.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_owner_search_store_accepts_full_provider_page_before_transaction(monkeypatch):
+    # The scanner commits one 100-row provider page atomically; rejecting it
+    # here failed the entire search before any result could be reviewed.
+    store = DriveOwnerSearchStore(db=SimpleNamespace())
+    transaction = AsyncMock(return_value={"status": "running"})
+    monkeypatch.setattr(store, "_transaction", transaction)
+    job = {"user_id": "owner"}
+    files = [{"id": f"file-{index}"} for index in range(100)]
+
+    await store.commit_page(job, checkpoint={}, files=files)
+    transaction.assert_awaited_once()
+    with pytest.raises(DriveReadError, match="invalid_argument"):
+        await store.commit_page(job, checkpoint={}, files=files + [{"id": "overflow"}])
+    transaction.assert_awaited_once()
+
+
 def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
     today = datetime.now(UTC).date()
     start = (today - timedelta(days=90)).isoformat()
@@ -334,6 +351,156 @@ def _provider_file(identity, name, mime="application/vnd.google-apps.document", 
 
 def _request_candidate(identity, name, mime="application/vnd.google-apps.document", **changes):
     return {**_provider_file(identity, name, mime, **changes), "title": name}
+
+
+@pytest.mark.asyncio
+async def test_request_returns_a_small_inline_page_then_uses_full_background_pages(monkeypatch):
+    store = SimpleNamespace(
+        clear_legacy_completed_request=AsyncMock(),
+        by_client=AsyncMock(return_value=None),
+        create=AsyncMock(return_value=({"jobId": "synthetic-job"}, True)),
+        align_request_expiry=AsyncMock(),
+    )
+    service = DriveOwnerSearchService(store=store, transport=SimpleNamespace())
+    service.run_one = AsyncMock()
+    service.status = AsyncMock(return_value={"jobId": "synthetic-job", "status": "queued"})
+    monkeypatch.setattr(search_module, "wake_drive_work", AsyncMock())
+    await service.create_for_request(
+        user_id="owner",
+        request_id="12345678-1234-1234-1234-123456789012",
+        request_revision=1,
+        purpose={"purpose": "Standup notes from last 3 months"},
+        plan={"mode": "find", "terms": ["standup"], "file_kind": "document"},
+        require_current=AsyncMock(),
+    )
+    assert service.run_one.await_args.kwargs["max_pages"] == 1
+    assert service.run_one.await_args.kwargs["deadline_seconds"] == 15
+    assert service.run_one.await_args.kwargs["initial_page_size"] == 25
+
+    calls = []
+
+    async def read(*, user_id, tool_name, arguments):
+        assert user_id == "owner" and tool_name == "search_files"
+        calls.append((arguments["pageSize"], arguments.get("pageToken")))
+        return ExternalMcpToolResult(
+            False,
+            {
+                "files": [],
+                "nextPageToken": "next-page" if not arguments.get("pageToken") else None,
+                "incompleteSearch": False,
+            },
+            False,
+        )
+
+    scanner = DriveOwnerSearchService(transport=SimpleNamespace(read_owner_search_page=read))
+    first, _, _, _ = await scanner._page(
+        {"user_id": "owner", "checkpoint": _checkpoint()}, page_size_override=25
+    )
+    await scanner._page({"user_id": "owner", "checkpoint": first})
+    assert calls == [(25, None), (100, "next-page")]
+    assert "file_page_size" not in first
+
+
+@pytest.mark.asyncio
+async def test_inline_page_override_applies_to_first_committed_page_only():
+    checkpoint = _checkpoint()
+    job = {"user_id": "owner", "job_id": "synthetic-job", "checkpoint": checkpoint}
+    store = SimpleNamespace(
+        claim=AsyncMock(return_value=job),
+        require_current=AsyncMock(),
+        commit_page=AsyncMock(return_value={"status": "running", "matched": 0}),
+        release=AsyncMock(return_value="queued"),
+    )
+    service = DriveOwnerSearchService(store=store, transport=SimpleNamespace())
+    service._page = AsyncMock(return_value=(checkpoint, [], False, False))
+    assert (
+        await service.run_one(
+            user_id="owner",
+            job_id="synthetic-job",
+            max_pages=2,
+            initial_page_size=25,
+            require_current=AsyncMock(),
+        )
+        == "queued"
+    )
+    assert service._page.call_args_list[0].kwargs == {"page_size_override": 25}
+    assert service._page.call_args_list[1].kwargs == {}
+    assert store.commit_page.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_oversized_rest_page_retries_same_token_at_25_before_checkpoint_advances():
+    calls = []
+
+    async def read(*, user_id, tool_name, arguments):
+        assert user_id == "owner" and tool_name == "search_files"
+        calls.append((arguments["pageSize"], arguments.get("pageToken")))
+        if arguments["pageSize"] == 100:
+            raise DriveReadError("file_too_large")
+        return ExternalMcpToolResult(
+            False,
+            {
+                "files": [_request_candidate("standup-note", "Standup notes 2026/09/26")],
+                "nextPageToken": "next-25",
+                "incompleteSearch": False,
+            },
+            False,
+        )
+
+    service = DriveOwnerSearchService(transport=SimpleNamespace(read_owner_search_page=read))
+    checkpoint = _checkpoint()
+    checkpoint["page_token"] = "same-token"
+    updated, files, incomplete, done = await service._page(
+        {"user_id": "owner", "checkpoint": checkpoint}
+    )
+    assert calls == [(100, "same-token"), (25, "same-token")]
+    assert checkpoint["page_token"] == "same-token"  # Original is unchanged until commit.
+    assert updated["page_token"] == "next-25"
+    assert updated["file_page_size"] == 25
+    assert [item["id"] for item in files] == ["standup-note"]
+    assert not incomplete and not done
+
+
+@pytest.mark.asyncio
+async def test_shortcut_heavy_page_retries_small_without_losing_incomplete_search():
+    calls = []
+    first_25 = [
+        _request_candidate(f"direct-{index}", f"Standup notes 2026/09/26 {index}")
+        for index in range(25)
+    ]
+    shortcuts = [
+        _request_candidate(
+            f"shortcut-{index}",
+            f"Standup notes shortcut {index}",
+            search_module.SHORTCUT_MIME,
+            shortcutDetails={"targetId": f"target-{index}"},
+        )
+        for index in range(9)
+    ]
+
+    async def read(*, user_id, tool_name, arguments):
+        assert user_id == "owner" and tool_name == "search_files"
+        calls.append((arguments["pageSize"], arguments.get("pageToken")))
+        return ExternalMcpToolResult(
+            False,
+            {
+                "files": first_25 + shortcuts if arguments["pageSize"] == 100 else first_25,
+                "nextPageToken": "next-100" if arguments["pageSize"] == 100 else "next-25",
+                "incompleteSearch": arguments["pageSize"] == 100,
+            },
+            False,
+        )
+
+    service = DriveOwnerSearchService(transport=SimpleNamespace(read_owner_search_page=read))
+    checkpoint = _checkpoint()
+    checkpoint["page_token"] = "same-token"
+    updated, files, incomplete, done = await service._page(
+        {"user_id": "owner", "checkpoint": checkpoint}
+    )
+    assert calls == [(100, "same-token"), (25, "same-token")]
+    assert checkpoint["page_token"] == "same-token"
+    assert updated["page_token"] == "next-25" and updated["file_page_size"] == 25
+    assert len(files) == 25 and incomplete and not done
 
 
 def _real_rest_service(monkeypatch, respond):

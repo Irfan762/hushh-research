@@ -31,6 +31,7 @@ import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
 import { FeedPushPrompt } from "@/components/feed/feed-push-prompt";
+import { FeedSoundControl } from "@/components/feed/feed-sound-control";
 import { OwnerConsentUnlockPrompt } from "@/components/consent/owner-consent-unlock-prompt";
 import { collapseConsentBundleRows } from "@/lib/feed/feed-consent-grouping";
 import {
@@ -624,6 +625,7 @@ function FeedPageSession({
         <SettingsPresentationProvider density="compact">
           <AppPageContentRegion>
             <FeedPushPrompt />
+            {user ? <FeedSoundControl userId={user.uid} firstPageItems={data?.items ?? null} /> : null}
             {hasLiveActionables ? (
               <section aria-label="Live">
                 <SectionLabel>Live</SectionLabel>

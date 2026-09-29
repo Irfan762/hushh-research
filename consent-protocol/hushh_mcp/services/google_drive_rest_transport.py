@@ -218,6 +218,19 @@ class GoogleDriveRestTransport:
     ) -> ExternalMcpToolResult:
         return await self._fenced(user_id, tool_name, arguments, _OPERATIONS, _MAX_ARGUMENT_BYTES)
 
+    async def read_owner_search_page(
+        self, *, user_id: str, tool_name: str, arguments: dict[str, Any]
+    ) -> ExternalMcpToolResult:
+        """Larger metadata pages for the checkpointed owner scanner only.
+
+        Agent-facing ``read_tool`` retains its 25-row response contract. This
+        path has the same owner/grant fence and only admits the two listing
+        operations used by the durable scanner.
+        """
+        return await self._fenced(
+            user_id, tool_name, arguments, _OWNER_SEARCH_OPERATIONS, _MAX_ARGUMENT_BYTES
+        )
+
     async def write_tool(
         self,
         *,
@@ -376,8 +389,10 @@ class GoogleDriveRestTransport:
         )
         return _project_page(page, _page_files(page))
 
-    async def _search_files(self, arguments: dict[str, Any], token: str) -> dict:
-        page_size, page_token = _page_arguments(arguments)
+    async def _search_files(
+        self, arguments: dict[str, Any], token: str, *, page_size_limit: int = 25
+    ) -> dict:
+        page_size, page_token = _page_arguments(arguments, max_page_size=page_size_limit)
         query = arguments.get("query")
         order = arguments.get("orderBy", "modifiedTime desc")
         if (
@@ -417,7 +432,10 @@ class GoogleDriveRestTransport:
             **({"drive_id": drive_id} if drive_id is not None else {}),
             **({"resource_keys": {folder: key}} if key is not None else {}),
         )
-        return _project_page(page, _page_files(page))
+        return _project_page(page, _page_files(page, max_files=page_size))
+
+    async def _owner_search_files(self, arguments: dict[str, Any], token: str) -> dict:
+        return await self._search_files(arguments, token, page_size_limit=100)
 
     async def _list_shared_drives(self, arguments: dict[str, Any], token: str) -> dict:
         _only(arguments, {"pageSize", "pageToken"})
@@ -564,6 +582,10 @@ _OPERATIONS = {
     "read_file_content": "_read_file_content",
     "get_file_metadata": "_get_file_metadata",
 }
+_OWNER_SEARCH_OPERATIONS = {
+    "search_files": "_owner_search_files",
+    "list_shared_drives": "_list_shared_drives",
+}
 REST_TOOLS = frozenset(_OPERATIONS)
 # Owner writes. Create, copy, move/rename and comment run when the owner's agent
 # calls them; share and trash run only after the owner reviews the exact call.
@@ -580,13 +602,15 @@ DIRECT_WRITE_TOOLS = frozenset(_WRITE_OPERATIONS) - REVIEWED_WRITE_TOOLS
 _MAX_WRITE_ARGUMENT_BYTES = MAX_CONTENT_BYTES + 8_192
 
 
-def _page_arguments(arguments: dict[str, Any]) -> tuple[int, str | None]:
+def _page_arguments(
+    arguments: dict[str, Any], *, max_page_size: int = 25
+) -> tuple[int, str | None]:
     page_size = arguments.get("pageSize", 8)
     page_token = arguments.get("pageToken")
     if (
         not isinstance(page_size, int)
         or isinstance(page_size, bool)
-        or not 1 <= page_size <= 25
+        or not 1 <= page_size <= max_page_size
         or page_token is not None
         and (not isinstance(page_token, str) or len(page_token) > 1024)
     ):
@@ -603,11 +627,11 @@ def _resource_key_argument(arguments: dict[str, Any]) -> str | None:
     return value
 
 
-def _page_files(page: dict[str, Any]) -> list[Any]:
+def _page_files(page: dict[str, Any], *, max_files: int = 25) -> list[Any]:
     files = page.get("files", [])
     if (
         not isinstance(files, list)
-        or len(files) > 25
+        or len(files) > max_files
         or any(not isinstance(item, dict) for item in files)
     ):
         raise DriveReadError("provider_response_invalid")
@@ -615,13 +639,26 @@ def _page_files(page: dict[str, Any]) -> list[Any]:
 
 
 def _project_page(page: dict[str, Any], files: list[Any]) -> dict:
-    projected: dict = _search_metadata(
-        {
-            "files": [_as_mcp_file(item) for item in files if isinstance(item, dict)],
-            "nextPageToken": page.get("nextPageToken"),
-            "incompleteSearch": page.get("incompleteSearch", False),
-        }
-    )
+    # Keep the shared MCP projection's 25-row bound unchanged. Validate each
+    # REST chunk through that projection, then join the bounded scanner page;
+    # its token and incompleteSearch flag remain the provider's exact values.
+    chunks = [files[index : index + 25] for index in range(0, len(files), 25)] or [[]]
+    projected_chunks = [
+        _search_metadata(
+            {
+                "files": [_as_mcp_file(item) for item in chunk],
+                "nextPageToken": page.get("nextPageToken") if index == len(chunks) - 1 else None,
+                "incompleteSearch": page.get("incompleteSearch", False),
+            }
+        )
+        for index, chunk in enumerate(chunks)
+    ]
+    projected: dict = {
+        "files": [item for chunk in projected_chunks for item in chunk["files"]],
+        "nextPageToken": projected_chunks[-1]["nextPageToken"],
+        "overLimit": any(chunk["overLimit"] for chunk in projected_chunks),
+        "incompleteSearch": projected_chunks[-1]["incompleteSearch"],
+    }
     # The shared MCP metadata filter intentionally keeps only its historical
     # scalar fields. This REST-only sharing search also needs the owner-specific
     # canShare fact; validate and reattach exactly that fact after filtering.
