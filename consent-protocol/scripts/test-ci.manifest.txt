@@ -8,6 +8,7 @@ tests/services/test_external_connector_google_oauth.py
 # Curated (operator-registered) connector registration + OAuth, e.g. HubSpot.
 tests/services/test_external_mcp_connector_descriptor.py
 tests/test_configure_external_mcp_connector.py
+tests/services/test_external_connector_curated_oauth.py
 tests/test_drive_uat_registry_provisioning.py
 tests/services/test_google_drive_adapter.py
 tests/services/test_drive_document_selection.py

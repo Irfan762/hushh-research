@@ -1,0 +1,852 @@
+"""Curated (operator-registered) connector OAuth: admission predicate, PKCE
+start/exchange, refresh-with-rotation, and policy-hash-gated reconnect --
+mocked lifecycle/credentials, no live HubSpot grants."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import httpx
+import pytest
+
+from hushh_mcp.services import external_connector_curated_oauth as oauth
+from hushh_mcp.services.external_connector_registry_service import ExternalMcpConnectorDefinition
+
+GOOD_REDIRECT = "https://uat.one.hushh.ai/one/profile/connectors/oauth/return"
+MCP_ENDPOINT = "https://mcp.hubspot.com/"
+AUTHORIZE_URL = "https://mcp.hubspot.com/oauth/authorize/user"
+TOKEN_URL = "https://mcp.hubspot.com/oauth/v3/token"
+CLIENT_ID_ENV = "HUBSPOT_OAUTH_CLIENT_ID"
+CLIENT_SECRET_ENV = "HUBSPOT_OAUTH_CLIENT_SECRET"
+DEFAULT_REFRESH_TOKEN = "r1"
+
+
+@pytest.fixture
+def connector() -> ExternalMcpConnectorDefinition:
+    return ExternalMcpConnectorDefinition(
+        connector_id="hubspot",
+        display_name="HubSpot",
+        description="Connect HubSpot so Kai can read and act on your CRM.",
+        mcp_endpoint=MCP_ENDPOINT,
+        auth_style="oauth",
+        oauth_authorize_url=AUTHORIZE_URL,
+        oauth_token_url=TOKEN_URL,
+        oauth_scopes=(),
+        oauth_client_id_env=CLIENT_ID_ENV,
+        oauth_client_secret_env=CLIENT_SECRET_ENV,
+        api_key_header_name=None,
+        is_active=True,
+        transport_kind="mcp",
+        capability_policy={"version": 1, "chat": "reviewed"},
+        registered_redirect_uris=(GOOD_REDIRECT,),
+        owner_user_id=None,
+    )
+
+
+@pytest.fixture
+def service() -> oauth.ExternalConnectorCuratedOAuth:
+    return oauth.ExternalConnectorCuratedOAuth(
+        registry=SimpleNamespace(get_connector=AsyncMock()),
+        credentials=SimpleNamespace(
+            encrypt_secret=Mock(return_value={"ciphertext": "ct", "iv": "iv", "algorithm": "alg"}),
+            decrypt_secret=Mock(return_value=json.dumps({"verifier": "v"})),
+            seal_credential=Mock(),
+            open_credential=Mock(),
+        ),
+        lifecycle=SimpleNamespace(
+            start_attempt=AsyncMock(),
+            claim_attempt=AsyncMock(),
+            finalize=AsyncMock(),
+            claim_refresh=AsyncMock(),
+            settle_refresh=AsyncMock(),
+            read=AsyncMock(),
+            mark_verified=AsyncMock(),
+            disconnect=AsyncMock(),
+            record_revocation=AsyncMock(),
+        ),
+        state_codec=SimpleNamespace(
+            _pkce_challenge=lambda verifier: f"challenge-{verifier}",
+            _signed_state=lambda attempt_id: f"state-{attempt_id}",
+            _verify_state=lambda state: state.removeprefix("state-"),
+        ),
+    )
+
+
+def _row(**overrides) -> dict:
+    base = dict(
+        status="connected",
+        envelope_version=2,
+        verified_policy_hash=None,
+        credential_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        connection_generation=3,
+        credential_version=2,
+    )
+    base.update(overrides)
+    return base
+
+
+# --- admission predicate + policy hash -------------------------------------
+
+
+def test_is_curated_oauth_connector_false_for_none():
+    assert oauth.is_curated_oauth_connector(None) is False
+
+
+@pytest.mark.parametrize(
+    "overrides,expected",
+    [
+        ({}, True),
+        ({"owner_user_id": "user-1"}, False),
+        ({"auth_style": "api_key"}, False),
+        ({"transport_kind": "google_drive_rest"}, False),
+        ({"capability_policy": {"chat": "unreviewed"}}, False),
+        ({"capability_policy": {}}, False),
+        ({"connector_id": "google_drive"}, False),
+    ],
+)
+def test_is_curated_oauth_connector_matrix(connector, overrides, expected):
+    assert oauth.is_curated_oauth_connector(replace(connector, **overrides)) is expected
+
+
+def test_curated_policy_hash_ignores_cosmetic_fields_but_reacts_to_functional_ones(connector):
+    baseline = oauth.curated_policy_hash(connector)
+    cosmetic = replace(connector, display_name="Something else", description="other")
+    assert oauth.curated_policy_hash(cosmetic) == baseline
+    functional = replace(connector, mcp_endpoint="https://mcp.hubspot.com/other")
+    assert oauth.curated_policy_hash(functional) != baseline
+
+
+# --- _configuration ----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_configuration_rejects_when_connector_is_not_curated(service, connector, monkeypatch):
+    service.registry.get_connector = AsyncMock(return_value=replace(connector, owner_user_id="u1"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_unavailable") as caught:
+        await service._configuration("hubspot")
+    assert caught.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_configuration_rejects_when_env_vars_are_missing(service, connector, monkeypatch):
+    service.registry.get_connector = AsyncMock(return_value=connector)
+    monkeypatch.setattr(oauth, "getenv", lambda name, default="": "")
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_unavailable"):
+        await service._configuration("hubspot")
+
+
+# --- connection_available ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_connection_available_false_when_feature_disabled(service, connector, monkeypatch):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: False)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    assert await service.connection_available("hubspot", user_id="u1") is False
+    service._configuration.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_connection_available_false_when_not_configured(service, monkeypatch):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: True)
+    service._configuration = AsyncMock(
+        side_effect=oauth.CuratedConnectorOAuthError("connector_unavailable", status_code=503)
+    )
+    assert await service.connection_available("hubspot", user_id="u1") is False
+
+
+@pytest.mark.asyncio
+async def test_connection_available_reflects_registered_redirects(service, connector, monkeypatch):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: True)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    assert await service.connection_available("hubspot", user_id="u1") is True
+    service._configuration.return_value = (
+        replace(connector, registered_redirect_uris=()),
+        "client-1",
+        "secret-1",
+    )
+    assert await service.connection_available("hubspot", user_id="u1") is False
+
+
+# --- start -------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_rejects_when_feature_disabled(service, monkeypatch):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: False)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_unavailable") as caught:
+        await service.start(
+            connector_id="hubspot", user_id="u1", redirect_uri=GOOD_REDIRECT, flow="web"
+        )
+    assert caught.value.status_code == 403
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "redirect_uri,flow",
+    [("https://evil.invalid/return", "web"), (GOOD_REDIRECT, "bogus")],
+)
+async def test_start_rejects_unregistered_redirect_or_unknown_flow(
+    service, connector, monkeypatch, redirect_uri, flow
+):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: True)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="redirect_not_registered"):
+        await service.start(
+            connector_id="hubspot", user_id="u1", redirect_uri=redirect_uri, flow=flow
+        )
+
+
+@pytest.mark.asyncio
+async def test_start_omits_scope_param_when_connector_has_no_scopes(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: True)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.lifecycle.start_attempt = AsyncMock(
+        return_value={"expires_at": datetime.now(UTC) + timedelta(minutes=10)}
+    )
+    result = await service.start(
+        connector_id="hubspot", user_id="u1", redirect_uri=GOOD_REDIRECT, flow="web"
+    )
+    assert "scope=" not in result["authorizeUrl"]
+    assert result["connectorId"] == "hubspot"
+
+
+@pytest.mark.asyncio
+async def test_start_includes_scope_param_when_connector_has_scopes(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth, "connector_feature_enabled", lambda *_: True)
+    scoped = replace(connector, oauth_scopes=("crm.read", "crm.write"))
+    service._configuration = AsyncMock(return_value=(scoped, "client-1", "secret-1"))
+    service.lifecycle.start_attempt = AsyncMock(
+        return_value={"expires_at": datetime.now(UTC) + timedelta(minutes=10)}
+    )
+    result = await service.start(
+        connector_id="hubspot", user_id="u1", redirect_uri=GOOD_REDIRECT, flow="web"
+    )
+    assert "scope=crm.read+crm.write" in result["authorizeUrl"]
+
+
+# --- _post ---------------------------------------------------------------
+
+
+def _install_transport(monkeypatch, handler):
+    original = httpx.AsyncClient
+    captured: dict = {}
+
+    def factory(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    return captured
+
+
+@pytest.mark.asyncio
+async def test_post_rejects_caller_chosen_endpoint(service, connector):
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_configuration_invalid"):
+        await service._post(
+            "https://attacker.invalid", token_url=connector.oauth_token_url, data={}
+        )
+
+
+@pytest.mark.asyncio
+async def test_post_never_follows_redirects(service, connector, monkeypatch):
+    def handler(request):
+        return httpx.Response(200, json={"access_token": "x"})
+
+    captured = _install_transport(monkeypatch, handler)
+    await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+    assert captured["follow_redirects"] is False
+
+
+@pytest.mark.asyncio
+async def test_post_bounds_response_size_before_json_parsing(service, connector, monkeypatch):
+    class Oversized(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b"x" * (oauth.RESPONSE_LIMIT + 1)
+            raise AssertionError("must stop reading immediately at response budget")
+
+    def handler(request):
+        return httpx.Response(200, stream=Oversized())
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="provider_response_too_large"):
+        await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+
+
+@pytest.mark.asyncio
+async def test_post_maps_invalid_grant_to_grant_rejected(service, connector, monkeypatch):
+    def handler(request):
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="grant_rejected") as caught:
+        await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+    assert caught.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_post_maps_other_provider_errors_to_provider_unavailable(
+    service, connector, monkeypatch
+):
+    def handler(request):
+        return httpx.Response(500, json={"error": "internal"})
+
+    _install_transport(monkeypatch, handler)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="provider_unavailable") as caught:
+        await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+    assert caught.value.status_code == 503
+
+
+# --- _token_fields ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"access_token": ""},
+        {"token_type": "Basic"},
+        {"expires_in": -1},
+        {"expires_in": True},
+        {"expires_in": 9999999},
+        {"refresh_token": 12345},
+    ],
+)
+def test_token_fields_rejects_invalid_or_unbounded_values(service, change):
+    token = {"access_token": "synthetic", "token_type": "Bearer", "expires_in": 3600, **change}
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="provider_response_invalid"):
+        service._token_fields(token)
+
+
+def test_token_fields_accepts_a_valid_bearer_token_without_refresh(service):
+    fields = service._token_fields(
+        {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+    )
+    assert fields["accessToken"] == "tok"
+    assert fields["refreshToken"] is None
+
+
+# --- _seal_activation --------------------------------------------------------
+
+
+def test_seal_activation_requires_a_refresh_token(service):
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="offline_consent_required"):
+        service._seal_activation(
+            {"user_id": "u1", "connector_id": "hubspot"},
+            {"connection_generation": 4, "credential_version": 2},
+            {
+                "accessToken": "tok",
+                "refreshToken": None,
+                "expiresAt": datetime.now(UTC).isoformat(),
+            },
+        )
+
+
+def test_seal_activation_increments_generation_and_version(service):
+    sealed = {"ciphertext": "c", "iv": "i", "algorithm": "a", "expires_at": datetime.now(UTC)}
+    service.credentials.seal_credential = Mock(return_value=sealed)
+    result = service._seal_activation(
+        {"user_id": "u1", "connector_id": "hubspot"},
+        {"connection_generation": 4, "credential_version": 2},
+        {
+            "accessToken": "tok",
+            "refreshToken": "r1",
+            "expiresAt": datetime.now(UTC).isoformat(),
+        },
+    )
+    assert result is sealed
+    kwargs = service.credentials.seal_credential.call_args.kwargs
+    assert kwargs["generation"] == 5
+    assert kwargs["version"] == 3
+
+
+# --- _exchange -----------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exchange_rejects_replay_or_other_user(service):
+    service.lifecycle.claim_attempt = AsyncMock(return_value=None)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="attempt_unavailable") as caught:
+        await service._exchange(state="state-attempt-1", code="code", owner="u1")
+    assert caught.value.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_exchange_rejects_when_client_id_drifted(service, connector):
+    attempt = dict(
+        connector_id="hubspot",
+        oauth_client_id="old-client",
+        redirect_uri=GOOD_REDIRECT,
+        user_id="u1",
+        attempt_id="attempt-1",
+        code_verifier_ciphertext="ct",
+        code_verifier_iv="iv",
+    )
+    service.lifecycle.claim_attempt = AsyncMock(return_value=attempt)
+    service._configuration = AsyncMock(return_value=(connector, "new-client", "secret-1"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="attempt_configuration_changed"):
+        await service._exchange(state="state-attempt-1", code="code", owner="u1")
+
+
+@pytest.mark.asyncio
+async def test_exchange_rejects_when_redirect_drifted(service, connector):
+    attempt = dict(
+        connector_id="hubspot",
+        oauth_client_id="client-1",
+        redirect_uri="https://old-redirect.invalid/return",
+        user_id="u1",
+        attempt_id="attempt-1",
+        code_verifier_ciphertext="ct",
+        code_verifier_iv="iv",
+    )
+    service.lifecycle.claim_attempt = AsyncMock(return_value=attempt)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="attempt_configuration_changed"):
+        await service._exchange(state="state-attempt-1", code="code", owner="u1")
+
+
+@pytest.mark.asyncio
+async def test_exchange_stamps_oauth_client_id_onto_the_credential(service, connector):
+    attempt = dict(
+        connector_id="hubspot",
+        oauth_client_id="client-1",
+        redirect_uri=GOOD_REDIRECT,
+        user_id="u1",
+        attempt_id="attempt-1",
+        code_verifier_ciphertext="ct",
+        code_verifier_iv="iv",
+    )
+    service.lifecycle.claim_attempt = AsyncMock(return_value=attempt)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service._post = AsyncMock(
+        return_value={
+            "access_token": "tok",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "r1",
+        }
+    )
+    returned_attempt, credential = await service._exchange(
+        state="state-attempt-1", code="code", owner="u1"
+    )
+    assert returned_attempt is attempt
+    assert credential["oauthClientId"] == "client-1"
+    assert credential["refreshToken"] == "r1"
+
+
+# --- complete --------------------------------------------------------------
+
+
+def _web_attempt(**overrides) -> dict:
+    base = dict(
+        connector_id="hubspot",
+        oauth_client_id="client-1",
+        redirect_uri=GOOD_REDIRECT,
+        user_id="user-1",
+        attempt_id="attempt-1",
+        flow="web",
+        code_verifier_ciphertext="ct",
+        code_verifier_iv="iv",
+    )
+    base.update(overrides)
+    return base
+
+
+def _wire_successful_exchange(service, connector, *, refresh_token=DEFAULT_REFRESH_TOKEN):
+    attempt = _web_attempt()
+    service.lifecycle.claim_attempt = AsyncMock(return_value=attempt)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    token = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+    if refresh_token is not None:
+        token["refresh_token"] = refresh_token
+    service._post = AsyncMock(return_value=token)
+    return attempt
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_non_web_flow(service, connector):
+    _wire_successful_exchange(service, connector)
+    service.lifecycle.claim_attempt = AsyncMock(return_value=_web_attempt(flow="native"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="attempt_flow_mismatch"):
+        await service.complete(state="state-attempt-1", code="code", expected_user_id="user-1")
+
+
+@pytest.mark.asyncio
+async def test_complete_requires_a_refresh_token(service, connector):
+    _wire_successful_exchange(service, connector, refresh_token=None)
+
+    async def _finalize(*, attempt_id, user_id, seal):
+        return seal(_web_attempt(), {"connection_generation": 4, "credential_version": 1})
+
+    service.lifecycle.finalize = AsyncMock(side_effect=_finalize)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="offline_consent_required"):
+        await service.complete(state="state-attempt-1", code="code", expected_user_id="user-1")
+
+
+@pytest.mark.asyncio
+async def test_complete_rejects_duplicate_finalization(service, connector):
+    _wire_successful_exchange(service, connector)
+    service.lifecycle.finalize = AsyncMock(return_value=None)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="attempt_unavailable"):
+        await service.complete(state="state-attempt-1", code="code", expected_user_id="user-1")
+
+
+@pytest.mark.asyncio
+async def test_complete_reports_connected_when_verify_succeeds(service, connector):
+    _wire_successful_exchange(service, connector)
+
+    async def _finalize(*, attempt_id, user_id, seal):
+        assert attempt_id == "attempt-1"
+        return seal(_web_attempt(), {"connection_generation": 4, "credential_version": 1})
+
+    service.lifecycle.finalize = AsyncMock(side_effect=_finalize)
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC),
+        }
+    )
+    service.verify = AsyncMock(return_value=True)
+
+    result = await service.complete(state="state-attempt-1", code="code", expected_user_id="user-1")
+
+    assert result == {"connectorId": "hubspot", "status": "connected"}
+    service.verify.assert_awaited_once_with(connector_id="hubspot", user_id="user-1")
+
+
+@pytest.mark.asyncio
+async def test_complete_reports_verifying_when_verify_fails(service, connector):
+    _wire_successful_exchange(service, connector)
+
+    async def _finalize(*, attempt_id, user_id, seal):
+        return seal(_web_attempt(), {"connection_generation": 4, "credential_version": 1})
+
+    service.lifecycle.finalize = AsyncMock(side_effect=_finalize)
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC),
+        }
+    )
+    service.verify = AsyncMock(
+        side_effect=oauth.CuratedConnectorOAuthError("provider_unavailable", status_code=503)
+    )
+
+    result = await service.complete(state="state-attempt-1", code="code", expected_user_id="user-1")
+
+    assert result == {"connectorId": "hubspot", "status": "verifying"}
+
+
+# --- current_credential ------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "row",
+    [None, _row(status="revoked"), _row(status="needs_reauth"), _row(envelope_version=1)],
+)
+async def test_current_credential_requires_reconnect_for_a_dead_or_legacy_row(service, row):
+    service.lifecycle.read = AsyncMock(return_value=row)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="reconnect_required") as caught:
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+    assert caught.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_current_credential_requires_reconnect_on_policy_hash_drift(service, connector):
+    service.lifecycle.read = AsyncMock(return_value=_row(verified_policy_hash="stale-hash"))
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="reconnect_required"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+
+@pytest.mark.asyncio
+async def test_current_credential_requires_reconnect_on_client_id_mismatch(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    service.lifecycle.read = AsyncMock(return_value=_row(verified_policy_hash=hash_))
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={
+            "oauthClientId": "a-different-client",
+            "accessToken": "tok",
+            "refreshToken": "r",
+        }
+    )
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="reconnect_required"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+
+@pytest.mark.asyncio
+async def test_current_credential_returns_cached_credential_when_far_from_expiry(
+    service, connector
+):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(verified_policy_hash=hash_)
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    credential = {"oauthClientId": "client-1", "accessToken": "tok", "refreshToken": "r"}
+    service.credentials.open_credential = Mock(return_value=credential)
+
+    result_row, result_credential = await service.current_credential(
+        connector_id="hubspot", user_id="u1"
+    )
+
+    assert result_row is row
+    assert result_credential is credential
+    service.lifecycle.claim_refresh.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_current_credential_refresh_in_progress_when_claim_fails(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={"oauthClientId": "client-1", "accessToken": "tok", "refreshToken": "r"}
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=None)
+    service._post = AsyncMock()
+
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="refresh_in_progress") as caught:
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+    assert caught.value.status_code == 409
+    service._post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_current_credential_keeps_prior_refresh_token_when_provider_omits_rotation(
+    service, connector
+):
+    hash_ = oauth.curated_policy_hash(connector)
+    stale_row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    fresh_row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(hours=1),
+        credential_version=3,
+    )
+    service.lifecycle.read = AsyncMock(side_effect=[stale_row, fresh_row])
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        side_effect=[
+            {
+                "oauthClientId": "client-1",
+                "accessToken": "old-tok",
+                "refreshToken": "prior-refresh",
+            },
+            {
+                "oauthClientId": "client-1",
+                "accessToken": "new-tok",
+                "refreshToken": "prior-refresh",
+            },
+        ]
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+    service._post = AsyncMock(
+        return_value={"access_token": "new-tok", "token_type": "Bearer", "expires_in": 3600}
+    )
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        }
+    )
+
+    result_row, result_credential = await service.current_credential(
+        connector_id="hubspot", user_id="u1"
+    )
+
+    assert result_row is fresh_row
+    assert result_credential["refreshToken"] == "prior-refresh"
+    sealed_secret = service.credentials.seal_credential.call_args.kwargs["secret"]
+    assert sealed_secret["refreshToken"] == "prior-refresh"
+
+
+@pytest.mark.asyncio
+async def test_current_credential_rotates_refresh_token_when_provider_issues_a_new_one(
+    service, connector
+):
+    hash_ = oauth.curated_policy_hash(connector)
+    stale_row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    fresh_row = _row(verified_policy_hash=hash_, credential_version=3)
+    service.lifecycle.read = AsyncMock(side_effect=[stale_row, fresh_row])
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={
+            "oauthClientId": "client-1",
+            "accessToken": "old-tok",
+            "refreshToken": "old-refresh",
+        }
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+    service._post = AsyncMock(
+        return_value={
+            "access_token": "new-tok",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "rotated-refresh",
+        }
+    )
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        }
+    )
+
+    await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    sealed_secret = service.credentials.seal_credential.call_args.kwargs["secret"]
+    assert sealed_secret["refreshToken"] == "rotated-refresh"
+
+
+@pytest.mark.asyncio
+async def test_current_credential_marks_needs_reauth_on_grant_rejected(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={
+            "oauthClientId": "client-1",
+            "accessToken": "old-tok",
+            "refreshToken": "old-refresh",
+        }
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+    service._post = AsyncMock(
+        side_effect=oauth.CuratedConnectorOAuthError("grant_rejected", status_code=401)
+    )
+
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="grant_rejected"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    service.lifecycle.settle_refresh.assert_awaited_once()
+    assert service.lifecycle.settle_refresh.call_args.kwargs["rejected"] is True
+
+
+@pytest.mark.asyncio
+async def test_current_credential_rejects_when_settle_loses_the_refresh_race(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+    )
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={
+            "oauthClientId": "client-1",
+            "accessToken": "old-tok",
+            "refreshToken": "old-refresh",
+        }
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=False)
+    service._post = AsyncMock(
+        return_value={"access_token": "new-tok", "token_type": "Bearer", "expires_in": 3600}
+    )
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        }
+    )
+
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connection_changed"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+
+@pytest.mark.asyncio
+async def test_current_credential_rejects_when_reread_generation_moved(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    stale_row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+        connection_generation=3,
+    )
+    moved_row = _row(verified_policy_hash=hash_, connection_generation=4)
+    service.lifecycle.read = AsyncMock(side_effect=[stale_row, moved_row])
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={
+            "oauthClientId": "client-1",
+            "accessToken": "old-tok",
+            "refreshToken": "old-refresh",
+        }
+    )
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+    service._post = AsyncMock(
+        return_value={"access_token": "new-tok", "token_type": "Bearer", "expires_in": 3600}
+    )
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        }
+    )
+
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connection_changed"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+
+# --- disconnect --------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_disconnect_records_revocation_when_a_credential_existed(service):
+    service.lifecycle.disconnect = AsyncMock(
+        return_value={"credential_ciphertext": "blob", "connection_generation": 5}
+    )
+    result = await service.disconnect(connector_id="hubspot", user_id="u1")
+    assert result == {
+        "status": "revoked",
+        "connectorId": "hubspot",
+        "revocationOutcome": "unavailable",
+    }
+    service.lifecycle.record_revocation.assert_awaited_once_with(
+        user_id="u1", connector_id="hubspot", generation=6, outcome="unavailable"
+    )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_skips_revocation_when_nothing_to_revoke(service):
+    service.lifecycle.disconnect = AsyncMock(return_value={"credential_ciphertext": None})
+    result = await service.disconnect(connector_id="hubspot", user_id="u1")
+    assert result["revocationOutcome"] == "not_attempted"
+    service.lifecycle.record_revocation.assert_not_awaited()
