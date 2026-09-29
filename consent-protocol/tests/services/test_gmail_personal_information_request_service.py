@@ -1898,3 +1898,74 @@ def test_the_registry_names_fields_in_words_a_person_would_use():
     named = safe_requested_fields(["date of birth", "full name"])
     assert named, "the registry must resolve its own aliases"
     assert all(name == name.strip() and "_" not in name for name in named)
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        # Each of these RESOLVED under containment matching and produced a
+        # registry-authored label, so the card claimed the sender had asked for a
+        # field they never named. A false positive is worse here than the model's
+        # own words, because the trusted label reads as authoritative.
+        "your name is needed for our lottery",
+        "AGE verification please",
+        "we already have your date of birth on file, nothing needed",
+        "no passport number required",
+    ],
+)
+def test_a_label_that_merely_contains_a_field_name_is_not_that_field(label):
+    from hushh_mcp.services.gmail_personal_information_request_service import (
+        _canonical_kyc_field_ids,
+        safe_requested_fields,
+    )
+
+    # The permissive resolver still matches: candidate-scope suggestion wants
+    # that, and intersects it against the manifest before anything is emitted.
+    assert _canonical_kyc_field_ids(label), "the permissive resolver is unchanged"
+    # Naming what a sender asked for is a factual claim, so it takes equality.
+    assert safe_requested_fields([label]) == ()
+
+
+@pytest.mark.parametrize(
+    ("label", "expected"),
+    [
+        ("passport number", "Passport number"),
+        ("date of birth", "Date of birth"),
+        ("dob", "Date of birth"),
+        ("full name", "Full name"),
+        ("  Full   Name  ", "Full name"),
+    ],
+)
+def test_a_label_that_names_a_registry_field_resolves_to_the_registry_name(label, expected):
+    from hushh_mcp.services.gmail_personal_information_request_service import (
+        safe_requested_fields,
+    )
+
+    assert safe_requested_fields([label]) == (expected,)
+
+
+async def test_a_request_with_no_nameable_field_is_still_a_request(monkeypatch):
+    """Tightening the resolver must not turn positives into silence.
+
+    The owner is told a request was found and not which field it named. That is
+    the honest shape when the classifier's own words cannot be trusted, and it is
+    strictly better than naming a field the sender never asked for.
+    """
+    _classifier(
+        monkeypatch,
+        {
+            "is_information_request": True,
+            "confidence": 0.93,
+            "requested_field_labels": ["kindly share the usual documents"],
+            "requested_domains": ["identity"],
+        },
+    )
+    _forbid_database(monkeypatch)
+    service = PersonalGmailInformationRequestService()
+
+    assessment = await service.assess_without_recording(_message())
+
+    assert assessment.is_information_request is True
+    assert assessment.confidence == pytest.approx(0.93)
+    assert assessment.requested_domains == ("identity",)
+    assert assessment.requested_fields == ()

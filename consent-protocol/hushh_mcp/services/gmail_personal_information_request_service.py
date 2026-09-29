@@ -284,18 +284,53 @@ def _registry_field_label(field_id: str) -> str:
     return words[:1].upper() + words[1:] if words else ""
 
 
+def _strict_kyc_field_ids(value: str) -> tuple[str, ...]:
+    """Field ids whose own name the label exactly is, once normalised.
+
+    Equality, never containment. The permissive resolver below is right for what
+    it does -- suggesting which of the owner's manifest leaves might be relevant,
+    where a loose match is intersected against the manifest side and validated by
+    ``_public_candidate_scope``, so a wrong suggestion is filtered out.
+
+    It is the wrong test for naming what a sender asked for, because that is a
+    factual claim shown to the owner and possibly spoken. Under containment
+    "your name is needed for our lottery" resolves to ``full_name`` and the card
+    reports that the sender asked for a Full name; "AGE verification please"
+    becomes Declared age. Both read as authoritative precisely because the label
+    is registry-authored, which makes a false positive here worse than the model's
+    own words rather than better.
+    """
+    normalized = _normalized_kyc_label(value)
+    if not normalized:
+        return ()
+    matches: list[str] = []
+    for field_id, field in _kyc_identity_fields().items():
+        names = [
+            field_id,
+            _text(field.get("path")),
+            *[_text(alias) for alias in field.get("aliases", [])],
+        ]
+        if any(name and _normalized_kyc_label(name) == normalized for name in names):
+            matches.append(field_id)
+    return tuple(matches)
+
+
 def safe_requested_fields(labels: Iterable[str]) -> tuple[str, ...]:
     """Registry-authored names for what a sender asked the owner to provide.
 
-    Every model-authored label is resolved against the KYC identity registry and
-    replaced by the registry's own name for the field it matched. A label that
-    resolves to nothing is dropped rather than shown: the cost of dropping one is
-    a slightly thinner card, and the cost of keeping one is letting a sender
-    choose words One will read out.
+    Every model-authored label is resolved against the KYC identity registry by
+    exact normalised match and replaced by the registry's own name for the field
+    it named. A label that resolves to nothing is dropped rather than shown: the
+    cost of dropping one is a slightly thinner card, and the cost of keeping one
+    is letting a sender choose words One will read out.
+
+    A positive classification with no resolvable field is still a positive. The
+    owner is told a request was found and not which field it named, which is the
+    honest shape when the classifier's own words cannot be trusted.
     """
     resolved: list[str] = []
     for label in labels:
-        for field_id in _canonical_kyc_field_ids(str(label)):
+        for field_id in _strict_kyc_field_ids(str(label)):
             name = _registry_field_label(field_id)
             if name and name not in resolved:
                 resolved.append(name)
