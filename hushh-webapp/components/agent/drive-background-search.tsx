@@ -7,8 +7,9 @@ import { isVaultSessionEpochCurrent, snapshotVaultSessionEpoch } from "@/lib/vau
 import { useCoarseClock, usePeriodicTask } from "@/lib/perf/use-periodic-task";
 import { Button } from "@/lib/morphy-ux/button";
 import { Card } from "@/lib/morphy-ux/card";
-import { Check, ChevronDown, X } from "@/components/icons";
+import { ChevronDown, ChevronRight, X } from "@/components/icons";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { ConnectorBrandMark } from "@/components/agent/connector-brand-mark";
 import { HelperText } from "@/components/app-ui/typography";
 import { dismissDriveSharingCard, isDriveSharingCardDismissed } from "@/lib/agent/drive-sharing-card-preferences";
@@ -108,13 +109,17 @@ export function DriveBackgroundSearches({ onUseInChat }: SearchSelectionProps = 
   if (!user || !isVaultUnlocked) return null;
   return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} ownerId={user.uid} getToken={getVaultOwnerToken} onUseInChat={onUseInChat} />;
 }
-export function DriveRecentSharing() {
+export function DriveRecentSharing({ presentation = "card", onNeedsReviewChange }: {
+  presentation?: "card" | "sidebar"; onNeedsReviewChange?: (count: number) => void;
+} = {}) {
   const { user } = useAuth();
   const { isVaultUnlocked, getVaultOwnerToken } = useVault();
   if (!user || !isVaultUnlocked) return null;
-  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} ownerId={user.uid} getToken={getVaultOwnerToken} sharingOnly />;
+  return <RecentSearches key={`${user.uid}:${snapshotVaultSessionEpoch()}`} ownerId={user.uid} getToken={getVaultOwnerToken}
+    sharingOnly sidebar={presentation === "sidebar"} onNeedsReviewChange={onNeedsReviewChange} />;
 }
-function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }: OwnerProps & SearchSelectionProps & { ownerId: string; sharingOnly?: boolean }) {
+function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false, sidebar = false, onNeedsReviewChange }: OwnerProps &
+  SearchSelectionProps & { ownerId: string; sharingOnly?: boolean; sidebar?: boolean; onNeedsReviewChange?: (count: number) => void }) {
   const owner = useOwnerGuard(getToken);
   const serial = useRef(0);
   const bulkSerial = useRef(0);
@@ -126,6 +131,10 @@ function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }:
   const seenBulk = useRef(false);
   const dismissed = useRef(new Set<string>());
   const [bulkErrorDismissed, setBulkErrorDismissed] = useState(false);
+  const [selectedShareId, setSelectedShareId] = useState<string | null>(null);
+  const [showAllShares, setShowAllShares] = useState(false);
+  const selectedSidebar = useRef<HTMLElement | null>(null);
+  const dismissingDetail = useRef(false);
   const load = useCallback(async () => {
     const ticket = ++serial.current;
     const { token, guard: checkOwner } = owner();
@@ -162,7 +171,7 @@ function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }:
       setBulkShares([]); setBulkError(seenBulk.current);
     }
   }, [owner, ownerId]);
-  const dismiss = (share: DriveBulkShareView) => {
+  const dismiss = (share: DriveBulkShareView, returnFocusToComposer = true) => {
     const { guard } = owner();
     try { guard(); } catch { return; }
     dismissed.current.add(share.shareId);
@@ -171,7 +180,8 @@ function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }:
       try { guard(); return true; } catch { return false; }
     });
     // Return focus to the task the person was doing; no share is stopped.
-    document.querySelector<HTMLTextAreaElement>("[data-agent-chat-composer-form] textarea")?.focus();
+    if (returnFocusToComposer)
+      document.querySelector<HTMLTextAreaElement>("[data-agent-chat-composer-form] textarea")?.focus();
   };
   const invalidate = useCallback(() => { ++serial.current; ++bulkSerial.current; }, []);
   useEffect(() => {
@@ -181,7 +191,70 @@ function RecentSearches({ ownerId, getToken, onUseInChat, sharingOnly = false }:
     window.addEventListener(CHANGED, changed);
     return () => { invalidate(); window.removeEventListener(CHANGED, changed); };
   }, [load, loadBulk, invalidate, sharingOnly]);
+  useEffect(() => {
+    if (sidebar) onNeedsReviewChange?.(bulkShares.filter(share => share.status === "review_ready" && share.canApprove).length);
+  }, [bulkShares, onNeedsReviewChange, sidebar]);
+  useEffect(() => () => { if (sidebar) onNeedsReviewChange?.(0); }, [onNeedsReviewChange, sidebar]);
+  usePeriodicTask(`drive-recent-sharing:${ownerId}`, bulkShares.some(share => BULK_ACTIVE.has(share.status)) ? 10_000 : 45_000,
+    loadBulk, { enabled: sidebar && !selectedShareId });
   const detached = sharingOnly ? bulkShares : bulkShares.filter(share => !jobs.some(job => job.jobId === share.searchJobId));
+  if (sidebar) {
+    if (!detached.length && (!bulkError || bulkErrorDismissed)) return null;
+    const selected = detached.find(share => share.shareId === selectedShareId);
+    const ordered = [...detached].sort((a, b) => Number(b.status === "review_ready") - Number(a.status === "review_ready"));
+    const visible = showAllShares ? ordered : ordered.slice(0, 3);
+    const restoreSidebarFocus = () => {
+      const sidebarElement = selectedSidebar.current;
+      if (!sidebarElement?.isConnected) return;
+      const target = sidebarElement.querySelector<HTMLButtonElement>("[data-drive-sharing-row]") ??
+        sidebarElement.querySelector<HTMLInputElement>('input[aria-label="Search chats"]');
+      target?.focus({ preventScroll: true });
+    };
+    return <section className="mb-2 border-b border-[color:var(--one-chat-divider)] pb-2" aria-label="Drive sharing activity">
+      <h3 className="px-3 pb-1 pt-1.5 text-[13.5px] font-normal text-[color:var(--one-chat-meta)]">Drive sharing</h3>
+      {bulkError && !bulkErrorDismissed ? <div className="px-3 py-2 text-xs text-muted-foreground">
+        <p>Couldn’t load Drive activity.</p>
+        <button type="button" className="min-h-11 font-medium text-foreground underline underline-offset-2"
+          onClick={() => void loadBulk()}>Try again</button>
+      </div> : null}
+      <div role="list" aria-label="Recent Drive sharing" className="space-y-0.5">{visible.map(share => {
+        const available = share.counts.shared + share.counts.alreadyShared;
+        const active = BULK_ACTIVE.has(share.status);
+        const needsAttention = share.counts.skipped + share.counts.failed + share.counts.needsReview + share.counts.unknown > 0;
+        const allAvailable = share.status === "completed" && share.counts.total > 0 && available === share.counts.total;
+        const title = share.status === "review_ready" ? "Review files" : active ? "Sharing files" :
+          share.status === "stopped" ? "Sharing stopped" : share.status === "failed" ? "Sharing failed" :
+            needsAttention ? "Needs attention" : allAvailable ? "Files are ready" : "Sharing incomplete";
+        const summary = share.status === "review_ready" ? `${share.fileCount.toLocaleString()} files to review` :
+          `${available.toLocaleString()} of ${share.counts.total.toLocaleString()} available`;
+        return <div role="listitem" key={share.shareId}><button type="button" data-drive-sharing-row
+          className="flex min-h-14 w-full items-center gap-2.5 rounded-[12px] px-2.5 py-2 text-left text-foreground hover:bg-[color:var(--one-chat-row-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)]/60"
+          aria-label={`${title}. ${summary}. View details`}
+          onClick={event => { selectedSidebar.current = event.currentTarget.closest("[data-agent-history-sidebar]"); setSelectedShareId(share.shareId); }}>
+          <ConnectorBrandMark brand="drive" />
+          <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium leading-5">{title}</span>
+            <span className="block truncate text-[12px] leading-4 text-[color:var(--one-chat-meta)]">{summary}</span></span>
+          {active ? <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-accent animate-pulse motion-reduce:animate-none" /> : null}
+          <ChevronRight className="size-4 shrink-0 text-[color:var(--one-chat-meta)]" aria-hidden="true" />
+        </button></div>;
+      })}</div>
+      {ordered.length > 3 ? <button type="button" className="min-h-11 px-3 text-[12px] font-medium text-[color:var(--one-chat-meta)] hover:text-foreground"
+        onClick={() => setShowAllShares(value => !value)}>{showAllShares ? "Show fewer updates" : `Show all ${ordered.length} updates`}</button> : null}
+      <Dialog modal open={!!selected} onOpenChange={open => { if (!open) { setSelectedShareId(null); void loadBulk(); } }}>
+        <DialogContent className="gap-3 p-4 sm:max-w-xl sm:p-5" srDescription="Google Drive sharing progress and available actions."
+          onCloseAutoFocus={event => { if (dismissingDetail.current) { event.preventDefault(); dismissingDetail.current = false; restoreSidebarFocus(); } }}>
+          <DialogTitle>Drive sharing</DialogTitle>
+          {selected ? <>
+            <DriveBulkShareReview key={selected.shareId} searchJobId={selected.searchJobId} initial={selected} getToken={getToken} />
+            <Button type="button" variant="muted" size="compact" className="self-start"
+              onClick={() => { dismissingDetail.current = true; setSelectedShareId(null); dismiss(selected, false);
+                requestAnimationFrame(restoreSidebarFocus); }}
+              title="Hide this update without changing file access">Hide this update</Button>
+          </> : null}
+        </DialogContent>
+      </Dialog>
+    </section>;
+  }
   if (!jobs.length && !error && !detached.length && (!bulkError || bulkErrorDismissed)) return null;
   return <div className={`mx-auto w-full max-w-4xl space-y-2 ${sharingOnly ? "max-h-[min(24rem,40dvh)] overflow-y-auto p-1" : ""}`}>
     {!sharingOnly && (jobs.length || error) ? <details open className="rounded-2xl bg-foreground/[0.035] px-4 py-2 text-sm" aria-label="Drive searches">
@@ -500,7 +573,6 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
         <p className="text-sm font-semibold text-foreground">{title}</p>
         <p ref={target} role="status" tabIndex={-1} className="text-sm leading-5 text-foreground/70">{summary}</p>
       </div>
-      {allAvailable ? <Check className="mt-2 h-5 w-5 shrink-0 text-[color:var(--app-success-deep)] dark:text-[color:var(--app-success-bright)]" aria-label="Sharing complete" /> : null}
       {onDismiss ? <DriveSharingClose onClick={onDismiss} /> : null}
     </div>
     {view.status === "review_ready" ? <>

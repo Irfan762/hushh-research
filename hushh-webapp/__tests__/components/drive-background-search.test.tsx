@@ -72,6 +72,61 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("durable Drive search UI", () => {
+  it("keeps completed Drive batches in Feed-style sidebar rows and opens details only on request", async () => {
+    const seven: DriveBulkShareView = { ...bulkReview(), status: "completed", canApprove: false, canStop: false,
+      counts: { total: 7, processed: 7, shared: 4, alreadyShared: 3, skipped: 0, failed: 0, needsReview: 0, unknown: 0, pending: 0 } };
+    const twentyFive: DriveBulkShareView = { ...seven, shareId: "33333333-3333-4333-8333-333333333333",
+      counts: { total: 25, processed: 25, shared: 11, alreadyShared: 14, skipped: 0, failed: 0, needsReview: 0, unknown: 0, pending: 0 } };
+    state.bulk.recentBulkShares.mockResolvedValue([seven, twentyFive]);
+    state.bulk.bulkShareStatus.mockImplementation(async (_token: string, shareId: string) =>
+      shareId === seven.shareId ? seven : twentyFive);
+    render(<DriveRecentSharing presentation="sidebar" />);
+
+    const first = await screen.findByRole("button", { name: "Files are ready. 7 of 7 available. View details" });
+    expect(screen.getByRole("button", { name: "Files are ready. 25 of 25 available. View details" })).toBeVisible();
+    expect(screen.getByRole("region", { name: "Drive sharing activity" })).toBeVisible();
+    expect(screen.queryByRole("region", { name: "Drive sharing", exact: true })).toBeNull();
+    expect(state.bulk.bulkShareStatus).not.toHaveBeenCalled();
+
+    fireEvent.click(first);
+    await screen.findByRole("dialog", { name: "Drive sharing" });
+    await screen.findByText("7 of 7 files available");
+    expect(screen.getByRole("button", { name: "Hide this update" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Close Drive sharing card" })).toBeNull();
+    expect(screen.queryByLabelText("Sharing complete")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Hide this update" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Files are ready. 7 of 7 available. View details" })).toBeNull());
+    expect(screen.getByRole("button", { name: "Files are ready. 25 of 25 available. View details" })).toBeVisible();
+    expect(state.bulk.stopBulkShare).not.toHaveBeenCalled();
+    await waitFor(() => expect(window.localStorage.length).toBe(1));
+  });
+
+  it("keeps a manual Drive review available from the sidebar without approving on open", async () => {
+    state.bulk.recentBulkShares.mockResolvedValue([bulkReview()]);
+    const onNeedsReviewChange = vi.fn();
+    render(<DriveRecentSharing presentation="sidebar" onNeedsReviewChange={onNeedsReviewChange} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Review files. 125 files to review. View details" }));
+    await screen.findByRole("button", { name: "Share 125 files with 1 person" });
+    expect(onNeedsReviewChange).toHaveBeenCalledWith(1);
+    expect(state.bulk.approveBulkShare).not.toHaveBeenCalled();
+  });
+
+  it("keeps a pending review visible while limiting old updates above chat history", async () => {
+    const completed = { ...bulkReview(), status: "completed" as const, canApprove: false,
+      counts: { total: 1, processed: 1, shared: 1, alreadyShared: 0, skipped: 0, failed: 0, needsReview: 0, unknown: 0, pending: 0 } };
+    state.bulk.recentBulkShares.mockResolvedValue([
+      ...[1, 2, 3, 4].map(index => ({ ...completed, shareId: `33333333-3333-4333-8333-33333333333${index}` })),
+      bulkReview(),
+    ]);
+    render(<DriveRecentSharing presentation="sidebar" />);
+    await screen.findByRole("button", { name: "Review files. 125 files to review. View details" });
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+    fireEvent.click(screen.getByRole("button", { name: "Show all 5 updates" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(5);
+    fireEvent.click(screen.getByRole("button", { name: "Show fewer updates" }));
+    expect(screen.getAllByRole("listitem")).toHaveLength(3);
+  });
+
   it("does not offer a background search without a visible results surface", () => {
     render(<ConnectorReadReceipt experience={{
       type: "one.connector_read.v1", connector: "drive", status: "response_too_large",
