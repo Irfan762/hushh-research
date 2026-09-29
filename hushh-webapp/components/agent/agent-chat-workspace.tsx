@@ -25,6 +25,7 @@ import {
   type AgentConsentContinuationHandler,
   type InformationRequestSubmissionReceipt,
 } from "@/components/agent/agent-structured-experience";
+import { CustomConnectorChatContext } from "@/components/agent/custom-connector-probe-card";
 import {
   claimConsentContinuation,
   collectOutgoingRequestCards,
@@ -4747,6 +4748,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     isPuppySurface, longPromptAttachment, pendingAppAction, pendingMcpReviews.length,
     pendingSpecialistDirective, queuedHandoffPrompt, user?.uid, vaultKey,
   ]);
+  const customConnectorChat = useMemo(() => ({ prepareRecovery: prepareDriveChatRecovery }), [prepareDriveChatRecovery]);
 
   const clearPreparedDriveChatRecovery = useCallback(async () => {
     if (user?.uid) await clearDriveChatRecovery(user.uid);
@@ -7956,6 +7958,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       <AgentPersonSelectionContext.Provider value={hasChatAccess && !isStreaming
         ? (handle, name, sourceTool) => enqueuePrompt(personSelectionPrompt(sourceTool, name), handle)
         : null}>
+      <CustomConnectorChatContext.Provider value={customConnectorChat}>
       <AgentConsentContinuationContext.Provider value={hasChatAccess
         ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
         : null}>
@@ -9808,6 +9811,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       </AgentTranscriptRevealContext.Provider>
       </ConsentCardPhaseContext.Provider>
       </AgentConsentContinuationContext.Provider>
+      </CustomConnectorChatContext.Provider>
       </AgentPersonSelectionContext.Provider>
     </div>
   );

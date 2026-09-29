@@ -558,6 +558,11 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Checking your saved connectors.",
     activity: "Checking your connectors",
   },
+  probe_private_connector: {
+    label: "Connectors",
+    message: "Checking that server.",
+    activity: "Checking the server",
+  },
   discover_workspace_tools: {
     label: "Connector access",
     message: "Checking which connected capabilities are available.",
@@ -942,6 +947,7 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     if (rawStatus === "interrupted") message = "This step did not finish.";
     else if (toolName === "discover_workspace_tools" || toolName === "read_workspace_tool") message = "Connector access checked.";
     else if (toolName === "inspect_private_connectors") message = "One checked your connectors.";
+    else if (toolName === "probe_private_connector") message = "One checked that server.";
     else if (toolName === "read_selected_drive_search_result") {
       message = step.readStatus === "ok" ? "Drive file checked."
         : step.readStatus === "input_required" ? "Choose the file again."
@@ -1421,7 +1427,7 @@ export async function streamAgentChat(input: {
         toolCallName === "read_workspace_tool";
       const safeArgs = workspaceConnectorTool
         ? { provider: toolCallArgs.provider }
-        : toolCallName === "inspect_private_connectors"
+        : toolCallName === "inspect_private_connectors" || toolCallName === "probe_private_connector"
           ? {}
         : toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files" || toolCallName === "read_selected_drive_search_result"
           ? {}
@@ -1484,6 +1490,19 @@ export async function streamAgentChat(input: {
             : "Drive file could not be checked.";
         payload.raw = { protocol: "ag-ui", toolName };
         handlers.onToolResult?.(payload);
+        return;
+      }
+      if (toolName === "probe_private_connector") {
+        // Server-authored names and descriptions reach only the parsed card,
+        // never the generic debug payload or the parked-directive parser.
+        const experience = parseAgentToolResultExperience(toolName, event.content);
+        const payload = toolPayload(event.toolCallId, toolName);
+        payload.execution = "server";
+        payload.message = experience?.type === "one.custom_connector_probe.v1" && experience.status !== "failed"
+          ? "One checked that server." : "That server could not be checked.";
+        payload.raw = { protocol: "ag-ui", toolName };
+        handlers.onToolResult?.(payload);
+        if (experience) handlers.onStructuredExperience?.(experience, event.toolCallId);
         return;
       }
       // External-read receipts are display-only, even if an invalid result attempts to

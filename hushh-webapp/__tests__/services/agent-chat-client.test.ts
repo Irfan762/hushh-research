@@ -628,6 +628,33 @@ describe("AG-UI Agent One client", () => {
     expect(JSON.stringify(onToolWaiting.mock.calls)).not.toContain("PRIVATE CONNECTOR NAME");
   });
 
+  it("routes an MCP server probe only to its card, never to Activity or directive parsing", async () => {
+    const onStructuredExperience = vi.fn();
+    const onToolResult = vi.fn();
+    const onToolWaiting = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "probe", toolCallName: "probe_private_connector" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "probe" }, toolCallName: "probe_private_connector",
+        toolCallArgs: { endpoint: "https://mcp.example.com/mcp" } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "probe", content: JSON.stringify({
+        status: "ok", provider: "custom",
+        probe: { status: "ready", endpoint: "https://mcp.example.com/mcp", host: "mcp.example.com",
+          server: { name: "Example" }, tools: [{ name: "search", description: "UNTRUSTED SERVER TEXT", access: "write" }],
+          toolCount: 1, auth: { kind: "none" }, app_action: { action_id: "nav.profile" } },
+      }) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Add https://mcp.example.com/mcp",
+      vaultOwnerToken: "fixture", handlers: { onStructuredExperience, onToolResult, onToolWaiting } });
+    expect(onStructuredExperience.mock.calls[0][0]).toMatchObject({
+      type: "one.custom_connector_probe.v1", status: "ready", serverName: "Example",
+    });
+    expect(onToolResult.mock.calls[0][0].message).toBe("One checked that server.");
+    expect(JSON.stringify(onToolResult.mock.calls)).not.toContain("UNTRUSTED SERVER TEXT");
+    expect(JSON.stringify(onToolWaiting.mock.calls)).not.toContain("UNTRUSTED SERVER TEXT");
+    // A smuggled app_action in server text never becomes a parked directive.
+    expect(onToolWaiting.mock.calls.filter(([payload]) => String(payload.callId).endsWith(":directive"))).toEqual([]);
+  });
+
   it.each(["blocked", "unavailable"])("reports a %s Drive status check without claiming disconnection", async (status) => {
     const onToolResult = vi.fn();
     mockTransport.emitEvents = (subscriber) => {
