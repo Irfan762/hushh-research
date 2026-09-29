@@ -355,6 +355,18 @@ describe("ToolResultCard", () => {
     expect(mailCoverageLine({ returned: 3, unit: "threads" })).toBe(
       "3 conversations",
     );
+    // Nothing narrowed the read, so the count is the front of the mailbox and
+    // says so. Five bodies is the reader's budget, not the size of the inbox.
+    expect(
+      mailCoverageLine({ returned: 5, unit: "messages", scope: "newest" }),
+    ).toBe("newest 5 messages");
+    expect(
+      mailCoverageLine({ returned: 5, unit: "messages", scope: "search" }),
+    ).toBe("5 messages");
+    // An assessed-vs-returned split still wins: it is the more specific fact.
+    expect(
+      mailCoverageLine({ returned: 3, assessed: 9, unit: "messages", scope: "newest" }),
+    ).toBe("3 of 9 checked");
   });
 });
 

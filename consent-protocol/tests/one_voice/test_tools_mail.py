@@ -88,6 +88,7 @@ def _coverage(returned: int, **overrides: Any) -> dict[str, Any]:
     base = {
         "operation": "search_inbox",
         "mailbox": "inbox",
+        "scope": "search",
         "unit": "messages",
         "assessed": returned,
         "returned": returned,
@@ -860,3 +861,67 @@ def test_opening_asks_for_one_message_and_nothing_else(open_app, monkeypatch):
     assert operation == "read_message_by_id"
     assert arguments["message_ids"] == ["id-first"]
     assert "query" not in arguments and "limit" not in arguments
+
+
+async def test_an_unnarrowed_read_says_it_read_the_newest_not_that_it_found_them(monkeypatch):
+    """Five bodies is this reader's budget, not a count of the mailbox.
+
+    "Give me an update" narrows nothing, so the read is the front of the mailbox.
+    Saying "I found 5 messages" reports the budget as a total; the person hears a
+    complete answer to a question that was answered from a sample.
+    """
+    result = await _call(
+        monkeypatch,
+        _delegated(
+            "ok",
+            [{"source_ref": f"mail:{n}"} for n in (1, 2)],
+            items=_rows(5),
+            coverage=_coverage(
+                5, scope="newest", content_depth="message", operation="read_message", cited=2
+            ),
+        ),
+        request="give me an update on my mail",
+    )
+
+    spoken = " ".join(result.spoken_facts)
+    assert "5 newest messages" in spoken
+    assert "I found 5" not in spoken
+    assert result.model_public()["coverage"]["scope"] == "newest"
+
+
+async def test_a_narrowed_search_still_reports_what_it_found(monkeypatch):
+    """The newest wording must not swallow a genuine search result."""
+    result = await _call(
+        monkeypatch,
+        _delegated("ok", [{"source_ref": "mail:1"}], coverage=_coverage(1, scope="search")),
+        request="any mail from Priya?",
+    )
+    assert "I found 1 message." in " ".join(result.spoken_facts)
+
+
+async def test_rows_without_a_summary_keep_their_place_beside_rows_that_have_one(monkeypatch):
+    """A partial analysis is authorized and keeps every original position.
+
+    Two of five messages summarised is a partial result, not a failure and not a
+    reason to hide the other three. Dropping or reordering them would renumber
+    the offer the next "open the second one" resolves against.
+    """
+    rows = _rows(5)
+    rows[1]["gist"] = "Priya wants the deck."
+    rows[3]["gist"] = "The invoice is overdue."
+    result = await _call(
+        monkeypatch,
+        _delegated(
+            "ok",
+            [{"source_ref": "mail:2"}, {"source_ref": "mail:4"}],
+            items=rows,
+            coverage=_coverage(5, scope="newest", content_depth="message", cited=2, summarized=2),
+        ),
+    )
+
+    shown = result.public()["items"]
+    assert [item["source_ref"] for item in shown] == [f"mail:{n}" for n in range(1, 6)]
+    assert shown[1]["gist"] == "Priya wants the deck."
+    assert "gist" not in shown[0] and "gist" not in shown[2]
+    # The count One says is every row returned, not only the summarised ones.
+    assert "5 newest messages" in " ".join(result.spoken_facts)

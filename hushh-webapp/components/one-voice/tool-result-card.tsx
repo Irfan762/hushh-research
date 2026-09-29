@@ -803,11 +803,16 @@ export function mailCoverageLine(coverage: unknown): string | null {
   const parts: string[] = [];
   const returned = count(row.returned);
   const assessed = count(row.assessed);
+  const scope = text(row.scope);
   if (returned !== null) {
     parts.push(
       assessed !== null && assessed > returned
         ? `${returned} of ${assessed} checked`
-        : `${returned} ${unitNoun(row.unit, returned)}`,
+        : scope === "newest"
+          // Nothing was narrowed, so this is the front of the mailbox. A bare
+          // count here reads as a total when it is a budget.
+          ? `newest ${returned} ${unitNoun(row.unit, returned)}`
+          : `${returned} ${unitNoun(row.unit, returned)}`,
     );
   }
   if (text(row.content_depth) === "message") parts.push("full text");

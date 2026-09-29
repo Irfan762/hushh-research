@@ -110,6 +110,7 @@ class ReadMailInput(ToolInput):
 # later cannot reach the model's context by being added to a dict.
 _MODEL_COVERAGE_KEYS = (
     "operation",
+    "scope",
     "unit",
     "assessed",
     "returned",
@@ -173,8 +174,18 @@ def _spoken(coverage: dict[str, Any]) -> list[str]:
         return ["I did not find any matching mail."]
     singular, plural = _UNIT_NOUN.get(str(coverage.get("unit")), _UNIT_NOUN["messages"])
     noun = singular if returned == 1 else plural
-    if coverage.get("content_depth") == "message":
-        # The person asked to read something, so the count is of what was read.
+    scope = str(coverage.get("scope") or "")
+    if scope == "selected":
+        line = f"I have that {singular}." if returned == 1 else f"I have those {returned} {noun}."
+    elif scope == "newest":
+        # Nothing was narrowed, so this is the front of the mailbox. Saying "I
+        # found 5" for an update would report a budget as a total.
+        line = (
+            f"I read your newest {noun}."
+            if returned == 1
+            else f"I read your {returned} newest {noun}."
+        )
+    elif coverage.get("content_depth") == "message":
         line = f"I have that {singular}." if returned == 1 else f"I have those {returned} {noun}."
     else:
         line = f"I found {returned} {noun}."

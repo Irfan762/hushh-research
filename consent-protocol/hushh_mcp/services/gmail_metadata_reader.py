@@ -640,6 +640,12 @@ class GmailMetadataReader:
         result["coverage"] = {
             "operation": operation,
             "mailbox": mailbox,
+            # What the read covered, so a count cannot imply a whole mailbox.
+            # "newest" is the front of the mailbox and nothing more: five bodies
+            # is this reader's budget, not evidence that five is all there is.
+            "scope": (
+                "selected" if operation == "read_message_by_id" else "search" if query else "newest"
+            ),
             # One row per thread for needs-reply, one per message everywhere else.
             "unit": "threads" if operation == "list_needs_reply" else "messages",
             "assessed": assessed,

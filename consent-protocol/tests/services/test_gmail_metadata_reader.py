@@ -118,6 +118,7 @@ async def test_search_is_one_page_metadata_only_and_drops_provider_ids_and_bodie
     assert result["coverage"] == {
         "operation": "search_inbox",
         "mailbox": "inbox",
+        "scope": "search",
         "unit": "messages",
         "assessed": 1,
         "returned": 1,
