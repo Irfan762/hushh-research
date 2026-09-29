@@ -330,6 +330,30 @@ async def test_the_offer_survives_a_reconnect_and_carries_no_mail_text(monkeypat
     assert second[0]["message_ids"] == ("id-second",)
 
 
+async def test_mail_offer_is_saved_before_its_open_button_is_shown(monkeypatch):
+    """A fast tap must find the exact offer already stored by the relay."""
+    from tests.one_voice.fakes import MemoryConversationStore
+    from tests.one_voice.test_relay_protocol import CONV
+
+    store = MemoryConversationStore()
+    sent_with_saved_offer: list[bool] = []
+    original_send = FakeTransport.send
+
+    async def observe_send(self, frame):
+        if frame.get("type") == "tool.result" and frame.get("tool") == "read_mail":
+            row = store.rows.get(CONV)
+            saved = (row.entity_context or {}).get("offered_mail") if row else None
+            sent_with_saved_offer.append(
+                bool(saved and saved.get("message_ids") == ["id-first", "id-second"])
+            )
+        await original_send(self, frame)
+
+    monkeypatch.setattr(FakeTransport, "send", observe_send)
+    await _run_real_mail(monkeypatch, [], second_turn=False, conversations=store)
+
+    assert sent_with_saved_offer == [True]
+
+
 # -- narration ---------------------------------------------------------------
 #
 # One may now speak a mail digest. It is rendered by a separate provider context

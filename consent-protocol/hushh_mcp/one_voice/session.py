@@ -1020,12 +1020,15 @@ class VoiceSession:
                 self._bump(tool_results_rejected=1)
         else:
             self.turn.not_ok_results += 1
+        # A read_mail result makes its Open button actionable immediately. Save
+        # the offered message IDs before publishing that result so a fast tap's
+        # HTTP resolver observes the same list the person just saw.
+        await self._persist_entities()
         await self._send(
             protocol.tool_result(
                 call_id=str(call_id or "") or None, tool=name, result_public=public
             )
         )
-        await self._persist_entities()
         # The client frame above carries the full result. The model gets its own
         # projection, which for an external-content read is a receipt rather
         # than the mail itself.
