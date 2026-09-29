@@ -850,17 +850,46 @@ function OwnerConnectorsPanel({
     drivePopupCancel.current = attemptCancel;
     setDrivePopupPending(true);
     void runDrive(async (token, signal) => {
-      const close = () => popup.close();
+      let popupClosed = false;
+      const close = () => {
+        if (popupClosed) return;
+        popupClosed = true;
+        popup.close();
+      };
       signal.addEventListener("abort", close, { once: true });
+      attemptCancel.signal.addEventListener("abort", close, { once: true });
+      const startController = new AbortController();
+      const abortStart = (source: AbortSignal) => {
+        if (!startController.signal.aborted)
+          startController.abort(source.reason);
+      };
+      const abortForDriveSession = () => abortStart(signal);
+      const abortForUserCancel = () => abortStart(attemptCancel.signal);
+      signal.addEventListener("abort", abortForDriveSession, { once: true });
+      attemptCancel.signal.addEventListener("abort", abortForUserCancel, { once: true });
+      if (signal.aborted) abortForDriveSession();
+      if (attemptCancel.signal.aborted) abortForUserCancel();
       try {
-        const start = await ExternalConnectorService.startOAuthConnect({
-          vaultOwnerToken: token,
-          connectorId: "google_drive",
-          redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
-          flow: "web",
-          profile,
-        });
-        if (signal.aborted) return;
+        let start: Awaited<ReturnType<typeof ExternalConnectorService.startOAuthConnect>>;
+        try {
+          start = await ExternalConnectorService.startOAuthConnect({
+            vaultOwnerToken: token,
+            connectorId: "google_drive",
+            redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
+            flow: "web",
+            profile,
+            signal: startController.signal,
+          });
+        } catch {
+          if (attemptCancel.signal.aborted) {
+            if (!signal.aborted) setDriveMessage("Drive connection cancelled.");
+            return;
+          }
+          if (signal.aborted) return;
+          setDriveMessage("Drive sign-in could not start. Check the connection and try again.");
+          return;
+        }
+        if (signal.aborted || attemptCancel.signal.aborted) return;
         if (!start.attemptId || start.connectorId !== "google_drive")
           throw new Error("invalid_start");
         const attempt = {
@@ -883,6 +912,9 @@ function OwnerConnectorsPanel({
       } finally {
         if (drivePopupCancel.current === attemptCancel) drivePopupCancel.current = null;
         if (!signal.aborted) setDrivePopupPending(false);
+        signal.removeEventListener("abort", abortForDriveSession);
+        attemptCancel.signal.removeEventListener("abort", abortForUserCancel);
+        attemptCancel.signal.removeEventListener("abort", close);
         signal.removeEventListener("abort", close);
         popup.close();
       }
@@ -1762,7 +1794,11 @@ function OwnerConnectorsPanel({
                 aria-live="polite"
                 className="text-sm text-muted-foreground"
               >
-                {driveBusy ? "Updating Drive…" : driveMessage}
+                {drivePopupPending
+                  ? "Preparing secure Google sign-in…"
+                  : driveBusy
+                    ? "Updating Drive…"
+                    : driveMessage}
               </p>
               {pending && (
                 <section

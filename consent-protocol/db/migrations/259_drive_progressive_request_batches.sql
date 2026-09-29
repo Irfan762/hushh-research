@@ -26,15 +26,27 @@ BEGIN
   END IF;
 END $$;
 
-ALTER TABLE drive_bulk_share_files
-  ADD COLUMN IF NOT EXISTS origin_request_id UUID;
-
-UPDATE drive_bulk_share_files f
-SET origin_request_id = b.origin_request_id
-FROM drive_bulk_shares b
-WHERE b.share_id = f.share_id
-  AND b.origin_request_id IS NOT NULL
-  AND f.origin_request_id IS NULL;
+-- Backfill only on the first upgrade. A later owner batch may intentionally
+-- release an earlier batch's file claim by setting this column to NULL.
+-- Replaying the backfill would reclaim that position and can conflict with
+-- the replacement batch's unique source-position claim.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_attribute
+    WHERE attrelid = 'drive_bulk_share_files'::regclass
+      AND attname = 'origin_request_id'
+      AND attnum > 0 AND NOT attisdropped
+  ) THEN
+    ALTER TABLE drive_bulk_share_files ADD COLUMN origin_request_id UUID;
+    UPDATE drive_bulk_share_files f
+    SET origin_request_id = b.origin_request_id
+    FROM drive_bulk_shares b
+    WHERE b.share_id = f.share_id
+      AND b.origin_request_id IS NOT NULL
+      AND f.origin_request_id IS NULL;
+  END IF;
+END $$;
 
 ALTER TABLE drive_bulk_share_files
   DROP CONSTRAINT IF EXISTS drive_bulk_file_origin_request_fk;

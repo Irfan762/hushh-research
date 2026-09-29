@@ -26,6 +26,7 @@ from hushh_mcp.services.google_drive_adapter import FILE_ID, RESOURCE_KEY, Drive
 from hushh_mcp.services.google_drive_rest_transport import GoogleDriveRestTransport
 
 PAGE_SIZE = 25
+FILE_LIST_PAGE_SIZE = 100
 MAX_SLICE_PAGES = 4
 SLICE_SECONDS = 90
 MAX_REQUEST_FILE_PAGES = 1000
@@ -517,6 +518,7 @@ class DriveOwnerSearchService:
                 job_id=state["jobId"],
                 max_pages=1,
                 deadline_seconds=15,
+                initial_page_size=PAGE_SIZE,
                 require_current=require_current,
             )
         await wake_drive_work("suggestions")
@@ -595,6 +597,7 @@ class DriveOwnerSearchService:
                 job_id=state["jobId"],
                 max_pages=1,
                 deadline_seconds=15,
+                initial_page_size=PAGE_SIZE,
                 require_current=require_current,
             )
         await wake_drive_work("suggestions")
@@ -907,14 +910,19 @@ class DriveOwnerSearchService:
             )
         return files, incomplete
 
-    async def _page(self, job):
+    async def _page(self, job, *, page_size_override=None):
         checkpoint = copy.deepcopy(job["checkpoint"])
+        listing_read = getattr(self.transport, "read_owner_search_page", None)
+        if listing_read is None:
+            # Older injected transports implement the same listing call shape
+            # through the original read_tool seam.
+            listing_read = self.transport.read_tool
         phase = checkpoint["phase"]
         if phase == "drives":
             args = {"pageSize": PAGE_SIZE}
             if checkpoint["drive_page_token"]:
                 args["pageToken"] = checkpoint["drive_page_token"]
-            result = await self.transport.read_tool(
+            result = await listing_read(
                 user_id=job["user_id"], tool_name="list_shared_drives", arguments=args
             )
             payload = result.payload
@@ -942,7 +950,12 @@ class DriveOwnerSearchService:
                 _phase(checkpoint, "files")
             done = _advance_query(checkpoint) if not drives and not next_token else False
             return checkpoint, [], False, done
-        args = {**checkpoint["arguments"], "pageSize": PAGE_SIZE}
+        file_page_size = (
+            PAGE_SIZE
+            if checkpoint.get("file_page_size") == PAGE_SIZE or page_size_override == PAGE_SIZE
+            else FILE_LIST_PAGE_SIZE
+        )
+        args = {**checkpoint["arguments"], "pageSize": file_page_size}
         if phase == "folder_files":
             folder = checkpoint["folder_queue"][0]
             clause = _request_discovery_clause(checkpoint.get("request_file_kind", "any"))
@@ -950,7 +963,7 @@ class DriveOwnerSearchService:
                 "folderId": folder["id"],
                 "query": clause or "trashed = false",
                 "orderBy": "createdTime desc",
-                "pageSize": PAGE_SIZE,
+                "pageSize": file_page_size,
                 **({"driveId": folder["driveId"]} if folder.get("driveId") else {}),
                 **({"resourceKey": folder["resourceKey"]} if folder.get("resourceKey") else {}),
             }
@@ -958,9 +971,22 @@ class DriveOwnerSearchService:
             args["pageToken"] = checkpoint["page_token"]
         if phase == "files":
             args["driveId"] = checkpoint["drives"][checkpoint["drive_index"]]
-        result = await self.transport.read_tool(
-            user_id=job["user_id"], tool_name="search_files", arguments=args
-        )
+        try:
+            result = await listing_read(
+                user_id=job["user_id"], tool_name="search_files", arguments=args
+            )
+        except DriveReadError as error:
+            if str(error) != "file_too_large" or file_page_size == PAGE_SIZE:
+                raise
+            # A 100-row response can exceed the unchanged 256 KiB metadata
+            # ceiling when titles or URLs are long. Retry the same token with
+            # 25 rows and persist that size with the next successful page.
+            file_page_size = PAGE_SIZE
+            checkpoint["file_page_size"] = PAGE_SIZE
+            args["pageSize"] = PAGE_SIZE
+            result = await listing_read(
+                user_id=job["user_id"], tool_name="search_files", arguments=args
+            )
         payload = result.payload
         if not isinstance(payload, dict):
             raise DriveReadError("provider_response_invalid")
@@ -972,9 +998,43 @@ class DriveOwnerSearchService:
             or payload.get("overLimit") is True
             or type(incomplete) is not bool
             or not isinstance(candidates, list)
-            or len(candidates) > PAGE_SIZE
+            or len(candidates) > file_page_size
         ):
             raise DriveReadError("provider_response_invalid")
+        if (
+            file_page_size > PAGE_SIZE
+            and sum(
+                item.get("mimeType") == SHORTCUT_MIME
+                for item in candidates
+                if isinstance(item, dict)
+            )
+            > 8
+        ):
+            # Avoid making a 90-second slice resolve an unbounded fanout of
+            # shortcut targets (six concurrent metadata reads at a time).
+            # No rows or cursor from the large page have been committed.
+            large_page_incomplete = incomplete
+            checkpoint["file_page_size"] = PAGE_SIZE
+            args["pageSize"] = PAGE_SIZE
+            result = await listing_read(
+                user_id=job["user_id"], tool_name="search_files", arguments=args
+            )
+            payload = result.payload
+            candidates = payload.get("files") if isinstance(payload, dict) else None
+            incomplete = (
+                payload.get("incompleteSearch", False) if isinstance(payload, dict) else None
+            )
+            if (
+                result.is_error
+                or result.truncated
+                or not isinstance(payload, dict)
+                or payload.get("overLimit") is True
+                or type(incomplete) is not bool
+                or not isinstance(candidates, list)
+                or len(candidates) > PAGE_SIZE
+            ):
+                raise DriveReadError("provider_response_invalid")
+            incomplete = incomplete or large_page_incomplete
         if checkpoint.get("request_origin_id"):
             _counter(checkpoint, "providerRowsScanned", len(candidates))
             _counter(checkpoint, "providerFilePages")
@@ -1044,12 +1104,15 @@ class DriveOwnerSearchService:
         job_id,
         max_pages=MAX_SLICE_PAGES,
         deadline_seconds=SLICE_SECONDS,
+        initial_page_size=None,
         require_current=None,
     ):
         if (
             type(max_pages) is not int
             or not 1 <= max_pages <= MAX_SLICE_PAGES
             or not 1 <= deadline_seconds <= SLICE_SECONDS
+            or initial_page_size is not None
+            and (type(initial_page_size) is not int or initial_page_size != PAGE_SIZE)
         ):
             raise ValueError("invalid search slice bounds")
         job = await self.store.claim(user_id=user_id, job_id=job_id)
@@ -1084,7 +1147,14 @@ class DriveOwnerSearchService:
                     page_outcome = "failed"
                     page_count = 0
                     try:
-                        checkpoint, files, incomplete, done = await self._page(job)
+                        checkpoint, files, incomplete, done = await self._page(
+                            job,
+                            **(
+                                {"page_size_override": initial_page_size}
+                                if pages == 0 and initial_page_size is not None
+                                else {}
+                            ),
+                        )
                         page_outcome = "received"
                         page_count = len(files)
                     finally:

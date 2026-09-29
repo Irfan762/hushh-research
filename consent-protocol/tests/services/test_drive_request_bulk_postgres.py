@@ -26,6 +26,7 @@ from hushh_mcp.services.drive_suggestion_store import DriveSuggestionStore
 from hushh_mcp.services.external_mcp_client import ExternalMcpToolResult
 from hushh_mcp.services.google_drive_adapter import DRIVE_BASE, DRIVE_POLICY, LIVE_POLICY_HASH
 from tests.services.test_drive_sharing_store import (  # noqa: F401
+    MIGRATIONS,
     connector_postgres_url,
     documents,
     drive,
@@ -245,7 +246,8 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
                 False,
             )
         assert tool_name == "search_files"
-        assert arguments["pageSize"] == 25
+        page_size = arguments["pageSize"]
+        assert page_size == 100
         if "driveId" not in arguments:
             numbers = range(1, 26)
             next_token = None
@@ -253,8 +255,8 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
             assert arguments["driveId"] == "shared-drive-1"
             offset = int(arguments.get("pageToken") or "0")
             seen_shared_pages.append(offset)
-            numbers = range(26 + offset, min(26 + offset + 25, 526))
-            next_token = str(offset + 25) if offset + 25 < 500 else None
+            numbers = range(26 + offset, min(26 + offset + page_size, 526))
+            next_token = str(offset + page_size) if offset + page_size < 500 else None
         files = [
             {
                 "id": f"standup-file-{number}",
@@ -295,7 +297,7 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
     assert final["status"] == "completed"
     assert final["matched"] == 525
     assert final["incompleteSearch"] is False
-    assert seen_shared_pages == list(range(0, 500, 25))
+    assert seen_shared_pages == list(range(0, 500, 100))
     last = await store.reference(user_id="owner", job_id=state["jobId"], position=525)
     assert last["id"] == "standup-file-525"
     assert last["shortcutName"].startswith("Standup notes")
@@ -1215,6 +1217,37 @@ async def test_owner_recovers_only_never_posted_auto_skipped_file(request_bulk, 
             {"auto": auto["shareId"], "owner": owner["shareId"]},
         ).all()
         claims = {str(share): origin for share, origin in (historical, current)}
+        assert claims[auto["shareId"]] is None
+        assert str(claims[owner["shareId"]]) == str(request_id)
+    # UAT replays every migration on each deploy. An old migration must not
+    # recreate the one-batch index, and 259 must not reclaim the released file.
+    with request_bulk.db.engine.connect() as connection:
+        for name in (
+            "256_drive_request_bulk_search.sql",
+            "259_drive_progressive_request_batches.sql",
+        ):
+            connection.exec_driver_sql((MIGRATIONS / name).read_text().replace("%", "%%"))
+        connection.commit()
+        assert (
+            connection.execute(
+                text("SELECT to_regclass('drive_bulk_origin_request_unique')")
+            ).scalar_one()
+            is None
+        )
+        assert (
+            connection.execute(
+                text("""SELECT count(*) FROM drive_bulk_shares
+            WHERE user_id='owner' AND origin_request_id=:request"""),
+                {"request": request_id},
+            ).scalar_one()
+            == 2
+        )
+        replayed = connection.execute(
+            text("""SELECT share_id,origin_request_id FROM drive_bulk_share_files
+            WHERE share_id IN (:auto,:owner)"""),
+            {"auto": auto["shareId"], "owner": owner["shareId"]},
+        ).all()
+        claims = {str(share): origin for share, origin in replayed}
         assert claims[auto["shareId"]] is None
         assert str(claims[owner["shareId"]]) == str(request_id)
     pending = await request_bulk.batches_by_request(user_id="owner", request_id=str(request_id))

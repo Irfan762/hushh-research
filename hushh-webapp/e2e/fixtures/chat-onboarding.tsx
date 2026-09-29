@@ -48,6 +48,7 @@ function Harness() {
     turns: [...TURNS, EXPLANATION],
     activeChipTurnId: "t3",
     shownTurns: new Map([...TURNS, EXPLANATION].map((turn) => [turn.id, "9:41 AM"])),
+    shownTurnTimes: new Map(),
     markShown: () => undefined,
     busy: false,
     onChip: () => undefined,

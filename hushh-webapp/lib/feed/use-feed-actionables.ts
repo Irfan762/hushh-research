@@ -169,6 +169,18 @@ export interface UseFeedActionablesResult {
   consentUnlockPrompt: OwnerConsentUnlockPrompt;
 }
 
+/** The server owns whether an incoming Drive request needs the owner's help. */
+export function isConsentFeedActionable(entry: ConsentCenterEntry): boolean {
+  if (entry.kind === "connection_request" || entry.kind === "outgoing_request") {
+    return false;
+  }
+  if (!isDriveSharingEntry(entry)) return true;
+  return (
+    entry.metadata?.direction === "incoming" &&
+    entry.metadata?.owner_attention_required !== false
+  );
+}
+
 /**
  * The Feed row for one owner request: the headline, the reason, and the three
  * things a person can do about it. Exported so the row's wording and its
@@ -701,8 +713,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
         // put one request in "Needs you" twice (a chevron-only consent row and
         // the real one). The connections lane owns them: it carries the inline
         // Confirm/Decline and the scoped Review route.
-        if (entry.kind === "connection_request") continue;
-        if (entry.kind === "outgoing_request" || (isDriveSharingEntry(entry) && entry.metadata?.direction !== "incoming")) continue;
+        if (!isConsentFeedActionable(entry)) continue;
         if (isOwnerConsentQueueEntry(entry)) {
           queueEntries.push(entry);
           continue;
