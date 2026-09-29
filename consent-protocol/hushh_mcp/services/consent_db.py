@@ -1971,8 +1971,14 @@ class ConsentDBService:
         request_ids: List[str],
         *,
         actions: Optional[List[str]] = None,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Return internal notification/audit events keyed by request_id."""
+        """Return internal notification/audit events keyed by request_id.
+
+        ``user_id`` narrows the read to one owner, which lets the lookup use
+        the ``(user_id, action)`` index instead of scanning by request id; a
+        requester polling a request calls this on every poll.
+        """
         if not request_ids:
             return []
 
@@ -1983,6 +1989,8 @@ class ConsentDBService:
             query = db.table("internal_access_events").select(
                 "request_id,action,issued_at,metadata,user_id,agent_id,scope"
             )
+            if user_id:
+                query = query.eq("user_id", user_id)
             query = query.in_("request_id", request_ids)
             if actions:
                 query = query.in_("action", actions)
@@ -1996,6 +2004,8 @@ class ConsentDBService:
             query = db.table("consent_audit").select(
                 "request_id,action,issued_at,metadata,user_id,agent_id,scope"
             )
+            if user_id:
+                query = query.eq("user_id", user_id)
             query = query.in_("request_id", request_ids)
             if actions:
                 query = query.in_("action", actions)

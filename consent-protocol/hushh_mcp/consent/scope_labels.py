@@ -24,6 +24,7 @@ from __future__ import annotations
 import re
 from itertools import pairwise
 
+from hushh_mcp.consent.field_labels import known_field_label
 from hushh_mcp.consent.pkm_scope_policy import normalize_pkm_scope
 from hushh_mcp.consent.segment_labels import humanize_segment, looks_like_opaque_id
 from hushh_mcp.services.domain_contracts import get_canonical_domain_metadata
@@ -115,6 +116,25 @@ def human_domain_label(domain: str | None) -> str:
     return _sentence_case(meta.display_name if meta else humanize_segment(key)) or "Information"
 
 
+def _whole_domain_label(domain: str) -> str:
+    """The name of a whole domain: "Food & dining information", "Tax record".
+
+    A registry domain is a broad area, so it reads as "<area> information". A
+    dynamic domain whose own name is already a specific thing in two or more
+    words (``tax_record``, ``legal_entity``) is named by that thing: "Tax
+    record", never "Tax Record Domain" (localhost acceptance run 4, S3) or
+    "Tax record information".
+    """
+    key = str(domain or "").strip().lower()
+    if (
+        key
+        and get_canonical_domain_metadata(key) is None
+        and len(_words(humanize_segment(key))) > 1
+    ):
+        return _sentence_case(humanize_segment(key))
+    return f"{human_domain_label(domain)} information"
+
+
 def _domain_noun(domain: str) -> str:
     """The short subject word: "Food" for "Food & Dining", "Health" for "Health & Wellness"."""
     return human_domain_label(domain).split("&", 1)[0].strip() or "Information"
@@ -202,12 +222,17 @@ def human_scope_label(scope: str | None, label: str | None = None) -> str:
         # domain-qualified: "Food preferences kind", never a bare "Kind".
         field = segments[-1]
         return _sentence_case(f"{_segments_label(domain, segments[:-1])} {humanize_segment(field)}")
+    # A field with a fixed human name ("fein" -> "Federal EIN") is named by it
+    # alone: "Entity fein" and "Naics code" reached a person (run 4, S3).
+    fixed = known_field_label(segments[-1]) if segments else None
+    if fixed:
+        return fixed
     return _segments_label(domain, segments)
 
 
 def _segments_label(domain: str, segments: list[str]) -> str:
     if not segments:
-        return f"{human_domain_label(domain)} information"
+        return _whole_domain_label(domain)
     leaf = segments[-1]
     if _is_generic(leaf):
         parent = next((s for s in reversed(segments[:-1]) if not _is_generic(s)), None)

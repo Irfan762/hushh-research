@@ -553,7 +553,161 @@ class TestListPending:
         assert "Nothing is waiting" in result["nextStep"]
 
 
+def _waiting(*pending: dict):
+    from hushh_mcp.services.information_request_service import InformationRequestService
+
+    return patch.object(
+        InformationRequestService,
+        "pending_for_scope_refs",
+        new=AsyncMock(return_value=list(pending)),
+    )
+
+
+TAX_PROFILE = {
+    "personRef": PERSON_REF,
+    "displayName": "Kushal Trivedi",
+    "requestableScopes": [
+        {
+            "scopeRef": "psr_portfolio",
+            "label": "Portfolio",
+            "domain": "financial",
+            "pathSegments": ["portfolio"],
+            "sensitivity": "sensitive",
+        },
+        {
+            "scopeRef": "psr_tax",
+            "label": "Tax record",
+            "domain": "tax_record",
+            "wildcard": True,
+            "sensitivity": "sensitive",
+        },
+    ],
+}
+TAX_QUESTION = "What was Kushal's adjusted gross income on his 2025 tax return?"
+
+
 class TestPropose:
+    @pytest.mark.asyncio
+    async def test_asking_again_while_it_waits_says_so_and_offers_no_send(self):
+        """A5 (localhost run 4): One said "tap Send" while the request was pending."""
+        state = _state()
+        waiting = {
+            "bundleId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+            "scopeRefs": ["psr_cuisine"],
+            "labels": ["Favorite cuisine"],
+            "purpose": "To pick a restaurant for dinner",
+            "durationSeconds": 604_800,
+            "sentAt": "2026-09-29T06:30:00+00:00",
+        }
+        with (
+            _auth(),
+            _connections({"displayName": "Sarah Chen", "publicPersonRef": PERSON_REF}),
+            _profile(),
+            _connector(True),
+            _waiting(waiting),
+        ):
+            result = await propose_information_request(
+                "Sarah", "favorite cuisine", "To pick a restaurant", _ctx(state)
+            )
+        assert result["status"] == "already_pending"
+        assert "already waiting" in result["nextStep"]
+        # No fresh ask card: the ``proposed`` key is what renders one with Send.
+        assert "proposed" not in result and "proposalId" not in result
+        assert action_tools._STATE_INFORMATION_REQUEST_PROPOSALS not in state
+        card = result["livingCard"]
+        assert card["bundleId"] == waiting["bundleId"]
+        assert (card["status"], card["phase"], card["direction"]) == (
+            "pending",
+            "submitted",
+            "outgoing",
+        )
+        assert card["durationLabel"] == "7 days"
+
+    @pytest.mark.asyncio
+    async def test_negative_control_nothing_waiting_is_a_fresh_proposal(self):
+        with (
+            _auth(),
+            _connections({"displayName": "Sarah Chen", "publicPersonRef": PERSON_REF}),
+            _profile(),
+            _connector(True),
+            _waiting(),
+        ):
+            result = await propose_information_request(
+                "Sarah", "favorite cuisine", "To pick a restaurant", _ctx(_state())
+            )
+        assert result["status"] == "proposal_ready"
+        assert result["fields"] == ["Favorite cuisine"]
+
+    @pytest.mark.asyncio
+    async def test_only_what_is_not_already_waiting_is_proposed(self):
+        waiting = {
+            "bundleId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+            "scopeRefs": ["psr_cuisine"],
+            "labels": ["Favorite cuisine"],
+            "purpose": "To pick a restaurant for dinner",
+            "durationSeconds": 604_800,
+        }
+        with (
+            _auth(),
+            _connections({"displayName": "Sarah Chen", "publicPersonRef": PERSON_REF}),
+            _profile(),
+            _connector(True),
+            _waiting(waiting),
+        ):
+            result = await propose_information_request(
+                "Sarah",
+                "employment status and favorite cuisine",
+                "Planning a dinner for the team",
+                _ctx(_state()),
+            )
+        assert result["status"] == "proposal_ready"
+        assert result["fields"] == ["Employment status"]
+
+    @pytest.mark.asyncio
+    async def test_a_tax_question_proposes_the_tax_record_never_portfolio(self):
+        """R3 (localhost run 4): "adjusted gross income" proposed Portfolio."""
+        with (
+            _auth(),
+            _connections({"displayName": "Kushal Trivedi", "publicPersonRef": PERSON_REF}),
+            _profile(TAX_PROFILE),
+            _connector(True),
+            _waiting(),
+        ):
+            result = await propose_information_request(
+                "Kushal",
+                "income",
+                "To check the 2025 return",
+                _ctx(_state()),
+                question=TAX_QUESTION,
+            )
+        assert result["status"] == "proposal_ready"
+        assert [item["label"] for item in result["proposed"]] == ["Tax record"]
+
+    @pytest.mark.asyncio
+    async def test_negative_control_without_tax_words_income_picks_portfolio(self, monkeypatch):
+        from hushh_mcp.consent import scope_matcher
+
+        monkeypatch.setattr(
+            scope_matcher,
+            "SYNONYM_GROUPS",
+            tuple(g for g in scope_matcher.SYNONYM_GROUPS if "tax_record" not in g.domains),
+        )
+        with (
+            _auth(),
+            _connections({"displayName": "Kushal Trivedi", "publicPersonRef": PERSON_REF}),
+            _profile(TAX_PROFILE),
+            _connector(True),
+            _waiting(),
+        ):
+            result = await propose_information_request(
+                "Kushal",
+                "income",
+                "To check the 2025 return",
+                _ctx(_state()),
+                question=TAX_QUESTION,
+            )
+        assert [item["label"] for item in result["proposed"]] == ["Portfolio"]
+
     @pytest.mark.asyncio
     async def test_parks_a_proposal_from_spoken_field_labels(self):
         state = _state()
