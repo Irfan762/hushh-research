@@ -5,6 +5,7 @@ import {
   CACHE_TTL,
 } from "@/lib/services/cache-service";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
+import { consentReadNeedsRevalidation } from "@/lib/cache/consent-read-after-write";
 import { DeviceResourceCacheService } from "@/lib/services/device-resource-cache-service";
 import { normalizeConsentResponse } from "@/src/lib/consent/normalizeConsent";
 
@@ -532,6 +533,7 @@ export class ConsentCenterService {
     );
     const deviceResourceKey = `consent_center_summary:${cacheActor}:${mode}`;
     const cache = CacheService.getInstance();
+    const revalidate = consentReadNeedsRevalidation(options.userId);
 
     if (!options.force) {
       const cached = cache.get<ConsentCenterPageSummary>(cacheKey);
@@ -547,6 +549,7 @@ export class ConsentCenterService {
           method: "GET",
           headers: {
             Authorization: `Bearer ${options.idToken}`,
+            ...(revalidate ? { "Cache-Control": "no-cache" } : {}),
           },
         },
       );
@@ -573,8 +576,9 @@ export class ConsentCenterService {
     // Stale-while-revalidate: on an in-memory miss, fall back to the persisted
     // IndexedDB device cache so a page reload after unlock returns the last
     // known summary instantly instead of blocking on a cold backend call.
-    // The fresh fetch then runs in the background to update both tiers.
-    if (!options.force) {
+    // The fresh fetch then runs in the background to update both tiers. Right
+    // after the person's own consent change the stored copy predates it.
+    if (!options.force && !revalidate) {
       const stored =
         await DeviceResourceCacheService.read<ConsentCenterPageSummary>({
           userId: options.userId,
@@ -677,6 +681,9 @@ export class ConsentCenterService {
         method: "GET",
         headers: {
           Authorization: `Bearer ${options.idToken}`,
+          ...(consentReadNeedsRevalidation(options.userId)
+            ? { "Cache-Control": "no-cache" }
+            : {}),
         },
       },
     );

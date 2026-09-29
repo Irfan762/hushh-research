@@ -2086,6 +2086,19 @@ export function ConsentCenterPage() {
   const [locallyRevokedScopes, setLocallyRevokedScopes] = useState<Set<string>>(
     () => new Set(),
   );
+  // Stop sharing leaves Active on the confirming tap, not when the server
+  // answers; a failed stop puts the row back, so the owner is never told
+  // sharing stopped when it did not.
+  const [stoppingScopes, setStoppingScopes] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const hiddenActiveScopes = useMemo(
+    () =>
+      stoppingScopes.size
+        ? new Set([...locallyRevokedScopes, ...stoppingScopes])
+        : locallyRevokedScopes,
+    [locallyRevokedScopes, stoppingScopes],
+  );
   useEffect(() => {
     if (routeQuery !== searchValue) {
       setSearchValue(routeQuery);
@@ -2191,6 +2204,18 @@ export function ConsentCenterPage() {
         ...current.filter((row) => row.request_id !== granted.request_id),
         granted,
       ]);
+      // A new Allow of a scope stopped earlier on this screen is live again.
+      const scope = granted.scope;
+      if (scope) {
+        const withoutScope = (current: Set<string>) => {
+          if (!current.has(scope)) return current;
+          const next = new Set(current);
+          next.delete(scope);
+          return next;
+        };
+        setLocallyRevokedScopes(withoutScope);
+        setStoppingScopes(withoutScope);
+      }
     },
     [],
   );
@@ -2489,16 +2514,23 @@ export function ConsentCenterPage() {
         entry.counterpart_type === "person",
       );
       const label = consentEntryInformationLabel(entry);
+      const scope = entry.scope;
       setLocallyGrantedEntries((current) =>
-        current.filter((row) => row.scope !== entry.scope),
+        current.filter((row) => row.scope !== scope),
       );
-      void handleRevoke(entry.scope, entry.request_id || undefined, {
+      setStoppingScopes((current) => new Set(current).add(scope));
+      void handleRevoke(scope, entry.request_id || undefined, {
         quiet: true,
       })
         .then(() => {
           toast.success(`${name} can no longer see your ${label}.`);
         })
         .catch((error: unknown) => {
+          setStoppingScopes((current) => {
+            const next = new Set(current);
+            next.delete(scope);
+            return next;
+          });
           toast.error(
             error instanceof Error && error.message
               ? error.message
@@ -2836,13 +2868,13 @@ export function ConsentCenterPage() {
         // answered connection request be filtered out of the live pane.
         tab === "connections" ? "connections" : listSurface,
         locallyHandledRequestIds,
-        locallyRevokedScopes,
+        hiddenActiveScopes,
       ),
     [
       listData?.items,
       locallyGrantedEntries,
       locallyHandledRequestIds,
-      locallyRevokedScopes,
+      hiddenActiveScopes,
       listSurface,
       connectionItems,
       showLocalGrants,
@@ -2860,14 +2892,14 @@ export function ConsentCenterPage() {
             pendingResource.data?.items || [],
             "pending",
             locallyHandledRequestIds,
-            locallyRevokedScopes,
+            hiddenActiveScopes,
           ),
     [
       tab,
       items,
       pendingResource.data,
       locallyHandledRequestIds,
-      locallyRevokedScopes,
+      hiddenActiveScopes,
     ],
   );
   const activeSurfaceItems = useMemo(
@@ -2883,7 +2915,7 @@ export function ConsentCenterPage() {
               : activeResource.data?.items || [],
             "active",
             locallyHandledRequestIds,
-            locallyRevokedScopes,
+            hiddenActiveScopes,
           ),
     [
       tab,
@@ -2892,7 +2924,7 @@ export function ConsentCenterPage() {
       locallyGrantedEntries,
       showLocalGrants,
       locallyHandledRequestIds,
-      locallyRevokedScopes,
+      hiddenActiveScopes,
     ],
   );
   const previousItems = useMemo(
@@ -2903,14 +2935,14 @@ export function ConsentCenterPage() {
             previousResource.data?.items || [],
             "previous",
             locallyHandledRequestIds,
-            locallyRevokedScopes,
+            hiddenActiveScopes,
           ),
     [
       tab,
       items,
       previousResource.data,
       locallyHandledRequestIds,
-      locallyRevokedScopes,
+      hiddenActiveScopes,
     ],
   );
   const connectionsSurfaceItems = useMemo(
@@ -2921,14 +2953,14 @@ export function ConsentCenterPage() {
             connectionItems,
             "connections",
             locallyHandledRequestIds,
-            locallyRevokedScopes,
+            hiddenActiveScopes,
           ),
     [
       tab,
       items,
       connectionItems,
       locallyHandledRequestIds,
-      locallyRevokedScopes,
+      hiddenActiveScopes,
     ],
   );
   const selectedEntryFromList = useMemo(() => {

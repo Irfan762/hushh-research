@@ -1635,6 +1635,87 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(screen.queryByRole("dialog", { name: "Kushal Trivedi" })).toBeNull();
   });
 
+  // Regression (localhost run 3, 2026-09-28): after Stop sharing the Active
+  // tab still listed the access, because each re-read returned the pre-stop
+  // list. The server list below keeps returning it throughout.
+  async function stopSharingFoodAccess(stop: Promise<void>) {
+    mocks.search = "tab=active&requestId=req_active_food";
+    mocks.handleRevoke.mockReturnValue(stop);
+    mocks.getSummary.mockResolvedValue({
+      ...summaryResponse(),
+      counts: { pending: 0, active: 1, previous: 0 },
+    });
+    mocks.listEntries.mockResolvedValue({
+      ...emptyListResponse(),
+      surface: "active",
+      total: 1,
+      items: [
+        {
+          id: "grant_active_food",
+          request_id: "req_active_food",
+          kind: "active_grant",
+          status: "active",
+          action: "CONSENT_GRANTED",
+          counterpart_type: "person",
+          counterpart_id: "user-requester",
+          counterpart_label: "Requester Person",
+          scope: "attr.food.preferences.*",
+          scope_description: "Food preferences",
+          issued_at: "2026-09-28T23:20:00.000Z",
+          expires_at: "2026-10-05T23:20:00.000Z",
+        },
+      ],
+    });
+    render(<ConsentCenterPage />);
+    const list = screen.getByTestId("consent-manager-list");
+    await waitFor(() => expect(list).toHaveTextContent("Requester Person"));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop sharing" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
+    return list;
+  }
+
+  it("takes the access out of Active on the confirming tap, before the server agrees", async () => {
+    let finishStop: () => void = () => undefined;
+    const list = await stopSharingFoodAccess(
+      new Promise<void>((resolve) => {
+        finishStop = resolve;
+      }),
+    );
+
+    // The stop is still in flight and the server list still carries it.
+    await waitFor(() => expect(list).not.toHaveTextContent("Requester Person"));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+
+    await act(async () => finishStop());
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    // A re-read that still returns the pre-stop list does not bring it back.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("consent-state-changed", { detail: { reconcile: true } }),
+      );
+    });
+    await waitFor(() => expect(mocks.listEntries.mock.calls.length).toBeGreaterThan(1));
+    expect(list).not.toHaveTextContent("Requester Person");
+  });
+
+  it("puts the access back in Active when stopping fails", async () => {
+    let failStop: (error: Error) => void = () => undefined;
+    const list = await stopSharingFoodAccess(
+      new Promise<void>((_resolve, reject) => {
+        failStop = reject;
+      }),
+    );
+    await waitFor(() => expect(list).not.toHaveTextContent("Requester Person"));
+
+    // Negative control: the removal was a promise to the owner, not a server
+    // answer. When the stop fails the access is still live, and says so.
+    await act(async () => failStop(new Error("Could not stop sharing. Try again.")));
+    await waitFor(() => expect(list).toHaveTextContent("Requester Person"));
+    expect(mocks.toastError).toHaveBeenCalledWith("Could not stop sharing. Try again.");
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
   it("names a request plainly: when it was asked, when to decide, what and how long", async () => {
     mocks.search = "tab=requests&requestId=req_food";
     mocks.sharePreviewState = {
