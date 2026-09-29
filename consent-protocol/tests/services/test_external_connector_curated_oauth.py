@@ -1003,3 +1003,47 @@ async def test_verify_does_not_mark_verified_when_the_server_rejects_the_token(
         await service.verify(connector_id="hubspot", user_id="u1")
 
     service.lifecycle.mark_verified.assert_not_awaited()
+
+
+# --- committed descriptor <-> reviewed runtime pin ---------------------------
+
+
+def test_committed_hubspot_descriptor_matches_its_runtime_pin():
+    """The registry row applied from the committed descriptor must satisfy the
+    code pin, otherwise HubSpot silently reads as unavailable."""
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "external_mcp_connectors"
+        / "hubspot.uat.json"
+    )
+    descriptor = json.loads(path.read_text(encoding="utf-8"))
+    row = ExternalMcpConnectorDefinition.from_row(
+        {
+            "connector_id": descriptor["connectorId"],
+            "display_name": descriptor["displayName"],
+            "description": descriptor["description"],
+            "mcp_endpoint": descriptor["mcpEndpoint"],
+            "auth_style": descriptor["authStyle"],
+            "oauth_authorize_url": descriptor["oauthAuthorizeUrl"],
+            "oauth_token_url": descriptor["oauthTokenUrl"],
+            "oauth_scopes": " ".join(descriptor["oauthScopes"]),
+            "oauth_client_id_env": descriptor["oauthClientIdEnv"],
+            "oauth_client_secret_env": descriptor["oauthClientSecretEnv"],
+            "is_active": True,
+            "transport_kind": "mcp",
+            "capability_policy": {"version": 1, "chat": descriptor["chatAdmission"]},
+            "registered_redirect_uris": descriptor["registeredRedirectUris"],
+        }
+    )
+    assert oauth.is_curated_oauth_connector(row)
+    assert (
+        row.mcp_endpoint,
+        row.oauth_authorize_url,
+        row.oauth_token_url,
+        row.oauth_scopes,
+        row.oauth_client_id_env,
+        row.oauth_client_secret_env,
+    ) == oauth._CURATED_OAUTH_RUNTIME_PINS["hubspot"]
