@@ -146,6 +146,9 @@ export function AgentConnectionsDrawer({
   const keyDown = (event: KeyboardEvent) => {
     if (externalModalOpen || event.defaultPrevented) return;
     if (event.key === "Escape") {
+      // A dialog opened from the drawer is a separate top layer. React portal
+      // events still bubble through this tree; leave its Escape to Radix.
+      if (event.target instanceof Element && event.target.closest('[data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot="alert-dialog-content"]')) return;
       event.stopPropagation();
       onOpenChange(false);
       return;

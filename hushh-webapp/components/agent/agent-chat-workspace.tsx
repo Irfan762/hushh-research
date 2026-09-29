@@ -2769,6 +2769,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     setDesktopHistoryCollapsed(readDesktopHistoryCollapsed());
   }, []);
   const desktopHistoryVisible = desktopHistoryLayout && !desktopHistoryCollapsed;
+  const [driveReviewSignal, setDriveReviewSignal] = useState<{ ownerId: string | null; epoch: number; count: number }>(
+    { ownerId: null, epoch: vaultSessionEpoch, count: 0 },
+  );
+  const onDriveNeedsReviewChange = useCallback((count: number) => {
+    const ownerId = user?.uid ?? null;
+    setDriveReviewSignal(current => current.ownerId === ownerId && current.epoch === vaultSessionEpoch && current.count === count
+      ? current : { ownerId, epoch: vaultSessionEpoch, count });
+  }, [user?.uid, vaultSessionEpoch]);
+  const driveReviewsPending = user && isVaultUnlocked && driveReviewSignal.ownerId === user.uid &&
+    driveReviewSignal.epoch === vaultSessionEpoch ? driveReviewSignal.count : 0;
   const desktopHistoryId = useId();
   const [getAppOpen, setGetAppOpen] = useState(false);
   const [getAppAnchorRect, setGetAppAnchorRect] = useState<DOMRect | null>(null);
@@ -7805,6 +7815,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         : undefined}
       onGetApp={offerGetApp ? openGetApp : undefined}
       getAppOpen={getAppOpen}
+      driveActivity={!isPuppySurface && (mode === "desktop" ? desktopHistoryVisible : !desktopHistoryVisible)
+        ? <DriveRecentSharing presentation="sidebar" onNeedsReviewChange={onDriveNeedsReviewChange} /> : null}
       onCreateNew={handleSidebarCreateNewChat}
       onSelectConversation={handleSidebarSelectConversation}
       onRenameConversation={isPuppySurface ? handleRenamePuppyConversation : handleRenameConversation}
@@ -7993,21 +8005,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 historyDrawerTriggerRef.current = event.currentTarget;
                 toggleHistoryDrawer();
               }}
-              aria-label={
-                desktopHistoryLayout
-                  ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
-                  : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"
-              }
-              title={
-                desktopHistoryLayout
-                  ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
-                  : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"
-              }
+              aria-label={`${desktopHistoryLayout
+                ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
+                : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}${driveReviewsPending > 0 && !desktopHistoryVisible && !isHistoryDrawerOpen
+                ? `, ${driveReviewsPending} Drive ${driveReviewsPending === 1 ? "review needs" : "reviews need"} you` : ""}`}
+              title={desktopHistoryLayout
+                ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
+                : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}
               aria-expanded={desktopHistoryLayout ? desktopHistoryVisible : undefined}
               aria-controls={desktopHistoryLayout && desktopHistoryVisible ? desktopHistoryId : undefined}
               className="relative z-[540]"
             >
               <AnimatedMenuCrossIcon isOpen={!desktopHistoryLayout && isHistoryDrawerOpen} />
+              {driveReviewsPending > 0 && !desktopHistoryVisible && !isHistoryDrawerOpen && !isPuppySurface ?
+                <span aria-hidden="true" className="pointer-events-none absolute right-0 top-0 size-2 rounded-full bg-[color:var(--app-warning)]" /> : null}
             </ShellActionSurface>
             <div
               data-agent-chat-header-region="identity"
@@ -8206,8 +8217,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               </ShellActionSurface>
             </div>
           </div>
-
-          {!isPuppySurface ? <DriveRecentSharing /> : null}
 
           {/* Both transcripts are HIDDEN rather than unmounted, and the
               symmetry is the point: `hidden` is display:none, so the surface
