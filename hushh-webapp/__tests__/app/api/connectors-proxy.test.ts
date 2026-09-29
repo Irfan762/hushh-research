@@ -37,6 +37,41 @@ describe("connector proxy privacy", () => {
     expect(await response.text()).toBe("");
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
+
+  it("aborts a pending OAuth start when the browser cancels the request", async () => {
+    const requestAbort = new AbortController();
+    const upstream = vi.fn(
+      (_url: string, init: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init.signal!;
+          const rejectAbort = () =>
+            reject(new DOMException("Aborted", "AbortError"));
+          if (signal.aborted) rejectAbort();
+          else signal.addEventListener("abort", rejectAbort, { once: true });
+        }),
+    );
+    vi.stubGlobal("fetch", upstream);
+    const timeout = vi.spyOn(AbortSignal, "timeout");
+    const pending = proxyExternalConnectorRequest(
+      new NextRequest("https://app.test/api/connectors/google_drive/connect/oauth/start", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ redirectUri: "https://app.test/return" }),
+        signal: requestAbort.signal,
+      }),
+      ["google_drive", "connect", "oauth", "start"],
+    );
+
+    await vi.waitFor(() => expect(upstream).toHaveBeenCalledOnce());
+    const upstreamSignal = upstream.mock.calls[0][1].signal as AbortSignal;
+    requestAbort.abort();
+
+    const response = await pending;
+    expect(upstreamSignal.aborted).toBe(true);
+    expect(timeout).toHaveBeenCalledWith(25_000);
+    expect(response.status).toBe(499);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+  });
   it.each(["review", "confirm", "catalog", "oauth/begin", "oauth/complete", "oauth/cancel"])("rejects oversized MCP %s before forwarding it", async operation => {
     const upstream = vi.fn();
     vi.stubGlobal("fetch", upstream);
