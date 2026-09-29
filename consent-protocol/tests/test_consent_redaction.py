@@ -272,16 +272,27 @@ def _everything_the_model_read(llm_request: Any) -> str:
 
 
 async def _agui_turn(service: Any, model: _StreamingModel, text: str, state: dict) -> str:
-    from ag_ui.core import EventType, RunAgentInput, UserMessage
+    from ag_ui.core import EventType
+
+    events = await _agui_events(service, model, text, state)
+    return "".join(e.delta for e in events if e.type == EventType.TEXT_MESSAGE_CONTENT)
+
+
+async def _agui_events(
+    service: Any, model: _StreamingModel, text: str, state: dict, extra_tools: tuple = ()
+) -> list[Any]:
+    from ag_ui.core import RunAgentInput, UserMessage
     from google.adk.apps import App, ResumabilityConfig
 
     from hushh_mcp.one_adk.agui_turn_timing import HEAD_ONE, TimedADKAgent
     from hushh_mcp.one_adk.external_read_boundary import STATE_EXECUTION_SURFACE
 
+    root = agent_tree.build_one_text_agent(model=model, include_thought_summaries=True)
+    root.tools = [*root.tools, *extra_tools]
     bridge = TimedADKAgent.from_app(
         App(
             name="hussh_one",
-            root_agent=agent_tree.build_one_text_agent(model=model, include_thought_summaries=True),
+            root_agent=root,
             resumability_config=ResumabilityConfig(is_resumable=True),
         ),
         head=HEAD_ONE,
@@ -301,8 +312,7 @@ async def _agui_turn(service: Any, model: _StreamingModel, text: str, state: dic
         messages=[UserMessage(id=f"message-{run_id}", role="user", content=text)],
         tools=[],
     )
-    events = [event async for event in bridge.run(run)]
-    return "".join(e.delta for e in events if e.type == EventType.TEXT_MESSAGE_CONTENT)
+    return [event async for event in bridge.run(run)]
 
 
 def _ended_progress(ending: str) -> dict[str, Any]:
@@ -432,6 +442,137 @@ async def test_production_shape_live_follow_up_runs_tools_and_answers_once(monke
     assert len(requests) == 3
     assert requests[1].config.tool_config is None
     assert result["follow_up_texts"] == ["Nopa is on Divisadero (0)."]
+
+
+# ── The auto-answer printed its sentence twice (localhost run 2da4bf9c) ───────
+#
+# The answer turn's model wrote the answer and, in the same response, called a
+# tool. The consent-answer gate refused it, ADK asked the model again with the
+# refusal, and the second call restated the answer into the same message. The
+# provider emitted that call although the request carried mode NONE, so the
+# guarantee has to hold in code whatever the model returns.
+
+ANSWER = "Kushal's favorite restaurant is Nopa in San Francisco."
+
+
+def _call(name: str, args: dict[str, Any]) -> types.Part:
+    return types.Part(function_call=types.FunctionCall(name=name, args=args))
+
+
+_CHIPS = _call("suggest_follow_ups", {"suggestions": ["Book a table", "Find similar places"]})
+_READ = _call("read_saved_notes", {"topic": "restaurants"})
+
+
+async def _consent_answer_turn(
+    monkeypatch, script: list[list[types.Part]]
+) -> tuple[_StreamingModel, list[Any], list[str]]:
+    from hushh_mcp.one_adk import encrypted_session_service
+    from tests.helpers.chat_keys import static_chat_cipher
+
+    table = _SessionTable()
+    monkeypatch.setattr(encrypted_session_service, "get_db", lambda: table)
+    monkeypatch.setattr(agent_tree, "_requester_bundle", _Ledger())
+    reads: list[str] = []
+
+    async def read_saved_notes(topic: str) -> dict[str, Any]:
+        """Read the person's saved notes on a topic."""
+        reads.append(topic)
+        return {"notes": []}
+
+    model = _StreamingModel(script)
+    service = encrypted_session_service.EncryptedAdkSessionService(static_chat_cipher())
+    events = await _agui_events(
+        service,
+        model,
+        "Consent approved",
+        {
+            consent_outcome_state_key(BUNDLE): "granted",
+            consent_shared_state_key(BUNDLE): {"personName": "Kushal", "labels": ["Food"]},
+            STATE_CONSENT_CONTINUATION: {
+                "bundleId": BUNDLE,
+                "outcome": "granted",
+                "personName": "Kushal",
+                "shared": store_request_secret("Favorite restaurant: Nopa"),
+                "sharedLabels": ["Food"],
+                "declinedLabels": [],
+            },
+        },
+        (read_saved_notes,),
+    )
+    return model, events, reads
+
+
+def _streamed_text(events: list[Any]) -> str:
+    from ag_ui.core import EventType
+
+    return "".join(e.delta for e in events if e.type == EventType.TEXT_MESSAGE_CONTENT)
+
+
+def _tool_results(events: list[Any]) -> dict[str, dict[str, Any]]:
+    import json
+
+    from ag_ui.core import EventType
+
+    names = {
+        e.tool_call_id: e.tool_call_name for e in events if e.type == EventType.TOOL_CALL_START
+    }
+    return {
+        names[e.tool_call_id]: json.loads(e.content)
+        for e in events
+        if e.type == EventType.TOOL_CALL_RESULT and e.tool_call_id in names
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("script", "model_calls", "results"),
+    [
+        # The run 2da4bf9c shape: One's chips end the turn in the answering call.
+        (
+            [[_thought("Answering"), types.Part(text=ANSWER), _CHIPS]],
+            1,
+            {"suggest_follow_ups": "shown"},
+        ),
+        # Any other tool after the answer is refused, and the refusal ends the turn.
+        ([[types.Part(text=ANSWER), _READ]], 1, {"read_saved_notes": "blocked"}),
+        # A tool asked for before any answer keeps the retry: never a silent turn.
+        ([[_READ], [types.Part(text=ANSWER)]], 2, {"read_saved_notes": "blocked"}),
+    ],
+    ids=["follow_ups", "tool_after_answer", "tool_before_answer"],
+)
+async def test_the_consent_answer_is_printed_once_and_reads_nothing(
+    monkeypatch, script, model_calls, results
+) -> None:
+    model, events, reads = await _consent_answer_turn(monkeypatch, script)
+
+    assert len(model._requests) == model_calls
+    assert _streamed_text(events).count(ANSWER) == 1
+    assert reads == []
+    assert {name: result["status"] for name, result in _tool_results(events).items()} == results
+    # Every model call of the answer turn is asked for no function calls.
+    for request in model._requests:
+        assert request.config.tool_config.function_calling_config.mode == (
+            types.FunctionCallingConfigMode.NONE
+        )
+
+
+@pytest.mark.asyncio
+async def test_negative_control_a_non_terminal_refusal_restates_the_answer(monkeypatch) -> None:
+    """The pre-fix gate refused every tool, chips included, and let ADK call again."""
+
+    def refuse_every_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
+        del tool, args
+        if tool_context.state.get(STATE_CONSENT_CONTINUATION):
+            return {"status": "blocked", "reason": "consent_answer_turn"}
+        return None
+
+    monkeypatch.setattr(agent_tree, "_before_one_tool", refuse_every_tool)
+    model, events, _reads = await _consent_answer_turn(
+        monkeypatch, [[types.Part(text=ANSWER), _CHIPS], [types.Part(text=ANSWER)]]
+    )
+
+    assert len(model._requests) == 2
+    assert _streamed_text(events).count(ANSWER) == 2
 
 
 @pytest.mark.asyncio

@@ -101,6 +101,7 @@ from hushh_mcp.one_adk.agui_turn_timing import (
 from hushh_mcp.one_adk.consent_continuation import (
     block_tools_during_consent_answer,
     consent_continuation_instruction,
+    is_consent_answer_turn,
 )
 from hushh_mcp.one_adk.consent_redaction import (
     consent_answer_fast_path,
@@ -2457,12 +2458,17 @@ def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
 
     Follow-up suggestions read and act on nothing, so the post-read barrier does
     not apply to them; identity is the application-owned function, never a name.
-    They stay blocked in consent-answer and feed-attention turns like every tool.
+    A consent answer admits them too: they end the turn in the answering model
+    call, where a refusal would cost a second call that restates the answer
+    (run 2da4bf9c). They stay blocked in feed-attention turns like every tool.
     """
+    follow_ups = getattr(tool, "func", None) is suggest_follow_ups
+    if follow_ups and is_consent_answer_turn(tool_context):
+        return None
     blocked = block_tools_during_consent_answer(tool_context) or block_tools_during_feed_attention(
         tool_context
     )
-    if blocked or getattr(tool, "func", None) is suggest_follow_ups:
+    if blocked or follow_ups:
         return blocked
     return before_external_read_tool(tool, args, tool_context)
 

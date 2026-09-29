@@ -18,7 +18,8 @@ follow-up turn in the same conversation. This module is the server's half:
 Another person's information therefore reaches the model only when the ledger
 shows an approved grant for this requester, in the conversation that asked. The
 decrypted text itself is used only by the turn that answers, and that turn may
-not call tools: it answers in words and cannot save, send or act. One's answer
+not call tools: it answers in words and cannot save, send or act. Its only
+exception is One's own follow-up chips, which read and act on nothing. One's answer
 is part of the requester's conversation, sealed with their chat key like any
 message they received. When the grant later ends, the stored answer is kept
 but ``consent_redaction`` removes it from every later model call and from the
@@ -27,12 +28,16 @@ history the client renders (founder decision 2026-09-28, CONTRACT C3).
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from hushh_mcp.one_adk.follow_up_suggestions import model_step_has_answer_text
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret, store_request_secret
+
+logger = logging.getLogger(__name__)
 
 # Per-invocation only; the ``temp:`` prefix keeps it out of persisted state.
 STATE_CONSENT_CONTINUATION = "temp:hussh:consent_continuation"
@@ -238,16 +243,31 @@ def _label_list(labels: Any) -> str:
     return ", ".join(values[:20])
 
 
+def is_consent_answer_turn(tool_context: Any) -> bool:
+    """Whether this turn holds another person's shared information to answer from."""
+    state = getattr(tool_context, "state", None)
+    getter = getattr(state, "get", None)
+    return callable(getter) and bool(getter(STATE_CONSENT_CONTINUATION))
+
+
 def block_tools_during_consent_answer(tool_context: Any) -> dict[str, Any] | None:
     """The answer turn answers in words only: no tool runs while it holds shared text.
 
     Enforced in code, not by instruction, so another person's information can
     never be saved to this person's memory, sent, or used to act from this turn.
+
+    When the model response that asked for the tool already shows the person its
+    answer, the refusal also ends the turn: ADK would otherwise call the model
+    again with the refusal, and that second call restates the answer into the
+    same message (run 2da4bf9c, 2026-09-28). A tool call with no answer yet keeps
+    the retry, so the turn is never left without an answer.
     """
-    state = getattr(tool_context, "state", None)
-    getter = getattr(state, "get", None)
-    if not callable(getter) or not getter(STATE_CONSENT_CONTINUATION):
+    if not is_consent_answer_turn(tool_context):
         return None
+    ends_turn = model_step_has_answer_text(tool_context)
+    if ends_turn:
+        tool_context.actions.skip_summarization = True
+    logger.info("one.consent_answer_tool_blocked ends_turn=%s", ends_turn)
     return {
         "status": "blocked",
         "reason": "consent_answer_turn",
