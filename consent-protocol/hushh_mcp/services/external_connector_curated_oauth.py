@@ -4,11 +4,11 @@ Generalizes `external_connector_google_oauth.py`'s Drive-specific pattern
 (PKCE, signed state, the v2 lifecycle store's generation/version fencing,
 policy-hash-gated reconnect, leased refresh) across whichever curated
 connector the registry names -- HubSpot first -- instead of a second
-Drive-shaped implementation per vendor. Config (endpoints, client env
-names, scopes, redirect allowlist, chat-admission marker) comes entirely
-from the connector's own registry row (`external_mcp_connectors`), never
-hardcoded here: a new connector of this same shape needs a descriptor and
-an `apply`, not a code change.
+Drive-shaped implementation per vendor. The operator registry
+(`external_mcp_connectors`) supplies the descriptor, while reviewed runtime
+pins bind secret-bearing endpoint, scope, and client-variable fields. A new
+connector of this same shape needs a descriptor, an `apply`, and a reviewed
+runtime trust pin before it can receive an OAuth client secret.
 
 Deliberately narrower than Drive in two ways:
 - No OIDC identity verification. Drive's pattern binds a refresh token to a
@@ -55,10 +55,31 @@ from hushh_mcp.services.external_connector_registry_service import (
     get_external_connector_registry_service,
 )
 from hushh_mcp.services.external_mcp_client import ExternalMcpError, list_tools
+from hushh_mcp.services.mcp_public_http import (
+    McpResponseLimitError,
+    UnsafeMcpEndpoint,
+    create_public_mcp_http_client,
+    validate_mcp_endpoint,
+)
 
 RESPONSE_LIMIT = 256 * 1024
 _REFRESH_MARGIN = timedelta(seconds=120)
 _FEATURE = "curated_mcp_connectors"
+# The registry is operator-writable and intentionally contains no secrets.
+# It therefore cannot itself decide which process environment variable is
+# safe to put in an OAuth token exchange. Keep each enabled provider's
+# endpoint, scope, and secret-name binding in reviewed application code.
+# Adding a provider is deliberately fail-closed until its pin is reviewed.
+_CURATED_OAUTH_RUNTIME_PINS: dict[str, tuple[str, str, str, tuple[str, ...], str, str]] = {
+    "hubspot": (
+        "https://mcp.hubspot.com/",
+        "https://mcp.hubspot.com/oauth/authorize/user",
+        "https://mcp.hubspot.com/oauth/v3/token",
+        (),
+        "HUBSPOT_OAUTH_CLIENT_ID",
+        "HUBSPOT_OAUTH_CLIENT_SECRET",
+    ),
+}
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +169,35 @@ class ExternalConnectorCuratedOAuth:
         connector = await self.registry.get_connector(connector_id)
         if connector is None or not is_curated_oauth_connector(connector):
             raise CuratedConnectorOAuthError("connector_unavailable", status_code=503)
+        expected = _CURATED_OAUTH_RUNTIME_PINS.get(connector.connector_id)
+        if (
+            expected is None
+            or (
+                connector.mcp_endpoint,
+                connector.oauth_authorize_url,
+                connector.oauth_token_url,
+                connector.oauth_scopes,
+                connector.oauth_client_id_env,
+                connector.oauth_client_secret_env,
+            )
+            != expected
+        ):
+            raise CuratedConnectorOAuthError("connector_configuration_invalid", status_code=503)
+        # A descriptor is checked on apply, but registry rows can predate that
+        # validation or be changed out-of-band. Do not let an OAuth client
+        # secret, authorization code, or refresh token reach a non-public
+        # endpoint even briefly.
+        try:
+            for endpoint in (
+                connector.mcp_endpoint,
+                connector.oauth_authorize_url,
+                connector.oauth_token_url,
+            ):
+                validate_mcp_endpoint(endpoint or "")
+        except UnsafeMcpEndpoint:
+            raise CuratedConnectorOAuthError(
+                "connector_configuration_invalid", status_code=503
+            ) from None
         client_id = getenv(connector.oauth_client_id_env or "", "").strip()
         client_secret = getenv(connector.oauth_client_secret_env or "", "").strip()
         if not client_id or not client_secret:
@@ -212,13 +262,22 @@ class ExternalConnectorCuratedOAuth:
 
     async def _post(self, url: str, *, token_url: str, data: dict[str, str]) -> dict[str, Any]:
         # Fixed to the connector's own configured token endpoint, no
-        # redirects, no response/request-body logging.
+        # redirects, proxy inheritance, or response/request-body logging.
         if url != token_url:
             raise CuratedConnectorOAuthError("connector_configuration_invalid", status_code=503)
         try:
+            validate_mcp_endpoint(token_url)
+        except UnsafeMcpEndpoint:
+            raise CuratedConnectorOAuthError(
+                "connector_configuration_invalid", status_code=503
+            ) from None
+        try:
             async with (
                 asyncio.timeout(20),
-                httpx.AsyncClient(timeout=15, follow_redirects=False) as client,
+                create_public_mcp_http_client(
+                    timeout=httpx.Timeout(15),
+                    max_response_bytes=RESPONSE_LIMIT,
+                ) as client,
             ):
                 async with client.stream(
                     "POST", url, data=data, headers={"Accept": "application/json"}
@@ -243,7 +302,11 @@ class ExternalConnectorCuratedOAuth:
                             raise CuratedConnectorOAuthError("grant_rejected", status_code=401)
                         raise CuratedConnectorOAuthError("provider_unavailable", status_code=503)
                     return parsed
-        except (httpx.HTTPError, TimeoutError):
+        except McpResponseLimitError:
+            raise CuratedConnectorOAuthError(
+                "provider_response_too_large", status_code=502
+            ) from None
+        except (httpx.HTTPError, TimeoutError, UnsafeMcpEndpoint):
             raise CuratedConnectorOAuthError("provider_unavailable", status_code=503) from None
 
     def _token_fields(self, token: dict[str, Any]) -> dict[str, Any]:

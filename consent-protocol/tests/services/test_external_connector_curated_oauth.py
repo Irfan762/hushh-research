@@ -139,6 +139,29 @@ async def test_configuration_rejects_when_env_vars_are_missing(service, connecto
         await service._configuration("hubspot")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"connector_id": "notion"},
+        {"mcp_endpoint": "https://mcp.hubspot.com/other"},
+        {"oauth_authorize_url": "https://mcp.hubspot.com/other"},
+        {"oauth_token_url": "https://mcp.hubspot.com/other"},
+        {"oauth_scopes": ("crm.read",)},
+        {"oauth_client_id_env": "DATABASE_URL"},
+        {"oauth_client_secret_env": "DATABASE_URL"},
+    ],
+)
+async def test_configuration_rejects_unpinned_endpoint_scope_or_secret_binding(
+    service, connector, monkeypatch, overrides
+):
+    service.registry.get_connector = AsyncMock(return_value=replace(connector, **overrides))
+    monkeypatch.setattr(oauth, "getenv", lambda name, default="": "synthetic")
+
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_configuration_invalid"):
+        await service._configuration("hubspot")
+
+
 # --- connection_available ------------------------------------------------
 
 
@@ -242,6 +265,7 @@ def _install_transport(monkeypatch, handler):
 
     def factory(**kwargs):
         captured.update(kwargs)
+        kwargs.pop("transport", None)
         return original(**kwargs, transport=httpx.MockTransport(handler))
 
     monkeypatch.setattr(httpx, "AsyncClient", factory)
@@ -264,6 +288,8 @@ async def test_post_never_follows_redirects(service, connector, monkeypatch):
     captured = _install_transport(monkeypatch, handler)
     await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
     assert captured["follow_redirects"] is False
+    assert captured["trust_env"] is False
+    assert captured["transport"]._max_response_bytes == oauth.RESPONSE_LIMIT
 
 
 @pytest.mark.asyncio
@@ -279,6 +305,64 @@ async def test_post_bounds_response_size_before_json_parsing(service, connector,
     _install_transport(monkeypatch, handler)
     with pytest.raises(oauth.CuratedConnectorOAuthError, match="provider_response_too_large"):
         await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+
+
+@pytest.mark.asyncio
+async def test_post_maps_public_transport_response_limit_error(service, connector, monkeypatch):
+    class LimitedResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def aiter_bytes(self):
+            raise oauth.McpResponseLimitError()
+            yield b""
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def stream(self, *args, **kwargs):
+            return LimitedResponse()
+
+    monkeypatch.setattr(oauth, "create_public_mcp_http_client", lambda **kwargs: Client())
+    with pytest.raises(
+        oauth.CuratedConnectorOAuthError, match="provider_response_too_large"
+    ) as caught:
+        await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+    assert caught.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_post_maps_unsafe_dns_answer_to_provider_unavailable(service, connector, monkeypatch):
+    class UnsafeResponse:
+        async def __aenter__(self):
+            raise oauth.UnsafeMcpEndpoint()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def stream(self, *args, **kwargs):
+            return UnsafeResponse()
+
+    monkeypatch.setattr(oauth, "create_public_mcp_http_client", lambda **kwargs: Client())
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="provider_unavailable") as caught:
+        await service._post(connector.oauth_token_url, token_url=connector.oauth_token_url, data={})
+    assert caught.value.status_code == 503
 
 
 @pytest.mark.asyncio

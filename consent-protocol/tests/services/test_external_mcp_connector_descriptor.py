@@ -86,6 +86,27 @@ def test_non_https_endpoint_is_rejected(tmp_path: Path) -> None:
         load_and_validate_descriptor(path)
 
 
+@pytest.mark.parametrize(
+    "endpoint",
+    [
+        "https://127.0.0.1/mcp",
+        "https://169.254.169.254/",
+        "https://metadata.internal/",
+        "https://user:secret@example.com/",
+        "https://example.com/?token=secret",
+        "https://example.com:8443/",
+    ],
+)
+@pytest.mark.parametrize("field", ["mcpEndpoint", "oauthAuthorizeUrl", "oauthTokenUrl"])
+def test_oauth_descriptor_rejects_non_public_endpoint(
+    tmp_path: Path, field: str, endpoint: str
+) -> None:
+    path = _write(tmp_path, _oauth_descriptor(**{field: endpoint}))
+
+    with pytest.raises(ExternalMcpConnectorDescriptorError):
+        load_and_validate_descriptor(path)
+
+
 def test_unknown_auth_style_is_rejected(tmp_path: Path) -> None:
     path = _write(tmp_path, _api_key_descriptor(authStyle="basic"))
 

@@ -783,6 +783,12 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
     # 243 or resurrect server-readable custom configuration to render Settings.
     connectors = await registry.list_active_connectors()
     statuses = {row["connectorId"]: row for row in await credentials.list_statuses(user_id=user_id)}
+    # A deactivated connector cannot accept a new grant or execute, but a
+    # stored owner grant must remain visible long enough to be disconnected.
+    # This explicit curated-only lookup cannot disclose private definitions.
+    inactive_curated = (
+        await registry.list_curated_connectors(include_inactive=True) if statuses else []
+    )
     oauth_service = get_external_connector_oauth_service()
     curated_available = {
         item.connector_id: await oauth_service.curated().connection_available(
@@ -837,6 +843,32 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
                 displayName="Drive",
                 description="Selected files only",
                 authStyle="oauth",
+                status=status["status"],
+                accountLabel=status.get("accountLabel"),
+                connectedAt=status.get("connectedAt"),
+                validationState=status.get("validationState", "unverified"),
+                profile=status.get("profile"),
+                revocationOutcome=status.get("revocationOutcome", "not_attempted"),
+                lastErrorCode=status.get("lastErrorCode"),
+                available=False,
+            )
+        )
+    active_connector_ids = {item.connector_id for item in connectors}
+    for connector in inactive_curated:
+        if connector.connector_id in active_connector_ids or not is_curated_oauth_connector(
+            connector
+        ):
+            continue
+        status = statuses.get(connector.connector_id)
+        if not status or status.get("status") in {"not_connected", "revoked"}:
+            continue
+        result.connectors.append(
+            ConnectorSummary(
+                connectorId=connector.connector_id,
+                displayName=connector.display_name,
+                description=connector.description,
+                authStyle=connector.auth_style,
+                registrationKind="curated",
                 status=status["status"],
                 accountLabel=status.get("accountLabel"),
                 connectedAt=status.get("connectedAt"),
@@ -1079,7 +1111,9 @@ async def disconnect_connector(
     # An active operator-registered OAuth connector disconnects through its own
     # lifecycle adapter (revocation fence + attempt invalidation). A row that was
     # deactivated since still falls through so the owner can always scrub it.
-    connector = await get_external_connector_registry_service().get_connector(connector_id)
+    connector = await get_external_connector_registry_service().get_connector(
+        connector_id, include_inactive=True
+    )
     if is_curated_oauth_connector(connector):
         try:
             result = (

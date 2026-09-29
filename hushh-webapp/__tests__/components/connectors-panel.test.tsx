@@ -297,6 +297,32 @@ describe("supported connector catalog", () => {
       expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
     });
 
+    it("keeps a connected connector reachable for disconnect while rollout is off", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "connected" }], false));
+      render(panel());
+      const connected = screen.getByRole("region", { name: "Connected" });
+      expect(await within(connected).findByText("HubSpot")).toBeInTheDocument();
+      fireEvent.click(within(connected).getByRole("button", { name: "Disconnect HubSpot" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Confirm" }));
+      await waitFor(() =>
+        expect(state.disconnect).toHaveBeenCalledWith({
+          vaultOwnerToken: "synthetic-owner-token",
+          connectorId: "hubspot",
+        }),
+      );
+    });
+
+    it("does not offer a stale grant a reconnect path while rollout is off", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "verifying" }], false));
+      render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "HubSpot" }));
+      const details = screen.getByRole("region", { name: "HubSpot details" });
+      expect(within(details).getByText("Unavailable")).toBeInTheDocument();
+      expect(within(details).queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
+      expect(within(details).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+      expect(state.startOAuth).not.toHaveBeenCalled();
+    });
+
     it("stays hidden when unavailable and not connected", async () => {
       state.overview.mockResolvedValue(withFlag([{ ...hubspot, available: false }, catalogItem]));
       render(panel());
@@ -358,7 +384,12 @@ describe("supported connector catalog", () => {
     it("treats a connection stuck before verification as needing sign-in", async () => {
       state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "verifying" }]));
       render(panel());
-      expect(await screen.findByRole("button", { name: "Reconnect HubSpot" })).toBeInTheDocument();
+      const available = screen.getByRole("region", { name: "Available" });
+      const connected = screen.getByRole("region", { name: "Connected" });
+      expect(
+        await within(available).findByRole("button", { name: "Reconnect HubSpot" }),
+      ).toBeInTheDocument();
+      expect(within(connected).queryByText("HubSpot")).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: "Disconnect HubSpot" })).not.toBeInTheDocument();
       expect(screen.queryByText(/choose files/)).not.toBeInTheDocument();
     });

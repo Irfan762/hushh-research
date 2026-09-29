@@ -1281,8 +1281,19 @@ function OwnerConnectorsPanel({
     drive?.available !== false &&
     overview?.features.google_drive_picker === true &&
     ["connected", "verifying"].includes(drive?.status ?? "");
+  const curatedRolloutEnabled = overview?.features.curated_mcp_connectors === true;
   const connectCurated = (connectorId: string, name: string) => {
     if (!vaultOwnerToken || !user?.uid || curatedBusy) return;
+    const connector = overview?.connectors.find((item) => item.connectorId === connectorId);
+    if (
+      !connector ||
+      !CURATED_OAUTH_CONNECTORS.has(connectorId) ||
+      !curatedRolloutEnabled ||
+      connector.available === false
+    ) {
+      setCuratedMessage(name + " is unavailable here.");
+      return;
+    }
     if (Capacitor.isNativePlatform()) {
       setCuratedMessage(`Connect ${name} on the web. It works here once connected.`);
       return;
@@ -1533,16 +1544,19 @@ function OwnerConnectorsPanel({
       .filter((item, index, items) => {
         if (["notion", "google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
         if (items.findIndex((candidate) => candidate.connectorId === item.connectorId) !== index) return false;
-        // A curated connector shows only while its rollout is on and it can be
-        // connected here, or while it is connected so Disconnect stays reachable.
-        if (CURATED_OAUTH_CONNECTORS.has(item.connectorId))
-          return overview?.features.curated_mcp_connectors === true &&
-            (item.available !== false || !["not_connected", "revoked"].includes(item.status));
+        // A curated connector shows when it can accept a new grant, or while
+        // an existing owner grant still needs a Disconnect/recovery path.
+        if (CURATED_OAUTH_CONNECTORS.has(item.connectorId)) {
+          const hasExistingGrant = !["not_connected", "revoked"].includes(item.status);
+          return (curatedRolloutEnabled && item.available !== false) || hasExistingGrant;
+        }
         return true;
       })
       .map((item): ConnectorListEntry => {
-        const isConnected = !["not_connected", "revoked"].includes(item.status);
+        const storedGrant = !["not_connected", "revoked"].includes(item.status);
         const curated = CURATED_OAUTH_CONNECTORS.has(item.connectorId);
+        const canStartCurated =
+          curated && curatedRolloutEnabled && item.available !== false;
         // A curated connection stuck before verification cannot be used by Kai,
         // so it reads as needing sign-in rather than as connected.
         const signInNeeded =
@@ -1550,12 +1564,17 @@ function OwnerConnectorsPanel({
         return {
           id: item.connectorId,
           name: item.displayName,
-          detail: signInNeeded ? "Sign-in needed" : undefined,
-          connected: isConnected,
-          onOpen: isConnected || curated ? () => showConnector(item.connectorId) : undefined,
+          detail:
+            signInNeeded && canStartCurated
+              ? "Sign-in needed"
+              : curated && storedGrant && !canStartCurated
+                ? "Unavailable"
+                : undefined,
+          connected: curated ? item.status === "connected" : storedGrant,
+          onOpen: storedGrant || curated ? () => showConnector(item.connectorId) : undefined,
           action: !curated
             ? undefined
-            : signInNeeded || !isConnected
+            : canStartCurated && (signInNeeded || !storedGrant)
               ? {
                   label: `${signInNeeded ? "Reconnect" : "Connect"} ${item.displayName}`,
                   onClick: () => {
@@ -1572,7 +1591,7 @@ function OwnerConnectorsPanel({
                   },
                   disabled: curatedBusy,
                 },
-          trailingText: !isConnected && !curated ? labels[item.status] : undefined,
+          trailingText: !storedGrant && !curated ? labels[item.status] : undefined,
         };
       }),
   ];
@@ -1586,6 +1605,12 @@ function OwnerConnectorsPanel({
   const availableEntries = matchingEntries.filter((entry) => !entry.connected);
   const selectedCatalog = overview?.connectors.find(
     (item) => item.connectorId === activeConnector,
+  );
+  const canStartSelectedCurated = Boolean(
+    selectedCatalog &&
+      CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+      curatedRolloutEnabled &&
+      selectedCatalog.available !== false,
   );
 
   return (
@@ -2130,14 +2155,20 @@ function OwnerConnectorsPanel({
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
                 <p role="status" className="text-sm">
-                  {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) && selectedCatalog.status === "verifying"
-                    ? "Sign-in needed"
+                  {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                  !canStartSelectedCurated &&
+                  !["not_connected", "revoked"].includes(selectedCatalog.status)
+                    ? "Unavailable"
+                    : CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                        selectedCatalog.status === "verifying"
+                      ? "Sign-in needed"
                     : (labels[selectedCatalog.status] ?? "Status unavailable")}
                 </p>
                 {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) ? (
                   <>
                     <div className="flex flex-wrap gap-2">
-                      {["not_connected", "revoked", "needs_reauth", "verifying"].includes(selectedCatalog.status) ? (
+                      {canStartSelectedCurated &&
+                      ["not_connected", "revoked", "needs_reauth", "verifying"].includes(selectedCatalog.status) ? (
                         <Button
                           className={touch}
                           disabled={curatedBusy || loading}

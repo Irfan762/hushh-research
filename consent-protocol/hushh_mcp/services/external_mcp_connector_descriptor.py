@@ -14,7 +14,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+
+from hushh_mcp.services.mcp_public_http import UnsafeMcpEndpoint, validate_mcp_endpoint
 
 _CONNECTOR_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 
@@ -29,9 +30,10 @@ def _text(value: Any) -> str:
 
 def _require_https_url(value: Any, label: str) -> str:
     candidate = _text(value)
-    parsed = urlparse(candidate)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ExternalMcpConnectorDescriptorError(f"{label} must be an HTTPS URL.")
+    try:
+        validate_mcp_endpoint(candidate)
+    except UnsafeMcpEndpoint:
+        raise ExternalMcpConnectorDescriptorError(f"{label} must be a public HTTPS URL.") from None
     return candidate
 
 
