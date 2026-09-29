@@ -288,15 +288,17 @@ async def issue_app_review_mode_session(request: Request):
         requested_uid=payload.get("reviewer_uid"),
     )
     if identity is None:
+        # Reasons are literal format text, not arguments: the process-wide log
+        # redactor (mcp_modules/log_redaction.py) scrubs long underscored
+        # argument values as if they were uids.
         if not str(payload.get("smoke_passphrase") or "").strip():
-            reason = "credential_missing"
+            logger.warning("app_review_mode.session_refused reason=credential_missing")
         elif not _configured_reviewer_identities():
             # Operator signal: this backend holds no reviewer passphrase in its
             # process env, so no request can succeed (see reviewer_mode.sh).
-            reason = "credential_not_configured"
+            logger.warning("app_review_mode.session_refused reason=credential_not_configured")
         else:
-            reason = "credential_mismatch"
-        logger.warning("app_review_mode.session_refused reason=%s", reason)
+            logger.warning("app_review_mode.session_refused reason=credential_mismatch")
         raise HTTPException(
             status_code=403,
             detail="Review session credential required",
