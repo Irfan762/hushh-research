@@ -361,6 +361,26 @@ class _RequestService(InformationRequestService):
                     }
                 )
             return [{"request_id": params["request"]}]
+        if "FROM consent_audit" in sql and "request_id = ANY(:request_ids)" in sql:
+            # The progress read (CONTRACT C1): every transition, oldest first.
+            return sorted(
+                (
+                    event
+                    for event in world.ledger.events
+                    if event.get("user_id") == params["subject"]
+                    and event.get("request_id") in params["request_ids"]
+                    and event.get("action")
+                    in {
+                        "REQUESTED",
+                        "CONSENT_GRANTED",
+                        "CONSENT_DENIED",
+                        "REVOKED",
+                        "TIMEOUT",
+                        "CANCELLED",
+                    }
+                ),
+                key=lambda event: (event["issued_at"], event["id"]),
+            )
         if "UPDATE one_information_request_bundles SET cancelled_at" in sql:
             bundle = world.bundles.get(params["bundle"])
             if bundle is None:

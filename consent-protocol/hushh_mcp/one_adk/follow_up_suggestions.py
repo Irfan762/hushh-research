@@ -80,18 +80,27 @@ def _current_model_step(tool_context: ToolContext) -> list[Any]:
     return step
 
 
-def _ends_turn_safely(tool_context: ToolContext) -> bool:
-    step = _current_model_step(tool_context)
-    calls = [call for event in step for call in event.get_function_calls()]
-    call_id = getattr(tool_context, "function_call_id", None)
-    if len(calls) != 1 or calls[0].name != FOLLOW_UP_TOOL_NAME or calls[0].id != call_id:
-        return False
+def _has_answer_text(step: list[Any]) -> bool:
     return any(
         isinstance(part.text, str) and part.text.strip() and not part.thought
         for event in step
         if event.content
         for part in event.content.parts or []
     )
+
+
+def model_step_has_answer_text(tool_context: Any) -> bool:
+    """Whether the model response that issued this call already shows the person an answer."""
+    return _has_answer_text(_current_model_step(tool_context))
+
+
+def _ends_turn_safely(tool_context: ToolContext) -> bool:
+    step = _current_model_step(tool_context)
+    calls = [call for event in step for call in event.get_function_calls()]
+    call_id = getattr(tool_context, "function_call_id", None)
+    if len(calls) != 1 or calls[0].name != FOLLOW_UP_TOOL_NAME or calls[0].id != call_id:
+        return False
+    return _has_answer_text(step)
 
 
 async def suggest_follow_ups(suggestions: list[str], tool_context: ToolContext) -> dict[str, Any]:
@@ -143,6 +152,7 @@ __all__ = [
     "FOLLOW_UP_INSTRUCTION",
     "FOLLOW_UP_TOOL_NAME",
     "follow_up_instruction",
+    "model_step_has_answer_text",
     "normalize_follow_ups",
     "suggest_follow_ups",
 ]

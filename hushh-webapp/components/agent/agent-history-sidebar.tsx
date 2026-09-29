@@ -293,11 +293,7 @@ export function AgentHistorySidebar({
             aria-current={active ? "page" : undefined}
             title={title}
           >
-            <MessageSquare
-              className="h-4 w-4"
-              strokeWidth={active ? 2 : 1.8}
-              aria-hidden="true"
-            />
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       );
@@ -553,13 +549,13 @@ export function AgentHistorySidebar({
               variant="outline"
               size="sm"
               data-chat-new-button
-              className="mt-3 flex h-11 w-full items-center justify-start gap-2 rounded-[12px] border-transparent bg-[color:var(--one-chat-field)] px-3 text-[15px] font-medium text-foreground shadow-none transition-[transform,background-color] motion-reduce:transition-none duration-150 hover:bg-[color:var(--one-chat-field-strong)] active:scale-[0.98] dark:border-transparent dark:bg-[color:var(--one-chat-field)] dark:hover:bg-[color:var(--one-chat-field-strong)]"
+              className="mt-3 flex h-11 w-full items-center justify-start gap-2 rounded-[12px] border-transparent bg-[color:var(--one-chat-field)] px-3 text-[15px] font-medium text-foreground shadow-none transition-[transform,background-color] motion-reduce:transition-none duration-150 hover:bg-[color:var(--one-chat-field-strong)] dark:border-transparent dark:bg-[color:var(--one-chat-field)] dark:hover:bg-[color:var(--one-chat-field-strong)]"
               onClick={onCreateNew}
               disabled={disabled}
               aria-label="Create new chat"
               title="Create new chat"
             >
-              <Plus className="h-4 w-4 text-muted-foreground" strokeWidth={2.2} aria-hidden="true" />
+              <Plus className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               <span>New chat</span>
             </Button>
           </div>
@@ -586,7 +582,7 @@ export function AgentHistorySidebar({
               aria-label="Create new chat"
               title="New chat"
             >
-              <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+              <Plus className="h-4 w-4" aria-hidden="true" />
             </Button>
           </div>
         ) : (
@@ -604,7 +600,7 @@ export function AgentHistorySidebar({
               aria-label="Create new chat"
               title="New chat"
             >
-              <Plus className="h-[18px] w-[18px]" strokeWidth={2.2} aria-hidden="true" />
+              <Plus className="h-[18px] w-[18px]" aria-hidden="true" />
             </Button>
           </div>
         )}
@@ -626,7 +622,7 @@ export function AgentHistorySidebar({
           {!railMode && !loading && conversations.length === 0 ? (
             <div className="my-3 flex flex-col items-center justify-center rounded-2xl border border-dashed border-[color:var(--one-chat-divider)] px-4 py-8 text-center">
               <div className="mb-2.5 grid h-10 w-10 place-items-center rounded-xl bg-[color:var(--one-chat-field)] text-muted-foreground">
-                <MessageSquare className="h-5 w-5 opacity-70" strokeWidth={1.8} aria-hidden="true" />
+                <MessageSquare className="h-5 w-5 opacity-70" aria-hidden="true" />
               </div>
               <p className="text-[13px] font-semibold text-foreground/80">No chats yet</p>
               <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
@@ -716,7 +712,6 @@ export function AgentHistorySidebar({
               <ShellActionSurface
                 variant="pill"
                 type="button"
-                pressScale={false}
                 wrapperClassName="w-full"
                 data-testid="agent-history-get-app"
                 className={footerButtonClassName}
@@ -734,7 +729,6 @@ export function AgentHistorySidebar({
               <ShellActionSurface
                 variant="pill"
                 type="button"
-                pressScale={false}
                 wrapperClassName="w-full"
                 className={footerButtonClassName}
                 onClick={(event) => onOpenConnectors(event.currentTarget)}

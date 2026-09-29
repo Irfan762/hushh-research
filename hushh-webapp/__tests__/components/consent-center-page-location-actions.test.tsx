@@ -314,6 +314,7 @@ describe("ConsentCenterPage One Location action routing", () => {
     mocks.handleLocationApprove.mockResolvedValue(undefined);
     mocks.handleLocationDeny.mockResolvedValue(undefined);
     mocks.handleLocationRevoke.mockResolvedValue(undefined);
+    mocks.handleRevoke.mockResolvedValue(undefined);
     installDesktopMediaQuery();
   });
 
@@ -478,7 +479,11 @@ describe("ConsentCenterPage One Location action routing", () => {
     fireEvent.click(within(confirmation).getByRole("button", { name: "Stop sharing" }));
 
     await waitFor(() => {
-      expect(mocks.handleRevoke).toHaveBeenCalledWith("attr.shopping.receipts.*");
+      expect(mocks.handleRevoke).toHaveBeenCalledWith(
+        "attr.shopping.receipts.*",
+        undefined,
+        { quiet: true },
+      );
     });
     expect(mocks.handleLocationRevoke).not.toHaveBeenCalled();
   });

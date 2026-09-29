@@ -3,6 +3,8 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { CHAT_USER_BUBBLE_CLASSNAME } from "@/components/agent/chat-message-styles";
+
 const root = process.cwd();
 
 function read(relativePath: string) {
@@ -285,5 +287,19 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("h-[calc(100dvh-var(--app-top-content-offset,0px)-var(--app-bottom-shell-height");
     expect(styles).toContain('[data-agent-chat-composer-form="root"]');
     expect(styles).toContain("var(--bottom-nav-travel, 0px)");
+  });
+
+  it("keeps selected text visible on the person's own accent bubble", () => {
+    // Regression: the theme highlight is the accent at 28%, so on the accent
+    // bubble selected text vanished. The on-accent rule is keyed to the
+    // bubble's exact fill class; renaming the fill must carry the rule with it.
+    const styles = read("app/globals.css");
+    const fill = CHAT_USER_BUBBLE_CLASSNAME.split(/\s+/).find((name) => name.startsWith("bg-"));
+
+    expect(fill).toBe("bg-[linear-gradient(145deg,var(--app-accent),var(--app-accent-deep))]");
+    expect(styles).toContain(`[class~="${fill}"]`);
+    expect(styles).toMatch(/\)\s*::selection\s*\{\s*background-color: var\(--app-accent-selection-bg\);\s*color: var\(--app-accent-selection-fg\);/);
+    expect(styles).toContain("--app-accent-selection-bg:");
+    expect(styles).toContain("--app-accent-selection-fg:");
   });
 });

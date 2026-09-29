@@ -194,3 +194,31 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
   A model failure is recorded as `failed` and retried after an hour.
 - Live eval before promotion: none yet. Mocked contract tests only; extraction
   quality on real mailboxes and calendars is unmeasured.
+
+### Declared: consent scope catalog search (contract C4)
+
+Keyword and synonym matching in `consent-protocol/hushh_mcp/consent/scope_matcher.py`
+would sit on the drift list above. It is declared, and scoped, as catalog search:
+
+- Owning agent: `agent_one`, tool `propose_information_request`; manifest
+  `consent-protocol/hushh_mcp/agents/one/agent.yaml`. The same ranker backs
+  `GET /api/one/people/{person_ref}/scope-catalog`.
+- Scope: it ranks the owner's requestable catalog by human labels, domains and a small
+  synonym table. It never sees a value and never decides intent; the model does.
+- Never overrides the model: the model's own words are matched first, verbatim. Search
+  only resolves words that named nothing, then the question only if nothing matched.
+- Explainable: every pick carries a `why` shown on the ask card, and a no-match fallback
+  is offered as a suggestion to change. The person's tap on Send is the decision.
+- Never picks storage shape: a record's schema field (`kind`, `status`, `summary`,
+  `observations` below `_entities` or `_items`) or app state (`parse_fallback`) is never
+  preselected (`is_proposable_entry`). The catalog a person reads drops those rows when a
+  branch row covers them and shows one row per human label (`presentable_scope_entries`);
+  request validation still uses the full catalog. Measured 2026-09-28: "What's Kushal's
+  favorite restaurant?" proposed "Kind".
+- The reason is the model's: One writes it from the question (`purpose`, for example
+  "To pick a restaurant for dinner"). Only an empty one is filled by host code, from the
+  person's own words and never from a catalog label, and the result records it as
+  `reasonSource: "fallback"` (`agent` otherwise) with the log line
+  `one.proposal_reason_fallback`.
+- Live eval before promotion: none yet. Deterministic ranking tests only
+  (`consent-protocol/tests/test_scope_search_ranking.py`).

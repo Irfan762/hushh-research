@@ -146,7 +146,9 @@ class TestAgentTreeShape:
     def test_root_agent_is_one_with_full_roster(self):
         agent = build_one_root_agent()
         assert agent.name == "one"
-        assert agent.before_model_callback is timed_one_before_model
+        # Consent redaction runs first, so timing measures the request actually sent.
+        assert agent.canonical_before_model_callbacks[-1] is timed_one_before_model
+        assert agent.canonical_before_model_callbacks[0].__name__ == "_one_consent_before_model"
         assert agent.after_model_callback is timed_one_after_model
         tool_names = {
             getattr(t, "name", getattr(t, "__name__", type(t).__name__)) for t in agent.tools

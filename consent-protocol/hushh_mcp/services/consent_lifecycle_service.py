@@ -15,6 +15,7 @@ import time
 from typing import Any, Awaitable, Callable, MutableMapping
 
 from hushh_mcp.consent import token as consent_token
+from hushh_mcp.consent.scope_labels import human_scope_label
 from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.services.actor_identity_service import ActorIdentityService
 from hushh_mcp.services.consent_center_service import (
@@ -151,11 +152,18 @@ class ConsentLifecycleService:
         drops the two fields the revoke path cannot work without.
         """
         scope = _clean(row.get("scope"))
-        metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+        raw_metadata = row.get("metadata")
+        metadata: dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
         # ``attr.`` is the storage prefix, not a word anybody says. Dropping it
         # is the difference between "Attr Professional Employment" and
         # "Professional Employment".
-        readable = humanize_path(scope[len("attr.") :] if scope.startswith("attr.") else scope)
+        # An ``attr.*`` scope gets the one human name every other surface uses
+        # ("Food preferences"), not its humanized storage path.
+        readable = (
+            human_scope_label(scope, _clean(metadata.get("human_label")) or None)
+            if scope.startswith("attr.")
+            else humanize_path(scope)
+        )
         return {
             "scope": scope,
             "requestId": _clean(row.get("request_id")) or None,

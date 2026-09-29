@@ -485,6 +485,7 @@ export interface HushhVaultPlugin {
     passkeyDeviceLabel?: string;
     passkeyLastUsedAt?: number;
     authToken?: string;
+    vaultOwnerToken: string;
   }): Promise<{ success: boolean }>;
 
   deleteVaultWrapper(options: {
@@ -503,6 +504,7 @@ export interface HushhVaultPlugin {
     primaryMethod: string;
     primaryWrapperId?: string;
     authToken?: string;
+    vaultOwnerToken: string;
   }): Promise<{ success: boolean }>;
 
   isPasskeyAvailable(options?: { rpId?: string }): Promise<{

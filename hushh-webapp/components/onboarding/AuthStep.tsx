@@ -643,7 +643,7 @@ export function AuthStep({
               action: provider,
               result: "success",
             });
-            void ApiService.notifyAuthMail("signed_in", { idToken });
+            void ApiService.notifyFirstWelcome({ idToken });
             // The sign-in screen states "By continuing you agree"; record it.
             void LegalAcceptanceService.recordSignInAcceptance(authenticatedUser);
             if (growthJourney) {

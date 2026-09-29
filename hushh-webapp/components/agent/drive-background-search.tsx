@@ -488,7 +488,8 @@ function DriveBulkShareReview({ searchJobId, getToken, initial = null, clientReq
   const attention = counts.skipped + counts.failed + counts.needsReview + counts.unknown;
   const allAvailable = complete && counts.total > 0 && available === counts.total;
   const title = view.status === "review_ready" ? "Review Drive sharing" : allAvailable ? "Files are ready" :
-    view.status === "stopped" ? "Sharing stopped" : complete ? "Sharing finished" : "Sharing files";
+    view.status === "stopped" ? "Sharing stopped" : view.status === "failed" ? "Sharing failed" :
+      complete ? "Sharing incomplete" : "Sharing files";
   const summary = view.status === "review_ready"
     ? `Review ${view.fileCount.toLocaleString()} files with ${view.recipientCount} ${view.recipientCount === 1 ? "person" : "people"}`
     : `${available.toLocaleString()} of ${counts.total.toLocaleString()} ${view.recipientCount === 1 ? "files available" : "file shares complete"}`;
