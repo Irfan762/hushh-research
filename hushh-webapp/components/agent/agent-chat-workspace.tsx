@@ -6922,6 +6922,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const editQueuedPrompt = async (id: string, textInput: string) => {
     const text = textInput.trim();
     if (!text) return;
+    if (detectLikelyPan(text)) {
+      // An edit is screened like a fresh message: the guard blocks it and
+      // opens the secure form; the queued message keeps its previous text.
+      enqueueGuardedTurn({ typedText: text, attachments: [], fromPaste: false });
+      setEditingQueuedPromptId(null);
+      setEditingQueuedPromptText("");
+      return;
+    }
     const held = liveTurnQueueRef.current?.holds(id) ?? false;
     if (!(await reclaimQueuedPrompt(id))) return;
     // A withdrawn id is spent on the server, so the edited message is new.

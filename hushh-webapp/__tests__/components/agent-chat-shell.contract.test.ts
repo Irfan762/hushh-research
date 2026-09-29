@@ -78,6 +78,16 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("drainOperationQueue");
     expect(workspace).toContain("<AgentQueuedStack");
     expect(read("components/agent/agent-queued-stack.tsx")).toContain("agent-chat-prompt-queue");
+    // Queued text reaches the running turn only through enqueuePrompt, which
+    // the card-number guard calls; an edit is screened the same way.
+    const edit = workspace.slice(
+      workspace.indexOf("const editQueuedPrompt = async"),
+      workspace.indexOf("const removeQueuedPrompt = async"),
+    );
+    expect(edit).toContain("detectLikelyPan(text)");
+    expect(edit).toContain("enqueueGuardedTurn({ typedText: text");
+    expect(edit.indexOf("detectLikelyPan(text)")).toBeLessThan(edit.indexOf("reclaimQueuedPrompt(id)"));
+    expect(workspace.match(/queue\.offer\(/g)).toHaveLength(1);
     expect(workspace).toContain("enqueueCalendarDirective");
     // Calendar and reviewed Gmail changes share one serialized runner.
     expect(workspace).toContain('pendingText: "Scheduling…"');
