@@ -35,6 +35,17 @@ function renderSidebar(extra: Partial<Parameters<typeof AgentHistorySidebar>[0]>
 }
 
 describe("AgentHistorySidebar", () => {
+  it("places Drive activity above chats on One and hides it on Puppy", () => {
+    const activity = <div data-testid="drive-activity">Drive sharing update</div>;
+    const first = renderSidebar({ driveActivity: activity });
+    const row = screen.getByTestId("drive-activity");
+    const today = screen.getByRole("list", { name: "Today conversations" });
+    expect(row.compareDocumentPosition(today) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    first.unmount();
+    renderSidebar({ driveActivity: activity, surface: "puppy" });
+    expect(screen.queryByTestId("drive-activity")).toBeNull();
+  });
+
   it("pins Get the app and Connectors in a footer below the scrollable chat list", () => {
     const onGetApp = vi.fn();
     const onOpenConnectors = vi.fn();
