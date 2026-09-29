@@ -51,6 +51,7 @@ import {
 } from "@/lib/consent/consent-events";
 import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
+import { projectFeedDriveProgress, type FeedDriveProgress } from "@/lib/feed/drive-request-progress";
 import { driveSharingSelectionId, isDriveSharingEntry } from "@/lib/consent/drive-query-consent";
 import { resolveConsentRequesterLabel } from "@/lib/consent/consent-display";
 import { parseConsentInstant } from "@/lib/consent/consent-owner-copy";
@@ -155,6 +156,11 @@ export interface FeedActionable {
 
 export interface UseFeedActionablesResult {
   actionables: FeedActionable[];
+  /** Passive Trusted Circle work, separate from tasks that need an answer. */
+  inProgress: FeedDriveProgress[];
+  progressOverflow: Array<{ label: string; href: string }>;
+  progressLoading: boolean;
+  progressError: string | null;
   count: number;
   loading: boolean;
   error: string | null;
@@ -530,6 +536,64 @@ export function useFeedActionables(): UseFeedActionablesResult {
     },
   });
 
+  // The owner queue above stays at 20 for fast decisions. Progress reads a
+  // separate bounded first page so its discovery does not depend on the
+  // actionable summary count (which only describes requests needing action).
+  const progressPageSize = 100;
+  const receivedOverflowResource = useStaleResource({
+    cacheKey: userId
+      ? CACHE_KEYS.CONSENT_CENTER_LIST(userId, "one:consents", "pending", "", 1, progressPageSize)
+      : "feed_received_progress_guest",
+    refreshKey: `one:consents:progress:${consentTick}:${pendingConsentCount ?? "?"}`,
+    enabled: Boolean(userId),
+    load: async (options) => {
+      const idToken = await user?.getIdToken();
+      if (!user?.uid || !idToken) throw new Error("Sign in to view requests");
+      return ConsentCenterService.listEntries({
+        idToken, userId: user.uid, mode: "consents", surface: "pending",
+        page: 1, limit: progressPageSize,
+        force: consentTick > 0 || Boolean(options?.force),
+      });
+    },
+  });
+  // B's sent requests are absent from A's received count and list. Fetching
+  // this lane independently is necessary even when Needs you is empty.
+  const sentProgressResource = useStaleResource({
+    cacheKey: userId
+      ? CACHE_KEYS.CONSENT_CENTER_LIST(userId, "one:consents:sent", "pending", "", 1, progressPageSize)
+      : "feed_sent_progress_guest",
+    refreshKey: `one:consents:sent:progress:${consentTick}`,
+    enabled: Boolean(userId),
+    load: async (options) => {
+      const idToken = await user?.getIdToken();
+      if (!user?.uid || !idToken) throw new Error("Sign in to view requests");
+      return ConsentCenterService.listEntries({
+        idToken, userId: user.uid, mode: "consents", surface: "pending",
+        requestView: "sent", page: 1, limit: progressPageSize,
+        force: consentTick > 0 || Boolean(options?.force),
+      });
+    },
+  });
+  // A first confirmed file promotes the same pending request into Active for
+  // access management. Keep the live status through the remaining background
+  // search without changing that bucket or displaying unconfirmed file data.
+  const activeProgressResource = useStaleResource({
+    cacheKey: userId
+      ? CACHE_KEYS.CONSENT_CENTER_LIST(userId, "one:consents", "active", "", 1, progressPageSize)
+      : "feed_active_progress_guest",
+    refreshKey: `one:consents:active:progress:${consentTick}`,
+    enabled: Boolean(userId),
+    load: async (options) => {
+      const idToken = await user?.getIdToken();
+      if (!user?.uid || !idToken) throw new Error("Sign in to view requests");
+      return ConsentCenterService.listEntries({
+        idToken, userId: user.uid, mode: "consents", surface: "active",
+        page: 1, limit: progressPageSize,
+        force: consentTick > 0 || Boolean(options?.force),
+      });
+    },
+  });
+
   // ── Location access requests (vault-gated read) ──
   // Shares the canonical ONE_LOCATION_STATE cache with the Location workspace,
   // so this loader write-throughs via OneLocationStateResource (which owns that
@@ -602,8 +666,46 @@ export function useFeedActionables(): UseFeedActionablesResult {
   const connectionRequests = connectionsResource.data;
   const connectionsRefresh = connectionsResource.refresh;
   const consentItems = consentListResource.data?.items;
+  const receivedOverflowItems = receivedOverflowResource.data?.items;
+  const sentProgressItems = sentProgressResource.data?.items;
+  const activeProgressItems = activeProgressResource.data?.items;
   const consentSummaryRefresh = consentSummaryResource.refresh;
   const consentListRefresh = consentListResource.refresh;
+  const receivedOverflowRefresh = receivedOverflowResource.refresh;
+  const sentProgressRefresh = sentProgressResource.refresh;
+  const activeProgressRefresh = activeProgressResource.refresh;
+
+  const receivedProgress = useMemo(() => {
+    return projectFeedDriveProgress(receivedOverflowItems ?? []);
+  }, [receivedOverflowItems]);
+  const sentProgress = useMemo(
+    () => projectFeedDriveProgress(sentProgressItems ?? []),
+    [sentProgressItems],
+  );
+  const activeProgress = useMemo(
+    () => projectFeedDriveProgress(activeProgressItems ?? []),
+    [activeProgressItems],
+  );
+  const inProgress = useMemo(() => {
+    const byRequest = new Map<string, FeedDriveProgress>();
+    for (const row of [...receivedProgress, ...sentProgress, ...activeProgress]) {
+      byRequest.set(row.id, row);
+    }
+    return [...byRequest.values()].sort((a, b) => (b.requestedAt ?? 0) - (a.requestedAt ?? 0));
+  }, [receivedProgress, sentProgress, activeProgress]);
+  const progressOverflow = useMemo(() => {
+    const links: Array<{ label: string; href: string }> = [];
+    if (receivedOverflowResource.data?.has_more) {
+      links.push({ label: "View all received requests", href: buildConsentCenterHref("pending", { from: "/one/feed" }) });
+    }
+    if (sentProgressResource.data?.has_more) {
+      links.push({ label: "View all sent requests", href: buildConsentCenterHref("pending", { requestView: "sent", from: "/one/feed" }) });
+    }
+    if (activeProgressResource.data?.has_more) {
+      links.push({ label: "View all active requests", href: buildConsentCenterHref("active", { from: "/one/feed" }) });
+    }
+    return links;
+  }, [receivedOverflowResource.data?.has_more, sentProgressResource.data?.has_more, activeProgressResource.data?.has_more]);
 
   // When a row genuinely has no arrival time, remember when it was first seen.
   //
@@ -633,6 +735,9 @@ export function useFeedActionables(): UseFeedActionablesResult {
     await Promise.all([
       consentSummaryRefresh({ force: true }),
       consentListRefresh({ force: true }),
+      receivedOverflowRefresh({ force: true }),
+      sentProgressRefresh({ force: true }),
+      activeProgressRefresh({ force: true }),
       locationRefresh({ force: true }),
       connectionsRefresh({ force: true }),
     ]);
@@ -640,6 +745,9 @@ export function useFeedActionables(): UseFeedActionablesResult {
     connectionsRefresh,
     consentListRefresh,
     consentSummaryRefresh,
+    receivedOverflowRefresh,
+    sentProgressRefresh,
+    activeProgressRefresh,
     locationRefresh,
   ]);
 
@@ -662,6 +770,18 @@ export function useFeedActionables(): UseFeedActionablesResult {
       [consentListRefresh, consentSummaryRefresh],
     ),
     Boolean(userId),
+  );
+
+  // Discovery happens on mount/focus and the 45s Feed cadence. Only a request
+  // already doing automatic work earns a 10s status refresh; idle accounts do
+  // not fetch three broad pages every 10s.
+  useFeedPendingConsentRefresh(
+    useCallback(() => Promise.all([
+      receivedOverflowRefresh({ force: true }),
+      sentProgressRefresh({ force: true }),
+      activeProgressRefresh({ force: true }),
+    ]), [receivedOverflowRefresh, sentProgressRefresh, activeProgressRefresh]),
+    Boolean(userId) && inProgress.length > 0,
   );
 
   // Revoked/expired SOS cards stay in the feed as a historical alert instead
@@ -1296,6 +1416,12 @@ export function useFeedActionables(): UseFeedActionablesResult {
 
   return {
     actionables,
+    inProgress,
+    progressOverflow,
+    progressLoading: sentProgressResource.loading || activeProgressResource.loading || receivedOverflowResource.loading,
+    progressError: [sentProgressResource.error, activeProgressResource.error, receivedOverflowResource.error].some(Boolean)
+      ? "Some request updates couldn't refresh."
+      : null,
     count: actionables.length,
     loading,
     error,

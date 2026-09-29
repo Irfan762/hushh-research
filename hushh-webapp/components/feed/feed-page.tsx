@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { toast } from "sonner";
 import type { User } from "firebase/auth";
 
@@ -30,6 +31,7 @@ import { CACHE_KEYS } from "@/lib/services/cache-service";
 import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
+import { FeedDriveProgressRow } from "@/components/feed/feed-drive-progress-row";
 import { FeedPushPrompt } from "@/components/feed/feed-push-prompt";
 import { FeedSoundControl } from "@/components/feed/feed-sound-control";
 import { OwnerConsentUnlockPrompt } from "@/components/consent/owner-consent-unlock-prompt";
@@ -276,6 +278,10 @@ function FeedPageSession({
 
   const {
     actionables,
+    inProgress = [],
+    progressOverflow = [],
+    progressLoading = false,
+    progressError = null,
     loading: actionablesLoading,
     error: actionablesError,
     retry: retryActionables,
@@ -579,17 +585,18 @@ function FeedPageSession({
   const hasLiveActionables = liveActionables.length > 0;
   const hasRegularActionables = regularActionables.length > 0;
   const hasActionables = hasLiveActionables || hasRegularActionables;
+  const hasProgress = inProgress.length > 0 || progressOverflow.length > 0;
   // Once cleared this session, the loaded history rows are hidden even though
   // `items` still holds them (no backend delete yet), so the empty state shows.
   const hasHistory = items.length > 0;
   const contentLoading =
-    !clearWatermarkHydrated || loading || actionablesLoading;
-  const hasRefreshError = Boolean(resourceError || actionablesError);
+    !clearWatermarkHydrated || loading || actionablesLoading || progressLoading;
+  const hasRefreshError = Boolean(resourceError || actionablesError || progressError);
   const showEmpty =
-    !contentLoading && !hasActionables && !hasHistory && !hasRefreshError;
+    !contentLoading && !hasActionables && !hasProgress && !hasHistory && !hasRefreshError;
   const showColdError =
-    !contentLoading && !hasActionables && !hasHistory && hasRefreshError;
-  const showStaleWarning = hasRefreshError && (hasActionables || hasHistory);
+    !contentLoading && !hasActionables && !hasProgress && !hasHistory && hasRefreshError;
+  const showStaleWarning = hasRefreshError && (hasActionables || hasProgress || hasHistory);
   // The Clear affordance only makes sense when there is dismissable history
   // showing. Actionables ("Needs you") are otherwise deliberately NOT
   // cleared — they're pending tasks the user must still act on — except a
@@ -600,7 +607,7 @@ function FeedPageSession({
     ? "loading"
     : showColdError
       ? "error"
-      : hasActionables || hasHistory
+      : hasActionables || hasProgress || hasHistory
         ? "loaded"
         : "empty-valid";
 
@@ -652,7 +659,34 @@ function FeedPageSession({
             </section>
           ) : null}
 
-            {contentLoading && !hasHistory && !hasActionables ? (
+            {hasProgress ? (
+              <section aria-label="In progress" aria-live="polite">
+                <SectionLabel>In progress</SectionLabel>
+                {inProgress.length > 0 ? (
+                  <SettingsGroup separatorInset testId="feed-drive-progress-group">
+                    {inProgress.map((item) => (
+                      <FeedDriveProgressRow key={item.id} item={item} />
+                    ))}
+                  </SettingsGroup>
+                ) : null}
+                {progressOverflow.length > 0 ? (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 px-4 pt-2">
+                    {progressOverflow.map((link) => (
+                      <Link
+                        key={link.href}
+                        href={link.href}
+                        prefetch={false}
+                        className="text-sm font-medium text-accent underline-offset-4 hover:underline"
+                      >
+                        {link.label}
+                      </Link>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
+
+            {contentLoading && !hasHistory && !hasActionables && !hasProgress ? (
               <FeedRowsSkeleton />
             ) : null}
 
