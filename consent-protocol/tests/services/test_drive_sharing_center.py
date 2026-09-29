@@ -4,12 +4,13 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from hushh_mcp.services.consent_center_service import ConsentCenterService
-from hushh_mcp.services.drive_sharing_center_contributor import DriveSharingCenterContributor
+from hushh_mcp.services.drive_sharing_center_contributor import DriveSharingCenterContributor, entry
 from tests.services.test_drive_permission_executor import (  # noqa: F401
     connector_postgres_url,
     documents,
@@ -21,6 +22,36 @@ from tests.services.test_drive_permission_executor import (  # noqa: F401
     sharing,
 )
 from tests.services.test_drive_sharing_store import request, review
+
+
+@pytest.mark.parametrize(
+    ("search_state", "attention_required"),
+    [
+        ("queued", False),
+        ("running", False),
+        ("completed", False),
+        ("failed", True),
+        ("limited", True),
+        ("stopped", True),
+        ("expired", True),
+        (None, True),
+    ],
+)
+def test_trusted_auto_attention_follows_linked_search_state(search_state, attention_required):
+    row = {
+        "source": "share",
+        "id": f"document_share_request:{uuid4()}",
+        "request_id": uuid4(),
+        "bucket": "incoming_requests",
+        "status": "pending",
+        "issued_at": 0,
+        "direction": "incoming",
+        "state": "pending",
+        "revision": 1,
+        "preparation_error_code": "trusted_auto_active",
+        "owner_search_state": search_state,
+    }
+    assert entry(row)["metadata"]["owner_attention_required"] is attention_required
 
 
 @pytest.mark.asyncio
@@ -107,7 +138,9 @@ async def test_metadata_only_previews_counts_and_filtered_pages(sharing, monkeyp
         "state",
         "revision",
         "recorded_outcome_only",
+        "owner_attention_required",
     }
+    assert row["metadata"]["owner_attention_required"] is True
     assert "recipient@example" not in str(snapshot) and "purpose" not in str(snapshot)
     assert (
         await projection.page(
@@ -154,6 +187,96 @@ async def test_metadata_only_previews_counts_and_filtered_pages(sharing, monkeyp
     assert (await service.list_center("recipient", actor="investor", surface="pending"))[
         "total"
     ] == 0
+
+
+@pytest.mark.asyncio
+async def test_trusted_auto_progress_never_claims_owner_attention(sharing):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    projection = DriveSharingCenterContributor(db=sharing.db)
+
+    async def attention() -> bool:
+        page = await projection.page("owner", bucket="incoming_requests", limit=1)
+        assert page["total"] == 1
+        return page["items"][0]["metadata"]["owner_attention_required"]
+
+    assert await attention() is True  # Ordinary request: owner review.
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE drive_share_requests SET preparation_error_code='trusted_auto_queued' WHERE request_id=:id"
+            ),
+            {"id": request_id},
+        )
+    assert await attention() is False  # Queued request awaiting its first search job.
+
+    job_id = str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""
+                INSERT INTO drive_owner_search_jobs
+                  (job_id,user_id,client_request_id,request_digest,connection_generation,
+                   consent_version,status,checkpoint_envelope)
+                VALUES (:job,'owner',:id,:digest,1,'drive-owner-search-v1',
+                        'queued','{}'::jsonb)
+            """),
+            {"job": job_id, "id": request_id, "digest": "a" * 64},
+        )
+        connection.execute(
+            text(
+                "UPDATE drive_share_requests SET preparation_error_code='trusted_auto_active' WHERE request_id=:id"
+            ),
+            {"id": request_id},
+        )
+    for state in ("queued", "running", "completed"):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE drive_owner_search_jobs SET status=:state WHERE job_id=:job"),
+                {"state": state, "job": job_id},
+            )
+        assert await attention() is False
+
+    # release() can fail the job without updating the request's trusted_auto_active
+    # marker. The Feed must surface the owner task using the linked job state.
+    for state in ("failed", "limited", "stopped"):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE drive_owner_search_jobs SET status=:state WHERE job_id=:job"),
+                {"state": state, "job": job_id},
+            )
+        assert await attention() is True
+
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE drive_owner_search_jobs SET status='completed',expires_at=clock_timestamp() - INTERVAL '1 second' WHERE job_id=:job"
+            ),
+            {"job": job_id},
+        )
+    assert await attention() is True
+
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM drive_owner_search_jobs WHERE job_id=:job"), {"job": job_id}
+        )
+    assert await attention() is True
+
+    # Background setup, a changed relationship, terminal preparation failure,
+    # and explicit manual takeover all restore an owner task.
+    for code in (
+        "background_preparation_required",
+        "trusted_relationship_changed",
+        "preparation_unavailable",
+        "manual_search_active",
+    ):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE drive_share_requests SET preparation_error_code=:code WHERE request_id=:id"
+                ),
+                {"code": code, "id": request_id},
+            )
+        assert await attention() is True
 
 
 @pytest.mark.asyncio

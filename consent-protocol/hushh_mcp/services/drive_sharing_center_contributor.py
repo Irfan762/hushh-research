@@ -29,10 +29,13 @@ WITH participants AS (
     CASE WHEN status IN ('pending','preparing','review_ready') AND expires_at<=now()
       THEN 'expired'
       WHEN recipient_user_id=:user AND status IN ('preparing','review_ready') THEN 'pending'
-      ELSE status END AS state
+      ELSE status END AS state,
+    preparation_error_code,
+    {owner_search_state} AS owner_search_state
   FROM drive_share_requests WHERE user_id=:user OR recipient_user_id=:user
   UNION ALL
-  SELECT request_id,revocation_revision,created_at,'share','incoming','management_only'
+  SELECT request_id,revocation_revision,created_at,'share','incoming','management_only',
+    NULL::text,NULL::text
   FROM drive_share_management_contexts
   WHERE user_id=:user AND private_request_erased_at IS NOT NULL{queries}
 ), classified AS (
@@ -87,18 +90,34 @@ _QUERIES = """
       WHEN status='running' AND expires_at<=now()
         AND decided_at < now() - interval '300 seconds' THEN 'expired'
       WHEN status='running' THEN 'pending'
-      ELSE status END
+      ELSE status END,
+    NULL::text,NULL::text
   FROM drive_live_query_requests WHERE user_id=:user OR requester_user_id=:user"""
 
+_OWNER_SEARCH_STATE = """(
+  SELECT CASE WHEN j.expires_at<=clock_timestamp() THEN 'expired' ELSE j.status END
+  FROM drive_owner_search_jobs j
+  WHERE j.user_id=drive_share_requests.user_id
+    AND j.client_request_id=drive_share_requests.request_id
+)"""
 
-def _projection(queries: bool) -> str:
-    return _PROJECTION.replace("{queries}", _QUERIES if queries else "")
+
+def _projection(queries: bool, owner_search: bool) -> str:
+    return _PROJECTION.replace("{queries}", _QUERIES if queries else "").replace(
+        "{owner_search_state}", _OWNER_SEARCH_STATE if owner_search else "'unavailable'::text"
+    )
 
 
 def entry(row: Any) -> dict[str, Any]:
     """Closed presentation shape; cannot enter the generic PKM grant path."""
     if row.get("source") == "query":
         return _query_entry(row)
+    preparation_code = row.get("preparation_error_code")
+    search_state = row.get("owner_search_state")
+    live_search = search_state in {"queued", "running", "completed"}
+    automatic_progressing = (
+        preparation_code == "trusted_auto_queued" and (search_state is None or live_search)
+    ) or (preparation_code == "trusted_auto_active" and live_search)
     return {
         "id": row["id"],
         "request_id": str(row["request_id"]),
@@ -123,6 +142,11 @@ def entry(row: Any) -> dict[str, Any]:
             "state": row["state"],
             "revision": row["revision"],
             "recorded_outcome_only": True,
+            # A Trusted Circle request stays pending while automatic search and
+            # sharing run. Only the sharing authority can distinguish that
+            # progress from an owner task or a paused/manual recovery.
+            "owner_attention_required": row["bucket"] == "incoming_requests"
+            and not automatic_progressing,
         },
     }
 
@@ -171,6 +195,14 @@ class DriveSharingCenterContributor(ExternalConnectorLifecycleStore):
         )
 
     @staticmethod
+    def _owner_search_installed(connection) -> bool:
+        return bool(
+            connection.execute(
+                text("SELECT to_regclass('drive_owner_search_jobs') IS NOT NULL")
+            ).scalar_one()
+        )
+
+    @staticmethod
     def _installed(connection) -> bool:
         # Rolling deployments may still be on the pre-sharing schema. This is
         # the only empty compatibility case; SQL/timeouts must remain errors.
@@ -194,7 +226,10 @@ class DriveSharingCenterContributor(ExternalConnectorLifecycleStore):
             rows = connection.execute(
                 # Both SQL fragments are static; every value is bound below.
                 text(
-                    _projection(self._queries_installed(connection))  # nosec B608
+                    _projection(
+                        self._queries_installed(connection),
+                        self._owner_search_installed(connection),
+                    )  # nosec B608
                     + "SELECT bucket,count(*) AS total FROM filtered GROUP BY bucket"
                 ),
                 {"user": user_id, "query": "", "bucket": ""},
@@ -222,7 +257,10 @@ class DriveSharingCenterContributor(ExternalConnectorLifecycleStore):
                 connection.execute(
                     text(
                         # Both SQL fragments are static; every value is bound below.
-                        _projection(self._queries_installed(connection))  # nosec B608
+                        _projection(
+                            self._queries_installed(connection),
+                            self._owner_search_installed(connection),
+                        )  # nosec B608
                         + """
                         SELECT totals.total,page.* FROM (SELECT count(*) AS total FROM filtered) totals
                         LEFT JOIN LATERAL (
@@ -267,7 +305,10 @@ class DriveSharingCenterContributor(ExternalConnectorLifecycleStore):
             rows = connection.execute(
                 text(
                     # Both SQL fragments are static; every value is bound below.
-                    _projection(self._queries_installed(connection))  # nosec B608
+                    _projection(
+                        self._queries_installed(connection),
+                        self._owner_search_installed(connection),
+                    )  # nosec B608
                     + """
                     , ranked AS (
                       SELECT *,count(*) OVER (PARTITION BY bucket) AS total,

@@ -752,7 +752,9 @@ class DriveOwnerSearchStore(DriveLivePreferences):
         await self._transaction(lambda connection: self._current(connection, job))
 
     async def commit_page(self, job, *, checkpoint, files, incomplete=False, done=False):
-        if not isinstance(files, list) or len(files) > 25:
+        # Provider collection pages may contain 100 metadata rows. The
+        # person-facing result cursor remains a separate 25-file boundary.
+        if not isinstance(files, list) or len(files) > 100:
             raise DriveReadError("invalid_argument")
 
         def operation(connection):
