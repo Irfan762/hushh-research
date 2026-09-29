@@ -104,6 +104,9 @@ export default defineConfig({
       // `text-attachment-viewer.layout` is opted in because the pasted-text
       // sheet, its own scroll box and the scroll after Send are read on an
       // iPhone; its fixture builds its own document.
+      // `settings-row-surface.layout` is opted in because a row's single
+      // full-width surface, the press that falls through its content and the
+      // nested checkbox beside it are tapped on an iPhone first.
       // `consent-center-row.layout` is opted in because the Requests row's
       // ✗ / ✓ targets and its row button are tapped on an iPhone.
       // `shared-with-you-card.layout` is opted in because the secure card is
@@ -111,6 +114,7 @@ export default defineConfig({
       // keyboard and 44px targets, are measured in the engine the app ships in.
       // Its fixture builds its own document.
       testMatch: [
+        /settings-row-surface\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
