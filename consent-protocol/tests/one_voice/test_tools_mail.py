@@ -772,11 +772,14 @@ def open_app(monkeypatch):
     entities.offer_mail(["id-first", "id-second"], account=ACCOUNT, mailbox="inbox")
 
     class _Conversation:
-        entity_context = entities.model_dump(mode="json")
-        screen_context: dict[str, Any] = {}
+        def __init__(self) -> None:
+            self.entity_context = entities.model_dump(mode="json")
+            self.screen_context: dict[str, Any] = {}
 
     class _Conversations:
         async def get(self, *, user_id, conversation_id):
+            # Re-read each call: minting a second offer between requests is how a
+            # later turn replaces the list, and the route must see that.
             return _Conversation()
 
     monkeypatch.setattr(
@@ -803,7 +806,10 @@ def test_a_tap_opens_the_offered_message_through_the_same_resolver(open_app, mon
     monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
     client, _ = open_app
 
-    response = client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 2})
+    response = client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 2, "offer_revision": 1},
+    )
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -828,7 +834,8 @@ def test_a_position_that_was_never_offered_is_refused_without_a_read(
     client, _ = open_app
 
     response = client.post(
-        "/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": ordinal}
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": ordinal, "offer_revision": 1},
     )
 
     assert response.status_code == 409
@@ -842,7 +849,10 @@ def test_the_voice_switch_closes_the_open_route_too(open_app, monkeypatch):
     monkeypatch.setenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, "false")
     client, _ = open_app
 
-    response = client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 1})
+    response = client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 1, "offer_revision": 1},
+    )
 
     assert response.status_code == 403
     assert response.json()["detail"]["code"] == "VOICE_MAIL_READS_DISABLED"
@@ -855,7 +865,10 @@ def test_opening_asks_for_one_message_and_nothing_else(open_app, monkeypatch):
     monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
     client, _ = open_app
 
-    client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 1})
+    client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 1, "offer_revision": 1},
+    )
 
     operation, arguments = _FakeReader.calls[-1]["operation"]
     assert operation == "read_message_by_id"
@@ -925,3 +938,76 @@ async def test_rows_without_a_summary_keep_their_place_beside_rows_that_have_one
     assert "gist" not in shown[0] and "gist" not in shown[2]
     # The count One says is every row returned, not only the summarised ones.
     assert "5 newest messages" in " ".join(result.spoken_facts)
+
+
+def test_a_row_from_a_replaced_list_is_refused_not_reinterpreted(open_app, monkeypatch):
+    """Show list A, show list B, tap a row that belonged to A.
+
+    Only one offer is kept, so A's original cannot be resolved. The failure to
+    avoid is resolving A's position two against B: the read succeeds, a message
+    opens, it is the wrong one, and nothing reports it. A refusal that names the
+    live list is the honest outcome, and full multi-offer browsing is a separate
+    piece of work.
+    """
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, entities = open_app
+
+    first = entities.offered_mail
+    assert first is not None
+    revision_a = first.revision
+
+    # A later turn reads again and replaces the list.
+    revision_b = entities.offer_mail(
+        ["id-new-first", "id-new-second"], account=ACCOUNT, mailbox="inbox"
+    )
+    assert revision_b > revision_a
+
+    response = client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 2, "offer_revision": revision_a},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "MAIL_OFFER_SUPERSEDED"
+    assert response.json()["detail"]["current_revision"] == revision_b
+    assert _FakeReader.calls == [], "a superseded row must not reach Gmail at all"
+
+    # The live list still opens, and opens its own second message.
+    ok = client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 2, "offer_revision": revision_b},
+    )
+    assert ok.status_code == 200, ok.text
+    assert _FakeReader.calls[-1]["operation"][1]["message_ids"] == ["id-new-second"]
+
+
+def test_an_open_request_without_a_revision_is_refused_by_the_schema(open_app, monkeypatch):
+    """The binding is not optional. An unbound request would silently mean
+    "whatever list is current", which is the behaviour being prevented."""
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, _ = open_app
+
+    response = client.post("/api/one/voice/mail/open", json={"conversation_id": CONV, "ordinal": 1})
+
+    assert response.status_code == 422
+    assert _FakeReader.calls == []
+
+
+async def test_the_offer_revision_reaches_the_screen_and_not_the_model(monkeypatch):
+    """It is a binding between this server and this screen.
+
+    In the model's context it would be one more number a compromised turn could
+    quote back, and the model has no use for it: it cannot open anything.
+    """
+    result = await _call(
+        monkeypatch,
+        _delegated(
+            "ok",
+            [{"source_ref": "mail:1"}],
+            offer={"message_ids": ["id-a"], "account": ACCOUNT, "mailbox": "inbox"},
+        ),
+    )
+
+    assert isinstance(result.public()["offer_revision"], int)
+    assert "offer_revision" not in result.model_public()
+    assert "offer_revision" not in json.dumps(result.model_public())

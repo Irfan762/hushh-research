@@ -142,6 +142,11 @@ class MailReadResult(ToolResult):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     items: list[dict[str, Any]] = Field(default_factory=list)
     coverage: dict[str, Any] = Field(default_factory=dict)
+    # Which offer these rows belong to. The client sends it back when it opens a
+    # row, so a row still on screen from a list that has since been replaced is
+    # refused rather than resolved against the newer list. Never shown to the
+    # model: it is a binding between this server and this screen.
+    offer_revision: int | None = None
     truncated: bool = False
     metadata_only: bool = True
 
@@ -318,8 +323,9 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
     offered_ids = [
         value for value in (handback.get("message_ids") or []) if isinstance(value, str) and value
     ]
+    offer_revision: int | None = None
     if offered_ids:
-        ctx.entities.offer_mail(
+        offer_revision = ctx.entities.offer_mail(
             offered_ids,
             account=str(handback.get("account") or ""),
             mailbox=str(handback.get("mailbox") or "inbox"),
@@ -338,6 +344,7 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
         coverage=coverage,
         truncated=bool(structured.get("truncated")),
         metadata_only=bool(structured.get("metadata_only", True)),
+        offer_revision=offer_revision,
         spoken_facts=_spoken(coverage),
         ui_refresh=["mail"],
     )

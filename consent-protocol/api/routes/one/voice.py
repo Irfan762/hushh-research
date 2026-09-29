@@ -429,6 +429,11 @@ class MailOpenRequest(BaseModel):
     # it. The client never holds a Gmail id, so it cannot ask for anything but a
     # position in an offer this server minted.
     ordinal: int = Field(ge=1, le=25)
+    # Which list that position came from. A row from an earlier list can still be
+    # on screen -- a duplicate or delayed frame, or a view cleared and refilled --
+    # and its position two is not the current list's position two. Sending the
+    # revision back makes that case a refusal instead of a wrong message.
+    offer_revision: int = Field(ge=1)
 
 
 _MAIL_OPEN_ERRORS = {
@@ -477,6 +482,15 @@ async def open_offered_mail(
 
     ctx = await _tool_context_for(token_data, payload.conversation_id, None)
     offer = ctx.entities.offered_mail
+    if offer is not None and offer.revision != payload.offer_revision:
+        # The row came from a list this conversation has since replaced. Only one
+        # offer is kept, so the original cannot be resolved -- and resolving the
+        # position against the current list would open a different message than
+        # the one the person is looking at. Refuse and say which list is live.
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "MAIL_OFFER_SUPERSEDED", "current_revision": offer.revision},
+        )
     message_id = ctx.entities.offered_mail_message_id(payload.ordinal)
     if offer is None or message_id is None:
         # Expired, replaced, or a position that was never offered. A refusal, not
