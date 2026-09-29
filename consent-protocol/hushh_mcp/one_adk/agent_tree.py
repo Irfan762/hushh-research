@@ -137,6 +137,7 @@ from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instructio
 from hushh_mcp.one_adk.registered_mcp_toolset import (
     RegisteredMcpToolset,
     inspect_private_connectors,
+    probe_private_connector,
 )
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret
 from hushh_mcp.one_adk.selected_drive_status import inspect_selected_drive_files
@@ -2442,6 +2443,7 @@ def _one_roster_tools(
                 propose_drive_file_share,
                 propose_drive_file_trash,
                 inspect_private_connectors,
+                probe_private_connector,
                 RegisteredMcpToolset(),
             ]
         )
