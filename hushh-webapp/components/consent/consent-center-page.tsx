@@ -4,6 +4,7 @@ import { SessionExpiryRecovery } from "@/components/system/session-expiry-recove
 import { StaleCacheTimestamp } from "@/components/system/stale-cache-timestamp";
 import Link from "next/link";
 import {
+  Fragment,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -152,6 +153,11 @@ import {
 } from "@/lib/navigation/top-shell-tabs";
 import { SwipeViews } from "@/lib/morphy-ux/ui/swipe-views";
 import { cn } from "@/lib/utils";
+import {
+  bundleAllowLabel,
+  ConsentBundleChoice,
+  splitBundleChoice,
+} from "@/components/consent/consent-bundle-choice";
 import {
   usePublishVoiceSurfaceMetadata,
   useVoiceSurfaceControlTracking,
@@ -979,15 +985,24 @@ function ConsentHistoryLifecycleDetails({
  */
 function ConsentSharePreviewRow({
   state,
+  onlyLabels,
 }: {
   state: ReturnType<typeof useConsentSharePreview>;
+  /**
+   * The items the owner has chosen to share. Each preview group carries its
+   * item's label, so the preview narrows to exactly what an Allow would send.
+   */
+  onlyLabels?: ReadonlySet<string>;
 }) {
   if (state.status === "idle" || state.status === "unavailable") return null;
-  const rows = state.status === "ready"
+  const allRows = state.status === "ready"
     ? state.preview.groups
     : state.status === "loading"
       ? state.labels.map((label) => ({ label, count: null as number | null, names: undefined }))
       : [];
+  const rows = onlyLabels ? allRows.filter((group) => onlyLabels.has(group.label)) : allRows;
+  if (onlyLabels && !rows.length) return null;
+  const shownTotal = rows.reduce((sum, group) => sum + (group.count ?? 0), 0);
   return (
     <div
       className="min-w-0 space-y-1 sm:col-span-2"
@@ -1006,7 +1021,7 @@ function ConsentSharePreviewRow({
         ) : (
           <>
             {state.status === "ready" && rows.length > 1 ? (
-              <span>{countItems(state.preview.total)}</span>
+              <span>{countItems(shownTotal)}</span>
             ) : null}
             <ul className="space-y-0.5">
               {rows.map((group) => (
@@ -1028,6 +1043,11 @@ function ConsentSharePreviewRow({
   );
 }
 
+/** One item of a grouped request, as the decision calls name it. */
+function bundleMemberRef(member: ConsentCenterEntry): string {
+  return member.request_id || member.id;
+}
+
 function ConsentEntryDetail({
   actor,
   entry,
@@ -1036,6 +1056,7 @@ function ConsentEntryDetail({
   onApproveBundle,
   onDeny,
   onDenyBundle,
+  onDecideBundle,
   onRevoke,
   onRevokeScope,
   activeAction,
@@ -1055,6 +1076,15 @@ function ConsentEntryDetail({
     durationHours?: number,
   ) => void;
   onDenyBundle?: (members: ConsentCenterEntry[]) => void;
+  /**
+   * Allow the chosen items of a grouped request and decline the rest. Absent,
+   * the sheet decides the whole request only.
+   */
+  onDecideBundle?: (
+    allow: ConsentCenterEntry[],
+    decline: ConsentCenterEntry[],
+    durationHours?: number,
+  ) => void;
   onApprove: (
     entry: ConsentCenterEntry,
     durationHours?: number,
@@ -1132,6 +1162,12 @@ function ConsentEntryDetail({
   // stock alert dialog instead. Both reset when a different item is selected.
   const denyConfirm = useArmedAction();
   const disarmDeny = denyConfirm.disarm;
+  // Every item of a grouped request starts chosen; the owner may hold some back.
+  const bundleMemberKey = bundleMembers.map(bundleMemberRef).join("|");
+  const [bundleChosen, setBundleChosen] = useState<{ key: string; refs: ReadonlySet<string> } | null>(null);
+  const chosenRefs = bundleChosen?.key === bundleMemberKey
+    ? bundleChosen.refs
+    : new Set(bundleMembers.map(bundleMemberRef));
   const [revokeDialogOpen, setRevokeDialogOpen] = useState(false);
   useEffect(() => {
     // Information owners' requested scopes are selected by default; offers
@@ -1277,6 +1313,22 @@ function ConsentEntryDetail({
     bundleMembers.length > 1 &&
     Boolean(onApproveBundle && onDenyBundle);
   const denyRestingLabel = isConnectionDecision ? "Decline" : "Don't allow";
+  // R5: a grouped request is chosen item by item when the page can decide part of it.
+  const canChooseItems = isBundleDecision && Boolean(onDecideBundle);
+  const bundleChoiceItems = canChooseItems
+    ? bundleMembers.map((member) => ({
+        key: bundleMemberRef(member),
+        label: consentEntryInformationLabel(member),
+      }))
+    : [];
+  const chosenCount = bundleChoiceItems.filter((item) => chosenRefs.has(item.key)).length;
+  const partialChoice = canChooseItems && chosenCount < bundleChoiceItems.length;
+  const toggleBundleItem = (ref: string, include: boolean) => {
+    const next = new Set(chosenRefs);
+    if (include) next.add(ref);
+    else next.delete(ref);
+    setBundleChosen({ key: bundleMemberKey, refs: next });
+  };
   const isMarketplaceDecision =
     isPendingDecision && isMarketplaceConsent(entry.metadata, entry.scope);
   const durationOptions =
@@ -1337,14 +1389,17 @@ function ConsentEntryDetail({
         entry.counterpart_secondary_label ||
         resolveCounterpartLabel(entry),
     ],
-    [
-      isConnectionDecision
-        ? "Relationship"
-        : isBundleDecision
-          ? `Access · ${countItems(decisionLabels.length)}`
-          : "Access",
-      accessValue,
-    ],
+    // A choosable request names its items in the choice list instead.
+    canChooseItems
+      ? null
+      : [
+          isConnectionDecision
+            ? "Relationship"
+            : isBundleDecision
+              ? `Access · ${countItems(decisionLabels.length)}`
+              : "Access",
+          accessValue,
+        ],
     // Omitted rather than "Unavailable" when the wire has no time at all.
     formatDate(entry.issued_at)
       ? [activityDateLabel, formatDate(entry.issued_at)!]
@@ -1377,18 +1432,39 @@ function ConsentEntryDetail({
     <div className="space-y-4">
       {!hasGroupedHistory ? (
         <dl className="grid gap-x-6 gap-y-4 px-1 py-1 sm:grid-cols-2">
-          {detailItems.map(([label, value]) => (
-            <div key={label} className="min-w-0 space-y-1">
-              <dt className="text-[13px] font-normal leading-[18px] tracking-normal text-muted-foreground">
-                {label}
-              </dt>
-              <dd className="text-sm leading-5 text-foreground [overflow-wrap:anywhere]">
-                {value}
-              </dd>
-            </div>
+          {detailItems.map(([label, value], index) => (
+            <Fragment key={label}>
+              <div className="min-w-0 space-y-1">
+                <dt className="text-[13px] font-normal leading-[18px] tracking-normal text-muted-foreground">
+                  {label}
+                </dt>
+                <dd className="text-sm leading-5 text-foreground [overflow-wrap:anywhere]">
+                  {value}
+                </dd>
+              </div>
+              {index === 0 && canChooseItems ? (
+                <ConsentBundleChoice
+                  items={bundleChoiceItems}
+                  chosen={chosenRefs}
+                  onToggle={toggleBundleItem}
+                  disabled={requestBusy}
+                />
+              ) : null}
+            </Fragment>
           ))}
           {isPendingDecision && previewEnabled ? (
-            <ConsentSharePreviewRow state={sharePreview} />
+            <ConsentSharePreviewRow
+              state={sharePreview}
+              onlyLabels={
+                partialChoice
+                  ? new Set(
+                      bundleChoiceItems
+                        .filter((item) => chosenRefs.has(item.key))
+                        .map((item) => item.label),
+                    )
+                  : undefined
+              }
+            />
           ) : null}
         </dl>
       ) : null}
@@ -1505,9 +1581,14 @@ function ConsentEntryDetail({
             effect="fill"
             size="sm"
             className="min-h-11"
-            disabled={requestBusy}
-            onClick={() =>
-              isBundleDecision
+            disabled={requestBusy || (canChooseItems && chosenCount === 0)}
+            onClick={() => {
+              if (partialChoice) {
+                const { allow, decline } = splitBundleChoice(bundleMembers, bundleMemberRef, chosenRefs);
+                onDecideBundle!(allow, decline, effectiveDurationHours);
+                return;
+              }
+              return isBundleDecision
                 ? onApproveBundle!(bundleMembers, effectiveDurationHours)
                 : onApprove(
                 entry,
@@ -1520,8 +1601,8 @@ function ConsentEntryDetail({
                       offeredScopeHandles: selectedOfferedScopes,
                     }
                   : undefined,
-              )
-            }
+              );
+            }}
             data-voice-control-id="consent_approve"
           >
             {approveBusy
@@ -1530,7 +1611,9 @@ function ConsentEntryDetail({
                 : "Allowing..."
               : isConnectionDecision
                 ? "Accept"
-                : "Allow"}
+                : canChooseItems
+                  ? bundleAllowLabel(bundleChoiceItems.length, chosenCount)
+                  : "Allow"}
           </Button>
           <Button
             variant="none"
@@ -2115,6 +2198,7 @@ export function ConsentCenterPage() {
   const {
     handleApprove,
     handleApproveBundle,
+    handleDecideBundle,
     handleDeny,
     handleDenyBundle,
     handleRevoke,
@@ -2404,6 +2488,37 @@ export function ConsentCenterPage() {
       ).catch(() => undefined);
     },
     [handleDenyBundle],
+  );
+  // Part of a request: the owner's chosen items are allowed, the rest declined.
+  const decideBundleEntries = useCallback(
+    (
+      allow: ConsentCenterEntry[],
+      decline: ConsentCenterEntry[],
+      durationHours?: number,
+    ) => {
+      const head = allow[0] ?? decline[0];
+      if (!head) return;
+      const name = requesterShortName(
+        resolveCounterpartLabel(head),
+        head.counterpart_type === "person",
+      );
+      const shared = joinInformationLabels(allow.map(consentEntryInformationLabel));
+      const held = joinInformationLabels(decline.map(consentEntryInformationLabel));
+      for (const member of allow) recordApprovalInFlight(member, durationHours);
+      void handleDecideBundle(
+        allow.map((member) => toPendingConsent(member, durationHours)),
+        decline.map((member) => member.request_id || member.id),
+        {
+          bundleId: String(head.metadata?.bundle_id || "") || undefined,
+          successMessage: `${name} can now see your ${shared}. ${held} ${decline.length === 1 ? "wasn't" : "weren't"} shared.`,
+        },
+      ).catch((error: unknown) => {
+        if (error instanceof Error && error.message.startsWith("Unlock")) {
+          toast.error("Unlock your vault to allow this. Nothing was shared.");
+        }
+      });
+    },
+    [handleDecideBundle, recordApprovalInFlight],
   );
   /**
    * The ✗ / ✓ a Requests row carries. Only a request the shared generic path
@@ -3694,6 +3809,10 @@ export function ConsentCenterPage() {
               onDenyBundle={(members) => {
                 closeDetailPanel();
                 denyBundleEntries(members);
+              }}
+              onDecideBundle={(allow, decline, durationHours) => {
+                closeDetailPanel();
+                decideBundleEntries(allow, decline, durationHours);
               }}
               onApprove={(entry, durationHours, scopeSelection) => {
                 // Dismiss the panel immediately; the list already optimistically
