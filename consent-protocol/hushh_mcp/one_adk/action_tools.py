@@ -55,6 +55,10 @@ from hushh_mcp.one_adk.action_retrieval import (
     search_actions,
 )
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret
+from hushh_mcp.one_adk.shared_with_me_card import (
+    SHARED_WITH_ME_CARD_KIND,
+    build_shared_with_me_cards,
+)
 from hushh_mcp.one_adk.voice_domain_policy import (
     is_voice_domain_disabled,
     is_voice_entirely_disabled,
@@ -2032,7 +2036,7 @@ async def discover_person_information(
                     "label": item.get("label") or "Information",
                     "description": item.get("description"),
                     "domain": item_domain or "Other",
-                    "sensitivity": item.get("sensitivity") or "standard",
+                    "sensitivity": item.get("sensitivity") or "sensitive",
                     "pathSegments": item.get("pathSegments") or [],
                 }
             )
@@ -2042,6 +2046,7 @@ async def discover_person_information(
                 "label": g.get("label") or "Shared information",
                 "domain": g.get("domain") or "Other",
                 "scopeRef": g.get("scopeRef"),
+                "sensitivity": g.get("sensitivity") or "sensitive",
                 "status": g.get("status") or "granted",
                 "expiresAt": g.get("expiresAt"),
                 "requestId": g.get("requestId"),
@@ -2086,10 +2091,14 @@ async def list_information_shared_with_me(
     tool_context: ToolContext,
     person: str = "",
 ) -> dict[str, Any]:
-    """List information that connections have shared with this person through active consent grants.
+    """Show what connections have already shared with this person, as a secure card.
 
-    Returns who has shared information with you, the specific fields/labels granted,
-    domains, and the profile link where the decrypted value can be opened using the vault key.
+    Call it when the person asks whether they have, or asks to see, something
+    another person already shared ("do we have access to Manish's tax
+    record?", "show me it"). The chat renders a "Shared with you" card that
+    decrypts the values on the person's own device. This result holds labels,
+    field names and dates only, never a value. Reply in one short line such as
+    "Here's what Manish shared with you:" and let the card show the rest.
     """
     user_id, blocked = await _read_tool_user_id(tool_context)
     if blocked is not None:
@@ -2116,6 +2125,9 @@ async def list_information_shared_with_me(
             requester_user_id=user_id,
             person_ref=selected_person_ref,
         )
+        # Contract C6: one card per person, no values. The chat renders it
+        # from this result; the model reads the same labels and field names.
+        cards = build_shared_with_me_cards(shares)
         # Model-facing guidance, not a line to repeat. Measured on UAT
         # 2026-09-28: the old sentence was read out verbatim next to an offer to
         # "prepare a card" while a card was already on screen.
@@ -2127,6 +2139,8 @@ async def list_information_shared_with_me(
             if selected_person_name
             else "No connections have shared information with you yet."
         )
+        names = [card["person"]["displayName"] for card in cards]
+        lead = names[0] if len(names) == 1 else "your connections"
         return {
             "status": "ok",
             **(
@@ -2134,19 +2148,18 @@ async def list_information_shared_with_me(
                 if selected_person_ref and selected_person_name
                 else {}
             ),
-            "shares": shares,
-            "count": len(shares),
+            "kind": SHARED_WITH_ME_CARD_KIND,
+            "cards": cards,
+            **({"card": cards[0]} if len(cards) == 1 else {}),
+            "count": sum(len(card["items"]) for card in cards),
             "nextStep": (
-                (
-                    f"Tell the person what {selected_person_name} has granted. "
-                    if selected_person_name
-                    else "Tell the person what their connections have granted. "
-                )
-                + "Values stay end-to-end encrypted. If the bound Chat request card is "
-                "available, its reveal control opens approved information in their unlocked "
-                "app; do not claim to have read the private values from these grant labels. "
-                "Only offer the same-app profilePath if the person asks to open Profile."
-                if shares
+                f'Reply in one short line, for example "Here\'s what {lead} shared with you:". '
+                "The secure card below it is already on screen and opens the values on the "
+                "person's own device, asking them to unlock if needed. You have labels and "
+                "field names only: never guess, restate or invent a value, and do not say you "
+                "cannot display it, that a card may be available, or to open Profile. Never "
+                "say grant, scope, domain or PKM."
+                if cards
                 else empty_message
             ),
         }
@@ -2523,6 +2536,8 @@ def _proposed_item(item: Any, why: str) -> dict[str, str]:
         "scope": str(item.get("scopeRef") or ""),
         "label": str(item.get("label") or "Information"),
         "why": why or "Matches what you asked for",
+        # C7: the catalog's server-side answer; deny by default when absent.
+        "sensitivity": "standard" if item.get("sensitivity") == "standard" else "sensitive",
     }
 
 

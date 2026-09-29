@@ -16,7 +16,8 @@
  * state changes use 150ms transitions.
  */
 import { createContext, type ReactNode } from "react";
-import { Check, Clock, Minus } from "@/components/icons";
+import { CheckCircle2, Clock, MinusCircle } from "@/components/icons";
+import { SEMANTIC_ROLE_CLASSES } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { AccessEndedNotice } from "./access-ended-notice";
 import {
   formatDay,
@@ -72,11 +73,19 @@ export function RequestTimeline({ steps }: { steps: TimelineStep[] }) {
   );
 }
 
+/**
+ * Status glyphs are registry duotone glyphs in a semantic tone: what was shared
+ * reads as success, what was not and when access ends read as neutral. A bare
+ * grey line glyph (a plain tick, a dash) carried no tone and read as a bullet.
+ */
+const SHARED_GLYPH = SEMANTIC_ROLE_CLASSES.success.glyph;
+const NEUTRAL_GLYPH = SEMANTIC_ROLE_CLASSES.neutral.glyph;
+
 function LabelLine({ icon, title, labels }: { icon: ReactNode; title: string; labels: string[] }) {
   if (!labels.length) return null;
   return (
     <p className="flex items-start gap-2 text-sm leading-6">
-      <span className="mt-[5px] inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center text-muted-foreground">{icon}</span>
+      <span className="mt-1 inline-flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
       <span className="min-w-0">
         <span className="text-muted-foreground">{title} </span>
         <span className="text-foreground">{labels.join(", ")}</span>
@@ -119,19 +128,19 @@ export function RequesterProgressBody({ progress, phase, personName, purpose, de
         <div className="space-y-1">
           {/* A full grant already names what was shared in the headline. */}
           {progress.outcome === "partially_granted" || phase ? (
-            <LabelLine icon={<Check className="h-3.5 w-3.5" />} title="Shared" labels={shared} />
+            <LabelLine icon={<CheckCircle2 className={`h-4 w-4 ${SHARED_GLYPH}`} aria-hidden="true" />} title="Shared" labels={shared} />
           ) : null}
-          <LabelLine icon={<Minus className="h-3.5 w-3.5" />} title="Not shared" labels={declined} />
+          <LabelLine icon={<MinusCircle className={`h-4 w-4 ${NEUTRAL_GLYPH}`} aria-hidden="true" />} title="Not shared" labels={declined} />
           {endsOn ? (
             <p className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
-              <Clock className="h-3.5 w-3.5" aria-hidden="true" />
+              <Clock className={`h-4 w-4 shrink-0 ${NEUTRAL_GLYPH}`} aria-hidden="true" />
               <span>Access ends {endsOn}</span>
             </p>
           ) : null}
         </div>
       ) : null}
       {progress.outcome === "denied" ? (
-        <LabelLine icon={<Minus className="h-3.5 w-3.5" />} title="Not shared" labels={declined.length ? declined : progress.fields.map((field) => field.label)} />
+        <LabelLine icon={<MinusCircle className={`h-4 w-4 ${NEUTRAL_GLYPH}`} aria-hidden="true" />} title="Not shared" labels={declined.length ? declined : progress.fields.map((field) => field.label)} />
       ) : null}
 
       {ended ? (

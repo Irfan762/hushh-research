@@ -428,7 +428,13 @@ async def test_progress_reports_each_stage_and_keeps_revoked_apart_from_expired(
     assert created["progress"]["outcome"] == "pending"
     assert created["progress"]["delivered_at"] is None
     assert created["progress"]["fields"] == [
-        {"scope": "attr.identity.legal_name", "label": "Legal name", "status": "pending"}
+        {
+            "scope": "attr.identity.legal_name",
+            "label": "Legal name",
+            # C7: identity is a deny-by-default sensitive domain.
+            "sensitivity": "sensitive",
+            "status": "pending",
+        }
     ]
 
     service.consent.notifications += [

@@ -77,6 +77,9 @@ const SURFACES: Surface[] = [
   "lib/consent/use-owner-consent-decision.ts",
   "lib/consent/consent-share-preview.ts",
   "components/consent/owner-consent-unlock-prompt.tsx",
+  // The Requests row's ✗ / ✓ and its Undo toast (2026-09-28, CONTRACT-2 C8).
+  "components/consent/consent-pending-row.tsx",
+  "lib/consent/deferred-consent-decline.ts",
   // The chat workspace, restricted to the blocks that decide or describe a
   // consent request. The rest of the file is a chat surface with its own
   // vocabulary, and scanning it whole is how a gate turns into a wolf cry.

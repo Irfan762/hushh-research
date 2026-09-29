@@ -2385,7 +2385,7 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
             data-voice-label={item.ariaLabel}
             aria-label={item.ariaLabel}
             onClick={item.onClick}
-            className="group flex h-[88px] min-h-[88px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-3 py-3 text-center shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            className="group flex h-[88px] min-h-[88px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-3 py-3 text-center shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
           >
             <span
               aria-hidden
@@ -2417,13 +2417,13 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
           data-voice-label={emergencyItem.ariaLabel}
           aria-label={emergencyItem.ariaLabel}
           onClick={emergencyItem.onClick}
-          className="group mt-0 flex min-h-[68px] w-full items-center justify-between gap-3.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-4 py-2.5 text-left shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-tint)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
+          className="group mt-0 flex min-h-[68px] w-full items-center justify-between gap-3.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-4 py-2.5 text-left shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-tint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
         >
           <span className="flex min-w-0 items-center gap-2.5">
               <span
                 aria-hidden
                 data-one-location-action-icon=""
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive-tint)] text-[color:var(--app-destructive)] transition-transform group-active:scale-95"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive-tint)] text-[color:var(--app-destructive)] transition-transform"
             >
               {emergencyItem.icon}
             </span>

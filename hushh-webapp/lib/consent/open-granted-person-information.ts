@@ -6,11 +6,91 @@ import {
   type InformationRequestBundle,
 } from "@/lib/services/person-profile-service";
 
+/**
+ * Contract C7. `sensitive` values are opened and shown on this device only;
+ * a model turn receives their field-name outline, never the values.
+ */
+export type SharedSensitivity = "sensitive" | "standard";
+
 export type OpenedPersonInformation = {
   requestId: string;
   label: string;
   data: Record<string, unknown>;
+  /** Absent on a value built elsewhere; the label deny-list still applies. */
+  sensitivity?: SharedSensitivity;
 };
+
+/**
+ * Deny-by-default families (CONTRACT-2 C7): tax, financial, identity or
+ * government ids, health and credentials. Matched against the domain, the
+ * scope and the human label, with separators flattened so `tax_record` and
+ * `attr.financial.tax.*` both read as words.
+ */
+const SENSITIVE_FAMILY = new RegExp(
+  "\\b(?:tax(?:es)?|financ\\w*|bank\\w*|income|salary|payroll|wallet|payments?|credit|loans?|mortgage|" +
+    "identity|identification|government|passport|ssn|social security|licen[cs]e|" +
+    "health\\w*|medical|diagnos\\w*|prescriptions?|medications?|insurance|" +
+    "credentials?|passwords?|passcodes?|secrets?)\\b",
+  "i",
+);
+const DECLARED_SENSITIVE = new Set(["sensitive", "restricted", "high", "medium", "confidential"]);
+
+/**
+ * The one client reading of an item's sensitivity (C7, deny by default).
+ * Missing means sensitive. A server declaration of sensitive always wins. A
+ * declaration of `standard` still yields to the deny-list families, because
+ * the server's own policy applies the same list and a stale row may predate it.
+ */
+export function resolveSharedSensitivity(input: {
+  sensitivity?: unknown;
+  domain?: string | null;
+  scope?: string | null;
+  label?: string | null;
+}): SharedSensitivity {
+  const declared = typeof input.sensitivity === "string" ? input.sensitivity.trim().toLowerCase() : "";
+  if (!declared || DECLARED_SENSITIVE.has(declared)) return "sensitive";
+  const words = [input.domain, input.scope, input.label]
+    .filter((part): part is string => typeof part === "string" && Boolean(part.trim()))
+    .join(" ")
+    .replace(/[._\-*/:]+/g, " ");
+  return SENSITIVE_FAMILY.test(words) ? "sensitive" : "standard";
+}
+
+type ProgressFieldHint = { label: string; scope: string | null; sensitivity: string | null };
+
+/** `progress.fields[]` in item order: the raw scope and, once C7 lands, sensitivity. */
+function progressFieldHints(progress: unknown): ProgressFieldHint[] {
+  const fields = (progress as { fields?: unknown } | null)?.fields;
+  if (!Array.isArray(fields)) return [];
+  return fields.slice(0, 100).map((raw) => {
+    const field = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+    const text = (value: unknown) => (typeof value === "string" && value.trim() ? value.trim() : null);
+    return { label: text(field.label) ?? "", scope: text(field.scope), sensitivity: text(field.sensitivity) };
+  });
+}
+
+function itemSensitivity(
+  bundle: Pick<InformationRequestBundle, "items" | "progress">,
+  item: InformationRequestBundle["items"][number],
+  domain: string | null | undefined,
+): SharedSensitivity {
+  const hints = progressFieldHints(bundle.progress);
+  const index = bundle.items.indexOf(item);
+  // The server builds progress.fields from the same items in the same order.
+  const hint = hints.length === bundle.items.length && index >= 0
+    ? hints[index]
+    : hints.find((entry) => entry.label === item.label);
+  const declared = [item.sensitivity, hint?.sensitivity]
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .filter(Boolean);
+  return resolveSharedSensitivity({
+    // Either source saying sensitive wins; neither saying anything is sensitive.
+    sensitivity: declared.find((value) => DECLARED_SENSITIVE.has(value)) ?? declared[0] ?? null,
+    domain,
+    scope: hint?.scope ?? null,
+    label: item.label,
+  });
+}
 
 /**
  * Open what another person approved for this requester, on this device only.
@@ -28,8 +108,14 @@ export async function openGrantedPersonInformation(input: {
   bundleId: string;
   subjectRef: string;
   domainFor?: (requestId: string) => string | null | undefined;
+  /**
+   * Open only these items of the bundle (the secure card). Items among them
+   * that are no longer shared come back in `endedRequestIds` instead of
+   * failing the whole open.
+   */
+  requestIds?: readonly string[];
   isCurrent?: () => boolean;
-}): Promise<{ values: OpenedPersonInformation[]; expiresAtMs: number } | null> {
+}): Promise<{ values: OpenedPersonInformation[]; expiresAtMs: number; endedRequestIds: string[] } | null> {
   const current = input.isCurrent ?? (() => true);
   const bundle = await PersonProfileService.getInformationRequest({
     bundleId: input.bundleId,
@@ -39,8 +125,16 @@ export async function openGrantedPersonInformation(input: {
   if (bundle.bundleId !== input.bundleId || bundle.personRef !== input.subjectRef) {
     throw new Error("Mismatched request");
   }
-  const granted = bundle.items.filter((item) => item.status === "granted");
-  if (!granted.length) throw new Error("No current grant");
+  const wanted = input.requestIds ? new Set(input.requestIds) : null;
+  const inScope = wanted ? bundle.items.filter((item) => wanted.has(item.requestId)) : bundle.items;
+  const granted = inScope.filter((item) => item.status === "granted");
+  const endedRequestIds = wanted
+    ? inScope.filter((item) => item.status === "revoked" || item.status === "expired").map((item) => item.requestId)
+    : [];
+  if (!granted.length) {
+    if (wanted) return { values: [], expiresAtMs: Number.MAX_SAFE_INTEGER, endedRequestIds };
+    throw new Error("No current grant");
+  }
   const connector = await OneKycClientZkService.readStoredConnector({
     userId: input.userId,
     vaultKey: input.vaultKey,
@@ -70,10 +164,12 @@ export async function openGrantedPersonInformation(input: {
       connector,
     });
     if (!current()) return null;
+    const domain = input.domainFor?.(item.requestId);
     values.push({
       requestId: item.requestId,
       label: item.label,
-      data: projectGrantPayload(payload, input.domainFor?.(item.requestId)),
+      data: projectGrantPayload(payload, domain),
+      sensitivity: itemSensitivity(bundle, item, domain),
     });
     expiresAtMs = Math.min(expiresAtMs, exact.encryptedExport.export_envelope.aad.expires_at_ms);
   }
@@ -91,7 +187,93 @@ export async function openGrantedPersonInformation(input: {
   ) {
     throw new Error("Grant changed while opening information");
   }
-  return { values, expiresAtMs };
+  return { values, expiresAtMs, endedRequestIds };
+}
+
+/** One item of the secure card, as the chat (C6) or Profile names it. */
+export type SharedItemRef = {
+  key: string;
+  bundleId: string | null;
+  requestId: string | null;
+  /** C6's opaque reference; matched against the share list when no bundle is named. */
+  grantRef: string | null;
+  label: string;
+  domain?: string | null;
+};
+
+export type SharedItemOpenResult =
+  | { key: string; state: "open"; value: OpenedPersonInformation; expiresAtMs: number }
+  | { key: string; state: "ended" }
+  | { key: string; state: "unavailable" };
+
+/**
+ * Open the card's items on this device. An item that names no bundle (a C6
+ * grant reference) is resolved through the person's current share list,
+ * which names the bundle and item of every live approval; an item that no
+ * longer appears there has nothing to open. Each bundle opens on its own, so
+ * one failure never hides what another person's other items show.
+ */
+export async function openSharedItems(input: {
+  userId: string;
+  vaultKey: string;
+  vaultOwnerToken: string;
+  subjectRef: string;
+  items: SharedItemRef[];
+  isCurrent?: () => boolean;
+}): Promise<SharedItemOpenResult[] | null> {
+  const current = input.isCurrent ?? (() => true);
+  const resolved = new Map<string, { bundleId: string; requestId: string }>();
+  const unresolved: SharedItemRef[] = [];
+  for (const item of input.items) {
+    if (item.bundleId && item.requestId) resolved.set(item.key, { bundleId: item.bundleId, requestId: item.requestId });
+    else unresolved.push(item);
+  }
+  if (unresolved.length) {
+    const shares = (await PersonProfileService.listSharedWithMe({ vaultOwnerToken: input.vaultOwnerToken }))
+      .filter((share) => share.personRef === input.subjectRef);
+    if (!current()) return null;
+    for (const item of unresolved) {
+      const ref = item.requestId || item.grantRef;
+      const match = (ref ? shares.find((share) => share.requestId === ref) : undefined)
+        ?? shares.find((share) => (!item.bundleId || share.bundleId === item.bundleId) && share.label === item.label);
+      if (match) resolved.set(item.key, { bundleId: match.bundleId, requestId: match.requestId });
+    }
+  }
+  const byBundle = new Map<string, SharedItemRef[]>();
+  for (const item of input.items) {
+    const target = resolved.get(item.key);
+    if (target) byBundle.set(target.bundleId, [...(byBundle.get(target.bundleId) ?? []), item]);
+  }
+  const results = new Map<string, SharedItemOpenResult>();
+  await Promise.all([...byBundle.entries()].map(async ([bundleId, items]) => {
+    const requestIdFor = (item: SharedItemRef) => resolved.get(item.key)!.requestId;
+    try {
+      const opened = await openGrantedPersonInformation({
+        userId: input.userId,
+        vaultKey: input.vaultKey,
+        vaultOwnerToken: input.vaultOwnerToken,
+        bundleId,
+        subjectRef: input.subjectRef,
+        requestIds: items.map(requestIdFor),
+        domainFor: (requestId) => items.find((item) => requestIdFor(item) === requestId)?.domain,
+        isCurrent: current,
+      });
+      if (!opened) return;
+      for (const item of items) {
+        const requestId = requestIdFor(item);
+        const value = opened.values.find((entry) => entry.requestId === requestId);
+        results.set(item.key, value
+          ? { key: item.key, state: "open", value, expiresAtMs: opened.expiresAtMs }
+          : opened.endedRequestIds.includes(requestId)
+            ? { key: item.key, state: "ended" }
+            : { key: item.key, state: "unavailable" });
+      }
+    } catch {
+      for (const item of items) results.set(item.key, { key: item.key, state: "unavailable" });
+    }
+  }));
+  if (!current()) return null;
+  return input.items.map((item) => results.get(item.key) ?? { key: item.key, state: "unavailable" });
 }
 
 const MAX_SHARED_TEXT_CHARS = 12_000;
@@ -122,13 +304,93 @@ function appendLines(lines: string[], value: unknown, path: string[]): void {
   lines.push(`- ${path.join(" > ")}: ${String(value)}`);
 }
 
+/** Bookkeeping keys that name the record's structure, not a field in it. */
+const OUTLINE_SKIP_KEYS = new Set([
+  "kind", "status", "id", "type", "state", "scope", "domain", "sensitivity", "source", "sources",
+  "version", "schema", "confidence", "provenance", "tags", "created_at", "updated_at", "observed_at", "timestamp",
+]);
+const MAX_OUTLINE_NAMES = 8;
+
+/**
+ * Field names of a record, never its values: the keys that hold a value
+ * directly (a leaf, or a list of leaves). Keys that hold further records are
+ * walked, not named, because a key over nested records can itself be
+ * information (an institution's name). Ids, internal and numeric keys are
+ * dropped outright.
+ */
+export function sharedFieldNames(data: unknown): string[] {
+  return sharedFieldOutline(data).names;
+}
+
+/** Field names plus how many fields there are, some of them unnamed on purpose. */
+export function sharedFieldOutline(data: unknown): { names: string[]; count: number } {
+  const names: string[] = [];
+  let flagCount = 0;
+  const seen = new Set<string>();
+  const walk = (node: unknown, depth: number) => {
+    if (depth > 8 || !node || typeof node !== "object") return;
+    if (Array.isArray(node)) {
+      node.slice(0, 50).forEach((entry) => walk(entry, depth + 1));
+      return;
+    }
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      const lower = key.trim().toLowerCase();
+      if (!lower || lower.startsWith("_") || OUTLINE_SKIP_KEYS.has(lower) || /(^|_)id$/.test(lower)
+        || /\d{3,}/.test(lower) || lower.length > 40) continue;
+      const leaf = value === null || typeof value !== "object"
+        || (Array.isArray(value) && value.every((entry) => entry === null || typeof entry !== "object"));
+      if (!leaf) {
+        walk(value, depth + 1);
+        continue;
+      }
+      // A key over a bare yes/no is often the answer itself ("Married filing
+      // jointly": true); it is counted, never named.
+      if (typeof value === "boolean") {
+        flagCount += 1;
+        continue;
+      }
+      const name = humanKey(key).toLowerCase();
+      if (!name || seen.has(name)) continue;
+      seen.add(name);
+      names.push(name[0]!.toUpperCase() + name.slice(1));
+    }
+  };
+  walk(data, 0);
+  return { names, count: names.length + flagCount };
+}
+
+/**
+ * The model's view of a sensitive item: its label and field names only, e.g.
+ * "Tax record: 4 fields (Filing year, Adjusted gross income, Refund, Filing
+ * status)". The values stay in the secure card on this device.
+ */
+export function sensitiveSharedOutline(value: Pick<OpenedPersonInformation, "label" | "data">): string {
+  const { names, count: total } = sharedFieldOutline(value.data);
+  const shown = names.slice(0, MAX_OUTLINE_NAMES);
+  const more = total - shown.length;
+  const list = shown.length ? ` (${shown.join(", ")}${more > 0 ? ` and ${more} more` : ""})` : "";
+  const count = total ? `${total} ${total === 1 ? "field" : "fields"}` : "shared";
+  return `- ${value.label}: ${count}${list}. Sensitive: shown to the person in the secure card on their device; `
+    + "the values are not shared with you.";
+}
+
+/** Missing sensitivity is sensitive; `standard` still yields to the deny-list. */
+export function isSensitiveSharedValue(value: Pick<OpenedPersonInformation, "label" | "sensitivity">): boolean {
+  return resolveSharedSensitivity({ sensitivity: value.sensitivity, label: value.label }) === "sensitive";
+}
+
 /**
  * The plain text One reads for the one follow-up turn: each approved item as
- * "Label > path: value" lines, bounded to the server's accepted size.
+ * "Label > path: value" lines, bounded to the server's accepted size. A
+ * sensitive item (C7) contributes its outline only; its values never leave
+ * this device.
  */
 export function formatSharedInformationForAgent(values: OpenedPersonInformation[]): string {
   const lines: string[] = [];
-  for (const value of values) appendLines(lines, value.data, [value.label]);
+  for (const value of values) {
+    if (isSensitiveSharedValue(value)) lines.push(sensitiveSharedOutline(value));
+    else appendLines(lines, value.data, [value.label]);
+  }
   let text = "";
   for (const line of lines) {
     const next = text ? `${text}\n${line}` : line;

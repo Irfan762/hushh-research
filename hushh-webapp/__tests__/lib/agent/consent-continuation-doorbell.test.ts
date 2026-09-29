@@ -3,6 +3,25 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// Only the continuation's open path touches these; the doorbell tests never do.
+const services = vi.hoisted(() => ({
+  getInformationRequest: vi.fn(),
+  getInformationRequestExports: vi.fn(),
+  readStoredConnector: vi.fn(),
+  decryptScopedExport: vi.fn(),
+}));
+vi.mock("@/lib/services/person-profile-service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/services/person-profile-service")>()),
+  PersonProfileService: {
+    getInformationRequest: services.getInformationRequest,
+    getInformationRequestExports: services.getInformationRequestExports,
+  },
+}));
+vi.mock("@/lib/services/one-kyc-client-zk-service", () => ({ OneKycClientZkService: {
+  readStoredConnector: services.readStoredConnector,
+  decryptScopedExport: services.decryptScopedExport,
+} }));
+
 import {
   accessWatchDelayMs,
   claimConsentContinuation,
@@ -14,6 +33,7 @@ import {
   isConsentContinuationUnavailable,
   markConsentContinuationUnavailable,
   mergeServerRedactionFlags,
+  prepareConsentContinuation,
   startAccessEndedWatch,
   tagAnswersFromLiveAccess,
   informationRequestPhase,
@@ -35,6 +55,7 @@ import {
   consentAccessEndedChipText,
   consentContinuationSentLabel,
   consentOutcomeDisplayText,
+  formatSharedInformationForAgent,
   informationRequestOutcome,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
@@ -724,5 +745,90 @@ describe("watching live access for its end", () => {
       .toBe("Kushal stopped sharing Food preferences");
     expect(consentAccessEndedChipText({ reason: "expired", personName: "Kushal", sharedLabels: ["Food preferences"] }))
       .toBe("Access to Food preferences ended");
+  });
+});
+
+describe("sensitive information never reaches the model (CONTRACT-2 C7)", () => {
+  const SUBJECT = "manish_public_ref_0001";
+  // "Head of household": a key that is itself the answer. Counted, never named.
+  const TAX = { filing_year: 2024, adjusted_gross_income: 85000, filing_status: "Married filing jointly", "Head of household": false };
+  const MEDS = { medication: "Atorvastatin 20mg", dose_time: "Every evening" };
+  const FOOD = { cuisine: "Neapolitan pizza" };
+  const HOBBIES = { weekend: "Sailing in Sausalito" };
+  const SECRETS = ["85000", "Married filing jointly", "2024", "Head of household", "Atorvastatin", "Every evening", "Sailing"];
+  const items = [
+    // An older server may call tax "standard"; the tax family is sensitive regardless.
+    { requestId: "req_tax_000001", scopeRef: "s-tax", label: "Tax record", sensitivity: "standard", status: "granted" },
+    // A harmless label, but the scope is health: sensitive from progress.fields[].scope.
+    { requestId: "req_meds_00001", scopeRef: "s-meds", label: "Daily routine", sensitivity: null, status: "granted" },
+    { requestId: "req_food_00001", scopeRef: "s-food", label: "Food preferences", sensitivity: "standard", status: "granted" },
+    // Nothing says what this is: deny by default.
+    { requestId: "req_hobby_0001", scopeRef: "s-hobby", label: "Hobbies", sensitivity: null, status: "granted" },
+  ];
+  const valuesByRequest: Record<string, Record<string, unknown>> = {
+    req_tax_000001: TAX, req_meds_00001: MEDS, req_food_00001: FOOD, req_hobby_0001: HOBBIES,
+  };
+
+  beforeEach(() => {
+    services.getInformationRequest.mockResolvedValue({
+      bundleId: BUNDLE_A, personRef: SUBJECT, purpose: "Preparing the joint return", durationSeconds: 86400,
+      cancelled: false, items,
+      progress: { requested_at: "2026-09-28T10:00:00Z", outcome: "granted", fields: [
+        { scope: "attr.financial.tax_record.*", label: "Tax record", status: "granted" },
+        { scope: "attr.health.medications.*", label: "Daily routine", status: "granted" },
+        { scope: "attr.food.preferences.*", label: "Food preferences", status: "granted" },
+        { scope: "attr.lifestyle.hobbies.*", label: "Hobbies", status: "granted" },
+      ] },
+    });
+    services.readStoredConnector.mockResolvedValue({ connector_key_id: "ck_1" });
+    services.getInformationRequestExports.mockResolvedValue(items.map((item) => ({
+      requestId: item.requestId, scopeRef: item.scopeRef,
+      encryptedExport: {
+        request_id: item.requestId, scope: `attr.${item.scopeRef}`, export_revision: 1,
+        export_envelope: { version: 2, export_id: `x-${item.requestId}`, aad: {
+          version: 2, app_id: "agent_one", grant_id: item.requestId, export_id: `x-${item.requestId}`,
+          revision: 1, machine_scope: `attr.${item.scopeRef}`, payload_algorithm: "AES-256-GCM",
+          expires_at_ms: Date.now() + 3_600_000,
+        } },
+      },
+    })));
+    services.decryptScopedExport.mockImplementation(async ({ exportPackage }: { exportPackage: { request_id: string } }) =>
+      valuesByRequest[exportPackage.request_id]);
+  });
+
+  it("the follow-up turn carries a sensitive item's field names, never its values", async () => {
+    const prepared = await prepareConsentContinuation({
+      userId: OWNER, vaultKey: "vault-key", vaultOwnerToken: "owner-token",
+      bundleId: BUNDLE_A, subjectRef: SUBJECT, outcome: "granted",
+    });
+    const wire = JSON.stringify(prepared?.continuation);
+    for (const secret of SECRETS) expect(wire, `leaked ${secret}`).not.toContain(secret);
+    const text = prepared?.continuation.sharedInformation ?? "";
+    expect(text).toContain("Tax record: 4 fields (Filing year, Adjusted gross income, Filing status and 1 more)");
+    expect(text).toContain("Daily routine: 2 fields (Medication, Dose time)");
+    expect(text).toContain("Hobbies: 1 field (Weekend)");
+    // Each placeholder line holds field names only: no string from the decrypted export.
+    const exported = [TAX, MEDS, HOBBIES].flatMap((record) => Object.values(record).map(String));
+    for (const line of text.split("\n").filter((entry) => /: \d+ fields?/.test(entry))) {
+      for (const value of exported) expect(line, `value in placeholder: ${value}`).not.toContain(value);
+    }
+    // Negative control: a standard item still flows, so a leak would be visible here.
+    expect(text).toContain("Neapolitan pizza");
+  });
+
+  it("negative control: marked standard with a harmless label, the same values would be sent", () => {
+    const text = formatSharedInformationForAgent([
+      { requestId: "r1", label: "Dinner notes", data: { ...TAX, ...MEDS }, sensitivity: "standard" },
+    ]);
+    expect(text).toContain("85000");
+    expect(text).toContain("Atorvastatin 20mg");
+  });
+
+  it("a server's sensitive wins over a harmless label", () => {
+    const text = formatSharedInformationForAgent([
+      { requestId: "r1", label: "Dinner notes", data: TAX, sensitivity: "sensitive" },
+    ]);
+    expect(text).not.toContain("85000");
+    expect(text).toContain("Dinner notes: 4 fields");
   });
 });

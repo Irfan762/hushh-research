@@ -123,9 +123,15 @@ for (const dark of [false, true]) {
             const a = avatar.getBoundingClientRect();
             const d = desc.getBoundingClientRect();
             const stamp = time.getBoundingClientRect();
+            // Only the row's decisions, never the row itself. The row's own
+            // tap target is a full-bleed overlay button that labels itself
+            // by reference and so no longer contains the title; counting it
+            // made the three-decision rows read as four (skipping the
+            // one-line check) and the two-decision rows read as three.
             // Only rendered buttons: a phone-hidden action has no box.
             const actions = [...row.querySelectorAll("button")].filter(
               (button) =>
+                button.getAttribute("data-slot") !== "settings-row-action" &&
                 !button.contains(title) &&
                 button.getBoundingClientRect().width > 0,
             );

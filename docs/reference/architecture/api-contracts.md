@@ -225,6 +225,15 @@ accepts. `sharedInformation` is accepted only for `granted`/`partially_granted`
 (≤ 12,000 characters), is the text the requester's device decrypted from the
 approved export, and is held as a 10-minute in-memory request secret; session
 state carries only its reference. Anything else returns `400`/`409`.
+**Sensitive values never reach the model (CONTRACT-2 C7).** The device sends a
+sensitive item's field-name outline instead of its values. Admission enforces
+it again before the text is stored: each line of an item whose
+`sensitivity` is `sensitive` (or missing) becomes
+`- <label>: N fields (<names>). Sensitive: shown to the person in the secure card on their device; the values are not shared with you.`,
+built from key names only, and a line no `standard` item claims is dropped.
+It logs `one.consent_sensitive_stripped count=<lines>` (a count only). The
+turn's instruction names those items and tells One the values are in the secure
+card above, never to guess or restate them.
 `GET /api/one/agent-chat/history/{conversation_id}` returns `consentOutcomes`
 (`{bundleId: outcome}` for bundles already continued), `consentAccessEnded`
 (`{bundleId: "revoked"|"expired"}`), and restores the follow-up message as a
@@ -274,7 +283,7 @@ keeps `bundleId, personRef, purpose, durationSeconds, cancelled, items` and adds
   "outcome": "pending|granted|partially_granted|denied|expired|revoked|cancelled",
   "access_ends_at": "iso|null",
   "ended_at": "iso|null",
-  "fields": [{"scope": "attr.food.preferences.*", "label": "Food preferences", "status": "pending|granted|denied|expired|revoked|cancelled"}]
+  "fields": [{"scope": "attr.food.preferences.*", "label": "Food preferences", "sensitivity": "sensitive|standard", "status": "pending|granted|denied|expired|revoked|cancelled"}]
 }
 ```
 
@@ -286,6 +295,16 @@ expired before a decision. `revoked` (the owner ended it) is never reported as
 `expired` (time ended it). `cancelled` means the requester withdrew. Labels come
 from `hushh_mcp/consent/scope_labels.py`. A field in a credential domain is
 refused at creation with `403` even if a catalog offered it.
+
+`sensitivity` (on `items[]`, `progress.fields[]`, catalog items, viewer-profile
+grants and the shared-with-me card) comes from one server function,
+`hushh_mcp/consent/scope_sensitivity.py` `scope_sensitivity(scope, pkm_tags)`.
+It is `sensitive` for the tax, financial or banking, identity or government-id,
+health or medical, and credentials domains (by registry key or by the words of
+a dynamic domain or path), for any scope a PKM tag (`restricted`,
+`confidential`, `sensitive`) marks, including a wildcard over a tagged branch,
+and for anything that is not a well-formed `attr.<domain>` scope. Everything
+else is `standard`. A stored `standard` never downgrades it.
 
 #### Outcome doorbell: `information_request_updated` (CONTRACT C2)
 
@@ -344,8 +363,36 @@ history restores the message as a `selection` chip.
 
 `GET /api/one/information-requests/shared-with-me` (VAULT_OWNER) lists the
 current approvals other people gave this person: display names, item labels,
-bundle and request ids, purpose and expiry. It never returns values; those stay
-in each encrypted export and open on the person's own device.
+bundle and request ids, purpose and expiry, plus `grantRef` (the request id),
+`sensitivity`, `fieldOutline` (field names from the owner's catalog, never
+values), `sharedAt`, `accessEndsAt` and `decryptable`. The consent ledger decides
+what is current, so an item approved before its request was withdrawn is still
+listed, and an active grant that no request row names is swept in from the
+ledger with `bundleId: null, decryptable: false` (no existing path can open it).
+It never returns values; those stay in each encrypted export and open on the
+person's own device.
+
+**"Shared with you" card in chat (CONTRACT-2 C6).** One's
+`list_information_shared_with_me` tool returns the same shares as
+`cards: [card]` (plus `card` when exactly one person), each:
+
+```json
+{
+  "kind": "one.shared_with_me_card.v1",
+  "person": {"personRef": "...", "displayName": "Manish Sainani", "profilePath": "/people/<ref>"},
+  "items": [{"grantRef": "<request id>", "requestId": "<request id>", "bundleId": "<uuid>|null",
+             "label": "Tax record information", "sensitivity": "sensitive|standard",
+             "fieldOutline": ["Filing year", "Refund"], "sharedAt": "iso|null",
+             "accessEndsAt": "iso|null", "purpose": "...", "decryptable": true}],
+  "decryptVia": "information_request_exports"
+}
+```
+
+`decryptVia` names the existing path: `GET /api/one/information-requests/{bundleId}`
+then `/exports`, matched by `requestId`. The model reads the same result, so it
+holds labels and field names only. History restores it as the structured
+experience `one.shared_with_me_card.v1` with content `{cards: [...]}`, each card
+re-validated field by field.
 
 `GET /api/one/people/{person_ref}/request-history` requires the authenticated
 Firebase user. It reads only bundles that user requested from the active person

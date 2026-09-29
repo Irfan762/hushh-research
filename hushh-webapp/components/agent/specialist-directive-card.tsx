@@ -2,7 +2,7 @@
 
 import React from "react";
 import { useEffect, useState } from "react";
-import { ExternalLink, ShieldCheck, ShieldOff } from "@/components/icons";
+import { ConsentAgentIcon, ExternalLink, ShieldCheck, ShieldOff } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { ClarificationCard } from "@/components/one-location/redesign/clarification-card";
@@ -73,19 +73,21 @@ export function SpecialistDirectiveCard({
           type="button"
           onClick={onConfirm}
           disabled={busy}
-          className="rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
+          className="relative rounded-full bg-primary px-4 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-60"
           data-testid="specialist-directive-confirm"
         >
           {busy ? busyLabel ?? "Working…" : confirmLabel}
+          <MaterialRipple variant="none" effect="fill" disabled={busy} />
         </button>
         <button
           type="button"
           onClick={onCancel}
           disabled={busy && !cancelWhileBusy}
-          className="rounded-full bg-black/5 px-4 py-1.5 text-sm dark:bg-white/10"
+          className="relative rounded-full bg-black/5 px-4 py-1.5 text-sm dark:bg-white/10"
           data-testid="specialist-directive-cancel"
         >
           Cancel
+          <MaterialRipple variant="none" effect="glass" disabled={busy && !cancelWhileBusy} />
         </button>
       </div>
     </div>
@@ -237,8 +239,9 @@ export function SpecialistConsentRequiredCard({
       className="rounded-2xl border border-[#6b8f71]/35 bg-[#6b8f71]/5 p-4"
     >
       <div className="flex items-start gap-3">
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#6b8f71]/10 text-[#426548]">
-          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+        {/* The /one Consent glyph, bare on a transparent well: never a tile. */}
+        <div data-slot="card-header-icon" className="grid h-9 w-9 shrink-0 place-items-center">
+          <ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-foreground">{agentName} needs permission</p>
@@ -335,8 +338,9 @@ export function SpecialistConsentActionsCard({
       className="rounded-2xl border border-[#6b8f71]/35 bg-[#6b8f71]/5 p-4"
     >
       <div className="flex items-start gap-3">
-        <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[#6b8f71]/10 text-[#426548]">
-          <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+        {/* The /one Consent glyph, bare on a transparent well: never a tile. */}
+        <div data-slot="card-header-icon" className="grid h-9 w-9 shrink-0 place-items-center">
+          <ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />
         </div>
         <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-foreground">Manage access</p>
@@ -436,6 +440,7 @@ import {
   requesterShortName,
 } from "@/lib/consent/consent-owner-copy";
 import { useArmedAction } from "@/lib/ui/use-armed-action";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 
 export type PendingConsentCardStatus =
   | "pending" | "approved" | "denied" | "cancelled"

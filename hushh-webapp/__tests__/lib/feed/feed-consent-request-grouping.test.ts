@@ -150,8 +150,9 @@ describe("the Feed row for one request", () => {
       ["deny", "Don't allow"],
       ["allow", "Allow"],
     ]);
-    // Don't allow is irreversible, so it arms before it fires.
-    expect(row.actions.find((action) => action.key === "deny")?.confirm).toBe(true);
+    // Don't allow is one tap: its Undo toast (not an armed second tap) is
+    // what keeps a stray tap from declining.
+    expect(row.actions.find((action) => action.key === "deny")?.confirm).toBeFalsy();
 
     await row.actions.find((action) => action.key === "allow")!.run();
     expect(allow).toHaveBeenCalledWith(request);

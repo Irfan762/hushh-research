@@ -10,6 +10,13 @@ follow-up turn in the same conversation. This module is the server's half:
   exception is the end of access: a request that was answered with shared
   information may be continued once more when that access is revoked or runs
   out, so One can say so.
+* Sensitive information never reaches the model (CONTRACT-2 C7, founder
+  decision 2026-09-28). The device sends a sensitive item's field-name outline
+  instead of its values; admission enforces that again here, before the text
+  is stored for the prompt: every line of a sensitive item (by
+  ``scope_sensitivity``, carried on the bundle's items) is replaced with an
+  outline of names only, and a line it cannot attribute to a standard item is
+  dropped. The values stay in the secure card on the person's device.
 * For an approval, the requester's own device decrypted the export with its own
   key and sends the resulting text for this one turn. The server never stores
   it: it is a short-lived in-memory reference, like the owner's own memory
@@ -182,6 +189,11 @@ async def admit_consent_continuation(
             "That request has not been answered that way.", status_code=409
         )
     shared_labels, declined_labels = _field_labels(bundle)
+    sensitive_labels = [
+        label
+        for label in shared_labels
+        if _item_sensitivities(bundle).get(label, "sensitive") == "sensitive"
+    ]
     person = person_name(str(bundle.get("personRef") or "")) or "they"
     shared_ref = ""
     if outcome in SHARED_OUTCOMES:
@@ -191,6 +203,10 @@ async def admit_consent_continuation(
             raise ConsentContinuationError(
                 "The shared information could not be opened on this device.", status_code=400
             )
+        # C7 defense in depth: sensitive values are stripped before any prompt use.
+        text, stripped = strip_sensitive_shared_information(text, _item_sensitivities(bundle))
+        if stripped:
+            logger.info("one.consent_sensitive_stripped count=%d", stripped)
         shared_ref = store_request_secret(text, ttl_seconds=SHARED_TEXT_TTL_SECONDS)
     elif payload.get("sharedInformation"):
         # Nothing was approved, so nothing of the other person's may ride along.
@@ -204,6 +220,7 @@ async def admit_consent_continuation(
             "shared": shared_ref,
             "sharedLabels": shared_labels,
             "declinedLabels": declined_labels,
+            "sensitiveLabels": sensitive_labels,
         },
     }
     if outcome in SHARED_OUTCOMES:
@@ -236,6 +253,121 @@ def _field_labels(bundle: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         if label not in bucket:
             bucket.append(label)
     return shared[:20], declined[:20]
+
+
+def _item_sensitivities(bundle: Mapping[str, Any]) -> dict[str, str]:
+    """Human label -> C7 sensitivity for each item the bundle names.
+
+    Read from the items and from ``progress.fields`` (the server builds both
+    from ``scope_sensitivity``). A label named twice is sensitive if either
+    says so, and an item that carries no sensitivity is sensitive: deny by
+    default, so an older or partial bundle view can only strip more.
+    """
+    progress = bundle.get("progress")
+    fields = progress.get("fields") if isinstance(progress, Mapping) else None
+    entries = [
+        entry
+        for source in (bundle.get("items"), fields)
+        if isinstance(source, list)
+        for entry in source
+        if isinstance(entry, Mapping)
+    ]
+    sensitivities: dict[str, str] = {}
+    for entry in entries:
+        label = " ".join(str(entry.get("label") or "").split())
+        if not label:
+            # An item no line can be attributed to: its lines are unknowable,
+            # so the text is treated as holding sensitive lines (deny).
+            sensitivities[""] = "sensitive"
+            continue
+        value = "standard" if entry.get("sensitivity") == "standard" else "sensitive"
+        if sensitivities.get(label) != "sensitive":
+            sensitivities[label] = value
+    return sensitivities
+
+
+# The device's own placeholder for a sensitive item (hushh-webapp
+# ``sensitiveSharedOutline``): the label, a field count and field NAMES. Kept
+# only in this exact shape and only with name-shaped entries.
+_DEVICE_OUTLINE = re.compile(
+    r"^- (?P<label>.+?): (?:(?P<count>\d{1,3}) fields?(?: \((?P<names>[^()]*)\))?|shared)\. "
+    r"Sensitive: shown to the person in the secure card on their device; "
+    r"the values are not shared with you\.$"
+)
+_OUTLINE_NAME = re.compile(r"^[A-Za-z][A-Za-z &/-]{0,39}$")
+_MAX_OUTLINE_NAMES = 8
+
+
+def _outline_names(raw: str) -> list[str]:
+    names: list[str] = []
+    for part in raw.split(","):
+        name = re.sub(r"^and \d+ more$", "", part.strip()).strip()
+        name = re.sub(r" and \d+ more$", "", name).strip()
+        if name and _OUTLINE_NAME.fullmatch(name) and len(name.split()) <= 5:
+            names.append(name)
+    return names
+
+
+def sensitive_outline_line(label: str, names: list[str]) -> str:
+    """The model's whole view of one sensitive item: its label and field names."""
+    unique = list(dict.fromkeys(names))
+    shown = unique[:_MAX_OUTLINE_NAMES]
+    more = len(unique) - len(shown)
+    listing = f" ({', '.join(shown)}{f' and {more} more' if more > 0 else ''})" if shown else ""
+    count = f"{len(unique)} field{'s' if len(unique) != 1 else ''}" if unique else "shared"
+    return (
+        f"- {label}: {count}{listing}. Sensitive: shown to the person in the secure card "
+        "on their device; the values are not shared with you."
+    )
+
+
+def strip_sensitive_shared_information(
+    text: str, sensitivities: Mapping[str, str]
+) -> tuple[str, int]:
+    """Replace every sensitive item's lines with a names-only outline (C7).
+
+    ``text`` is the device's "- Label > path: value" lines. A line belongs to
+    the longest label it starts with. Lines of a sensitive label become one
+    outline line built from their key path names (never the part after the
+    colon), or from the device's own outline if that is what it sent. When any
+    item is sensitive, a line no standard label claims is dropped too. Returns
+    the text and the number of lines removed; nothing is logged here.
+    """
+    if not any(value == "sensitive" for value in sensitivities.values()):
+        return text, 0
+    labels = sorted((label for label in sensitivities if label), key=len, reverse=True)
+    kept: list[str] = []
+    outlines: dict[str, list[str]] = {}
+    stripped = 0
+    for line in text.splitlines():
+        owner = next(
+            (
+                label
+                for label in labels
+                if line.startswith(f"- {label} > ") or line.startswith(f"- {label}: ")
+            ),
+            None,
+        )
+        if owner is not None and sensitivities.get(owner) == "standard":
+            kept.append(line)
+            continue
+        if not line.strip():
+            continue
+        stripped += 1
+        if owner is None:
+            continue
+        names = outlines.setdefault(owner, [])
+        device = _DEVICE_OUTLINE.fullmatch(line)
+        if device and device.group("label") == owner:
+            names.extend(_outline_names(device.group("names") or ""))
+            continue
+        path = line[len(f"- {owner}") :].split(": ", 1)[0]
+        keys = [part.strip() for part in path.split(" > ") if part.strip()]
+        leaf = next((key for key in reversed(keys) if not key.isdigit()), "")
+        if leaf and _OUTLINE_NAME.fullmatch(leaf):
+            names.append(leaf[:1].upper() + leaf[1:])
+    kept.extend(sensitive_outline_line(label, names) for label, names in outlines.items())
+    return "\n".join(kept), stripped
 
 
 def _label_list(labels: Any) -> str:
@@ -298,6 +430,14 @@ def consent_continuation_instruction(state_getter: Callable[[str], Any] | None) 
         field_note += (
             f" Not shared: {declined_labels}. Say plainly that those were not shared and "
             "do not guess them."
+        )
+    sensitive_labels = _label_list(record.get("sensitiveLabels"))
+    if sensitive_labels:
+        field_note += (
+            f" Sensitive, so you have its field names only: {sensitive_labels}. Its values are "
+            "shown to the person in the secure card above, decrypted on their device. Say that "
+            "in one short line; never guess, restate or summarize those values, and do not "
+            "say you cannot display them."
         )
     if outcome in SHARED_OUTCOMES:
         shared = resolve_request_secret(record.get("shared"))

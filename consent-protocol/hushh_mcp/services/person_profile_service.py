@@ -20,6 +20,7 @@ from db.db_client import get_db
 from hushh_mcp.consent.scope_generator import rank_scope_matches
 from hushh_mcp.consent.scope_labels import human_domain_label, human_scope_label
 from hushh_mcp.consent.scope_matcher import presentable_scope_entries, search_scope_entries
+from hushh_mcp.consent.scope_sensitivity import covers, scope_sensitivity
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_db import ConsentDBService
 
@@ -82,6 +83,31 @@ def requester_principal(public_person_ref: str) -> str:
 def _scope_ref(public_person_ref: str, scope: str) -> str:
     material = f"person-scope-v1|{public_person_ref}|{scope}".encode()
     return f"psr_{hashlib.sha256(material).hexdigest()[:32]}"
+
+
+MAX_OUTLINE_FIELDS = 12
+
+
+def field_outline(scope: str, catalog: list[dict[str, Any]]) -> list[str]:
+    """Names (never values) of what a grant on ``scope`` covers, for the C6 card.
+
+    Drawn from the owner's requestable catalog, which the requester can already
+    browse: the labels of the branches under ``scope``, or the scope's own label
+    when it is a single field.
+    """
+    own_label = ""
+    names: list[str] = []
+    for item in catalog:
+        child = str(item.get("scope") or "")
+        label = human_scope_label(child, str(item.get("label") or ""))
+        if child == scope:
+            own_label = label
+            continue
+        if covers(scope, child) and label and label not in names:
+            names.append(label)
+    if not names and own_label:
+        names = [own_label]
+    return names[:MAX_OUTLINE_FIELDS]
 
 
 class PersonProfileService:
@@ -182,6 +208,13 @@ class PersonProfileService:
         if set(resolved) != requested:
             raise ValueError("One or more requested fields are unavailable.")
         return row, [resolved[value] for value in scope_refs if value in resolved]
+
+    def field_outlines(
+        self, viewer_user_id: str, subject_user_id: str, scopes: list[str]
+    ) -> dict[str, list[str]]:
+        """Field names for each granted scope, from the current catalog. Labels only."""
+        catalog = self._requestable_scope_entries(viewer_user_id, subject_user_id)
+        return {scope: field_outline(scope, catalog) for scope in scopes}
 
     def _relationship(self, viewer_user_id: str, subject_user_id: str) -> dict[str, Any]:
         connection = self._execute_one(
@@ -373,7 +406,8 @@ class PersonProfileService:
             "description": item.get("description"),
             "domain": domain,
             "domainLabel": human_domain_label(domain),
-            "sensitivity": item.get("sensitivity"),
+            # C7: the one server-side authority; a stored tag only escalates.
+            "sensitivity": scope_sensitivity(scope, [item.get("sensitivity")]),
             "wildcard": bool(item.get("wildcard")),
             "pathSegments": [part for part in scope.split(".")[2:] if part != "*"],
         }
@@ -573,6 +607,10 @@ class PersonProfileService:
                         "scopeRef": (scope_projection or {}).get("scopeRef"),
                         "label": (scope_projection or {}).get("label") or "Shared information",
                         "domain": (scope_projection or {}).get("domain"),
+                        "sensitivity": scope_sensitivity(
+                            str(grant.get("scope") or ""),
+                            [(scope_projection or {}).get("sensitivity")],
+                        ),
                         "requestId": grant.get("request_id"),
                         "bundleId": bundle_by_request.get(str(grant.get("request_id") or "")),
                         "issuedAt": grant.get("issued_at"),
@@ -593,7 +631,7 @@ class PersonProfileService:
                         SELECT bundle.bundle_id, bundle.purpose,
                                bundle.duration_seconds, bundle.created_at,
                                bundle.cancelled_at, item.request_id,
-                               item.scope_ref, item.label, item.sensitivity
+                               item.scope_ref, item.scope, item.label, item.sensitivity
                         FROM one_information_request_bundles bundle
                         JOIN one_information_request_items item
                           ON item.bundle_id = bundle.bundle_id
@@ -645,7 +683,9 @@ class PersonProfileService:
                     "requestId": item["request_id"],
                     "scopeRef": item["scope_ref"],
                     "label": item["label"],
-                    "sensitivity": item.get("sensitivity"),
+                    "sensitivity": scope_sensitivity(
+                        str(item.get("scope") or ""), [item.get("sensitivity")]
+                    ),
                     "purpose": item["purpose"],
                     "durationSeconds": item["duration_seconds"],
                     "createdAt": str(item.get("created_at") or "") or None,

@@ -679,6 +679,7 @@ class TestPropose:
                 "scope": "psr_cuisine",
                 "label": "Favorite cuisine",
                 "why": '"restaurant" relates to food & dining',
+                "sensitivity": "standard",
             }
         ]
         assert result["duration_default"] == "7d"
@@ -1151,6 +1152,51 @@ class TestPropose:
         assert "has not shared any information" not in result["nextStep"]
 
     @pytest.mark.asyncio
+    async def test_shared_information_returns_the_secure_card_without_values(self):
+        """CONTRACT-2 C6: the chat renders the card from this result at once."""
+        context = _ctx(_state())
+        action_tools._remember_information_person(
+            context, "user_1", PERSON_REF, "Sarah Chen", "Sarah"
+        )
+        share = {
+            "person": "Sarah Chen",
+            "personRef": PERSON_REF,
+            "bundleId": "0f0e0d0c-0b0a-4908-8706-050403020100",
+            "requestId": "one_person_tax",
+            "grantRef": "one_person_tax",
+            "label": "Tax record information",
+            "sensitivity": "sensitive",
+            "fieldOutline": ["Filing year", "Refund"],
+            "sharedAt": "2026-09-21T12:00:00+00:00",
+            "accessEndsAt": None,
+            "purpose": "To ensure information sharing works",
+            "decryptable": True,
+        }
+        with (
+            _auth(),
+            patch.object(
+                InformationRequestService,
+                "list_granted_shares",
+                new=AsyncMock(return_value=[share]),
+            ),
+        ):
+            result = await list_information_shared_with_me(context)
+
+        assert result["kind"] == "one.shared_with_me_card.v1"
+        assert result["count"] == 1
+        assert result["card"] == result["cards"][0]
+        item = result["card"]["items"][0]
+        assert (item["label"], item["sensitivity"], item["fieldOutline"]) == (
+            "Tax record information",
+            "sensitive",
+            ["Filing year", "Refund"],
+        )
+        assert result["card"]["person"]["displayName"] == "Sarah Chen"
+        assert "Here's what Sarah Chen shared with you:" in result["nextStep"]
+        for dead_end in ("reveal", "if the bound Chat request card", "Profile automatically"):
+            assert dead_end not in result["nextStep"]
+
+    @pytest.mark.asyncio
     async def test_short_purpose_and_bad_duration_are_asked_back(self):
         with (
             _auth(),
@@ -1446,7 +1492,9 @@ def test_bulk_share_chat_history_keeps_only_review_pointer():
 
 
 _BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100"
-_SHARED = "- Allergies > medication: penicillin"
+# A standard (C7) item: its value may reach the model in the answer turn. A
+# health value would be stripped; see the sensitive-stripping tests below.
+_SHARED = "- Food preferences > favorite restaurant: Nopa"
 
 
 def _bundle_with(*statuses: str) -> dict:
@@ -1454,7 +1502,15 @@ def _bundle_with(*statuses: str) -> dict:
         "bundleId": _BUNDLE,
         "personRef": "person-ref",
         "cancelled": False,
-        "items": [{"requestId": f"r{i}", "status": status} for i, status in enumerate(statuses)],
+        "items": [
+            {
+                "requestId": f"r{i}",
+                "label": "Food preferences",
+                "sensitivity": "standard",
+                "status": status,
+            }
+            for i, status in enumerate(statuses)
+        ],
     }
 
 
@@ -1502,7 +1558,7 @@ async def test_approved_answer_reaches_the_model_for_one_turn_and_is_never_store
     record = state[STATE_CONSENT_CONTINUATION]
     assert resolve_request_secret(record["shared"]) == _SHARED
     instruction = consent_continuation_instruction(state.get)
-    assert "penicillin" in instruction and "Kushal approved" in instruction
+    assert "Nopa" in instruction and "Kushal approved" in instruction
     # The answer turn runs no tools, so the shared text cannot be saved or sent.
     blocked = block_tools_during_consent_answer(SimpleNamespace(state=state))
     assert blocked and blocked["status"] == "blocked"
@@ -1575,7 +1631,14 @@ def _progress_bundle(outcome: str, fields: list[tuple[str, str]]) -> dict:
         **_bundle_with(*[status for _label, status in fields]),
         "progress": {
             "outcome": outcome,
-            "fields": [{"label": label, "status": status} for label, status in fields],
+            "fields": [
+                {
+                    "label": label,
+                    "status": status,
+                    "sensitivity": "standard" if label == "Food preferences" else "sensitive",
+                }
+                for label, status in fields
+            ],
         },
     }
 

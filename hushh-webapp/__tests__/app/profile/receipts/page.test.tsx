@@ -253,7 +253,6 @@ vi.mock("lucide-react", () => ({
   Send: () => <span />,
   ShieldCheck: () => <span />,
   ShoppingBag: () => <span />,
-  Sparkles: () => <span />,
   Trash2: () => <span />,
 }));
 

@@ -3,10 +3,10 @@
 /**
  * Allow / Don't allow for one owner request, from any surface.
  *
- * The Feed and the owner's own chat card both decide inline. Both go through
- * this hook, which goes through `useConsentActions`, so there is exactly one
- * approve path (the on-device encrypted export, then the server call) and one
- * deny path, whichever button was tapped.
+ * The Feed, the Consent Center rows and the owner's own chat card all decide
+ * inline. They go through this hook, which goes through `useConsentActions`,
+ * so there is exactly one approve path (the on-device encrypted export, then
+ * the server call) and one deny path, whichever button was tapped.
  *
  * The vault is the one thing an inline button cannot assume. Allowing builds
  * the export from the owner's encrypted memory on this device, so it needs the
@@ -17,6 +17,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import { useVault } from "@/lib/vault/vault-context";
 import { useConsentActions } from "@/lib/consent/use-consent-actions";
@@ -25,13 +26,21 @@ import {
   type OwnerConsentRequest,
 } from "@/lib/consent/owner-consent-request";
 import { joinInformationLabels } from "@/lib/consent/consent-owner-copy";
+import { useDeferredConsentDeclines } from "@/lib/consent/deferred-consent-decline";
 
 export type OwnerConsentDecisionKind = "allow" | "deny";
+
+/** The calls a decision needs from `useConsentActions`. */
+export type OwnerConsentDecisionActions = Pick<
+  ReturnType<typeof useConsentActions>,
+  "handleApproveBundle" | "handleDenyBundle" | "bundleProgress"
+>;
 
 type PendingUnlock = {
   kind: OwnerConsentDecisionKind;
   request: OwnerConsentRequest;
-  durationHours?: number;
+  /** What runs once the key is here. */
+  proceed: () => Promise<void>;
   resolve: (decided: boolean) => void;
   reject: (error: unknown) => void;
 };
@@ -44,18 +53,49 @@ export type OwnerConsentUnlockPrompt = {
   cancel: () => void;
 };
 
+export interface OwnerConsentDecisionHooks {
+  /** Runs once the vault is open, just before the decision goes out. */
+  onStart?: () => void;
+}
+
+export interface DeclineWithUndoHooks {
+  /** The row leaves now, before anything is sent. */
+  onHide: () => void;
+  /** Undo, or the deny failed: the row comes back. */
+  onRestore: () => void;
+}
+
+const DECLINE_FAILED = "Could not decline this request. Try again.";
+
 export function allowSuccessMessage(request: OwnerConsentRequest): string {
   return `${request.requesterShortName} can now see your ${joinInformationLabels(request.labels)}.`;
+}
+
+/** The Undo toast's line. Nothing has been sent while it shows. */
+export function declineUndoMessage(request: OwnerConsentRequest): string {
+  return `Declined ${request.requesterShortName}'s request.`;
 }
 
 export function useOwnerConsentDecision(options: {
   userId: string | null | undefined;
 }) {
-  const { vaultKey } = useVault();
   const actions = useConsentActions({ userId: options.userId });
+  return useOwnerConsentDecisionWith(actions);
+}
+
+/**
+ * The same decision over an actions instance the caller already holds. The
+ * Consent Center passes its own, so a row decision shares the sheet's busy
+ * state and its confirmed-approval bookkeeping instead of running beside it.
+ */
+export function useOwnerConsentDecisionWith(
+  actions: OwnerConsentDecisionActions,
+) {
+  const { vaultKey } = useVault();
   const [pendingUnlock, setPendingUnlock] = useState<PendingUnlock | null>(
     null,
   );
+  const { schedule: scheduleDecline } = useDeferredConsentDeclines();
 
   // useConsentActions returns a fresh object every render; reading it through
   // a ref keeps `allow`/`deny` stable, so a list that builds rows around them
@@ -70,6 +110,7 @@ export function useOwnerConsentDecision(options: {
       kind: OwnerConsentDecisionKind,
       request: OwnerConsentRequest,
       durationHours?: number,
+      runOptions: { quiet?: boolean } = {},
     ): Promise<void> => {
       if (!request.complete) {
         throw new Error("This request is still arriving. Open Details to review it.");
@@ -91,31 +132,40 @@ export function useOwnerConsentDecision(options: {
       }
       await actionsRef.current.handleDenyBundle(
         request.members.map((member) => member.request_id || member.id),
-        { bundleId: request.key, successMessage: "Declined. Nothing was shared." },
+        {
+          bundleId: request.key,
+          successMessage: "Declined. Nothing was shared.",
+          quiet: runOptions.quiet,
+        },
       );
     },
     [],
   );
 
-  const decide = useCallback(
+  /**
+   * Run `proceed` once the vault is open. With the vault locked the unlock
+   * prompt opens and nothing runs until the key is here; closing the prompt
+   * resolves false and nothing runs at all.
+   */
+  const whenUnlocked = useCallback(
     (
       kind: OwnerConsentDecisionKind,
       request: OwnerConsentRequest,
-      durationHours?: number,
+      proceed: () => Promise<void>,
     ): Promise<boolean> => {
       if (vaultKey) {
-        return run(kind, request, durationHours).then(() => true);
+        return proceed().then(() => true);
       }
       return new Promise<boolean>((resolve, reject) => {
         setPendingUnlock((current) => {
           // A second tap while the prompt is open replaces the first; the
           // first resolves as not decided so its spinner stops.
           current?.resolve(false);
-          return { kind, request, durationHours, resolve, reject };
+          return { kind, request, proceed, resolve, reject };
         });
       });
     },
-    [run, vaultKey],
+    [vaultKey],
   );
 
   useEffect(() => {
@@ -124,9 +174,22 @@ export function useOwnerConsentDecision(options: {
     setPendingUnlock(null);
     // The actions ref is refreshed by the render that carried the new key, so
     // this runs the approve path that can see it.
-    run(waiting.kind, waiting.request, waiting.durationHours)
-      .then(() => waiting.resolve(true), waiting.reject);
-  }, [pendingUnlock, run, vaultKey]);
+    waiting.proceed().then(() => waiting.resolve(true), waiting.reject);
+  }, [pendingUnlock, vaultKey]);
+
+  const decide = useCallback(
+    (
+      kind: OwnerConsentDecisionKind,
+      request: OwnerConsentRequest,
+      durationHours?: number,
+      hooks: OwnerConsentDecisionHooks = {},
+    ): Promise<boolean> =>
+      whenUnlocked(kind, request, () => {
+        hooks.onStart?.();
+        return run(kind, request, durationHours);
+      }),
+    [run, whenUnlocked],
+  );
 
   const cancel = useCallback(() => {
     setPendingUnlock((current) => {
@@ -148,8 +211,11 @@ export function useOwnerConsentDecision(options: {
   };
 
   const allow = useCallback(
-    (request: OwnerConsentRequest, durationHours?: number) =>
-      decide("allow", request, durationHours),
+    (
+      request: OwnerConsentRequest,
+      durationHours?: number,
+      hooks?: OwnerConsentDecisionHooks,
+    ) => decide("allow", request, durationHours, hooks),
     [decide],
   );
   const deny = useCallback(
@@ -157,9 +223,43 @@ export function useOwnerConsentDecision(options: {
     [decide],
   );
 
+  /**
+   * Don't allow with a five-second Undo (see deferred-consent-decline.ts).
+   *
+   * The unlock comes first, so the Undo window never ends in a prompt: once
+   * the vault is open the row leaves, the toast offers Undo, and the deny goes
+   * out when the window closes. Resolves true once the decline is scheduled,
+   * false when the unlock was closed and nothing changed.
+   */
+  const declineWithUndo = useCallback(
+    (request: OwnerConsentRequest, hooks: DeclineWithUndoHooks) =>
+      whenUnlocked("deny", request, async () => {
+        hooks.onHide();
+        scheduleDecline({
+          key: request.key,
+          message: declineUndoMessage(request),
+          onUndo: hooks.onRestore,
+          send: () =>
+            run("deny", request, undefined, { quiet: true }).catch(
+              (error: unknown) => {
+                // The quiet bundle path rejects with an owner-facing sentence.
+                hooks.onRestore();
+                toast.error(
+                  error instanceof Error && error.message
+                    ? error.message
+                    : DECLINE_FAILED,
+                );
+              },
+            ),
+        });
+      }),
+    [run, scheduleDecline, whenUnlocked],
+  );
+
   return {
     allow,
     deny,
+    declineWithUndo,
     unlockPrompt,
     bundleProgress: actions.bundleProgress,
   };
