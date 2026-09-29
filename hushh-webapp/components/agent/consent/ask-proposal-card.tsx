@@ -35,6 +35,11 @@ export type AskProposalCardProps = {
   error: string | null;
   onSend: (draft: AskProposalDraft) => void;
   searchCatalog: (query: string, page: number, signal: AbortSignal) => Promise<PersonScopeCatalogPage>;
+  /**
+   * Called once when the card appears, with its Send row, so the chat can
+   * lift it above the composer. The card never scrolls anything itself.
+   */
+  revealActions?: (element: HTMLElement) => void;
 };
 
 const SEARCH_DEBOUNCE_MS = 200;
@@ -140,7 +145,15 @@ function CatalogPicker({ personName, selected, onToggle, searchCatalog }: {
   );
 }
 
-export function AskProposalCard({ personName, proposal, ready, sending, error, onSend, searchCatalog }: AskProposalCardProps) {
+export function AskProposalCard({ personName, proposal, ready, sending, error, onSend, searchCatalog, revealActions }: AskProposalCardProps) {
+  const actionsRef = useRef<HTMLDivElement | null>(null);
+  // Once per appearance: Send must never sit behind the composer. The first
+  // reveal callback is kept, so a re-render never scrolls the chat again.
+  const [reveal] = useState(() => revealActions);
+  useEffect(() => {
+    const element = actionsRef.current;
+    if (element) reveal?.(element);
+  }, [reveal]);
   const [scopes, setScopes] = useState<RequestablePersonScope[]>(() => proposedScopes(proposal));
   const [durationHours, setDurationHours] = useState(proposal.durationHours);
   const [reason, setReason] = useState(proposal.reasonSuggestion);
@@ -198,7 +211,7 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
       {!changing && reason.trim().length < MIN_REASON ? (
         <p className="text-xs text-muted-foreground">Add a reason so {firstName(personName)} can decide.</p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-2">
+      <div ref={actionsRef} data-testid="ask-proposal-actions" className="flex flex-wrap items-center gap-2">
         <MorphyButton type="button" size="sm" disabled={!canSend}
           onClick={() => onSend({ scopes, purpose: reason.trim(), durationHours })}>
           {sending ? "Sending…" : !ready ? "Checking…" : "Send"}

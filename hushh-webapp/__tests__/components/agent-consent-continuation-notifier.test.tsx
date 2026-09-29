@@ -48,6 +48,8 @@ import { AgentConsentContinuationNotifier } from "@/components/agent/agent-conse
 import {
   clearSentInformationRequests,
   informationRequestPhase,
+  listSentInformationRequests,
+  markConsentContinuationUnavailable,
   watchSentInformationRequest,
 } from "@/lib/agent/consent-continuation";
 import { dispatchConsentStateChanged } from "@/lib/consent/consent-events";
@@ -176,6 +178,22 @@ describe("AgentConsentContinuationNotifier doorbell", () => {
     expect(mocks.toast.error).not.toHaveBeenCalled();
     expect(mocks.toast.dismiss).toHaveBeenCalledWith(`consent-outcome-${BUNDLE}`);
     expect(informationRequestPhase(OWNER, BUNDLE)).toBe("answered");
+  });
+
+  // Regression (localhost run 2026-09-28): the receipt was refused (404), so
+  // the follow-up turn got 409 and "One couldn't complete that response".
+  it("never starts a follow-up the server would refuse for a request without a receipt", async () => {
+    mocks.getInformationRequest.mockResolvedValue(bundle("denied"));
+    waitOnKushal();
+    markConsentContinuationUnavailable(OWNER, BUNDLE);
+    render(<AgentConsentContinuationNotifier />);
+    await flush();
+    await flush();
+    expect(mocks.streamAgentChat).not.toHaveBeenCalled();
+    expect(mocks.toast).not.toHaveBeenCalled();
+    expect(mocks.toast.error).not.toHaveBeenCalled();
+    // It stops waiting: no endless polling of a settled request.
+    expect(listSentInformationRequests(OWNER)).toEqual([]);
   });
 
   it("control: a failure nobody else answered still says so", async () => {

@@ -93,7 +93,20 @@ export type InformationRequestSubmissionReceipt = {
   bundleId: string;
   subjectRef: string;
   idempotencyKey: string;
+  /**
+   * The sent card, built from the created request itself. The chat shows it
+   * at once, whether or not its history receipt is recorded: the request
+   * exists either way, so "Request sent" is the truth.
+   */
+  review: InformationRequestReviewExperience;
 };
+
+/**
+ * Bring an element that just appeared into view above the chat composer. The
+ * chat provides it; a card calls it once for the part a person must reach
+ * (the ask card's Send), which otherwise could land behind the composer.
+ */
+export const AgentTranscriptRevealContext = createContext<((element: HTMLElement) => void) | null>(null);
 
 export function AgentStructuredExperienceView({
   experience,
@@ -291,6 +304,7 @@ function ScopeDiscoveryView({
 }) {
   const { user } = useAuth();
   const { isVaultUnlocked } = useVault();
+  const revealInTranscript = useContext(AgentTranscriptRevealContext);
   const personRef = experience.person.personRef;
   const request = usePersonInformationRequest(personRef ?? "");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -405,7 +419,7 @@ function ScopeDiscoveryView({
       });
       if (review) {
         setSubmitted({ ownerUid: user.uid, subjectRef: personRef, review });
-        void onInformationRequestSubmitted?.({ bundleId: bundle.bundleId, subjectRef: personRef, idempotencyKey });
+        void onInformationRequestSubmitted?.({ bundleId: bundle.bundleId, subjectRef: personRef, idempotencyKey, review });
       }
       else setSent(true);
       setReviewing(false); setSelectedIds(new Set()); setPurpose("");
@@ -425,6 +439,7 @@ function ScopeDiscoveryView({
     : null;
   if (proposal && personRef && !sent) {
     return <AskProposalCard
+      revealActions={revealInTranscript ?? undefined}
       personName={personName(profile?.displayName || experience.person.displayName)}
       proposal={proposal}
       ready={Boolean(profile) && request.available}
@@ -531,12 +546,17 @@ function informationRequestStatusLabel(
 function InformationRequestReviewView({ experience }: { experience: InformationRequestReviewExperience }) {
   const { user } = useAuth();
   const { isVaultUnlocked, vaultKey, vaultOwnerToken } = useVault();
-  const [current, setCurrent] = useState<{
+  const [latest, setCurrent] = useState<{
+    /** The request this reading is for; a different card never shows it. */
+    bundleId: string;
     status: InformationRequestReviewExperience["status"];
     fields: InformationRequestReviewExperience["fields"];
     /** Contract C1 progress; null on an older backend, which keeps the pre-C1 card. */
     progress: RequestProgress | null;
   } | null>(null);
+  // The last reading stays on screen while the next one loads: a refresh
+  // never blanks the card or drops it back to "Request sent" for a frame.
+  const current = latest && latest.bundleId === experience.bundleId ? latest : null;
   const phaseFor = useContext(ConsentCardPhaseContext);
   const phase = experience.bundleId && phaseFor ? phaseFor(experience.bundleId) : null;
   const [refreshState, setRefreshState] = useState<"idle" | "checking" | "loaded" | "unavailable">("idle");
@@ -566,7 +586,6 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
     const refresh = () => {
       revealGeneration.current += 1;
       setRevealed(null);
-      setCurrent(null);
       setRefreshState("checking");
       setRefreshRevision((revision) => revision + 1);
     };
@@ -574,7 +593,8 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
     const onConsentChanged = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail;
       if (detail?.source === "information_request_updated") {
-        if (detail.bundleId !== experience.bundleId || typeof detail.requestId !== "string") return;
+        if (String(detail.bundleId ?? "").toLowerCase() !== String(experience.bundleId).toLowerCase()
+          || typeof detail.requestId !== "string") return;
         if (detail.action === "CONSENT_GRANTED") setAutoRevealRequestId(detail.requestId);
         else setAutoRevealRequestId((pending) => pending === detail.requestId ? null : pending);
       }
@@ -634,12 +654,13 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
 
   useEffect(() => {
     let active = true;
-    setCurrent(null);
     if (experience.phase !== "submitted" || !experience.bundleId) {
+      setCurrent(null);
       setRefreshState("idle");
       return () => { active = false; };
     }
     if (!isVaultUnlocked || !vaultOwnerToken) {
+      setCurrent(null);
       setRefreshState("unavailable");
       return () => { active = false; };
     }
@@ -654,10 +675,12 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       // rendering any of its status and settle the card into a recoverable
       // state instead of leaving the reader on an endless "Checking...".
       if (!experience.subjectRef || bundle.personRef !== experience.subjectRef || bundle.bundleId !== experience.bundleId) {
+        setCurrent(null);
         setRefreshState("unavailable");
         return;
       }
       if (!bundle.items.length) {
+        setCurrent(null);
         setRefreshState("unavailable");
         return;
       }
@@ -677,7 +700,7 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
         status: item.status,
       }));
       const progress = parseRequestProgress(bundle.progress);
-      setCurrent({ status, fields, progress });
+      setCurrent({ bundleId: bundle.bundleId, status, fields, progress });
       setAnswer(informationRequestOutcome(bundle));
       // Decrypted values live only in this component's memory, and only while
       // every one of them is still granted. Ended access drops them outright.
@@ -750,7 +773,8 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
     && revealed.bundleId === experience.bundleId
     && revealed.expiresAtMs > Date.now() ? revealed.values : null;
   const canReveal = experience.direction === "outgoing" && experience.phase === "submitted"
-    && refreshState === "loaded" && Boolean(current?.fields.some((field) => field.status === "granted"));
+    && (refreshState === "loaded" || refreshState === "checking")
+    && Boolean(current?.fields.some((field) => field.status === "granted"));
   // Every field becomes a row in the one list every scope surface uses, so this
   // reads the same as Memory and the same as the pending-request card.
   const items = displayFields.map((field, index) => ({
@@ -820,7 +844,8 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
   ) : null;
 
   // C1: the living card, when the server reports progress for this request.
-  const progress = isOutgoingSubmitted && refreshState === "loaded" ? current?.progress ?? null : null;
+  // It keeps its last reading through a refetch (and a failed one).
+  const progress = isOutgoingSubmitted ? current?.progress ?? null : null;
   if (progress) {
     const progressLabels = progress.fields.length ? progress.fields.map((field) => field.label) : displayFields.map((field) => field.label);
     const ended = isAccessEnded(progress);

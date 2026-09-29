@@ -4,10 +4,16 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  accessWatchDelayMs,
   claimConsentContinuation,
   clearSentInformationRequests,
   collectOutgoingRequestCards,
+  consentRequestDirectiveDuplicatesAskCard,
   DOORBELL_FAST_WINDOW_MS,
+  foldSubmittedRequestReceipts,
+  isConsentContinuationUnavailable,
+  markConsentContinuationUnavailable,
+  startAccessEndedWatch,
   informationRequestPhase,
   isConsentContinuationArmed,
   isStaleRestoredAnswer,
@@ -24,6 +30,7 @@ import {
 import {
   CONSENT_OUTCOME_LABELS,
   CONSENT_WIRE_OUTCOME,
+  consentAccessEndedChipText,
   consentContinuationSentLabel,
   consentOutcomeDisplayText,
   informationRequestOutcome,
@@ -458,5 +465,167 @@ describe("continuation presentation", () => {
     const refs = { userScrolled: { current: true }, scrollToSubmittedTurn: { current: false } };
     revealConsentContinuationReply(refs);
     expect(refs).toEqual({ userScrolled: { current: false }, scrollToSubmittedTurn: { current: true } });
+  });
+});
+
+// --- Fix round 2026-09-28 (localhost run): receipt, one Send, reload, revoke --
+
+const PERSON = "11111111-1111-4111-8111-111111111111";
+const OTHER_PERSON = "22222222-2222-4222-8222-222222222222";
+
+function review(phase: "draft" | "submitted", subjectRef: string, bundleId: string | null) {
+  return {
+    type: "one.information_request_review.v1" as const,
+    personName: "Kushal Trivedi",
+    purpose: "Planning a dinner for Kushal",
+    durationLabel: "7 days",
+    direction: "outgoing" as const,
+    phase,
+    subjectRef,
+    bundleId,
+    requestId: null,
+    status: phase === "draft" ? "awaiting_review" as const : "pending" as const,
+    fields: [{ label: phase === "draft" ? "Kind" : "Food preferences", domain: "Information", sensitivity: "standard" as const }],
+  };
+}
+
+function askCard(personRef: string) {
+  return {
+    type: "one.scope_discovery.v1" as const,
+    person: { personRef, displayName: "Kushal Trivedi", profilePath: `/people/${personRef}`, relationship: "connected" },
+    domainFilter: null,
+    scopes: [],
+    proposal: { proposed: [{ scopeRef: "psr_food", label: "Food preferences", why: null }], durationHours: 168, reasonSuggestion: "dinner" },
+  };
+}
+
+describe("one Send per ask", () => {
+  const withCard = (experience: object) => [{ structuredExperiences: [{ id: "card", experience: experience as never }] }];
+
+  it("hides a consent.request bar while that person's ask card, or the card it became, is on screen", () => {
+    const directive = { actionId: "consent.request", slots: { personRef: PERSON, labels: ["Kind"] } };
+    expect(consentRequestDirectiveDuplicatesAskCard({ ...directive, messages: withCard(askCard(PERSON)) })).toBe(true);
+    // After Send the ask card is the sent card: still no second Send.
+    expect(consentRequestDirectiveDuplicatesAskCard({ ...directive, messages: withCard(review("submitted", PERSON, BUNDLE_A)) })).toBe(true);
+    // A directive that names nobody is a duplicate once any ask card shows.
+    expect(consentRequestDirectiveDuplicatesAskCard({ actionId: "consent.request", slots: {}, messages: withCard(askCard(PERSON)) })).toBe(true);
+  });
+
+  it("negative control: keeps the bar with no ask card, for another person, or for another action", () => {
+    const directive = { actionId: "consent.request", slots: { personRef: PERSON } };
+    expect(consentRequestDirectiveDuplicatesAskCard({ ...directive, messages: [{ structuredExperiences: [] }] })).toBe(false);
+    expect(consentRequestDirectiveDuplicatesAskCard({ ...directive, messages: withCard(askCard(OTHER_PERSON)) })).toBe(false);
+    expect(consentRequestDirectiveDuplicatesAskCard({ actionId: "consent.revoke", slots: {}, messages: withCard(askCard(PERSON)) })).toBe(false);
+  });
+});
+
+describe("a sent request after a reload", () => {
+  it("restores in place as sent: the receipt replaces the explanatory draft, never 'Not sent yet'", () => {
+    const messages = [
+      { id: "q", role: "user" as const, text: "What's Kushal's favorite restaurant?" },
+      { id: "turn", role: "assistant" as const, text: "I'll ask Kushal Trivedi.",
+        structuredExperiences: [{ id: "evt:propose-call", experience: review("draft", PERSON, null) }] },
+      { id: "receipt", role: "assistant" as const, text: "",
+        structuredExperiences: [{ id: "request_submission_x", experience: review("submitted", PERSON, BUNDLE_A) }] },
+    ];
+    const folded = foldSubmittedRequestReceipts(messages);
+    expect(folded.map((message) => message.id)).toEqual(["q", "turn"]);
+    const card = folded[1]!.structuredExperiences![0]!;
+    expect(card.id).toBe("evt:propose-call");
+    expect(card.experience).toMatchObject({ phase: "submitted", bundleId: BUNDLE_A, status: "pending" });
+    // The restored card is a real outgoing card: the chat waits for its answer again.
+    expect(collectOutgoingRequestCards(folded).map((entry) => entry.bundleId)).toEqual([BUNDLE_A]);
+  });
+
+  it("negative control: a draft for someone else, or one never sent, stays as it was", () => {
+    const messages = [
+      { id: "turn", role: "assistant" as const, text: "",
+        structuredExperiences: [{ id: "draft", experience: review("draft", OTHER_PERSON, null) }] },
+      { id: "receipt", role: "assistant" as const, text: "",
+        structuredExperiences: [{ id: "sent", experience: review("submitted", PERSON, BUNDLE_A) }] },
+    ];
+    expect(foldSubmittedRequestReceipts(messages)).toBe(messages);
+  });
+
+  it("restores the continuation label as the human chip even when the server never recorded it", () => {
+    // History after the 409: the label came back as a plain user turn.
+    const messages = [
+      { id: "turn", role: "assistant" as const, text: "",
+        structuredExperiences: [{ id: "c", experience: review("submitted", PERSON, BUNDLE_A) }] },
+      { id: "chip", role: "user" as const, kind: "selection" as const, text: "Consent approved" },
+      { id: "answer", role: "assistant" as const, text: "Kushal likes Nopa." },
+    ];
+    const cards = collectOutgoingRequestCards(messages);
+    const tags = tagConsentContinuationMessages({ messages, cards, continued: {} });
+    expect(tags.get("chip")).toEqual({ bundleId: BUNDLE_A, continuedOutcome: "granted", role: "chip" });
+    expect(consentOutcomeDisplayText({ outcome: "granted", personName: "Kushal", sharedLabels: cards[0]!.labels }))
+      .toBe("Kushal shared Food preferences");
+    // And that answer is hidden once access ends, like any answer from shared information.
+    expect([...redactedConsentAnswers({ tags, liveOutcomes: { [BUNDLE_A]: "revoked" } })]).toEqual(["answer"]);
+  });
+});
+
+describe("a request whose receipt was not recorded", () => {
+  afterEach(() => clearSentInformationRequests(null));
+
+  it("never auto-continues (the server would refuse with 409), while the card still reads its answer", () => {
+    watchSentInformationRequest({ ownerId: OWNER, bundleId: BUNDLE_A, conversationId: "c1", subjectRef: PERSON, personName: "Kushal" });
+    expect(isConsentContinuationArmed(OWNER, BUNDLE_A)).toBe(true);
+    markConsentContinuationUnavailable(OWNER, BUNDLE_A);
+    expect(isConsentContinuationUnavailable(OWNER, BUNDLE_A)).toBe(true);
+    expect(isConsentContinuationArmed(OWNER, BUNDLE_A)).toBe(false);
+    expect(claimConsentContinuation(OWNER, BUNDLE_A)).toBe(false);
+    // Another request is unaffected.
+    watchSentInformationRequest({ ownerId: OWNER, bundleId: BUNDLE_B, conversationId: "c1", subjectRef: PERSON, personName: "Kushal" });
+    expect(claimConsentContinuation(OWNER, BUNDLE_B)).toBe(true);
+  });
+});
+
+describe("watching live access for its end", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-28T10:00:00Z"));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("checks about every 10s while visible, backs off to 60s, and never slower", () => {
+    const times: number[] = [];
+    const startedAt = Date.now();
+    const watch = startAccessEndedWatch({ check: () => times.push((Date.now() - startedAt) / 1000), isVisible: () => true, listen: false });
+    watch.wake();
+    vi.advanceTimersByTime(300_000);
+    watch.stop();
+    expect(times.slice(0, 7)).toEqual([0, 10, 20, 30, 40, 50, 60]);
+    expect(times.slice(7, 10)).toEqual([80, 110, 170]);
+    const gaps = times.slice(1).map((t, index) => t - times[index]!);
+    expect(Math.max(...gaps)).toBe(60);
+    // The observed failure took 76s to notice a stop to sharing; the fast window catches it within 10s.
+    expect(accessWatchDelayMs(0)).toBe(10_000);
+  });
+
+  it("pauses while hidden and checks at once when a push or event wakes it", () => {
+    let visible = true;
+    const check = vi.fn();
+    const watch = startAccessEndedWatch({ check, isVisible: () => visible, listen: false });
+    watch.wake();
+    expect(check).toHaveBeenCalledTimes(1);
+    visible = false;
+    vi.advanceTimersByTime(600_000);
+    expect(check).toHaveBeenCalledTimes(1);
+    visible = true;
+    watch.wake();
+    expect(check).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(10_000);
+    expect(check).toHaveBeenCalledTimes(3);
+    watch.stop();
+    vi.advanceTimersByTime(600_000);
+    expect(check).toHaveBeenCalledTimes(3);
+  });
+
+  it("words the shared chip in its ended form", () => {
+    expect(consentAccessEndedChipText({ reason: "revoked", personName: "Kushal", sharedLabels: ["Food preferences"] }))
+      .toBe("Kushal stopped sharing Food preferences");
+    expect(consentAccessEndedChipText({ reason: "expired", personName: "Kushal", sharedLabels: ["Food preferences"] }))
+      .toBe("Access to Food preferences ended");
   });
 });

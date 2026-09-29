@@ -101,6 +101,24 @@ export function subscribeSentInformationRequests(listener: () => void): () => vo
 
 const armed = new Set<string>();
 const mountedCards = new Map<string, number>();
+/**
+ * Requests this conversation sent whose receipt the server never recorded.
+ * The server admits a continuation only for a request its history says this
+ * conversation sent (`asked_here`), so continuing one of these is a certain
+ * 409 and a scary error bubble. The request itself was created and its card
+ * stays true; only the automatic follow-up turn is off.
+ */
+const withoutContinuation = new Set<string>();
+
+/** The chat could not record this request's receipt: never auto-continue it. */
+export function markConsentContinuationUnavailable(ownerId: string, bundleId: string): void {
+  if (!ownerId || !bundleId) return;
+  withoutContinuation.add(keyOf(ownerId, bundleId));
+}
+
+export function isConsentContinuationUnavailable(ownerId: string, bundleId: string): boolean {
+  return withoutContinuation.has(keyOf(ownerId, bundleId));
+}
 
 /**
  * A chat card for this request is on screen and will continue it in place.
@@ -128,6 +146,7 @@ export function armConsentContinuation(ownerId: string, bundleId: string): void 
 /** Waiting (sent here, or rebuilt from history), or opened from its notice. */
 export function isConsentContinuationArmed(ownerId: string, bundleId: string): boolean {
   const key = keyOf(ownerId, bundleId);
+  if (withoutContinuation.has(key)) return false;
   return waiting.has(key) || armed.has(key);
 }
 
@@ -137,7 +156,7 @@ export function isConsentContinuationArmed(ownerId: string, bundleId: string): b
  */
 export function claimConsentContinuation(ownerId: string, bundleId: string): boolean {
   const key = keyOf(ownerId, bundleId);
-  if (claimed.has(key)) return false;
+  if (claimed.has(key) || withoutContinuation.has(key)) return false;
   claimed.add(key);
   armed.delete(key);
   if (waiting.delete(key)) emit();
@@ -158,7 +177,7 @@ export function clearSentInformationRequests(keepOwnerId?: string | null): void 
   for (const [key, request] of waiting) {
     if (request.ownerId !== keepOwnerId) waiting.delete(key);
   }
-  for (const set of [claimed, armed]) {
+  for (const set of [claimed, armed, withoutContinuation]) {
     for (const key of set) {
       if (!keepOwnerId || !key.startsWith(`${keepOwnerId}:`)) set.delete(key);
     }
@@ -456,8 +475,14 @@ export function tagConsentContinuationMessages(input: {
     Object.entries(input.continued).map(([bundleId, outcome]) => [bundleId.toLowerCase(), outcome]),
   );
   const assigned = new Set<string>();
+  const position = new Map(input.messages.map((message, index) => [message.id, index]));
+  // The newest card above this chip that no earlier chip claimed. A chip the
+  // server never recorded as a continuation (it refused the turn, or a retry
+  // sent the label as a plain turn) still belongs to the request above it.
+  const nearestEarlierCard = (index: number) => [...input.cards].reverse().find((card) =>
+    !assigned.has(card.bundleId) && (position.get(card.messageId) ?? Number.POSITIVE_INFINITY) < index)?.bundleId;
   let current: { bundleId: string; continuedOutcome: ConsentContinuationWireOutcome } | null = null;
-  for (const message of input.messages) {
+  for (const [index, message] of input.messages.entries()) {
     if (message.role === "user") {
       current = null;
       const outcome = message.kind === "selection" ? wireOutcomeForSentLabel(message.text) : null;
@@ -468,7 +493,7 @@ export function tagConsentContinuationMessages(input: {
       const bundleId = tagged
         ? tagged
         : input.cards.find((card) => !assigned.has(card.bundleId)
-          && continued.get(card.bundleId) === outcome)?.bundleId;
+          && continued.get(card.bundleId) === outcome)?.bundleId ?? nearestEarlierCard(index);
       if (!bundleId) continue;
       assigned.add(bundleId);
       current = { bundleId, continuedOutcome: outcome };
@@ -506,6 +531,188 @@ export function redactedConsentAnswers(input: {
     if (isAccessEndedOutcome(input.liveOutcomes[tag.bundleId])) hidden.add(messageId);
   }
   return hidden;
+}
+
+// --- One send affordance per ask, and a sent card restored in place ---------
+
+type ExperienceEntry = { id: string; experience: AgentStructuredExperience | { type: string } };
+
+function outgoingReview(experience: ExperienceEntry["experience"]) {
+  const review = experience as AgentStructuredExperience;
+  return review.type === "one.information_request_review.v1" && review.direction === "outgoing" ? review : null;
+}
+
+/**
+ * True when a staged `consent.request` confirmation would be a second Send
+ * for an ask the transcript already shows as a card. The ask card (One's
+ * proposal) and the card it becomes after Send own the one send path; a
+ * directive bar beside them offers a second, duplicate request. A directive
+ * that names nobody is also a duplicate once any ask card is on screen.
+ */
+export function consentRequestDirectiveDuplicatesAskCard(input: {
+  actionId: string | null | undefined;
+  slots: Record<string, unknown> | null | undefined;
+  messages: readonly { structuredExperiences?: readonly ExperienceEntry[] }[];
+}): boolean {
+  if (input.actionId !== "consent.request") return false;
+  const raw = input.slots?.personRef ?? input.slots?.person_ref;
+  const personRef = typeof raw === "string" ? raw.trim() : "";
+  for (const message of input.messages) {
+    for (const entry of message.structuredExperiences ?? []) {
+      const experience = entry.experience as AgentStructuredExperience;
+      const cardPerson = experience.type === "one.scope_discovery.v1" && experience.proposal
+        ? experience.person.personRef ?? ""
+        : outgoingReview(experience)?.subjectRef ?? null;
+      if (cardPerson === null) continue;
+      if (!personRef || !cardPerson || cardPerson === personRef) return true;
+    }
+  }
+  return false;
+}
+
+type FoldableMessage = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  structuredExperiences?: ExperienceEntry[];
+};
+
+/**
+ * Put each sent request back where it was asked, after a reload.
+ *
+ * History restores One's proposal as an explanatory draft ("Not sent yet")
+ * in the turn that asked, and the Send receipt as its own card-only message
+ * after it. Read together they are the truth: the draft was sent. Each
+ * receipt replaces the newest earlier draft for the same person, in place,
+ * and a receipt message left with nothing else to show is dropped. The
+ * restored card then reads its live state from the request itself.
+ */
+export function foldSubmittedRequestReceipts<T extends FoldableMessage>(messages: T[]): T[] {
+  const drafts: Array<{ message: number; entry: number; subjectRef: string }> = [];
+  const out = [...messages];
+  const dropped = new Set<number>();
+  let changed = false;
+  messages.forEach((message, messageIndex) => {
+    const entries = message.structuredExperiences ?? [];
+    const isReceipt = message.role === "assistant" && !message.text.trim() && entries.length > 0
+      && entries.every((entry) => {
+        const review = outgoingReview(entry.experience);
+        return Boolean(review && review.phase === "submitted" && review.bundleId && review.subjectRef);
+      });
+    if (!isReceipt) {
+      entries.forEach((entry, entryIndex) => {
+        const review = outgoingReview(entry.experience);
+        if (review && review.phase === "draft" && !review.bundleId && review.subjectRef) {
+          drafts.push({ message: messageIndex, entry: entryIndex, subjectRef: review.subjectRef });
+        }
+      });
+      return;
+    }
+    const remaining = entries.filter((entry) => {
+      const review = outgoingReview(entry.experience)!;
+      let draftIndex = -1;
+      for (let index = drafts.length - 1; index >= 0; index -= 1) {
+        if (drafts[index]!.subjectRef === review.subjectRef) { draftIndex = index; break; }
+      }
+      if (draftIndex < 0) return true;
+      const [draft] = drafts.splice(draftIndex, 1);
+      const target = out[draft!.message]!;
+      out[draft!.message] = {
+        ...target,
+        structuredExperiences: (target.structuredExperiences ?? []).map((item, itemIndex) =>
+          itemIndex === draft!.entry ? { ...item, experience: entry.experience } : item),
+      };
+      changed = true;
+      return false;
+    });
+    if (remaining.length === entries.length) return;
+    if (remaining.length) out[messageIndex] = { ...message, structuredExperiences: remaining };
+    else dropped.add(messageIndex);
+  });
+  return changed ? out.filter((_, index) => !dropped.has(index)) : messages;
+}
+
+// --- Watching live access for its end ---------------------------------------
+
+/** About every 10s while the chat is visible, right after a wake. */
+export const ACCESS_WATCH_FAST_MS = 10_000;
+/** Fast checks after a wake before backing off (one minute). */
+export const ACCESS_WATCH_FAST_CHECKS = 6;
+/** Then 20s, 30s, and every 60s from there. */
+export const ACCESS_WATCH_BACKOFF_MS = [20_000, 30_000, 60_000] as const;
+
+/** The wait before the next check, given the checks since the last wake. */
+export function accessWatchDelayMs(checksSinceWake: number): number {
+  if (checksSinceWake < ACCESS_WATCH_FAST_CHECKS) return ACCESS_WATCH_FAST_MS;
+  const step = Math.min(checksSinceWake - ACCESS_WATCH_FAST_CHECKS, ACCESS_WATCH_BACKOFF_MS.length - 1);
+  return ACCESS_WATCH_BACKOFF_MS[step]!;
+}
+
+export type AccessEndedWatch = {
+  /** Check now and return to the fast cadence (a push, a live event). */
+  wake: () => void;
+  stop: () => void;
+};
+
+/**
+ * Re-reads live shared access on a gentle cadence so a stop to sharing reaches
+ * the chat in seconds, not at the next page event. Paused (no timer at all)
+ * while hidden; becoming visible or focused checks at once. Only the cadence
+ * lives here; `check` is the caller's ledger read.
+ */
+export function startAccessEndedWatch(input: {
+  check: () => void;
+  isVisible: () => boolean;
+  /** Listen to the page's own visibility and focus. Defaults to true. */
+  listen?: boolean;
+}): AccessEndedWatch {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  let checks = 0;
+  const clear = () => {
+    if (timer !== null) clearTimeout(timer);
+    timer = null;
+  };
+  const schedule = () => {
+    clear();
+    if (stopped || !input.isVisible()) return;
+    timer = setTimeout(tick, accessWatchDelayMs(checks));
+  };
+  function tick() {
+    timer = null;
+    if (stopped || !input.isVisible()) return;
+    input.check();
+    checks += 1;
+    schedule();
+  }
+  const wake = () => {
+    if (stopped) return;
+    checks = 0;
+    if (input.isVisible()) input.check();
+    schedule();
+  };
+  const onVisibility = () => {
+    if (stopped) return;
+    if (input.isVisible()) wake();
+    else clear();
+  };
+  const listen = input.listen ?? true;
+  if (listen && typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onVisibility);
+  }
+  schedule();
+  return {
+    wake,
+    stop: () => {
+      stopped = true;
+      clear();
+      if (listen && typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVisibility);
+        window.removeEventListener("focus", onVisibility);
+      }
+    },
+  };
 }
 
 // --- The follow-up turn -----------------------------------------------------

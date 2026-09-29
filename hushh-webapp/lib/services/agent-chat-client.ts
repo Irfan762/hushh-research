@@ -2147,6 +2147,56 @@ export async function findInformationRequestConversation(input: {
   return typeof payload.conversationId === "string" ? payload.conversationId : null;
 }
 
+/** A receipt the server did not record, with the HTTP status when there was one. */
+export class InformationRequestReceiptError extends Error {
+  readonly status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "InformationRequestReceiptError";
+    this.status = status;
+  }
+}
+
+/**
+ * Whether recording the receipt again can help. The route is idempotent
+ * (`append_event_once` keyed by the source card, and the request's own
+ * idempotency key), so a repeat never makes a second receipt. A card sent
+ * while its turn is still streaming can race the session write (404); the
+ * network, a timeout, a rate limit or a server fault may pass. Any other
+ * refusal (403, 409 recipient mismatch, 422) is final.
+ */
+export function isRetryableReceiptStatus(status: number | null): boolean {
+  if (status === null) return true;
+  return status === 404 || status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+/** Waits between receipt attempts: three tries within about four seconds. */
+export const RECEIPT_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+
+/**
+ * `recordAgentChatInformationRequest`, retried on the failures that can pass.
+ * The request itself already exists; this only makes the chat's history say so.
+ */
+export async function recordAgentChatInformationRequestWithRetry(
+  input: Parameters<typeof recordAgentChatInformationRequest>[0],
+  options: { delaysMs?: readonly number[]; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<AgentStructuredExperience> {
+  const delays = options.delaysMs ?? RECEIPT_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await recordAgentChatInformationRequest(input);
+    } catch (error) {
+      const status = error instanceof InformationRequestReceiptError ? error.status : null;
+      const retryable = error instanceof InformationRequestReceiptError
+        ? isRetryableReceiptStatus(status)
+        : true;
+      if (!retryable || attempt >= delays.length) throw error;
+      await sleep(delays[attempt]!);
+    }
+  }
+}
+
 /** Record only a request locator; the Chat owner derives the history card from its ledger. */
 export async function recordAgentChatInformationRequest(input: {
   conversationId: string;
@@ -2171,14 +2221,14 @@ export async function recordAgentChatInformationRequest(input: {
       }),
     },
   ));
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw new InformationRequestReceiptError(await readError(response), response.status);
   const payload = (await response.json()) as { descriptor?: { activityType?: string; content?: unknown } };
   const descriptor = payload.descriptor;
   const experience = descriptor?.activityType === "one.information_request_review.v1"
     ? parseAgentActivityExperience(descriptor.activityType, descriptor.content) : null;
   if (!experience || experience.type !== "one.information_request_review.v1"
     || experience.phase !== "submitted" || experience.bundleId !== input.bundleId) {
-    throw new Error("The submitted request history could not be verified.");
+    throw new InformationRequestReceiptError("The submitted request history could not be verified.", response.status);
   }
   return experience;
 }

@@ -100,7 +100,7 @@ const SURFACES: Surface[] = [
       },
       {
         label: "confirmation card render",
-        from: "{pendingAppAction ? (",
+        from: "{pendingAppAction && !pendingAppActionDuplicatesAskCard ? (",
         to: "{pendingSpecialistDirective ? (",
       },
     ],

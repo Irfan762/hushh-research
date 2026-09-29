@@ -243,6 +243,24 @@ export function consentOutcomeDisplayText(input: {
   }
 }
 
+/**
+ * The shared chip once that sharing has ended: it no longer says "Kushal
+ * shared Food preferences" beside answers that now read "Access ended".
+ */
+export function consentAccessEndedChipText(input: {
+  reason: "revoked" | "expired";
+  personName?: string | null;
+  sharedLabels?: readonly string[];
+}): string {
+  const name = input.personName?.trim() || "";
+  const what = joinLabels(input.sharedLabels ?? []);
+  if (input.reason === "expired") {
+    return what ? `Access to ${what} ended` : "Access ended";
+  }
+  const who = name || "They";
+  return what ? `${who} stopped sharing ${what}` : `${who} stopped sharing`;
+}
+
 function progressOutcome(bundle: unknown): ConsentOutcome | "pending" | null {
   const progress = (bundle as { progress?: unknown } | null)?.progress;
   if (!progress || typeof progress !== "object") return null;

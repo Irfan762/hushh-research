@@ -36,7 +36,7 @@ vi.mock("@/components/consent/consent-scope-nested-list", () => ({
     <div>{items.map(item => <span key={item.id}>{item.label}</span>)}</div>,
 }));
 
-import { AgentStructuredExperienceView } from "@/components/agent/agent-structured-experience";
+import { AgentStructuredExperienceView, AgentTranscriptRevealContext } from "@/components/agent/agent-structured-experience";
 import { ConsentCardPhaseContext, RequesterProgressBody } from "@/components/agent/consent/requester-consent-card";
 import { AccessEndedNotice } from "@/components/agent/consent/access-ended-notice";
 import { SharedDetailsList, humanSharedDetails } from "@/components/agent/consent/shared-details";
@@ -298,6 +298,38 @@ describe("InformationRequestReviewView with and without progress", () => {
   });
 });
 
+describe("the living card during a refresh", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    clearSentInformationRequests();
+    mocks.unlocked = true;
+  });
+  afterEach(cleanup);
+
+  // Regression (localhost run 2026-09-28): a refresh blanked the card to the
+  // pre-progress "Request sent · 1 thing" card before it read "Access ended".
+  it("keeps its last reading while it refetches, then turns to Access ended", async () => {
+    mocks.getInformationRequest.mockResolvedValue(bundle("granted", true));
+    render(<AgentStructuredExperienceView experience={restored} />);
+    expect(await screen.findByText("Food preferences from Kushal Trivedi")).toBeInTheDocument();
+
+    let settle: (value: unknown) => void = () => undefined;
+    mocks.getInformationRequest.mockReturnValue(new Promise((resolve) => { settle = resolve; }));
+    act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
+      source: "information_request_updated", bundleId: bundleId.toUpperCase(), requestId, action: "CONSENT_REVOKED",
+    } })));
+    // Mid-refetch: the same living card, never the fallback card or a blank.
+    expect(screen.getByTestId("requester-progress")).toBeInTheDocument();
+    expect(screen.getByText("Food preferences from Kushal Trivedi")).toBeInTheDocument();
+    expect(screen.queryByText(/1 thing/)).toBeNull();
+    expect(screen.queryByText("Checking current status…")).toBeNull();
+
+    await act(async () => { settle(bundle("revoked", true)); });
+    expect(await screen.findByTestId("access-ended-notice")).toBeInTheDocument();
+    expect(screen.queryByText(/1 thing/)).toBeNull();
+  });
+});
+
 function viewer(): ViewerPersonProfile {
   return { personRef: person, displayName: "Kushal Trivedi", photoUrl: null, verifiedRole: null,
     relationship: { status: "connected", connectionId: "c", connectedAt: null, requestId: null },
@@ -387,8 +419,24 @@ describe("One picks, you confirm", () => {
       personRef: person, scopeRefs: ["scope-food"], purpose: "dinner planning", durationSeconds: 168 * 3600,
     })));
     expect(mocks.create).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ bundleId, subjectRef: person })));
+    await waitFor(() => expect(onSubmitted).toHaveBeenCalledWith(expect.objectContaining({ bundleId, subjectRef: person,
+      review: expect.objectContaining({ phase: "submitted", bundleId, subjectRef: person, durationLabel: "7 days" }) })));
     expect(await screen.findByTestId("request-timeline")).toBeInTheDocument();
+  });
+
+  it("lifts its Send row above the composer once, when it appears", async () => {
+    const reveal = vi.fn();
+    const { rerender } = render(<AgentTranscriptRevealContext.Provider value={reveal}>
+      <AgentStructuredExperienceView experience={{ ...discovery, proposal }} />
+    </AgentTranscriptRevealContext.Provider>);
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(reveal.mock.calls[0][0]).toBe(screen.getByTestId("ask-proposal-actions"));
+    expect(within(reveal.mock.calls[0][0] as HTMLElement).getByRole("button", { name: /Send|Checking/ })).toBeInTheDocument();
+    rerender(<AgentTranscriptRevealContext.Provider value={reveal}>
+      <AgentStructuredExperienceView experience={{ ...discovery, proposal }} />
+    </AgentTranscriptRevealContext.Provider>);
+    await screen.findByRole("button", { name: "Send" });
+    expect(reveal).toHaveBeenCalledTimes(1);
   });
 
   it("opens a server-searched picker behind Change and updates the sentence", async () => {

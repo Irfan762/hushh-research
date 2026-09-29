@@ -38,6 +38,7 @@ import {
   clearSentInformationRequests,
   continuedElsewhere,
   isConsentContinuationClaimed,
+  isConsentContinuationUnavailable,
   isInformationRequestCardMounted,
   isStaleRestoredAnswer,
   listSentInformationRequests,
@@ -209,6 +210,12 @@ export function AgentConsentContinuationNotifier(): null {
           requestId: bundle.items[0]?.requestId ?? "",
           action: LEDGER_ACTION[outcome],
         });
+        // No receipt, so no follow-up turn: the card shows the answer and
+        // this request stops waiting.
+        if (isConsentContinuationUnavailable(ownerId, request.bundleId)) {
+          unwatchSentInformationRequest(ownerId, request.bundleId);
+          return;
+        }
         // Continued on another device already: the card settles as answered
         // and this one stops waiting; nothing here is an error.
         const token = getVaultOwnerToken();
@@ -226,6 +233,11 @@ export function AgentConsentContinuationNotifier(): null {
             setInformationRequestPhase(ownerId, request.bundleId, "answered");
           });
         }
+        return;
+      }
+      if (isConsentContinuationUnavailable(ownerId, request.bundleId)) {
+        // The server would refuse this follow-up (no receipt): stay quiet.
+        unwatchSentInformationRequest(ownerId, request.bundleId);
         return;
       }
       const token = getVaultOwnerToken();

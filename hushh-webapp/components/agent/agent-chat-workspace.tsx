@@ -20,27 +20,38 @@ import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkm
 import {
   AgentConsentContinuationContext,
   AgentPersonSelectionContext,
+  AgentTranscriptRevealContext,
   type AgentConsentContinuationHandler,
   type InformationRequestSubmissionReceipt,
 } from "@/components/agent/agent-structured-experience";
 import {
+  claimConsentContinuation,
   collectOutgoingRequestCards,
+  consentRequestDirectiveDuplicatesAskCard,
   continuedElsewhere,
+  foldSubmittedRequestReceipts,
+  markConsentContinuationUnavailable,
   prepareConsentContinuation,
   rebuildWaitingRequests,
   redactedConsentAnswers,
+  releaseConsentContinuation,
   revealConsentContinuationReply,
   setInformationRequestPhase,
+  startAccessEndedWatch,
   tagConsentContinuationMessages,
   useInformationRequestPhaseReader,
   watchSentInformationRequest,
 } from "@/lib/agent/consent-continuation";
 import { ConsentCardPhaseContext } from "@/components/agent/consent/requester-consent-card";
+import { firstName as personFirstName } from "@/components/agent/consent/request-progress";
 import { AccessEndedNotice } from "@/components/agent/consent/access-ended-notice";
 import {
+  consentAccessEndedChipText,
   consentOutcomeDisplayText,
   informationRequestOutcome,
+  isAccessEndedOutcome,
   isSharedOutcome,
+  wireOutcomeForSentLabel,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
 import { PersonProfileService } from "@/lib/services/person-profile-service";
@@ -267,7 +278,8 @@ import {
   getAgentChatFeedback,
   setAgentChatFeedback,
   type AgentResponseReportReason,
-  recordAgentChatInformationRequest,
+  InformationRequestReceiptError,
+  recordAgentChatInformationRequestWithRetry,
   parseRestoredTurnActivity,
 } from "@/lib/services/agent-chat-client";
 import { runConnectedSystemDirective } from "@/lib/agent/connected-system-directive-runtime";
@@ -325,7 +337,7 @@ import {
   streamOwnerDriveCompilation,
 } from "@/lib/services/drive-owner-compilation-service";
 import { exportPrivateDriveMarkdown } from "@/lib/utils/private-markdown-export";
-import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
+import { CONSENT_STATE_CHANGED_EVENT, dispatchConsentStateChanged } from "@/lib/consent/consent-events";
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { deriveVoiceRouteScreen } from "@/lib/voice/route-screen-derivation";
 import { useRootChatDeferredReady } from "@/lib/navigation/use-root-chat-deferred-ready";
@@ -2030,7 +2042,13 @@ export function storedMessageToAgentMessage(
   // reload: prefer the persisted display label and render it as a chip. The
   // backend (Task 3) guarantees metadata.display for new selection messages;
   // legacy rows without metadata are detected via LEGACY_SELECTION_SEED below.
-  const isSelection = message.metadata?.kind === "selection";
+  // The follow-up turn after an answer is sent as the server's fixed label
+  // ("Consent approved"). It is a status chip, never the person's words, even
+  // when the server did not mark it (it refused the continuation, or a retry
+  // sent the label as a plain turn): the chip then names the request above it.
+  const isConsentOutcomeLabel =
+    message.role === "user" && wireOutcomeForSentLabel(message.content.trim()) !== null;
+  const isSelection = message.metadata?.kind === "selection" || isConsentOutcomeLabel;
   // Detect legacy rows: user message with raw seed content and no usable metadata.
   const isLegacySelectionSeed =
     !isSelection &&
@@ -2038,7 +2056,9 @@ export function storedMessageToAgentMessage(
     LEGACY_SELECTION_SEED.test(message.content);
 
   const displayText =
-    isSelection && message.metadata?.display
+    isConsentOutcomeLabel
+      ? message.content.trim()
+      : isSelection && message.metadata?.display
       ? message.metadata.display
       : isLegacySelectionSeed
         ? "Your selection"
@@ -2176,9 +2196,11 @@ export function labelRestoredConnectorSteps<T extends { streamEvents?: AgentVisi
 
 export function storedMessagesToAgentMessages(messages: StoredAgentChatMessage[]): AgentMessage[] {
   const seenExperienceIds = new Set<string>();
-  return messages
+  // A sent request comes back as a draft plus its Send receipt; fold them so
+  // the card restores in place as sent, never as "Not sent yet".
+  return foldSubmittedRequestReceipts(messages
     .map(message => storedMessageToAgentMessage(message, seenExperienceIds))
-    .filter((message): message is AgentMessage => Boolean(message));
+    .filter((message): message is AgentMessage => Boolean(message)));
 }
 
 function ChatAgentSubtitle({ text }: { text: string }) {
@@ -2326,6 +2348,25 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     },
     [clearTranscriptProgrammaticScroll],
   );
+
+  // A card that just appeared (the ask card's Send row) is lifted above the
+  // composer the same way a sent turn is; it never lands behind it.
+  const revealInTranscript = useCallback((element: HTMLElement) => {
+    if (typeof window === "undefined") return;
+    window.requestAnimationFrame(() => {
+      const transcript = transcriptRef.current;
+      if (!transcript || !transcript.contains(element)) return;
+      const top = transcriptRevealScrollTop(
+        measureTranscriptReveal(transcript, element, composerStackRef.current),
+      );
+      if (Math.abs(top - transcript.scrollTop) < 1) return;
+      beginTranscriptProgrammaticScroll(top);
+      transcript.scrollTo({
+        top,
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+    });
+  }, [beginTranscriptProgrammaticScroll]);
   const enterPuppySurface = useCallback(() => {
     // Unconditional, and not behind a `voiceActive` guard. It is a no-op when
     // nothing is running, and it is the only shape that also covers the window
@@ -6714,44 +6755,84 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       .map((tag) => tag.bundleId),
   )].sort().join(","), [consentTags]);
 
-  // Answers from shared information: re-read the ledger on load, on any
-  // doorbell for that request, and on return to the app. A stop or a lapse
-  // hides them. Decrypted information itself is never kept past its turn.
+  // Shared access this chat answered from, while it is still live. Ended
+  // access leaves the watch; its answers already read "Access ended".
+  const watchedAccessBundleKey = useMemo(() => sharedAnswerBundleKey
+    .split(",")
+    .filter((bundleId) => bundleId && !isAccessEndedOutcome(liveBundleOutcomes[bundleId]))
+    .join(","), [liveBundleOutcomes, sharedAnswerBundleKey]);
+
+  // Answers from shared information: re-read the ledger while that access is
+  // live, about every 10s while the chat is visible and backing off to 60s,
+  // paused while hidden, and at once on a push, a live event or a return to
+  // the app. A stop or a lapse hides the answers and ends the card within
+  // seconds. Decrypted information itself is never kept past its turn.
   useEffect(() => {
     const token = vaultOwnerToken;
-    if (!hasChatAccess || !token || !sharedAnswerBundleKey) return;
-    const bundles = sharedAnswerBundleKey.split(",");
+    if (!hasChatAccess || !token || !watchedAccessBundleKey) return;
+    const bundles = watchedAccessBundleKey.split(",");
     let active = true;
+    const inFlight = new Set<string>();
     const check = (only?: string) => {
       for (const bundleId of only ? [only] : bundles) {
+        if (inFlight.has(bundleId)) continue;
+        inFlight.add(bundleId);
         void PersonProfileService.getInformationRequest({ bundleId, vaultOwnerToken: token })
           .then((bundle) => {
             if (!active || bundle.bundleId.toLowerCase() !== bundleId) return;
             const outcome = informationRequestOutcome(bundle);
-            setLiveBundleOutcomes((current) =>
-              current[bundleId] === outcome ? current : { ...current, [bundleId]: outcome });
+            let changed = false;
+            setLiveBundleOutcomes((current) => {
+              if (current[bundleId] === outcome) return current;
+              changed = true;
+              return { ...current, [bundleId]: outcome };
+            });
+            // The card for this request reads its own status: tell it now,
+            // so it turns to "Access ended" with the answers, not later.
+            if (changed && isAccessEndedOutcome(outcome)) {
+              dispatchConsentStateChanged({
+                source: "information_request_updated",
+                origin: "chat_access_watch",
+                bundleId,
+                requestId: bundle.items[0]?.requestId ?? "",
+                action: outcome === "expired" ? "TIMEOUT" : "CONSENT_REVOKED",
+              });
+            }
           })
-          .catch(() => undefined);
+          .catch(() => undefined)
+          .finally(() => inFlight.delete(bundleId));
       }
     };
+    const watch = startAccessEndedWatch({
+      check,
+      isVisible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
+    });
     const onConsentChanged = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail;
-      if (detail?.source !== "information_request_updated") return;
-      const bundleId = String(detail.bundleId || "").toLowerCase();
-      if (bundles.includes(bundleId)) check(bundleId);
+      if (detail?.origin === "chat_access_watch") return;
+      const bundleId = String(detail?.bundleId || "").toLowerCase();
+      // A push or live event about one of these requests, or a consent change
+      // that names none: check now and return to the fast cadence.
+      if (!bundleId || bundles.includes(bundleId)) watch.wake();
     };
-    const onVisible = () => {
-      if (document.visibilityState === "visible") check();
-    };
-    check();
+    watch.wake();
     window.addEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
-    document.addEventListener("visibilitychange", onVisible);
     return () => {
       active = false;
+      watch.stop();
       window.removeEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
-      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [hasChatAccess, sharedAnswerBundleKey, vaultOwnerToken]);
+  }, [hasChatAccess, watchedAccessBundleKey, vaultOwnerToken]);
+
+  // One Send per ask: while an ask card (or the card it became) is on screen
+  // for that person, a staged "Request someone's information" bar would be a
+  // second, duplicate send affordance.
+  const pendingAppActionDuplicatesAskCard = useMemo(() => Boolean(pendingAppAction)
+    && consentRequestDirectiveDuplicatesAskCard({
+      actionId: pendingAppAction?.event.actionId,
+      slots: pendingAppAction?.event.slots,
+      messages,
+    }), [messages, pendingAppAction]);
 
   const redactedAnswerIds = useMemo(() => redactedConsentAnswers({
     tags: consentTags,
@@ -6781,13 +6862,24 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   };
 
   const consentChipLabel = (message: AgentMessage): string => {
-    if (message.consentChipText) return message.consentChipText;
     const tag = consentTags.get(message.id);
-    if (!tag || tag.role !== "chip") return message.text;
     const card = outgoingRequestCardFor(message.id);
+    // Once that sharing ends, the chip says so too, beside answers that now
+    // read "Access ended" ("Kushal stopped sharing Food preferences").
+    const live = tag ? liveBundleOutcomes[tag.bundleId] : null;
+    if (tag?.role === "chip" && isSharedOutcome(tag.continuedOutcome)
+      && (isAccessEndedOutcome(live) || message.consentAccessEnded)) {
+      return consentAccessEndedChipText({
+        reason: live === "expired" ? "expired" : "revoked",
+        personName: card?.personName ? personFirstName(card.personName) : null,
+        sharedLabels: card?.labels,
+      });
+    }
+    if (message.consentChipText) return message.consentChipText;
+    if (!tag || tag.role !== "chip") return message.text;
     return consentOutcomeDisplayText({
       outcome: tag.continuedOutcome,
-      personName: card?.personName,
+      personName: card?.personName ? personFirstName(card.personName) : null,
       sharedLabels: card?.labels,
     });
   };
@@ -6833,7 +6925,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         consentBundleId: bundleId,
         consentChipText: consentOutcomeDisplayText({
           outcome: input.outcome,
-          personName: card?.personName,
+          personName: card?.personName ? personFirstName(card.personName) : null,
           sharedLabels: sent.sharedLabels.length ? sent.sharedLabels : card?.labels,
         }),
         timestamp: formatNow(),
@@ -7252,6 +7344,34 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       toast.error("No previous message found to retry.");
       return;
     }
+    // A failed answer after someone shared retries as that continuation. Sent
+    // as a plain turn, the fixed label ("Consent approved") reached One with
+    // nothing shared attached, was answered blind, and was saved as if the
+    // person had typed it.
+    const continuationRetry = previousUserMessage.kind === "selection"
+      ? consentTags.get(previousUserMessage.id) ?? null
+      : null;
+    if (continuationRetry && wireOutcomeForSentLabel(previousUserMessage.text)) {
+      const ownerId = user?.uid;
+      const card = outgoingRequestCards.find((entry) => entry.bundleId === continuationRetry.bundleId);
+      if (!ownerId || !card) {
+        toast.info("Open the request card above to try again.");
+        return;
+      }
+      setMessages((current) => current.filter((item) =>
+        item.id !== messageId && item.id !== previousUserMessage.id));
+      releaseConsentContinuation(ownerId, card.bundleId);
+      if (!claimConsentContinuation(ownerId, card.bundleId)) return;
+      void continueWithConsentOutcome({
+        bundleId: card.bundleId,
+        subjectRef: card.subjectRef,
+        outcome: continuationRetry.continuedOutcome,
+        domainFor: () => undefined,
+      }).then((started) => {
+        if (!started) releaseConsentContinuation(ownerId, card.bundleId);
+      }).catch(() => releaseConsentContinuation(ownerId, card.bundleId));
+      return;
+    }
     setWalletWidgets([]);
     const lostTurn = messages[assistantIndex]?.lostTurn;
     const retryFromConversation = conversationIdRef.current;
@@ -7452,6 +7572,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         ? { conversationId, continueWithOutcome: continueWithConsentOutcome }
         : null}>
       <ConsentCardPhaseContext.Provider value={consentCardPhaseFor}>
+      <AgentTranscriptRevealContext.Provider value={revealInTranscript}>
       <div
         className={cn(
           "relative flex min-h-0 flex-1",
@@ -7875,8 +7996,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         const threadId = conversationIdRef.current;
                         const ownerToken = vaultOwnerToken;
                         const epoch = historyRestoreEpochRef.current;
+                        // The request exists now: the card says "Request sent"
+                        // from the request itself, whatever happens to its
+                        // history receipt below.
+                        const showSent = (review: AgentStructuredExperience) =>
+                          setMessages((current) => current.map((item) => item.id !== message.id ? item : {
+                            ...item,
+                            structuredExperiences: (item.structuredExperiences ?? []).map((entry) =>
+                              entry.id === activityId ? { ...entry, experience: review } : entry),
+                          }));
+                        showSent(receipt.review);
                         if (!ownerUid || !threadId || !ownerToken) {
-                          toast.error("Request sent, but Chat history could not be saved.");
+                          if (ownerUid) markConsentContinuationUnavailable(ownerUid, receipt.bundleId);
+                          console.warn("[one-chat] information request receipt not recorded", {
+                            bundleId: receipt.bundleId, reason: "no_conversation",
+                          });
                           return;
                         }
                         // Sent from this chat, now: watch for the answer even if
@@ -7886,10 +8020,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           bundleId: receipt.bundleId,
                           conversationId: threadId,
                           subjectRef: receipt.subjectRef,
-                          personName: "",
+                          personName: receipt.review.personName,
                         });
                         try {
-                          const review = await recordAgentChatInformationRequest({
+                          const review = await recordAgentChatInformationRequestWithRetry({
                             conversationId: threadId,
                             sourceActivityId: activityId,
                             bundleId: receipt.bundleId,
@@ -7903,13 +8037,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           }
                           clearAgentChatHistoryCache(ownerUid);
                           if (historyRestoreEpochRef.current !== epoch || conversationIdRef.current !== threadId) return;
-                          setMessages((current) => current.map((item) => item.id !== message.id ? item : {
-                            ...item,
-                            structuredExperiences: (item.structuredExperiences ?? []).map((entry) =>
-                              entry.id === activityId ? { ...entry, experience: review } : entry),
-                          }));
-                        } catch {
-                          toast.error("Request sent, but Chat history could not be saved.");
+                          showSent(review);
+                        } catch (error) {
+                          // Nothing scary for the person: the request was sent
+                          // and its card stays true. Without a receipt the server
+                          // refuses a follow-up turn (409), so this chat does not
+                          // start one; the card still shows the answer when it lands.
+                          markConsentContinuationUnavailable(ownerUid, receipt.bundleId);
+                          console.warn("[one-chat] information request receipt not recorded", {
+                            bundleId: receipt.bundleId,
+                            status: error instanceof InformationRequestReceiptError ? error.status : null,
+                          });
                         }
                       }}
                       onOpenConnections={openConnectorSurface}
@@ -8225,7 +8363,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 />
               ))}
 
-              {pendingAppAction ? (
+              {pendingAppAction && !pendingAppActionDuplicatesAskCard ? (
                 <SpecialistDirectiveCard
                   summary={
                     pendingAppAction.event.message ||
@@ -9276,6 +9414,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSuccess={() => setVaultDialogOpen(false)}
         />
       ) : null}
+      </AgentTranscriptRevealContext.Provider>
       </ConsentCardPhaseContext.Provider>
       </AgentConsentContinuationContext.Provider>
       </AgentPersonSelectionContext.Provider>

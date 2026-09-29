@@ -154,6 +154,9 @@ describe("current-authority inline Chat catalog", () => {
     expect(await screen.findByText("Waiting for Synthetic Recipient's approval")).toBeInTheDocument();
     expect(onInformationRequestSubmitted).toHaveBeenCalledWith({
       bundleId, subjectRef: person, idempotencyKey: expect.any(String),
+      // The sent card itself, labels only, so the chat shows "Request sent"
+      // whether or not its history receipt is recorded.
+      review: expect.objectContaining({ phase: "submitted", bundleId, subjectRef: person }),
     });
     expect(JSON.stringify(onInformationRequestSubmitted.mock.calls)).not.toContain("Synthetic analyst");
     expect(mocks.getInformationRequest).toHaveBeenCalledWith({ bundleId, vaultOwnerToken: "test-owner-token" });
