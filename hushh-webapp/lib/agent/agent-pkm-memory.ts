@@ -24,6 +24,7 @@ import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
 import { humanizeMemorySegment } from "@/lib/pkm/humanize-segment";
 import { toPlainMemoryText, toPlainMemoryValue } from "@/lib/pkm/memory-plain-text";
 import { pkmScopeBreadcrumb } from "@/lib/pkm/pkm-memory-level";
+import { classifyMergeOutcome, type PkmMergeOutcome } from "@/lib/pkm/pkm-supersede-merge";
 
 export type AgentPkmDomainChoice = {
   domain_key: string;
@@ -133,8 +134,15 @@ export type AgentPkmSaveResult = {
     success: boolean;
     message?: string;
     result?: PkmWriteCoordinatorResult;
+    /**
+     * What this write did, classified against the same stored state the
+     * coordinator merged into. Present only for prepared memory cards.
+     */
+    outcome?: PkmMergeOutcome;
   }>;
 };
+
+export { isCommittedPkmSave } from "@/lib/agent/pkm-save-receipt";
 
 export class AgentPkmContextNotReadyError extends Error {
   readonly code = "AGENT_PKM_CONTEXT_NOT_READY";
@@ -580,6 +588,8 @@ export async function addToPKM(params: {
           } as DomainManifest)
         : null;
 
+    let outcome: PkmMergeOutcome | undefined;
+    const mergeMode = readString(card.merge_mode) || readString(card.merge_decision?.merge_mode);
     try {
       const sharingImpact = card.sharing_impact;
       const ownerConfirmation = automatic
@@ -611,7 +621,16 @@ export async function addToPKM(params: {
                   }
                 : undefined,
             },
-        build: async () => ({
+        build: async (context) => {
+          // Re-run on a conflict retry, so the outcome follows the state that
+          // was finally merged into.
+          outcome = classifyMergeOutcome({
+            // Display-only classification; the coordinator always passes context.
+            existing: context?.currentDomainData ?? {},
+            incoming: candidatePayload,
+            mergeMode,
+          });
+          return {
           domainData: candidatePayload,
           summary: {
             ...nextSummaryProjection,
@@ -621,7 +640,8 @@ export async function addToPKM(params: {
           structureDecision: nextStructureDecision,
           manifest: nextManifest || undefined,
           scopePath: resolveCardScope(card) || undefined,
-        }),
+          };
+        },
       });
       results[index] = {
         cardId,
@@ -631,6 +651,7 @@ export async function addToPKM(params: {
         success: result.success,
         message: result.message,
         result,
+        ...(result.success && outcome ? { outcome } : {}),
       };
     } catch (error) {
       results[index] = {

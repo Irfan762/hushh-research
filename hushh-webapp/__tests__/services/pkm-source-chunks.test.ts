@@ -8,6 +8,17 @@ import {
 } from "@/lib/pkm/pkm-source-chunks";
 
 describe("source-preserving Memory transport planning", () => {
+  it("plans one proposal per section for an explicit save of a long document", () => {
+    const source = Array.from({ length: 8 }, (_, index) =>
+      `## Section ${index + 1}\n- Synthetic fact ${index + 1}a\n- Synthetic fact ${index + 1}b\n`,
+    ).join("");
+    const packed = planPkmSourceChunks(source);
+    const sections = planPkmSourceChunks(source, { maxBlocks: 1 });
+    expect(packed.length).toBeLessThan(8);
+    expect(sections).toHaveLength(8);
+    expect(sections.map((chunk) => sourceChunkText(source, chunk)).join("")).toBe(source);
+  });
+
   it("treats numbered one-line facts as bounded items rather than heading-only lines", () => {
     const source = Array.from(
       { length: 33 },

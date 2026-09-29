@@ -156,7 +156,17 @@ function proseBlocks(
   return blocks;
 }
 
-export function planPkmSourceChunks(source: string): PkmSourceChunk[] {
+/**
+ * `maxBlocks` bounds how many source sections share one proposal. An explicit
+ * save of a long context document plans one section per proposal: each section
+ * then fits the segmentation agent's eight-card limit on the first call instead
+ * of spending a round trip on a six-section chunk that can only answer "split".
+ */
+export function planPkmSourceChunks(
+  source: string,
+  options: { maxBlocks?: number } = {},
+): PkmSourceChunk[] {
+  const maxBlocks = Math.max(1, Math.floor(options.maxBlocks ?? MAX_BLOCKS));
   const blocks: SourceBlock[] = [];
   let start = 0;
   let offset = 0;
@@ -208,7 +218,7 @@ export function planPkmSourceChunks(source: string): PkmSourceChunk[] {
   for (const block of blocks) {
     if (
       pending.length &&
-      (pending.length >= MAX_BLOCKS ||
+      (pending.length >= maxBlocks ||
         block.end - pending[0]!.start > PKM_PROPOSAL_CHARS)
     ) {
       chunks.push({ blocks: pending });

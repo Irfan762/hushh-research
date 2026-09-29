@@ -17,7 +17,16 @@ import {
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
-import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmProcessingReady, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
+import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmCaptureRunning, isAgentPkmProcessingReady, shouldPublishAgentPkmCapture, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
+import {
+  applyOwnerConfirmedSave,
+  formatPkmSaveReceiptForAgent,
+  pkmSaveReceiptWrote,
+  runExplicitPkmSave,
+  saveOwnerConfirmedCards,
+  type PkmSaveReceipt,
+} from "@/lib/agent/agent-pkm-explicit-save";
+import { isCommittedPkmSave, type AgentPkmPreviewCard } from "@/lib/agent/agent-pkm-memory";
 import {
   AgentConsentContinuationContext,
   AgentPersonSelectionContext,
@@ -408,6 +417,11 @@ import {
   type GmailInformationRequestSourcePreview,
 } from "@/lib/services/gmail-information-requests-service";
 
+// Every memory capture job ends: auto-capture prepares within 120 s, an
+// explicit save of a long document within 300 s, and each leaves time to write.
+const AGENT_PKM_CAPTURE_DEADLINE_MS = 4 * 60_000;
+const AGENT_PKM_EXPLICIT_SAVE_DEADLINE_MS = 8 * 60_000;
+
 type AgentMessage = {
   id: string;
   /**
@@ -631,12 +645,6 @@ function clearDriveCompilationFromMessages(messages: AgentMessage[]): AgentMessa
         streamEvents: stopDriveCompilationProgress(message.streamEvents) }
     : message);
 }
-
-type AgentPkmActivity = {
-  id: string;
-  text: string;
-  status: "streaming" | "done" | "error";
-};
 
 /**
  * Inline secure card widget in the chat surface. The decrypted values live
@@ -1762,6 +1770,8 @@ export function AgentBubble({
   gmailInformationRequestAttachment,
   driveMemoryReview,
   onResendAttachment,
+  onConfirmMemoryNeedsOwner,
+  onUnlockVault,
 }: {
   message: AgentMessage;
   onOpenConnections?: (provider: WorkspaceConnectorProvider, trigger: HTMLButtonElement) => void;
@@ -1789,6 +1799,8 @@ export function AgentBubble({
   driveMemoryReview?: ReactNode;
   /** "Edit and send again" on a sent paste: a new turn, never an edit of this one. */
   onResendAttachment?: (index: number, editedText: string) => boolean | void;
+  onConfirmMemoryNeedsOwner?: () => Promise<void>;
+  onUnlockVault?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   // The rating is owned by the workspace so it survives a reload; the bubble
@@ -2050,7 +2062,7 @@ export function AgentBubble({
           ) : null}
         </div>
         {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
-        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} /> : null}
+        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} onUnlock={onUnlockVault} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
         {showResponseActions ? (
         <div
@@ -2840,6 +2852,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const pkmAbortControllersRef = useRef<Set<AbortController>>(new Set());
   const pkmCaptureJobsRef = useRef(new Map<string, Promise<AgentPkmCaptureStatus>>());
   const pkmCaptureReceiptsRef = useRef(new Map<string, Map<string, AgentPkmCaptureStatus>>());
+  // The newest explicit-save receipt in this conversation. One is told it on
+  // the next turn, so it never has to guess whether a save finished.
+  const latestPkmSaveReceiptRef = useRef<PkmSaveReceipt | null>(null);
+  // Details that need the owner's direct tap, per assistant message. Session
+  // memory only: they hold the owner's words and are dropped with the turn.
+  const pkmNeedsOwnerCardsRef = useRef(new Map<string, { cards: AgentPkmPreviewCard[]; sourceMessage: string }>());
   const latestVisibleTurnIdRef = useRef<string | null>(null);
   const inlineConsentRequestIdsRef = useRef<Set<string>>(new Set());
   // Set by the FCM effect below; lets a server tool result (pending requests
@@ -2898,6 +2916,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     pkmAbortControllersRef.current.clear();
     pkmCaptureJobsRef.current.clear();
     pkmCaptureReceiptsRef.current.clear();
+    latestPkmSaveReceiptRef.current = null;
+    pkmNeedsOwnerCardsRef.current.clear();
     setActivePkmToolCount(0);
   }, []);
 
@@ -5078,6 +5098,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       sourceMessage: string;
       currentDomains: string[];
       kycInformationSaveConfirmed?: boolean;
+      /** The owner asked One to save this; see lib/agent/agent-pkm-explicit-save.ts. */
+      explicitRequest?: boolean;
     }): Promise<AgentPkmCaptureStatus> => {
       // Private source text is used only in this transient deduplication key.
       const jobKey = JSON.stringify([params.assistantMessageId, params.sourceMessage]);
@@ -5085,7 +5107,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       if (existing) return existing;
       const token = getVaultOwnerToken();
       const ownerConfirmedKycSave = params.kycInformationSaveConfirmed === true;
-      if (!user?.uid || !vaultKey || !token || (!pkmCaptureEnabledRef.current && !ownerConfirmedKycSave)) {
+      const explicitRequest = params.explicitRequest === true;
+      if (explicitRequest && (!user?.uid || !vaultKey || !token)) {
+        const locked: AgentPkmCaptureStatus = { phase: "needs_unlock", saved: 0 };
+        setMessages((current) => current.map((message) =>
+          message.id === params.assistantMessageId ? { ...message, memoryCapture: locked } : message,
+        ));
+        return Promise.resolve(locked);
+      }
+      if (!user?.uid || !vaultKey || !token || (!pkmCaptureEnabledRef.current && !ownerConfirmedKycSave && !explicitRequest)) {
         return Promise.resolve({ phase: "review", saved: 0 });
       }
       const userId = user.uid;
@@ -5093,22 +5123,38 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const controller = new AbortController();
       const guard = createAgentPkmCaptureGuard({
         userId, signal: controller.signal,
-        isEnabled: () => ownerConfirmedKycSave || (
-          pkmCaptureEnabledRef.current && pkmCapturePolicyRef.current === policy &&
-          isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, token)
-        ),
+        // An explicit request does not depend on the background auto-save
+        // policy; it still needs the same unlocked, unexpired vault session.
+        isEnabled: () => ownerConfirmedKycSave ||
+          (explicitRequest && isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, token)) || (
+            pkmCaptureEnabledRef.current && pkmCapturePolicyRef.current === policy &&
+            isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, token)
+          ),
       });
       pkmAbortControllersRef.current.add(controller);
       setActivePkmToolCount((count) => count + 1);
+      let timedOut = false;
+      // Every job ends. Before this deadline a vault token that expired by the
+      // clock (no React change) made the guard false, the final status was
+      // dropped, and "Checking for details worth remembering" stayed forever.
+      const deadline = globalThis.setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, explicitRequest ? AGENT_PKM_EXPLICIT_SAVE_DEADLINE_MS : AGENT_PKM_CAPTURE_DEADLINE_MS);
       const settle = (status: AgentPkmCaptureStatus) => {
-        if (guard.isCurrent()) {
-          const receipts = pkmCaptureReceiptsRef.current.get(params.assistantMessageId) || new Map<string, AgentPkmCaptureStatus>();
-          receipts.set(jobKey, status);
-          pkmCaptureReceiptsRef.current.set(params.assistantMessageId, receipts);
-          const aggregate = aggregateAgentPkmCaptures([...receipts.values()]);
-          setMessages((current) => current.map((message) =>
-            message.id === params.assistantMessageId ? { ...message, memoryCapture: aggregate } : message,
-          ));
+        // Progress is published only while the session is current. A terminal
+        // status is always published: it is display only, and a status that
+        // never resolves is itself a false claim that work is happening.
+        if (!shouldPublishAgentPkmCapture(status, guard.isCurrent())) return status;
+        const receipts = pkmCaptureReceiptsRef.current.get(params.assistantMessageId) || new Map<string, AgentPkmCaptureStatus>();
+        receipts.set(jobKey, status);
+        pkmCaptureReceiptsRef.current.set(params.assistantMessageId, receipts);
+        const aggregate = aggregateAgentPkmCaptures([...receipts.values()]);
+        setMessages((current) => current.map((message) =>
+          message.id === params.assistantMessageId ? { ...message, memoryCapture: aggregate } : message,
+        ));
+        if (!isAgentPkmCaptureRunning(status) && status.receipt) {
+          latestPkmSaveReceiptRef.current = status.receipt;
         }
         return status;
       };
@@ -5147,6 +5193,49 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 ? (ingestion.save.failed ? "partial" : "saved")
                 : "failed",
               saved: ingestion.save.saved,
+            });
+          }
+          if (explicitRequest) {
+            const labContext = await loadPkmAgentLabContext({ userId, vaultOwnerToken: token });
+            await guard.assertCurrent();
+            const { receipt, needsOwnerCards } = await runExplicitPkmSave({
+              userId,
+              message: params.sourceMessage,
+              currentDomains: params.currentDomains,
+              currentManifests: Object.values(labContext.manifests || {}).filter(Boolean),
+              vaultKey,
+              vaultOwnerToken: token,
+              findDuplicate: (candidate) => AgentPkmContextStore.findLocalDuplicate({ userId, candidate }),
+              beforeEffect: guard.assertCurrent,
+              isEffectCurrent: guard.isCurrent,
+              mayPublish: guard.isCurrent,
+              onProgress: (progress) => {
+                settle({ phase: progress.stage === "saving" ? "saving" : "preparing", saved: 0, progress });
+              },
+            });
+            if (needsOwnerCards.length) {
+              pkmNeedsOwnerCardsRef.current.set(params.assistantMessageId, {
+                cards: needsOwnerCards, sourceMessage: params.sourceMessage,
+              });
+            }
+            const wrote = pkmSaveReceiptWrote(receipt);
+            appendDebugEvent(params.turnId, "pkm_explicit_save_result", {
+              saved: receipt.saved, updated: receipt.updated, merged: receipt.merged,
+              unchanged: receipt.unchanged, skipped: receipt.skipped, needs_owner: receipt.needsOwner,
+              failed: receipt.failed, unprepared: receipt.unprepared,
+            });
+            trackEvent("agent_pkm_save_confirmation_completed", {
+              route_id: "agent", result: wrote > 0 ? "success" : "expected_error",
+              saved_count_bucket: toPkmFactCountBucket(wrote), failed_count_bucket: toPkmFactCountBucket(receipt.failed),
+              has_active_recipients: false,
+            });
+            const incomplete = receipt.failed + receipt.unprepared + receipt.needsOwner > 0;
+            return settle({
+              phase: wrote > 0 || receipt.unchanged > 0
+                ? (incomplete ? "partial" : "saved")
+                : incomplete ? "failed" : "skipped",
+              saved: wrote,
+              receipt,
             });
           }
           const labContext = await loadPkmAgentLabContext({ userId, vaultOwnerToken: token });
@@ -5192,8 +5281,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           });
           return settle({ phase: result.saved > 0 ? (result.failed || reviewRequired ? "partial" : "saved") : "failed", saved: result.saved });
         } catch {
-          return settle({ phase: "failed", saved: 0 });
+          if (timedOut) return settle({ phase: "failed", saved: 0, reason: "timeout" });
+          return settle({ phase: guard.isCurrent() ? "failed" : "canceled", saved: 0 });
         } finally {
+          globalThis.clearTimeout(deadline);
           // A canceled old job must not decrement a new conversation's count.
           if (pkmAbortControllersRef.current.delete(controller)) {
             setActivePkmToolCount((count) => Math.max(0, count - 1));
@@ -5205,6 +5296,31 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     },
     [appendDebugEvent, getVaultOwnerToken, user?.uid, vaultKey],
   );
+
+  // The owner tapped "Save these too" on a memory receipt card: their direct
+  // confirmation for the details an explicit save held back.
+  const confirmMemoryNeedsOwner = useCallback(async (messageId: string) => {
+    const pending = pkmNeedsOwnerCardsRef.current.get(messageId);
+    const token = getVaultOwnerToken();
+    if (!pending || !user?.uid || !vaultKey || !token) {
+      throw new Error("Unlock your vault to save these details.");
+    }
+    const result = await saveOwnerConfirmedCards({
+      userId: user.uid, cards: pending.cards, sourceMessage: pending.sourceMessage,
+      vaultKey, vaultOwnerToken: token,
+    });
+    const remaining = pending.cards.filter((_, index) => !isCommittedPkmSave(result.results[index]));
+    if (remaining.length === pending.cards.length) throw new Error("Nothing was saved.");
+    if (remaining.length) pkmNeedsOwnerCardsRef.current.set(messageId, { ...pending, cards: remaining });
+    else pkmNeedsOwnerCardsRef.current.delete(messageId);
+    setMessages((current) => current.map((message) => {
+      const receipt = message.id === messageId ? message.memoryCapture?.receipt : undefined;
+      if (!receipt || !message.memoryCapture) return message;
+      const next = applyOwnerConfirmedSave(receipt, pending.cards, result);
+      latestPkmSaveReceiptRef.current = next;
+      return { ...message, memoryCapture: { ...message.memoryCapture, receipt: next, saved: pkmSaveReceiptWrote(next) } };
+    }));
+  }, [getVaultOwnerToken, user?.uid, vaultKey]);
 
   const runAgentTurn = async (
     textInput: string,
@@ -5265,7 +5381,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const executedToolCalls = new Set<string>();
     let pkmToolHandledFullTurn = false;
     let toolStatusMessageId: string | null = null;
-    let pkmStatusItemId: string | null = null;
     let turnPkmContext = EMPTY_PKM_CONTEXT;
     let pendingAssistantDelta = "";
     let assistantFlushFrame: number | null = null;
@@ -5333,33 +5448,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       });
     };
 
-    const upsertPkmStatusMessage = (
-      messageText: string,
-      status: AgentPkmActivity["status"] = "streaming",
-    ) => {
-      if (latestVisibleTurnIdRef.current !== debugTurnId) return;
-      const cleanText = messageText.trim();
-      if (!cleanText) {
-        if (pkmStatusItemId) upsertTurnStreamEvent({
-          id: pkmStatusItemId,
-          label: "Memory",
-          message: "No new information needed saving.",
-          status: "done",
-          createdAtMs: Date.now(),
-        });
-        return;
-      }
-      const nextStatusItemId = pkmStatusItemId || `pkm-status-${turnId}`;
-      pkmStatusItemId = nextStatusItemId;
-      upsertTurnStreamEvent({
-        id: nextStatusItemId,
-        label: "Memory",
-        message: cleanText,
-        status: status === "error" ? "error" : status === "done" ? "done" : "running",
-        createdAtMs: Date.now(),
-      });
-    };
-
     const toolResultStatus = (
       result: AgentActionRuntimeResult,
     ): AgentMessage["status"] => {
@@ -5374,15 +5462,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     };
 
     const executePkmAddTool = async (toolEvent: AgentChatToolEvent) => {
-      if (!vaultKey || !token) {
-        upsertPkmStatusMessage(
-          "Unlock your vault before saving to Memory.",
-          "error",
-        );
-        return { phase: "failed", saved: 0 } as AgentPkmCaptureStatus;
-      }
-
+      // `source_scope: "turn"` means the person asked to save what they pasted
+      // this turn. The device reads it directly, so the model never has to copy
+      // a long document into a tool argument (where it would be cut short).
+      const wholeTurn = toolEvent.slots.source_scope === "turn";
       const sourceText =
+        !wholeTurn &&
         typeof toolEvent.slots.source_text === "string" &&
         toolEvent.slots.source_text.trim()
           ? toolEvent.slots.source_text.trim()
@@ -5396,6 +5481,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         assistantMessageId,
         sourceMessage: sourceText,
         currentDomains: turnPkmContext.domains,
+        explicitRequest: true,
       });
     };
 
@@ -5411,6 +5497,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         const capture = await executePkmAddTool(toolEvent);
         return {
           status: capture.phase === "saved" || capture.phase === "skipped" ? "succeeded" : "blocked",
+          ...(capture.phase === "needs_unlock" ? { reason: "vault_locked" } : {}),
           actionId: toolEvent.actionId,
           label: toolEvent.label,
           routeBefore: pathname,
@@ -5938,7 +6025,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           if (!vaultKey) throw new Error("Unlock your vault to use connectors.");
           return (await loadCustomConnectorSnapshot({ userId, vaultKey, vaultOwnerToken: token }, true)).configurations;
         },
-        pkmContext: agentPkmContext.text || undefined,
+        // The latest save receipt leads the packet so the server's length clip
+        // can never drop it. Counts and category names only.
+        pkmContext: [
+          latestPkmSaveReceiptRef.current
+            ? formatPkmSaveReceiptForAgent(latestPkmSaveReceiptRef.current)
+            : "",
+          agentPkmContext.text || "",
+        ].filter(Boolean).join("\n\n") || undefined,
         personSelectionHandle: options.personSelectionHandle,
         gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
         driveSearchSelection: options.driveSearchSelection,
@@ -8662,6 +8756,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           ? (index, editedText) => resendTextAttachment(message, index, editedText)
                           : undefined
                       }
+                      onConfirmMemoryNeedsOwner={() => confirmMemoryNeedsOwner(message.id)}
+                      onUnlockVault={() => setVaultDialogOpen(true)}
                       onInformationRequestSubmitted={async (activityId, receipt) => {
                         const ownerUid = user?.uid;
                         const threadId = conversationIdRef.current;

@@ -128,6 +128,9 @@ export default defineConfig({
         /settings-row-surface\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,
+        // memory-save-card: the explicit-save receipt's pixel-grid contract
+        // (insets, tile grid, aligned tabular counts) in the shipped engine.
+        /memory-save-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
