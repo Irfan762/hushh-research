@@ -318,6 +318,7 @@ import {
   type PendingConsent,
 } from "@/lib/consent/use-consent-actions";
 import { useOneLocationConsentActions } from "@/lib/consent/use-one-location-consent-actions";
+import { useDeferredConsentDeclines } from "@/lib/consent/deferred-consent-decline";
 import { DriveRecentSharing, type SelectedDriveSearchFile } from "@/components/agent/drive-background-search";
 import { canReviewDriveMemory, DriveReadMemoryAction } from "@/components/agent/drive-read-memory-action";
 import { clearGeneratedDriveSearchDraft } from "@/lib/agent/drive-search-draft";
@@ -1273,10 +1274,17 @@ export function mergePendingConsentMessages(
   return merged;
 }
 
+/** The Undo toast's line for a decline from the chat card, as the Consent Center words it. */
+export function declinedChatRequestMessage(requesterLabel: string): string {
+  const first = requesterLabel.trim().split(/\s+/)[0];
+  return first ? `Declined ${first}'s request.` : "Declined the request.";
+}
+
 function markPendingConsentRequestDirectiveStatus(
   event: SpecialistDirectiveEvent | null | undefined,
   itemId: string,
-  status: Exclude<PendingConsentCardStatus, "pending">,
+  // "pending" puts a card back after Undo on a decline.
+  status: PendingConsentCardStatus,
 ): SpecialistDirectiveEvent | null | undefined {
   if (!event || event.directive.kind !== "prompt") return event;
   const payload = event.directive.payload as Record<string, unknown>;
@@ -2678,6 +2686,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       setPendingSpecialistDirective(null);
     },
   });
+  // Don't allow from the chat card holds for the same five-second Undo as
+  // the Consent Center rows and the Feed (lib/consent/deferred-consent-decline.ts).
+  const { schedule: scheduleConsentDecline } = useDeferredConsentDeclines();
   const consentActions = useConsentActions({
     userId: user?.uid,
     onActionComplete: (detail) => {
@@ -8255,19 +8266,31 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             );
                             return;
                           }
-                          await consentActions.handleDenyBundle(
-                            targets.map((target) => target.id),
-                            { quiet: true, bundleId: item.bundleId || item.id },
-                          );
-                          updateMessage(message.id, (current) => ({
-                            ...current,
-                            specialistDirective:
-                              markPendingConsentRequestDirectiveStatus(
-                                current.specialistDirective,
-                                item.id,
-                                "denied",
-                              ),
-                          }));
+                          const setCardStatus = (status: PendingConsentCardStatus) =>
+                            updateMessage(message.id, (current) => ({
+                              ...current,
+                              specialistDirective:
+                                markPendingConsentRequestDirectiveStatus(
+                                  current.specialistDirective,
+                                  item.id,
+                                  status,
+                                ),
+                            }));
+                          const requestIds = targets.map((target) => target.id);
+                          const bundleId = item.bundleId || item.id;
+                          const deny = consentActions.handleDenyBundle;
+                          // The card reads declined at once; nothing is sent
+                          // until the Undo window closes, and Undo sends nothing.
+                          setCardStatus("denied");
+                          scheduleConsentDecline({
+                            key: `chat:${bundleId}`,
+                            message: declinedChatRequestMessage(item.requesterLabel),
+                            onUndo: () => setCardStatus("pending"),
+                            send: () => deny(requestIds, { quiet: true, bundleId }).catch(() => {
+                              setCardStatus("pending");
+                              addErrorMessage("Could not decline that request. Try again.");
+                            }),
+                          });
                         } catch (error) {
                           addErrorMessage(
                             error instanceof Error && error.message.startsWith("This request")
