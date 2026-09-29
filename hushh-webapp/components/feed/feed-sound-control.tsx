@@ -1,7 +1,7 @@
 "use client";
 
 import { Capacitor } from "@capacitor/core";
-import { Volume2, VolumeX } from "lucide-react";
+import { Volume2, VolumeX } from "@/components/icons";
 import { useEffect, useRef, useState } from "react";
 
 import { isFeedIdAtOrBefore, latestFeedId } from "@/lib/feed/feed-pagination";

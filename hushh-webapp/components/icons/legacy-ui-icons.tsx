@@ -253,6 +253,7 @@ export const UserRoundPlus = createCanonicalIcon(Phosphor.UserCirclePlus);
 export const Users = createCanonicalIcon(Phosphor.Users);
 export const UsersRound = createCanonicalIcon(Phosphor.UsersThree);
 export const Volume2 = createCanonicalIcon(Phosphor.SpeakerHigh);
+export const VolumeX = createCanonicalIcon(Phosphor.SpeakerSlash);
 export const Wallet = createCanonicalIcon(Phosphor.Wallet);
 export const WalletCards = createCanonicalIcon(Phosphor.Wallet);
 export const Wifi = createCanonicalIcon(Phosphor.WifiHigh);
