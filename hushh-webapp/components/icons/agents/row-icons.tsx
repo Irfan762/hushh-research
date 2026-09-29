@@ -6,6 +6,7 @@ import {
   ArrowsClockwise,
   ArrowsCounterClockwise,
   Broadcast,
+  ChatCircle,
   CheckCircle,
   CircleHalf,
   ClipboardText,
@@ -27,7 +28,6 @@ import {
   SealCheck,
   ShareNetwork,
   Siren,
-  Sparkle,
   Trash,
   Tray,
   UserPlus,
@@ -120,7 +120,8 @@ export const PeopleRowIcon = createRowIcon(UsersThree, ROW_TONE.indigo, "PeopleR
 /** An SOS alert from someone who listed you as an emergency contact. */
 export const EmergencyRowIcon = createRowIcon(Siren, ROW_TONE.red, "EmergencyRowIcon");
 export const InviteCodeRowIcon = createRowIcon(Key, ROW_TONE.amber, "InviteCodeRowIcon");
-export const UseAgentRowIcon = createRowIcon(Sparkle, ROW_TONE.indigo, "UseAgentRowIcon");
+/** Talking to an agent: the same chat glyph as the one control that opens One. */
+export const UseAgentRowIcon = createRowIcon(ChatCircle, ROW_TONE.indigo, "UseAgentRowIcon");
 
 // Information and editing
 export const FolderRowIcon = createRowIcon(FolderSimple, ROW_TONE.indigo, "FolderRowIcon");

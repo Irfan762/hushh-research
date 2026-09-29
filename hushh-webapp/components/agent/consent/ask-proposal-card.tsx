@@ -12,7 +12,7 @@
  * send path, so there is exactly one way a request is created.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, ChevronRight, Minus, Search, Sparkles } from "@/components/icons";
+import { Check, ChevronRight, ConsentAgentIcon, Minus, Search } from "@/components/icons";
 import { Input } from "@/components/ui/input";
 import { Button as MorphyButton } from "@/lib/morphy-ux/button";
 import { REQUEST_DURATION_OPTIONS } from "@/lib/agent/action-directive-summary";
@@ -314,8 +314,9 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
     <section aria-label={`Ask ${firstName(personName)}`} data-testid="ask-proposal-card"
       className="space-y-3 rounded-[24px] bg-[linear-gradient(145deg,var(--app-accent-surface),color-mix(in_srgb,var(--background)_94%,var(--app-accent-soft)))] p-4 shadow-[0_18px_55px_-38px_var(--app-accent-deep)] sm:p-5">
       <div className="flex items-start gap-3">
-        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-accent-strong text-white">
-          <Sparkles className="h-4 w-4" aria-hidden="true" />
+        {/* The /one Consent glyph, bare on a transparent well: never a filled tile. */}
+        <span data-slot="card-header-icon" className="inline-flex h-9 w-9 shrink-0 items-center justify-center">
+          <ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-base font-semibold leading-6 tracking-[-0.015em] text-foreground [overflow-wrap:anywhere]" data-testid="ask-sentence">

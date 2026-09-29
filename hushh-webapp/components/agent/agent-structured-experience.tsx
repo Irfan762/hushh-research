@@ -48,10 +48,10 @@ import {
   ArrowUpRight,
   Check,
   CircleAlert,
+  ConsentAgentIcon,
   FileCheck2,
   FolderLock,
   Link2,
-  ShieldCheck,
   UserRound,
 } from "@/components/icons";
 
@@ -216,7 +216,10 @@ function ExperienceShell({
   return (
     <section data-experience-type={experienceType} className="overflow-hidden rounded-[24px] bg-[linear-gradient(145deg,var(--app-accent-surface),color-mix(in_srgb,var(--background)_94%,var(--app-accent-soft)))] shadow-[0_18px_55px_-38px_var(--app-accent-deep)]">
       <header className="flex items-start gap-3 px-4 pb-4 pt-4 sm:px-5 sm:pt-5">
-        <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px] bg-accent-strong text-white shadow-sm">
+        {/* /one iconography: a bare duotone glyph on a transparent well. A
+            registry capability glyph keeps its own colour; a utility glyph
+            takes the accent. Never a filled tile with a white glyph. */}
+        <span data-slot="card-header-icon" className="inline-flex h-10 w-10 shrink-0 items-center justify-center text-accent-strong">
           {icon}
         </span>
         <div className="min-w-0 flex-1">
@@ -464,8 +467,8 @@ function ScopeDiscoveryView({
       className="space-y-3"
     >
       <header className="flex items-start gap-3 px-1">
-        <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-accent-surface text-accent-strong">
-          <UserRound className="h-4 w-4" aria-hidden="true" />
+        <span data-slot="card-header-icon" className="inline-flex h-9 w-9 shrink-0 items-center justify-center">
+          <ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />
         </span>
         <div className="min-w-0 flex-1">
           <h3 className="text-sm font-semibold text-foreground">
@@ -809,7 +812,7 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
           label={progressLabel}
           title={`${joinLabels(progressLabels)} from ${experience.personName}`}
           summary={experience.durationLabel}
-          icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
+          icon={<ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />}
         >
           <RequesterProgressBody progress={progress} phase={phase} personName={experience.personName}
             purpose={experience.purpose} />
@@ -826,7 +829,7 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       label={label}
       title={title}
       summary={`${items.length} ${items.length === 1 ? "thing" : "things"} · ${experience.durationLabel}`}
-      icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
+      icon={<ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />}
     >
       <p className="text-sm leading-6 text-foreground">{experience.purpose}</p>
       <p role="status" className="mt-2 text-xs font-medium text-muted-foreground">{statusText}</p>

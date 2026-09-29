@@ -16,9 +16,14 @@
 
 import type { ReactNode } from "react";
 
-import { Check, Code2, Landmark, UserRound, X } from "@/components/icons";
+import {
+  Check,
+  DeveloperToolsProfileIcon,
+  RiaAgentIcon,
+  X,
+} from "@/components/icons";
 import { SettingsRow } from "@/components/app-ui/settings-ui";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 import { Button } from "@/components/ui/button";
 import { resolveConsentRequesterLabel } from "@/lib/consent/consent-display";
 import {
@@ -41,53 +46,48 @@ export function resolveCounterpartLabel(entry: ConsentCenterEntry): string {
   });
 }
 
+/**
+ * Who is asking, drawn the way the rest of One draws them.
+ *
+ * A person (or anyone with a photo) is their face or initials, exactly as the
+ * Feed's "Needs you" row and the owner's chat card show them. An advisor or an
+ * app with no photo is its /one registry glyph, bare on a transparent well:
+ * never a tinted tile around a generic silhouette.
+ */
 export function ConsentCounterpartAvatar({
   entry,
 }: {
   entry: ConsentCenterEntry;
 }) {
-  const kind =
-    entry.counterpart_type === "ria"
-      ? "ria"
-      : entry.counterpart_type === "developer"
-        ? "developer"
-        : "person";
-  const Icon =
-    kind === "ria" ? Landmark : kind === "developer" ? Code2 : UserRound;
   const label = resolveCounterpartLabel(entry);
-  const initials = label
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() || "")
-    .join("");
-  const identityTone =
-    kind === "ria"
-      ? "border-accent-border bg-accent-surface text-accent-strong"
-      : kind === "developer"
-        ? "border-sky-500/20 bg-sky-500/10 text-sky-700 dark:border-sky-300/20 dark:bg-sky-300/10 dark:text-sky-200"
-        : "border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:border-emerald-300/20 dark:bg-emerald-300/10 dark:text-emerald-200";
+  const photoUrl = entry.counterpart_image_url?.trim() || null;
+  const Glyph =
+    entry.counterpart_type === "ria"
+      ? RiaAgentIcon
+      : entry.counterpart_type === "developer"
+        ? DeveloperToolsProfileIcon
+        : null;
+
+  if (!Glyph || photoUrl) {
+    return (
+      <ConnectionPersonAvatar
+        label={label}
+        photoUrl={photoUrl}
+        size="list"
+        className="bg-[color:var(--app-neutral-fill)] text-[13px] font-semibold text-[color:var(--app-secondary-label)]"
+        testId="consent-counterpart-avatar"
+      />
+    );
+  }
 
   return (
-    <Avatar
-      size="lg"
-      className={cn(
-        "h-10 w-10 rounded-[14px] border shadow-[0_1px_0_rgba(255,255,255,0.35)_inset]",
-        identityTone,
-      )}
+    <span
+      aria-hidden="true"
+      data-testid="consent-counterpart-avatar"
+      className="inline-flex size-10 shrink-0 items-center justify-center"
     >
-      <AvatarImage src={entry.counterpart_image_url || undefined} alt="" />
-      <AvatarFallback className="rounded-[13px] bg-transparent text-current">
-        <span className="relative flex h-full w-full items-center justify-center">
-          <Icon className="h-[18px] w-[18px] opacity-80" aria-hidden="true" />
-          {initials ? (
-            <span className="absolute bottom-0.5 right-0.5 rounded-md bg-[color:var(--app-card-surface-default-solid)] px-1 text-[9px] font-semibold leading-4 text-foreground shadow-sm">
-              {initials}
-            </span>
-          ) : null}
-        </span>
-      </AvatarFallback>
-    </Avatar>
+      <Glyph className="size-7" />
+    </span>
   );
 }
 

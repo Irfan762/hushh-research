@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
-import { Loader2, Mail, Send, Sparkles, X } from "@/components/icons";
+import { FilePenLine, Loader2, Mail, Send, X } from "@/components/icons";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -613,7 +613,7 @@ export function EmailDraftCard({
               className="flex items-center gap-2.5 rounded-xl border border-amber-500/30 bg-amber-500/10 px-3.5 py-2.5 text-sm font-medium text-amber-700 dark:text-amber-300"
               data-testid="one-email-draft-missing-details"
             >
-              <Sparkles className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <FilePenLine className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" aria-hidden="true" />
               <span>One still needs: {missingDetails.join(", ")}.</span>
             </div>
           ) : null}
