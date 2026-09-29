@@ -288,6 +288,12 @@ export function driveBatchProgressToVisibleStreamEvent(
   };
 }
 
+/** Cards One introduces with a sentence: text first, then the card. */
+export const CONSENT_ASK_EXPERIENCE_TYPES: ReadonlySet<string> = new Set([
+  "one.scope_discovery.v1",
+  "one.information_request_review.v1",
+]);
+
 export function AgentTurnStreamPanel({
   streamEvents,
   responseText,
@@ -368,9 +374,15 @@ export function AgentTurnStreamPanel({
     [structuredExperience, structuredExperiences],
   );
 
+  // One's lead-in ("I'll ask Kushal. Here's what I'd request:") reads before
+  // the ask card it introduces, the way a person talks.
+  const leadsIntoConsentCard = experienceItems.some(({ experience }) =>
+    CONSENT_ASK_EXPERIENCE_TYPES.has(experience.type));
+
   return (
     <AppStreamPanel
       title="One activity"
+      structuredContentPlacement={leadsIntoConsentCard ? "after" : "before"}
       progressItems={[...progressItems, ...specialistItems]}
       progressValue={batchIsStreaming && currentBatchProgress
         ? driveBatchProgressPercent(currentBatchProgress)

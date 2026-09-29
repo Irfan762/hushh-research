@@ -406,6 +406,11 @@ tests/test_information_sharing_lifecycle_e2e.py
 tests/test_specialist_turn_parity.py
 tests/test_health_review_mode.py
 tests/services/test_person_profile_service.py
+# Consent lifecycle C4 (2026-09-28), "One picks, the person confirms": the
+# label-and-synonym scope matcher with its synonym-off negative control, human
+# scope labels, and the people scope-catalog route binding.
+tests/test_scope_search_ranking.py
+tests/test_one_people_request_history.py
 tests/services/test_information_request_service.py
 tests/services/test_consent_export_read_dedupe.py
 tests/test_consent_handshake.py
@@ -507,3 +512,14 @@ tests/test_structure_agent_prompt_is_unambiguous.py
 # rollback refusal) runs against the isolated PostgreSQL CI service.
 tests/test_one_attention.py
 tests/test_one_attention_ledger_postgres.py
+# Consent lifecycle in chat (2026-09-28). After a grant ends, One's real ADK
+# runner no longer sends the shared answer, or anything derived from it, to the
+# model, with a negative control that shows it would otherwise. The requester's
+# outcome doorbell stays bare. Migration 259 on real PostgreSQL: eight workers
+# handling one consent event send one push (without the claim, eight), one owner
+# Feed row per request bundle, NOTIFY carries the audit id, rollback refuses
+# while claims are recent. The Feed keeps a bundle item's who, what and why.
+tests/test_consent_redaction.py
+tests/test_consent_outcome_delivery_postgres.py
+tests/test_consent_listener_notifications.py
+tests/test_feed_metadata_allowlist.py

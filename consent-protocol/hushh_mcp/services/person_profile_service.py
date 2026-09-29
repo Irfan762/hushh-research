@@ -17,6 +17,9 @@ from typing import Any
 from uuid import UUID
 
 from db.db_client import get_db
+from hushh_mcp.consent.scope_generator import rank_scope_matches
+from hushh_mcp.consent.scope_labels import human_domain_label, human_scope_label
+from hushh_mcp.consent.scope_matcher import presentable_scope_entries, search_scope_entries
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_db import ConsentDBService
 
@@ -357,6 +360,105 @@ class PersonProfileService:
 
         raise ValueError("The information catalog is too large to load safely.")
 
+    @staticmethod
+    def _scope_projection(public_person_ref: str, item: dict[str, Any]) -> dict[str, Any] | None:
+        """The only shape a viewer sees for one requestable row: no raw scope, no value."""
+        scope = str(item.get("scope") or "")
+        if not scope:
+            return None
+        domain = str(item.get("domain") or "") or None
+        return {
+            "scopeRef": _scope_ref(public_person_ref, scope),
+            "label": human_scope_label(scope, str(item.get("label") or "")),
+            "description": item.get("description"),
+            "domain": domain,
+            "domainLabel": human_domain_label(domain),
+            "sensitivity": item.get("sensitivity"),
+            "wildcard": bool(item.get("wildcard")),
+            "pathSegments": [part for part in scope.split(".")[2:] if part != "*"],
+        }
+
+    async def get_requestable_catalog(
+        self, *, viewer_user_id: str, public_person_ref: str
+    ) -> dict[str, Any]:
+        """Who this person is and what the viewer may ask them for. Labels only.
+
+        The lean read behind One's proposal: unlike ``get_viewer_profile`` it
+        loads no grants, request history or consent statuses, because choosing
+        what to ask needs none of them and every query here is on the chat's
+        critical path.
+        """
+        row = await asyncio.to_thread(self._profile_row, public_person_ref)
+        subject_user_id = str(row.get("user_id") or "")
+        if not subject_user_id or subject_user_id == viewer_user_id:
+            raise PersonProfileNotFoundError("Person profile was not found.")
+        scope_items = await asyncio.to_thread(
+            self._requestable_scope_entries, viewer_user_id, subject_user_id
+        )
+        scopes = [
+            projection
+            for item in presentable_scope_entries(scope_items)
+            if (projection := self._scope_projection(public_person_ref, item)) is not None
+        ]
+        return {**self._public_projection(row), "requestableScopes": scopes}
+
+    async def search_scope_catalog(
+        self,
+        *,
+        viewer_user_id: str,
+        public_person_ref: str,
+        query: str = "",
+        page: int = 1,
+        limit: int = 20,
+        catalog_revision: str = "",
+    ) -> dict[str, Any]:
+        """Server-side search over human labels and synonyms, paged (Contract C4).
+
+        "restaurant" finds Food. Each hit carries a readable ``why``. Items
+        carry an opaque ``scopeRef`` only; the raw scope never leaves the
+        server, and ``resolve_scope_refs`` re-checks every ref at request time.
+        """
+        row = await asyncio.to_thread(self._profile_row, public_person_ref)
+        subject_user_id = str(row.get("user_id") or "")
+        if not subject_user_id or subject_user_id == viewer_user_id:
+            raise PersonProfileNotFoundError("Person profile was not found.")
+        scope_items = await asyncio.to_thread(
+            self._requestable_scope_entries, viewer_user_id, subject_user_id
+        )
+        page_result = ConnectionsService.page_information_scope_entries(
+            scope_items,
+            page=page,
+            limit=limit,
+            catalog_revision=catalog_revision,
+            # Presentation filter inside the ranker: the revision still digests
+            # the full catalog, so paging stays consistent with validation.
+            ranker=lambda entries: search_scope_entries(presentable_scope_entries(entries), query),
+        )
+        items = []
+        for item in page_result["items"]:
+            projection = self._scope_projection(public_person_ref, item)
+            if projection is None:
+                continue
+            # ``scope`` mirrors the proposal's C4 field: the same opaque ref,
+            # never the raw ``attr.*`` string.
+            projection["scope"] = projection["scopeRef"]
+            if item.get("why"):
+                projection["why"] = item["why"]
+            items.append(projection)
+        return {
+            "person": {
+                "personRef": public_person_ref,
+                "displayName": self._public_projection(row)["displayName"],
+            },
+            "query": query,
+            "items": items,
+            **{key: value for key, value in page_result.items() if key not in {"items", "domains"}},
+            "domains": [
+                {**domain, "label": human_domain_label(domain.get("domain"))}
+                for domain in page_result.get("domains") or []
+            ],
+        }
+
     async def get_viewer_profile(
         self,
         *,
@@ -375,23 +477,22 @@ class PersonProfileService:
         scope_items = await asyncio.to_thread(
             self._requestable_scope_entries, viewer_user_id, subject_user_id
         )
-        scopes = []
         scope_by_name: dict[str, dict[str, Any]] = {}
         for item in scope_items:
             scope = str(item.get("scope") or "")
             if not scope:
                 continue
-            projection = {
-                "scopeRef": _scope_ref(public_person_ref, scope),
-                "label": item.get("label"),
-                "description": item.get("description"),
-                "domain": item.get("domain"),
-                "sensitivity": item.get("sensitivity"),
-                "wildcard": bool(item.get("wildcard")),
-                "pathSegments": [part for part in scope.split(".")[2:] if part != "*"],
-            }
-            scopes.append(projection)
+            projection = self._scope_projection(public_person_ref, item)
+            if projection is None:
+                continue
             scope_by_name[scope] = projection
+        # The complete map above names grants; the listing a person reads is
+        # the presentable catalog (no app state, one row per label).
+        scopes = [
+            scope_by_name[str(item["scope"])]
+            for item in presentable_scope_entries(scope_items)
+            if str(item.get("scope") or "") in scope_by_name
+        ]
 
         catalog = None
         if catalog_page is not None:
@@ -401,8 +502,12 @@ class PersonProfileService:
                 scope_items,
                 page=catalog_page,
                 catalog_revision=catalog_revision,
-                query=catalog_query,
-                domain=catalog_domain,
+                ranker=lambda entries: rank_scope_matches(
+                    presentable_scope_entries(entries),
+                    query=catalog_query,
+                    domain=catalog_domain,
+                    limit=None,
+                ),
             )
             scopes = [scope_by_name[item["scope"]] for item in page["items"]]
             catalog = {key: value for key, value in page.items() if key != "items"}

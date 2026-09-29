@@ -51,6 +51,11 @@ from hushh_mcp.one_adk.consent_continuation import (
     admit_consent_continuation,
     continued_outcomes,
 )
+from hushh_mcp.one_adk.consent_redaction import (
+    access_ended_outcome,
+    redaction_for_history,
+    shared_record_for_history,
+)
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
@@ -858,6 +863,61 @@ def _safe_information_request_descriptor(
     return None
 
 
+def _safe_proposal_source(
+    event: Any, selected_parts: list[Any] | None = None
+) -> dict[str, Any] | None:
+    """The recipient of One's ask card (``propose_information_request``), or None.
+
+    The ask card is a send surface exactly like a discovery card, so its receipt
+    is bound the same way: a sealed ``proposal_ready`` result in this
+    conversation that carries a proposal, and a person whose reference matches
+    their profile path. Nothing else of the proposal leaves the session.
+    """
+    parts = (
+        selected_parts
+        if selected_parts is not None
+        else (getattr(getattr(event, "content", None), "parts", None) or [])
+    )
+    for part in parts:
+        function_response = getattr(part, "function_response", None)
+        if (
+            function_response is None
+            or getattr(function_response, "name", "") != "propose_information_request"
+        ):
+            continue
+        result = _record(getattr(function_response, "response", None)) or {}
+        for key in ("result", "content", "data"):
+            nested = _record(result.get(key))
+            if nested and nested.get("status"):
+                result = nested
+                break
+        proposed = result.get("proposed")
+        if result.get("status") != "proposal_ready" or not isinstance(proposed, list):
+            return None
+        if not any(_record(item) for item in proposed):
+            return None
+        person = _record(result.get("person")) or {}
+        display_name = _bounded_text(person.get("displayName"), 120)
+        profile_path = _bounded_text(person.get("profilePath"), 180)
+        person_ref = _bounded_text(person.get("personRef"), 128)
+        if (
+            not display_name
+            or not profile_path
+            or not person_ref
+            or not _SAFE_PROFILE_PATH.fullmatch(profile_path)
+            or profile_path.rsplit("/", 1)[-1] != person_ref
+        ):
+            return None
+        return {
+            "person": {
+                "displayName": display_name,
+                "profilePath": profile_path,
+                "personRef": person_ref,
+            }
+        }
+    return None
+
+
 def _safe_submitted_information_request_card(card: Any) -> dict[str, Any] | None:
     """Allowlist display-only submission metadata, never consent authority."""
     card = _record(card) or {}
@@ -1442,9 +1502,10 @@ def _safe_agent_history_metadata(
             getattr(getattr(part, "function_response", None), "id", None), 128
         )
         card_id = f"{event_identity}:{invocation_identity or index}"
-        if card_id in (suppressed_discovery_ids or set()) and _safe_discovery_descriptor(
-            event, [part]
+        if card_id in (suppressed_discovery_ids or set()) and (
+            _safe_discovery_descriptor(event, [part]) or _safe_proposal_source(event, [part])
         ):
+            # Sent: the submission event restores this card in its sent state.
             continue
         if card_id in seen:
             continue
@@ -1484,7 +1545,14 @@ class RecordInformationRequestSubmission(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=256)
 
 
-def _discovery_source(session: Any, activity_id: str) -> tuple[str, dict[str, Any]] | None:
+def _request_source(session: Any, activity_id: str) -> tuple[str, dict[str, Any]] | None:
+    """The one send card in this conversation that ``activity_id`` names.
+
+    A discovery card (``discover_person_information``) or One's ask card
+    (``propose_information_request``). Anything else, or an ambiguous id, is None.
+    Before 2026-09-28 only discovery cards were recognised, so every Send on an
+    ask card got 404 here and its answer was then refused with 409.
+    """
     matches: list[tuple[str, dict[str, Any]]] = []
     for event in session.events:
         event_id = (
@@ -1493,15 +1561,16 @@ def _discovery_source(session: Any, activity_id: str) -> tuple[str, dict[str, An
             or "event"
         )
         for index, part in enumerate(getattr(getattr(event, "content", None), "parts", None) or []):
-            descriptor = _safe_discovery_descriptor(event, [part])
-            if descriptor is None:
+            discovery = _safe_discovery_descriptor(event, [part])
+            source = discovery["content"] if discovery else _safe_proposal_source(event, [part])
+            if source is None:
                 continue
             tool_id = _bounded_text(
                 getattr(getattr(part, "function_response", None), "id", None), 128
             )
             card_id = f"{event_id}:{tool_id or index}"
             if activity_id in {card_id, tool_id}:
-                matches.append((card_id, descriptor["content"]))
+                matches.append((card_id, source))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -1533,10 +1602,10 @@ async def record_information_request_submission(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    source = _discovery_source(session, payload.source_activity_id)
+    source = _request_source(session, payload.source_activity_id)
     if source is None:
-        raise HTTPException(status_code=404, detail="Discovery card not found.")
-    source_card_id, discovery = source
+        raise HTTPException(status_code=404, detail="Request card not found.")
+    source_card_id, source_card = source
     try:
         bundle = await InformationRequestService().verify_submission_receipt(
             requester_user_id=owner,
@@ -1545,9 +1614,9 @@ async def record_information_request_submission(
         )
     except InformationRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    person = discovery["person"]
+    person = source_card["person"]
     if bundle["personRef"] != person.get("personRef") or not bundle.get("items"):
-        raise HTTPException(status_code=409, detail="Request recipient did not match discovery.")
+        raise HTTPException(status_code=409, detail="Request recipient did not match the card.")
     statuses = [item["status"] for item in bundle["items"]]
     status = statuses[0] if all(value == statuses[0] for value in statuses) else "mixed"
     hours = bundle["durationSeconds"] // 3600
@@ -1632,6 +1701,49 @@ async def list_conversations(
     }
 
 
+# At most this many shared requests are re-checked per history load.
+_MAX_CONSENT_ACCESS_CHECKS = 10
+
+
+async def _consent_access_for_history(
+    owner: str, state: Any
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(invocation_id -> bundle_id, bundle_id -> ended outcome)`` for this load.
+
+    A bundle latched as ended by a model turn is ended. Otherwise its current
+    outcome is read (requester-bound) so a revoke is honoured on the very next
+    history load, before any new turn runs. A failed read redacts: the safe
+    direction, for this response only.
+    """
+    by_invocation, ended = redaction_for_history(state)
+    pending = [bundle for bundle in dict.fromkeys(by_invocation.values()) if bundle not in ended]
+    service = InformationRequestService()
+    for bundle_id in pending[:_MAX_CONSENT_ACCESS_CHECKS]:
+        try:
+            outcome = access_ended_outcome(
+                await service.get(requester_user_id=owner, bundle_id=bundle_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - unknown means redact
+            logger.info("one.history_consent_access_unknown error=%s", type(exc).__name__)
+            outcome = "revoked"
+        if outcome:
+            ended[bundle_id] = outcome
+    for bundle_id in pending[_MAX_CONSENT_ACCESS_CHECKS:]:
+        ended[bundle_id] = "revoked"
+    return by_invocation, ended
+
+
+def _consent_access_metadata(state: Any, bundle_id: str, ended: dict[str, str]) -> dict[str, Any]:
+    """The ``metadata.consentAccess`` field on an assistant message (CONTRACT C3)."""
+    outcome = ended.get(bundle_id)
+    return {
+        "bundleId": bundle_id,
+        "state": "ended" if outcome else "live",
+        "outcome": outcome,
+        **shared_record_for_history(state, bundle_id),
+    }
+
+
 @router.get("/api/one/agent-chat/history/{conversation_id}")
 async def conversation_history(
     conversation_id: str,
@@ -1671,8 +1783,11 @@ async def conversation_history(
                 if isinstance(receipt.get("structured"), dict):
                     receipts[event.invocation_id] = receipt["structured"]
     # A follow-up turn that reported an owner's answer shows as a status chip.
+    # A bundle can be continued twice (answer, then end of access), so every
+    # outcome label is a chip once this conversation continued any request.
     consent_outcomes = continued_outcomes(session.state)
-    outcome_labels = {CONSENT_OUTCOME_LABELS[outcome] for outcome in consent_outcomes.values()}
+    outcome_labels = set(CONSENT_OUTCOME_LABELS.values()) if consent_outcomes else set()
+    consent_by_invocation, consent_ended = await _consent_access_for_history(user_id, session.state)
     # A turn a push tap started about a feed update shows as the same kind of chip.
     if opened_feed_items(session.state):
         outcome_labels.add(FEED_ATTENTION_LABEL)
@@ -1730,6 +1845,26 @@ async def conversation_history(
                 metadata = {**(metadata or {}), "specialist_read": receipts[turn]}
         if event.author == "user" and text in outcome_labels:
             metadata = {**(metadata or {}), "kind": "selection", "display": text}
+        consent_bundle = consent_by_invocation.get(str(turn or ""))
+        if consent_bundle and event.author == "user" and text in outcome_labels:
+            # The status chip that opened the answer turn names its request.
+            metadata = {
+                **(metadata or {}),
+                "consentBundleId": consent_bundle,
+                **({"consentAccessEnded": True} if consent_bundle in consent_ended else {}),
+            }
+        elif consent_bundle and event.author != "user":
+            access = _consent_access_metadata(session.state, consent_bundle, consent_ended)
+            tag = {"consentBundleId": consent_bundle, "consentAccess": access}
+            if access["state"] == "ended":
+                # Revoke redacts everywhere: the text, its cards and its
+                # activity never leave the server again (founder decision 1).
+                # One "Access ended" message per turn, at the turn's anchor.
+                if not is_anchor:
+                    continue
+                text, metadata = "", {**tag, "consentAccessEnded": True}
+            else:
+                metadata = {**(metadata or {}), **tag}
         messages.append(
             {
                 "id": event.id or f"{event.invocation_id}:{len(messages)}",
@@ -1751,6 +1886,8 @@ async def conversation_history(
         "turn": {"pending": newest_turn_pending(session.events)},
         # Requests whose answer this conversation already continued with.
         "consentOutcomes": consent_outcomes,
+        # Shared requests whose access has ended: {bundle_id: "revoked"|"expired"}.
+        "consentAccessEnded": consent_ended,
     }
 
 

@@ -4,6 +4,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +30,18 @@ const mocks = vi.hoisted(() => ({
   connectionAccept: vi.fn(),
   connectionReject: vi.fn(),
   toastError: vi.fn(),
+  toastSuccess: vi.fn(),
+  handleApproveBundle: vi.fn(),
+  handleDenyBundle: vi.fn(),
+  consentActionOptions: null as null | {
+    onActionComplete?: (detail: {
+      action: "approve" | "deny" | "revoke";
+      requestId?: string;
+      scope?: string;
+      source: "consent_actions";
+    }) => void;
+  },
+  sharePreviewState: { status: "idle" } as Record<string, unknown>,
   busyRequestIds: new Set<string>(),
   cacheSubscribers: new Set<
     (event: { type: string; key?: string; keys?: string[] }) => void
@@ -92,13 +105,24 @@ vi.mock("@/lib/services/connections-service", () => ({
 vi.mock("sonner", () => ({
   toast: {
     error: mocks.toastError,
+    success: mocks.toastSuccess,
   },
 }));
 
+// The on-device preview decrypts the owner's memory; these tests only need
+// to control what it reports.
+vi.mock("@/lib/consent/consent-share-preview", () => ({
+  useConsentSharePreview: () => mocks.sharePreviewState,
+}));
+
 vi.mock("@/lib/consent", () => ({
-  useConsentActions: () => ({
+  useConsentActions: (options: typeof mocks.consentActionOptions) => {
+    mocks.consentActionOptions = options;
+    return {
     handleApprove: mocks.handleApprove,
+    handleApproveBundle: mocks.handleApproveBundle,
     handleDeny: mocks.handleDeny,
+    handleDenyBundle: mocks.handleDenyBundle,
     handleRevoke: mocks.handleRevoke,
     activeAction: mocks.activeAction,
     activeActions: mocks.activeAction ? [mocks.activeAction] : [],
@@ -106,7 +130,8 @@ vi.mock("@/lib/consent", () => ({
       mocks.busyRequestIds.has(String(requestId || "")),
     isScopeBusy: (scope?: string | null) =>
       mocks.busyScopes.has(String(scope || "")),
-  }),
+    };
+  },
   // One Location rows route through a dedicated hook; non-location consents
   // never touch it, so a no-op mock is enough for these deep-link tests.
   useOneLocationConsentActions: () => ({
@@ -258,6 +283,29 @@ function pendingListResponse(entry: Record<string, unknown>) {
   };
 }
 
+/** Kushal's dinner request, as the pending list sends it today. */
+function foodRequestEntry() {
+  return {
+    id: "req_food",
+    request_id: "req_food",
+    kind: "incoming_request",
+    status: "pending",
+    action: "REQUESTED",
+    allowed_next_action: "review_request",
+    scope: "attr.food.preferences.*",
+    scope_description: "Preferences",
+    counterpart_type: "person",
+    counterpart_id: "user-kushal",
+    counterpart_label: "Kushal Trivedi",
+    counterpart_email: "kushal@example.com",
+    reason: "Picking a place for our dinner together",
+    // Numeric epoch string, exactly as the pending list serialises it.
+    issued_at: String(Date.now() - 60_000),
+    approval_timeout_at: new Date(new Date().getFullYear(), 9, 5, 13, 51).getTime(),
+    metadata: { expiry_hours: 168 },
+  };
+}
+
 function expectInHiddenSwipePanel(text: string) {
   const panel = screen.getByText(text).closest('[role="tabpanel"]');
   expect(panel?.getAttribute("aria-hidden")).toBe("true");
@@ -352,6 +400,9 @@ describe("ConsentCenterPage requestId deep links", () => {
     mocks.handleApprove.mockResolvedValue(undefined);
     mocks.handleDeny.mockResolvedValue(undefined);
     mocks.handleRevoke.mockResolvedValue(undefined);
+    mocks.sharePreviewState = { status: "idle" };
+    mocks.handleApproveBundle.mockResolvedValue(undefined);
+    mocks.handleDenyBundle.mockResolvedValue(undefined);
     mocks.connectionAccept.mockResolvedValue(undefined);
     mocks.connectionReject.mockResolvedValue(undefined);
     mocks.busyRequestIds = new Set();
@@ -390,7 +441,7 @@ describe("ConsentCenterPage requestId deep links", () => {
               status: "pending",
               action: "REQUESTED",
               allowed_next_action: "review_request",
-              scope: `attr.professional.detail_${index}`,
+              scope: `attr.professional.detail_${index + 1}`,
               scope_description: `Professional detail ${index + 1}`,
               counterpart_type: "person",
               counterpart_label: "A member",
@@ -418,8 +469,9 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(await screen.findByTestId("consent-bundle-row")).toBeTruthy();
     expect(screen.getAllByTestId("consent-bundle-item")).toHaveLength(12);
     expect(screen.queryAllByTestId("consent-entry-row")).toHaveLength(0);
-    expect(screen.getByText("granted")).toBeTruthy();
-    expect(screen.getByText("denied")).toBeTruthy();
+    // Item states read in the owner's words, not the wire's.
+    expect(screen.getByText("Shared")).toBeTruthy();
+    expect(screen.getByText("Not shared")).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: "A member" })).toBeNull();
     fireEvent.click(screen.getByText("Professional detail 3"));
     expect(mocks.replace).toHaveBeenCalledWith(
@@ -432,9 +484,14 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(
       await screen.findByRole("dialog", { name: "A member" }),
     ).toBeTruthy();
-    expect(
-      screen.getByText("Professional detail 3", { selector: "dd" }),
-    ).toBeTruthy();
+    // The sheet decides the whole request: every item still waiting, named
+    // and counted, not only the one that was tapped.
+    expect(screen.getByText("Access · 10 items")).toBeTruthy();
+    const access = screen.getByText(/Professional detail 3, Professional detail 4/, {
+      selector: "dd",
+    });
+    expect(access).toHaveTextContent("Professional detail 12");
+    expect(access).not.toHaveTextContent("Professional detail 1,");
   });
 
   it("routes a cold document link only to its private review, never generic consent or voice decisions", async () => {
@@ -583,7 +640,7 @@ describe("ConsentCenterPage requestId deep links", () => {
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Allow" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Don't allow" })).toBeTruthy();
-    expect(screen.queryByText("Requested duration")).toBeNull();
+    expect(screen.queryByText("For")).toBeNull();
     expect(screen.queryByText("Future updates")).toBeNull();
     expect(
       screen.queryByText("Includes approved updates until access ends."),
@@ -596,7 +653,8 @@ describe("ConsentCenterPage requestId deep links", () => {
 
     fireEvent.click(screen.getByRole("combobox", { name: "Access duration" }));
     expect(
-      await screen.findByRole("option", { name: "24 hours" }),
+      // One duration wording everywhere: the requester's form says "1 day".
+      await screen.findByRole("option", { name: "1 day" }),
     ).toBeTruthy();
     expect(screen.getByRole("option", { name: "2 days" })).toBeTruthy();
     expect(screen.queryByRole("option", { name: "7 days" })).toBeNull();
@@ -629,7 +687,7 @@ describe("ConsentCenterPage requestId deep links", () => {
 
     render(<ConsentCenterPage />);
 
-    expect(await screen.findByText("Requested duration")).toBeTruthy();
+    expect(await screen.findByText("For")).toBeTruthy();
     expect(screen.getAllByText("1 day")).toHaveLength(1);
     expect(
       screen.queryByText(
@@ -677,7 +735,7 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(
       await screen.findByRole("dialog", { name: "Travel Agent" }),
     ).toBeTruthy();
-    expect(screen.queryByText("Requested duration")).toBeNull();
+    expect(screen.queryByText("For")).toBeNull();
     expect(
       screen.queryByRole("combobox", { name: "Access duration" }),
     ).toBeNull();
@@ -738,7 +796,9 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(
       await screen.findByRole("dialog", { name: "Macy's CRM" }),
     ).toBeTruthy();
-    expect(screen.getByText("Shopping receipts")).toBeTruthy();
+    // Named from the item key, the same rule the Active row uses, so the
+    // request and the access it becomes carry one name.
+    expect(screen.getByText("Shopping receipts memory")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Allow" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Don't allow" })).toBeTruthy();
     expect(screen.getByText("Contact")).toBeTruthy();
@@ -799,7 +859,7 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(screen.getByRole("button", { name: "Accept" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Decline" })).toBeTruthy();
     expect(screen.queryByText("Access duration")).toBeNull();
-    expect(screen.queryByText("Requested duration")).toBeNull();
+    expect(screen.queryByText("For")).toBeNull();
     expect(screen.queryByText("Ends")).toBeNull();
   });
 
@@ -895,9 +955,9 @@ describe("ConsentCenterPage requestId deep links", () => {
 
     render(<ConsentCenterPage />);
 
-    expect(await screen.findByText("Requested duration")).toBeTruthy();
+    expect(await screen.findByText("For")).toBeTruthy();
     expect(screen.getAllByText("3 days").length).toBeGreaterThan(0);
-    expect(screen.getByText("Decision due")).toBeTruthy();
+    expect(screen.getByText("Decide by")).toBeTruthy();
     expect(screen.queryByText("Access duration")).toBeNull();
   });
 
@@ -1461,6 +1521,50 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(denyButton).toHaveTextContent("Don't allow");
   });
 
+  // Regression (localhost run 2026-09-28): one allowed request showed as one
+  // Active row per field ("Food preferences kind", "Health dietary ...").
+  it("shows one Active row per request, named by the server, each field still its own access", async () => {
+    mocks.search = "tab=active";
+    const grant = (id: string, scope: string, label: string) => ({
+      id, request_id: `req_${id}`, kind: "active_grant", status: "active", action: "CONSENT_GRANTED",
+      counterpart_type: "person", counterpart_id: "user-kushal", counterpart_label: "Kushal Trivedi",
+      counterpart_email: "kushal@example.com", scope, scope_description: label,
+      issued_at: "2026-09-28T23:20:00.000Z", expires_at: "2026-10-05T23:20:00.000Z",
+      bundle_id: "bundle-dinner", bundle_labels: ["Food preferences", "Dietary constraints"],
+      bundle_label: "Food preferences and Dietary constraints",
+      metadata: { bundle_id: "bundle-dinner", request_source: "one_person_profile" },
+    });
+    mocks.listEntries.mockResolvedValue({
+      ...emptyListResponse(), surface: "active", total: 2,
+      items: [grant("g1", "attr.food.preferences.*", "Food preferences"), grant("g2", "attr.health.dietary.*", "Dietary constraints")],
+    });
+    render(<ConsentCenterPage />);
+    const rows = await screen.findAllByTestId("consent-active-request-row");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toHaveTextContent("Food preferences and Dietary constraints");
+    expect(screen.queryAllByTestId("consent-entry-row")).toHaveLength(0);
+    fireEvent.click(within(rows[0]!).getByRole("button", { name: /Show Food preferences and Dietary constraints/ }));
+    const items = within(rows[0]!).getAllByTestId("consent-active-request-item");
+    expect(items.map((item) => item.textContent)).toEqual([
+      expect.stringContaining("Food preferences"), expect.stringContaining("Dietary constraints"),
+    ]);
+  });
+
+  it("names what they'll see at once, then fills in the counts", async () => {
+    mocks.search = "tab=requests&requestId=req_food";
+    mocks.sharePreviewState = { status: "loading", labels: ["Food preferences"] };
+    mocks.listEntries.mockResolvedValue(pendingListResponse(foodRequestEntry()));
+    const { rerender } = render(<ConsentCenterPage />);
+    const preview = await screen.findByTestId("consent-share-preview");
+    expect(preview).toHaveTextContent("Food preferences");
+    expect(preview).not.toHaveTextContent(/Checking/);
+    mocks.sharePreviewState = { status: "ready", preview: { total: 2, groups: [
+      { label: "Food preferences", count: 2, names: ["Favorite restaurants"] }] } };
+    rerender(<ConsentCenterPage />);
+    expect(screen.getByTestId("consent-share-preview")).toHaveTextContent("Food preferences · 2 items");
+    expect(screen.getByTestId("consent-share-preview")).toHaveTextContent("Favorite restaurants");
+  });
+
   it("confirms Stop sharing through an alert dialog before revoking", async () => {
     mocks.search = "tab=active&requestId=req_active_1";
     mocks.getSummary.mockResolvedValue({
@@ -1512,9 +1616,186 @@ describe("ConsentCenterPage requestId deep links", () => {
       expect(mocks.handleRevoke).toHaveBeenCalledWith(
         "attr.financial.*",
         "req_active_1",
+        { quiet: true },
       ),
     );
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    // The sheet closes into a plain confirmation, never the "Request not
+    // visible" dead end the old path left once the row left Active.
+    expect(mocks.replace).toHaveBeenCalledWith(
+      expect.not.stringContaining("requestId="),
+      { scroll: false },
+    );
+    await waitFor(() =>
+      expect(mocks.toastSuccess).toHaveBeenCalledWith(
+        "Kushal Trivedi can no longer see your Financial data.",
+      ),
+    );
+    expect(screen.queryByText("Request not visible")).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Kushal Trivedi" })).toBeNull();
+  });
+
+  // Regression (localhost run 3, 2026-09-28): after Stop sharing the Active
+  // tab still listed the access, because each re-read returned the pre-stop
+  // list. The server list below keeps returning it throughout.
+  async function stopSharingFoodAccess(stop: Promise<void>) {
+    mocks.search = "tab=active&requestId=req_active_food";
+    mocks.handleRevoke.mockReturnValue(stop);
+    mocks.getSummary.mockResolvedValue({
+      ...summaryResponse(),
+      counts: { pending: 0, active: 1, previous: 0 },
+    });
+    mocks.listEntries.mockResolvedValue({
+      ...emptyListResponse(),
+      surface: "active",
+      total: 1,
+      items: [
+        {
+          id: "grant_active_food",
+          request_id: "req_active_food",
+          kind: "active_grant",
+          status: "active",
+          action: "CONSENT_GRANTED",
+          counterpart_type: "person",
+          counterpart_id: "user-requester",
+          counterpart_label: "Requester Person",
+          scope: "attr.food.preferences.*",
+          scope_description: "Food preferences",
+          issued_at: "2026-09-28T23:20:00.000Z",
+          expires_at: "2026-10-05T23:20:00.000Z",
+        },
+      ],
+    });
+    render(<ConsentCenterPage />);
+    const list = screen.getByTestId("consent-manager-list");
+    await waitFor(() => expect(list).toHaveTextContent("Requester Person"));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop sharing" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Stop sharing" }));
+    return list;
+  }
+
+  it("takes the access out of Active on the confirming tap, before the server agrees", async () => {
+    let finishStop: () => void = () => undefined;
+    const list = await stopSharingFoodAccess(
+      new Promise<void>((resolve) => {
+        finishStop = resolve;
+      }),
+    );
+
+    // The stop is still in flight and the server list still carries it.
+    await waitFor(() => expect(list).not.toHaveTextContent("Requester Person"));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+
+    await act(async () => finishStop());
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
+    // A re-read that still returns the pre-stop list does not bring it back.
+    act(() => {
+      window.dispatchEvent(
+        new CustomEvent("consent-state-changed", { detail: { reconcile: true } }),
+      );
+    });
+    await waitFor(() => expect(mocks.listEntries.mock.calls.length).toBeGreaterThan(1));
+    expect(list).not.toHaveTextContent("Requester Person");
+  });
+
+  it("puts the access back in Active when stopping fails", async () => {
+    let failStop: (error: Error) => void = () => undefined;
+    const list = await stopSharingFoodAccess(
+      new Promise<void>((_resolve, reject) => {
+        failStop = reject;
+      }),
+    );
+    await waitFor(() => expect(list).not.toHaveTextContent("Requester Person"));
+
+    // Negative control: the removal was a promise to the owner, not a server
+    // answer. When the stop fails the access is still live, and says so.
+    await act(async () => failStop(new Error("Could not stop sharing. Try again.")));
+    await waitFor(() => expect(list).toHaveTextContent("Requester Person"));
+    expect(mocks.toastError).toHaveBeenCalledWith("Could not stop sharing. Try again.");
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+  });
+
+  it("names a request plainly: when it was asked, when to decide, what and how long", async () => {
+    mocks.search = "tab=requests&requestId=req_food";
+    mocks.sharePreviewState = {
+      status: "ready",
+      preview: {
+        total: 5,
+        groups: [
+          { label: "Favorite cuisines", count: 2 },
+          { label: "Favorite restaurants", count: 3 },
+        ],
+      },
+    };
+    mocks.listEntries.mockResolvedValue(
+      pendingListResponse(foodRequestEntry()),
+    );
+
+    render(<ConsentCenterPage />);
+
+    const dialog = await screen.findByRole("dialog", { name: "Kushal Trivedi" });
+    const valueFor = (label: string) =>
+      screen.getByText(label, { selector: "dt" }).nextElementSibling?.textContent;
+    // The wire sends issued_at as a numeric string; it used to read
+    // "Unavailable".
+    expect(valueFor("Requested")).toMatch(/^Today, /);
+    expect(valueFor("Decide by")).toMatch(/^Oct 5/);
+    // The request carries the same name its access will.
+    expect(valueFor("Access")).toBe("Food preferences");
+    // One duration wording: the requester's card says "7 days", so the
+    // owner's picker says "7 days" too, never "1 week".
+    expect(
+      screen.getByRole("combobox", { name: "Access duration" }),
+    ).toHaveTextContent("7 days");
+    expect(dialog).not.toHaveTextContent("Unavailable");
+    expect(dialog).not.toHaveTextContent("Decision due");
+    // What an Allow would hand over, counted on this device.
+    const preview = screen.getByTestId("consent-share-preview");
+    expect(preview).toHaveTextContent("5 items");
+    expect(preview).toHaveTextContent("Favorite restaurants · 3");
+  });
+
+  it("shows the new access in Active the moment an Allow is confirmed", async () => {
+    mocks.search = "tab=requests&requestId=req_food";
+    mocks.listEntries.mockImplementation(
+      async (options: { surface: string }) =>
+        options.surface === "pending"
+          ? pendingListResponse(foodRequestEntry())
+          : { ...emptyListResponse(), surface: options.surface },
+    );
+
+    const { rerender } = render(<ConsentCenterPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Allow" }));
+    expect(mocks.handleApprove).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "req_food", durationHours: 168 }),
+    );
+
+    // The shared hook reports the confirmed approval.
+    act(() => {
+      mocks.consentActionOptions?.onActionComplete?.({
+        action: "approve",
+        requestId: "req_food",
+        source: "consent_actions",
+      });
+    });
+
+    // Active's server page is still the pre-approval one (empty).
+    mocks.search = "tab=active";
+    rerender(<ConsentCenterPage />);
+
+    await waitFor(() =>
+      expect(mocks.listEntries).toHaveBeenCalledWith(
+        expect.objectContaining({ surface: "active" }),
+      ),
+    );
+    // The Active pane shows the new access with its status, named the same
+    // way the request was.
+    const status = await screen.findByText("active");
+    const activePane = status.closest('[role="tabpanel"]');
+    expect(activePane).toHaveTextContent("Kushal Trivedi");
+    expect(activePane).toHaveTextContent("Food preferences");
+    expect(screen.queryByText("No one currently has active access.")).toBeNull();
   });
 
   it("advertises no consents.* voice actions the gateway cannot run", async () => {

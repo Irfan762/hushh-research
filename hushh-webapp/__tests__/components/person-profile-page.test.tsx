@@ -961,7 +961,7 @@ describe("PersonProfilePage request catalog tools", () => {
     });
     render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
     fireEvent.click(await screen.findByRole("button", { name: "Details for Employment status" }));
-    expect(await screen.findByTestId("person-profile-bundle-details")).toHaveTextContent("Employment status (pending) · 1 week");
+    expect(await screen.findByTestId("person-profile-bundle-details")).toHaveTextContent("Employment status (pending) · 7 days");
   });
 
   it("groups a multi-field request into one history row with one action", async () => {

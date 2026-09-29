@@ -22,6 +22,7 @@ from google.genai import types
 from hushh_mcp.one_adk import agent_tree
 from hushh_mcp.one_adk.agent_tree import _SPECIALIST_MODEL, build_one_text_agent
 from hushh_mcp.one_adk.agui_turn_timing import HEAD_ONE, TimedADKAgent
+from hushh_mcp.one_adk.consent_continuation import STATE_CONSENT_CONTINUATION
 from hushh_mcp.one_adk.external_read_boundary import STATE_EXECUTION_SURFACE, STATE_EXTERNAL_READ
 from hushh_mcp.one_adk.follow_up_suggestions import (
     FOLLOW_UP_INSTRUCTION,
@@ -176,7 +177,7 @@ def test_follow_ups_are_on_the_roster_with_the_rule_in_typed_chat_only():
         assert rule in FOLLOW_UP_INSTRUCTION
 
 
-def test_follow_ups_pass_the_post_read_barrier_but_not_a_consent_answer(monkeypatch):
+def test_follow_ups_pass_the_post_read_barrier_and_a_consent_answer():
     """They read and act on nothing; a same-named tool gets no exemption."""
 
     class _Tool:
@@ -197,12 +198,20 @@ def test_follow_ups_pass_the_post_read_barrier_but_not_a_consent_answer(monkeypa
     blocked = agent_tree._before_one_tool(_Tool(impostor), {}, _Context())
     assert blocked["reason"] == "connector_read_complete"
 
-    monkeypatch.setattr(
-        agent_tree, "block_tools_during_consent_answer", lambda _context: {"status": "blocked"}
-    )
-    assert agent_tree._before_one_tool(_Tool(suggest_follow_ups), {}, _Context()) == {
-        "status": "blocked"
-    }
+    class _AnswerContext:
+        invocation_id = "turn"
+        user_id = "owner"
+        session = None
+        state = {
+            STATE_EXECUTION_SURFACE: "typed_chat",
+            STATE_CONSENT_CONTINUATION: {"bundleId": "b", "outcome": "granted"},
+        }
+
+    # A consent answer admits One's own chips (they end the turn in the same
+    # model call) and nothing else, whatever it is named.
+    assert agent_tree._before_one_tool(_Tool(suggest_follow_ups), {}, _AnswerContext()) is None
+    refused = agent_tree._before_one_tool(_Tool(impostor), {}, _AnswerContext())
+    assert refused["reason"] == "consent_answer_turn"
 
 
 def test_suggestions_are_bounded_single_line_and_distinct():

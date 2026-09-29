@@ -525,7 +525,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
   const revealGrant = useCallback(
     async (requestId: string | null) => {
       if (!requestId || !user || !vaultKey || !vaultOwnerToken || !isVaultUnlocked || !viewerProfile) {
-        toast.error("Unlock your vault to view this grant.");
+        toast.error("Unlock your vault to view what was shared.");
         return;
       }
       const grant = viewerProfile.grants.find((item) => item.requestId === requestId);
@@ -800,11 +800,11 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       ? {
           screenId: "one_person_profile",
           title: "Person profile",
-          purpose: "Review a person's relationship, requestable information, grants, and request history.",
+          purpose: "Review a person's relationship, requestable information, shared access, and request history.",
           primaryEntity: null,
           spokenSubject: null,
           sections: [
-            { id: "shared", title: "Shared with you", summary: `${viewerProfile.grants.length} active grants` },
+            { id: "shared", title: "Shared with you", summary: `${viewerProfile.grants.length} active` },
             { id: "requestable", title: "Available to request", summary: `${viewerProfile.scopeCatalog?.totalCount ?? viewerProfile.requestableScopes.length} things you can ask for` },
             { id: "history", title: "Request history", summary: `${historyGroups.length} ${historyGroups.length === 1 ? "request" : "requests"}` },
           ],

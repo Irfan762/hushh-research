@@ -138,22 +138,162 @@ export function formatSharedInformationForAgent(values: OpenedPersonInformation[
   return text;
 }
 
-export type ConsentOutcome = "granted" | "denied" | "expired";
+/**
+ * The answer a chat reports once the other person decides (contract C3).
+ * `partially_granted` means some of what was asked was shared and some was
+ * not; `revoked` means sharing was stopped, which is distinct from a request
+ * or access window that simply ran out (`expired`).
+ */
+export type ConsentOutcome = "granted" | "partially_granted" | "denied" | "expired" | "revoked";
 
-export const CONSENT_OUTCOME_LABELS: Record<ConsentOutcome, string> = {
+const CONSENT_OUTCOMES: ReadonlySet<string> = new Set<ConsentOutcome>([
+  "granted",
+  "partially_granted",
+  "denied",
+  "expired",
+  "revoked",
+]);
+
+/**
+ * The outcomes the server's continuation admission accepts as the turn's
+ * outcome: all five, each as itself (`CONSENT_OUTCOME_LABELS` in
+ * `consent_continuation.py`).
+ */
+export type ConsentContinuationWireOutcome = ConsentOutcome;
+
+/**
+ * The fixed text of the follow-up turn, sent as its message. It MUST equal
+ * `CONSENT_OUTCOME_LABELS` in `consent-protocol/hushh_mcp/one_adk/consent_continuation.py`:
+ * admission refuses a follow-up whose message is anything else. People never
+ * read this text; the chip shows `consentOutcomeDisplayText` instead.
+ */
+export const CONSENT_OUTCOME_LABELS: Record<ConsentContinuationWireOutcome, string> = {
   granted: "Consent approved",
+  partially_granted: "Partly approved",
   denied: "Request declined",
   expired: "Request expired",
+  revoked: "Access ended",
 };
 
-/** Mirrors the server's `bundle_outcome`: the one answer a chat reports. */
+/**
+ * How each outcome travels to the server: as itself. Admission compares the
+ * sent outcome with the ledger's own `progress.outcome`, which distinguishes a
+ * partial approval and a stop from a lapse, so mapping them would be refused.
+ */
+export const CONSENT_WIRE_OUTCOME: Record<ConsentOutcome, ConsentContinuationWireOutcome> = {
+  granted: "granted",
+  partially_granted: "partially_granted",
+  denied: "denied",
+  expired: "expired",
+  revoked: "revoked",
+};
+
+/** Outcomes that carry the other person's information into the answer turn. */
+export function isSharedOutcome(outcome: string | null | undefined): outcome is "granted" | "partially_granted" {
+  return outcome === "granted" || outcome === "partially_granted";
+}
+
+/** The exact message a follow-up turn for this outcome sends. */
+export function consentContinuationSentLabel(outcome: ConsentOutcome): string {
+  return CONSENT_OUTCOME_LABELS[CONSENT_WIRE_OUTCOME[outcome]];
+}
+
+/** A sent label read back from history, as the outcome the server recorded. */
+export function wireOutcomeForSentLabel(text: string): ConsentContinuationWireOutcome | null {
+  for (const [outcome, label] of Object.entries(CONSENT_OUTCOME_LABELS)) {
+    if (label === text) return outcome as ConsentContinuationWireOutcome;
+  }
+  return null;
+}
+
+/** Access that was shared and has since ended: its answers are hidden. */
+export function isAccessEndedOutcome(outcome: ConsentOutcome | null | undefined): boolean {
+  return outcome === "revoked" || outcome === "expired";
+}
+
+function joinLabels(labels: readonly string[]): string {
+  const clean = [...new Set(labels.map((label) => label.trim()).filter(Boolean))];
+  if (clean.length <= 1) return clean[0] ?? "";
+  return `${clean.slice(0, -1).join(", ")} and ${clean.at(-1)}`;
+}
+
+/**
+ * What the outcome chip says to the person, e.g. "Kushal shared Food
+ * preferences". Display only: the turn itself always sends the fixed label.
+ */
+export function consentOutcomeDisplayText(input: {
+  outcome: ConsentOutcome;
+  personName?: string | null;
+  sharedLabels?: readonly string[];
+}): string {
+  const name = input.personName?.trim() || "";
+  const who = name || "They";
+  const what = joinLabels(input.sharedLabels ?? []);
+  switch (input.outcome) {
+    case "granted":
+      return what ? `${who} shared ${what}` : `${who} shared what you asked for`;
+    case "partially_granted":
+      return what ? `${who} shared ${what} and declined the rest` : `${who} shared part of what you asked for`;
+    case "denied":
+      return `${who} declined`;
+    case "expired":
+      return name ? `${name}'s request expired` : "Your request expired";
+    case "revoked":
+      return what ? `${who} stopped sharing ${what}` : `${who} stopped sharing`;
+  }
+}
+
+/**
+ * The shared chip once that sharing has ended: it no longer says "Kushal
+ * shared Food preferences" beside answers that now read "Access ended".
+ */
+export function consentAccessEndedChipText(input: {
+  reason: "revoked" | "expired";
+  personName?: string | null;
+  sharedLabels?: readonly string[];
+}): string {
+  const name = input.personName?.trim() || "";
+  const what = joinLabels(input.sharedLabels ?? []);
+  if (input.reason === "expired") {
+    return what ? `Access to ${what} ended` : "Access ended";
+  }
+  const who = name || "They";
+  return what ? `${who} stopped sharing ${what}` : `${who} stopped sharing`;
+}
+
+function progressOutcome(bundle: unknown): ConsentOutcome | "pending" | null {
+  const progress = (bundle as { progress?: unknown } | null)?.progress;
+  if (!progress || typeof progress !== "object") return null;
+  const outcome = (progress as { outcome?: unknown }).outcome;
+  if (outcome === "pending") return "pending";
+  return typeof outcome === "string" && CONSENT_OUTCOMES.has(outcome) ? (outcome as ConsentOutcome) : null;
+}
+
+/**
+ * The one answer a chat reports, or null while the request is still open.
+ * Uses the server's `progress.outcome` when present; otherwise reads item
+ * statuses the same way the server's `bundle_outcome` does, with the richer
+ * partial and revoked readings layered on top.
+ */
 export function informationRequestOutcome(
   bundle: Pick<InformationRequestBundle, "items" | "cancelled">,
 ): ConsentOutcome | null {
+  if (bundle.cancelled) return null;
+  const fromServer = progressOutcome(bundle);
+  if (fromServer === "pending") return null;
+  if (fromServer) return fromServer;
   const statuses = bundle.items.map((item) => item.status);
-  if (!statuses.length || bundle.cancelled || statuses.includes("pending")) return null;
-  if (statuses.includes("granted")) return "granted";
+  if (!statuses.length || statuses.includes("pending")) return null;
+  if (statuses.includes("granted")) {
+    return statuses.every((status) => status === "granted") ? "granted" : "partially_granted";
+  }
   if (statuses.includes("denied")) return "denied";
-  if (statuses.some((status) => status === "expired" || status === "revoked")) return "expired";
+  if (statuses.includes("revoked")) return "revoked";
+  if (statuses.includes("expired")) return "expired";
   return null;
+}
+
+/** Labels of what is currently shared in this bundle, for display. */
+export function sharedItemLabels(bundle: Pick<InformationRequestBundle, "items">): string[] {
+  return bundle.items.filter((item) => item.status === "granted").map((item) => item.label);
 }

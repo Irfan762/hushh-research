@@ -286,11 +286,7 @@ export function AgentHistorySidebar({
             aria-current={active ? "page" : undefined}
             title={title}
           >
-            <MessageSquare
-              className="h-4 w-4"
-              strokeWidth={active ? 2 : 1.8}
-              aria-hidden="true"
-            />
+            <MessageSquare className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       );
@@ -496,7 +492,7 @@ export function AgentHistorySidebar({
               title="Create new chat"
             >
               <div className="flex items-center gap-2">
-                <Plus className="h-3.5 w-3.5 text-muted-foreground/80 group-hover:text-foreground" strokeWidth={2.2} aria-hidden="true" />
+                <Plus className="h-3.5 w-3.5 text-muted-foreground/80 group-hover:text-foreground" aria-hidden="true" />
                 <span className="font-medium text-[13px]">New chat</span>
               </div>
             </Button>
@@ -526,7 +522,7 @@ export function AgentHistorySidebar({
                   aria-label="Create new chat"
                   title="New chat"
                 >
-                  <Plus className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+                  <Plus className="h-4 w-4" aria-hidden="true" />
                 </Button>
               </div>
             ) : (
@@ -584,7 +580,7 @@ export function AgentHistorySidebar({
                   title="Create new chat"
                 >
                   <div className="flex items-center gap-2">
-                    <Plus className="h-3.5 w-3.5 text-muted-foreground/80 group-hover:text-foreground" strokeWidth={2.2} aria-hidden="true" />
+                    <Plus className="h-3.5 w-3.5 text-muted-foreground/80 group-hover:text-foreground" aria-hidden="true" />
                     <span className="font-medium text-[13px]">New chat</span>
                   </div>
                   <kbd className="rounded border border-black/10 bg-background/60 px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground/70 dark:border-white/10 dark:bg-black/40">
@@ -637,7 +633,7 @@ export function AgentHistorySidebar({
           {!collapsed && !loading && conversations.length === 0 ? (
             <div className="my-3 flex flex-col items-center justify-center rounded-2xl border border-dashed border-black/10 bg-foreground/[0.015] px-4 py-8 text-center dark:border-white/10 dark:bg-white/[0.02]">
               <div className="mb-2.5 grid h-10 w-10 place-items-center rounded-xl bg-foreground/[0.04] text-muted-foreground dark:bg-white/[0.06]">
-                <MessageSquare className="h-5 w-5 opacity-70" strokeWidth={1.8} aria-hidden="true" />
+                <MessageSquare className="h-5 w-5 opacity-70" aria-hidden="true" />
               </div>
               <p className="text-[13px] font-semibold text-foreground/80">No chats yet</p>
               <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">

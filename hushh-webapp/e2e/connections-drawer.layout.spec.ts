@@ -472,9 +472,16 @@ for (const width of [320, 390, 768, 1440])
     await page
       .getByRole("button", { name: "Open drawer", exact: true })
       .click();
-    await page
-      .getByRole("searchbox", { name: "Search chats" })
-      .fill("History filter");
+    // Opening moves focus to Open Connectors one frame later. `fill` focuses
+    // the box and then inserts text in a separate step, so typing before that
+    // frame lands sent the text to the button about 1 run in 60 on WebKit and
+    // left the search empty. Wait for the drawer's own focus to settle first.
+    await expect(
+      page.getByLabel("Open Connectors", { exact: true }),
+    ).toBeFocused();
+    const chatSearch = page.getByRole("searchbox", { name: "Search chats" });
+    await chatSearch.fill("History filter");
+    await expect(chatSearch).toHaveValue("History filter");
     await page.getByLabel("Open Connectors", { exact: true }).click();
     const drawer = page.getByRole("dialog", { name: "Connectors", exact: true });
     await expect(page.getByRole("dialog", { name: "Agent chat history", exact: true })).not.toBeVisible();
