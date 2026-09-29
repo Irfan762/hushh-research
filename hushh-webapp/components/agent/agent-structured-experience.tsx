@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
 import { usePersonInformationRequest } from "@/lib/consent/use-person-information-request";
@@ -8,7 +8,6 @@ import { selectedRequestScopes, toggleRequestScopes } from "@/lib/consent/reques
 import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
 import {
   informationRequestOutcome,
-  openGrantedPersonInformation,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
 import {
@@ -19,9 +18,11 @@ import {
   watchSentInformationRequest,
 } from "@/lib/agent/consent-continuation";
 import { getAgentChatConsentOutcomes } from "@/lib/services/agent-chat-client";
-import { SharedDetailsList } from "@/components/agent/consent/shared-details";
 import { ConsentCardPhaseContext, RequesterProgressBody } from "@/components/agent/consent/requester-consent-card";
 import { AskProposalCard, type AskProposalDraft } from "@/components/agent/consent/ask-proposal-card";
+import { SharedWithYouCard } from "@/components/agent/consent/shared-with-you-card";
+import { AgentTranscriptRevealContext } from "@/components/agent/agent-transcript-reveal";
+import { humanSharedLabel, type SharedWithMeCardItem } from "@/lib/agent/agui-structured-experiences";
 import { isAccessEnded, joinLabels, parseRequestProgress, type RequestProgress } from "@/components/agent/consent/request-progress";
 import { InformationRequestReviewFields } from "@/components/consent/information-request-review-fields";
 import { DEFAULT_REQUEST_DURATION_HOURS, requestDurationLabel } from "@/lib/agent/action-directive-summary";
@@ -101,12 +102,7 @@ export type InformationRequestSubmissionReceipt = {
   review: InformationRequestReviewExperience;
 };
 
-/**
- * Bring an element that just appeared into view above the chat composer. The
- * chat provides it; a card calls it once for the part a person must reach
- * (the ask card's Send), which otherwise could land behind the composer.
- */
-export const AgentTranscriptRevealContext = createContext<((element: HTMLElement) => void) | null>(null);
+export { AgentTranscriptRevealContext };
 
 export function AgentStructuredExperienceView({
   experience,
@@ -125,6 +121,12 @@ export function AgentStructuredExperienceView({
 }) {
   const selectPerson = useContext(AgentPersonSelectionContext);
   switch (experience.type) {
+    case "one.shared_with_me_card.v1":
+      return <div className="space-y-3">
+        {experience.cards.map((card) => (
+          <SharedWithYouCard key={card.person.personRef} person={card.person} items={card.items} variant="chat" />
+        ))}
+      </div>;
     case "one.connector_read.v1":
       return <ConnectorReadReceipt experience={experience} onOpenConnections={onOpenConnections}
         onCompileDriveNotes={onCompileDriveNotes} onDownloadDriveNotes={onDownloadDriveNotes}
@@ -440,6 +442,7 @@ function ScopeDiscoveryView({
   if (proposal && personRef && !sent) {
     return <AskProposalCard
       revealActions={revealInTranscript ?? undefined}
+      catalog={authorityScopes}
       personName={personName(profile?.displayName || experience.person.displayName)}
       proposal={proposal}
       ready={Boolean(profile) && request.available}
@@ -560,44 +563,22 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
   const phaseFor = useContext(ConsentCardPhaseContext);
   const phase = experience.bundleId && phaseFor ? phaseFor(experience.bundleId) : null;
   const [refreshState, setRefreshState] = useState<"idle" | "checking" | "loaded" | "unavailable">("idle");
-  const [revealState, setRevealState] = useState<"idle" | "opening" | "unavailable">("idle");
-  const [autoRevealRequestId, setAutoRevealRequestId] = useState<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [answer, setAnswer] = useState<ConsentOutcome | null>(null);
   const continuation = useContext(AgentConsentContinuationContext);
-  const [revealed, setRevealed] = useState<{
-    viewerUid: string;
-    ownerToken: string;
-    bundleId: string;
-    expiresAtMs: number;
-    values: Array<{ requestId: string; label: string; data: Record<string, unknown> }>;
-  } | null>(null);
-  const revealGeneration = useRef(0);
-
-  useEffect(() => {
-    revealGeneration.current += 1;
-    setRevealed(null);
-    setRevealState("idle");
-    setAutoRevealRequestId(null);
-  }, [experience.bundleId, experience.subjectRef, isVaultUnlocked, user?.uid, vaultKey, vaultOwnerToken]);
 
   useEffect(() => {
     if (!experience.bundleId || experience.phase !== "submitted") return;
     const refresh = () => {
-      revealGeneration.current += 1;
-      setRevealed(null);
       setRefreshState("checking");
       setRefreshRevision((revision) => revision + 1);
     };
     const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
     const onConsentChanged = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail;
-      if (detail?.source === "information_request_updated") {
-        if (String(detail.bundleId ?? "").toLowerCase() !== String(experience.bundleId).toLowerCase()
-          || typeof detail.requestId !== "string") return;
-        if (detail.action === "CONSENT_GRANTED") setAutoRevealRequestId(detail.requestId);
-        else setAutoRevealRequestId((pending) => pending === detail.requestId ? null : pending);
-      }
+      // A doorbell for another request says nothing about this one.
+      if (detail?.source === "information_request_updated"
+        && String(detail.bundleId ?? "").toLowerCase() !== String(experience.bundleId).toLowerCase()) return;
       refresh();
     };
     window.addEventListener("focus", refresh);
@@ -609,48 +590,6 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [experience.bundleId, experience.phase]);
-
-  useEffect(() => {
-    if (!revealed) return;
-    const remainingMs = revealed.expiresAtMs - Date.now();
-    if (remainingMs <= 0) {
-      setRevealed(null);
-      return;
-    }
-    const timer = window.setTimeout(() => setRevealed(null), Math.min(remainingMs, 2_147_483_647));
-    return () => window.clearTimeout(timer);
-  }, [revealed]);
-
-  const revealGrantedInformation = useCallback(async () => {
-    if (!user || !vaultKey || !vaultOwnerToken || !isVaultUnlocked || !experience.bundleId || !experience.subjectRef) return;
-    const generation = ++revealGeneration.current;
-    setRevealed(null);
-    setRevealState("opening");
-    try {
-      const opened = await openGrantedPersonInformation({
-        userId: user.uid,
-        vaultKey,
-        vaultOwnerToken,
-        bundleId: experience.bundleId,
-        subjectRef: experience.subjectRef,
-        domainFor: (requestId) => current?.fields.find((field) => field.requestId === requestId)?.domain,
-        isCurrent: () => generation === revealGeneration.current,
-      });
-      if (!opened || generation !== revealGeneration.current) return;
-      const { values, expiresAtMs } = opened;
-      setRevealed({ viewerUid: user.uid, ownerToken: vaultOwnerToken, bundleId: experience.bundleId, expiresAtMs, values });
-      setRevealState("idle");
-    } catch {
-      if (generation === revealGeneration.current) setRevealState("unavailable");
-    }
-  }, [user, vaultKey, vaultOwnerToken, isVaultUnlocked, experience.bundleId, experience.subjectRef, current?.fields]);
-
-  useEffect(() => {
-    if (!autoRevealRequestId || refreshState !== "loaded" || !isVaultUnlocked
-      || !current?.fields.some((field) => field.requestId === autoRevealRequestId && field.status === "granted")) return;
-    setAutoRevealRequestId(null);
-    void revealGrantedInformation();
-  }, [autoRevealRequestId, refreshState, isVaultUnlocked, current, revealGrantedInformation]);
 
   useEffect(() => {
     let active = true;
@@ -692,21 +631,20 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       // The bundle is the role-authorized source of truth. A restored card's
       // labels are display hints, never keys for assigning a current status.
       const byRequestId = new Map(experience.fields.filter((field) => field.requestId).map((field) => [field.requestId, field]));
-      const fields = bundle.items.map((item) => ({
+      const fields = bundle.items.map((item) => {
+        // The ledger's own reading (C7); nothing said is sensitive.
+        const ledger = String(item.sensitivity ?? "").trim().toLowerCase();
+        return {
         label: item.label,
         domain: byRequestId.get(item.requestId)?.domain || "Information",
-        sensitivity: byRequestId.get(item.requestId)?.sensitivity || "standard" as const,
+        sensitivity: ledger === "standard" ? "standard" as const : ledger === "restricted" ? "restricted" as const : "sensitive" as const,
         requestId: item.requestId,
         status: item.status,
-      }));
+        };
+      });
       const progress = parseRequestProgress(bundle.progress);
       setCurrent({ bundleId: bundle.bundleId, status, fields, progress });
       setAnswer(informationRequestOutcome(bundle));
-      // Decrypted values live only in this component's memory, and only while
-      // every one of them is still granted. Ended access drops them outright.
-      setRevealed((previous) => previous && !(progress && isAccessEnded(progress)) && previous.values.every((value) =>
-        bundle.items.some((item) => item.requestId === value.requestId && item.status === "granted"),
-      ) ? previous : null);
       setRefreshState("loaded");
     }).catch(() => {
       if (active) setRefreshState("unavailable");
@@ -768,13 +706,26 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
 
   const displayFields = current?.fields || experience.fields;
   const displayStatus = current?.status || experience.status;
-  const visibleValues = isVaultUnlocked && revealed && revealed.viewerUid === user?.uid
-    && revealed.ownerToken === vaultOwnerToken
-    && revealed.bundleId === experience.bundleId
-    && revealed.expiresAtMs > Date.now() ? revealed.values : null;
-  const canReveal = experience.direction === "outgoing" && experience.phase === "submitted"
-    && (refreshState === "loaded" || refreshState === "checking")
-    && Boolean(current?.fields.some((field) => field.status === "granted"));
+  // What is shared right now opens at once in the secure card (CONTRACT-2
+  // decision 2), for sensitive items too: the model only ever had their
+  // outline. The card owns opening, the unlock prompt and ended access.
+  const sharedItems: SharedWithMeCardItem[] = experience.direction === "outgoing" && experience.phase === "submitted"
+    && experience.bundleId && (refreshState === "loaded" || refreshState === "checking")
+    ? (current?.fields ?? []).flatMap((field) => field.status === "granted" && field.requestId ? [{
+      key: field.requestId,
+      grantRef: field.requestId,
+      bundleId: experience.bundleId,
+      requestId: field.requestId,
+      label: humanSharedLabel(field.label) ?? field.label,
+      sensitivity: field.sensitivity === "standard" ? "standard" as const : "sensitive" as const,
+      domain: field.domain,
+      fieldOutline: [],
+      sharedAt: current?.progress?.decidedAt ?? null,
+      accessEndsAt: current?.progress?.accessEndsAt ?? null,
+      purpose: null,
+      status: "granted" as const,
+    }] : [])
+    : [];
   // Every field becomes a row in the one list every scope surface uses, so this
   // reads the same as Memory and the same as the pending-request card.
   const items = displayFields.map((field, index) => ({
@@ -832,15 +783,12 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
                     ? "Access revoked"
                     : "Status unavailable";
 
-  const revealControls = canReveal ? (
-    <div className="space-y-3">
-      <MorphyButton type="button" size="sm" disabled={revealState === "opening" || !isVaultUnlocked}
-        onClick={() => void revealGrantedInformation()}>
-        {revealState === "opening" ? "Opening…" : visibleValues ? "Refresh shared information" : "View shared information"}
-      </MorphyButton>
-      {revealState === "unavailable" ? <p role="alert" className="text-sm text-muted-foreground">Shared information could not be opened. Check your vault and try again.</p> : null}
-      {visibleValues ? <SharedDetailsList values={visibleValues} /> : null}
-    </div>
+  const sharedCard = sharedItems.length && experience.subjectRef ? (
+    <SharedWithYouCard
+      person={{ personRef: experience.subjectRef, displayName: experience.personName }}
+      items={sharedItems}
+      variant="chat"
+    />
   ) : null;
 
   // C1: the living card, when the server reports progress for this request.
@@ -855,20 +803,24 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
           : progress.outcome === "expired" ? "Request expired"
             : progress.outcome === "partially_granted" ? "Partly shared" : "Shared with you";
     return (
-      <ExperienceShell
-        experienceType={experience.type}
-        label={progressLabel}
-        title={`${joinLabels(progressLabels)} from ${experience.personName}`}
-        summary={experience.durationLabel}
-        icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
-      >
-        <RequesterProgressBody progress={progress} phase={phase} personName={experience.personName}
-          purpose={experience.purpose} details={ended ? null : revealControls} />
-      </ExperienceShell>
+      <div className="space-y-3">
+        <ExperienceShell
+          experienceType={experience.type}
+          label={progressLabel}
+          title={`${joinLabels(progressLabels)} from ${experience.personName}`}
+          summary={experience.durationLabel}
+          icon={<ShieldCheck className="h-5 w-5" aria-hidden="true" />}
+        >
+          <RequesterProgressBody progress={progress} phase={phase} personName={experience.personName}
+            purpose={experience.purpose} />
+        </ExperienceShell>
+        {ended ? null : sharedCard}
+      </div>
     );
   }
 
   return (
+    <div className="space-y-3">
     <ExperienceShell
       experienceType={experience.type}
       label={label}
@@ -886,8 +838,9 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
           testIdPrefix="information-request-review-scopes"
         />
       </div>
-      {revealControls ? <div className="mt-4">{revealControls}</div> : null}
     </ExperienceShell>
+    {sharedCard}
+    </div>
   );
 }
 

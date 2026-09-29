@@ -11,14 +11,27 @@
  * This component never submits by itself: `onSend` is the caller's existing
  * send path, so there is exactly one way a request is created.
  */
-import { useEffect, useRef, useState } from "react";
-import { Check, Search, Sparkles } from "@/components/icons";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Check, ChevronRight, Minus, Search, Sparkles } from "@/components/icons";
 import { Input } from "@/components/ui/input";
 import { Button as MorphyButton } from "@/lib/morphy-ux/button";
 import { REQUEST_DURATION_OPTIONS } from "@/lib/agent/action-directive-summary";
 import { proposalDurationLabel, type ScopeProposal } from "@/lib/agent/scope-proposal";
 import type { PersonScopeCatalogPage, RequestablePersonScope } from "@/lib/services/person-profile-service";
 import { firstName, joinLabels } from "./request-progress";
+import {
+  initialProposalSelection,
+  proposalCheckState,
+  proposalChosenCount,
+  proposalChosenLabels,
+  proposalRowLabel,
+  proposalSendScopes,
+  proposalTree,
+  proposalUniverse,
+  toggleProposalRow,
+  type ProposalCheckState,
+  type ProposalNode,
+} from "@/lib/agent/proposal-selection";
 
 export type AskProposalDraft = {
   scopes: RequestablePersonScope[];
@@ -40,16 +53,130 @@ export type AskProposalCardProps = {
    * lift it above the composer. The card never scrolls anything itself.
    */
   revealActions?: (element: HTMLElement) => void;
+  /**
+   * The person's requestable catalog, already loaded for this card. It says
+   * how proposed items nest, so a group row can open to its children.
+   */
+  catalog?: readonly RequestablePersonScope[];
 };
 
 const SEARCH_DEBOUNCE_MS = 200;
 const MIN_REASON = 8;
 
-function proposedScopes(proposal: ScopeProposal): RequestablePersonScope[] {
-  return proposal.proposed.map((item) => ({
-    scopeRef: item.scopeRef, label: item.label, description: null,
-    domain: null, sensitivity: null, wildcard: false,
-  }));
+const EMPTY_CATALOG: readonly RequestablePersonScope[] = [];
+
+function CheckMark({ state }: { state: ProposalCheckState }) {
+  return (
+    <span aria-hidden="true" className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-[6px] transition-colors duration-150 ${
+      state === "unchecked" ? "border border-border bg-background" : "bg-accent-strong text-white"}`}>
+      {state === "checked" ? <Check className="h-3 w-3" /> : state === "mixed" ? <Minus className="h-3 w-3" /> : null}
+    </span>
+  );
+}
+
+/**
+ * One selectable row. The whole row is the target; Space toggles, and on a
+ * group Enter or Right opens it and Left closes it. The chevron opens without
+ * changing the choice.
+ */
+function ProposalRow({ label, meta, state, disabled, onToggle, expanded, onExpand, nested }: {
+  label: string;
+  meta?: string | null;
+  state: ProposalCheckState;
+  disabled: boolean;
+  onToggle: () => void;
+  expanded?: boolean;
+  onExpand?: (open: boolean) => void;
+  nested?: boolean;
+}) {
+  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (disabled) return;
+    if (event.key === " ") {
+      event.preventDefault();
+      onToggle();
+    } else if (event.key === "Enter" || event.key === "ArrowRight") {
+      event.preventDefault();
+      if (onExpand) onExpand(true);
+      else if (event.key === "Enter") onToggle();
+    } else if (event.key === "ArrowLeft" && onExpand) {
+      event.preventDefault();
+      onExpand(false);
+    }
+  };
+  return (
+    <div className="flex items-stretch">
+      <div role="checkbox" aria-checked={state === "mixed" ? "mixed" : state === "checked"} aria-disabled={disabled || undefined}
+        aria-expanded={onExpand ? Boolean(expanded) : undefined}
+        tabIndex={disabled ? -1 : 0} onClick={() => { if (!disabled) onToggle(); }} onKeyDown={onKeyDown}
+        data-testid="ask-proposal-row" data-state={state}
+        className={`flex min-h-11 min-w-0 flex-1 cursor-pointer items-center gap-3 py-2 pr-2 text-left outline-none transition-colors duration-150 hover:bg-accent/40 focus-visible:bg-accent/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring aria-disabled:cursor-default aria-disabled:opacity-60 ${
+          nested ? "pl-11" : "pl-3.5"}`}>
+        <CheckMark state={state} />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm leading-5 text-foreground [overflow-wrap:anywhere]">{label}</span>
+          {meta ? <span className="block text-xs leading-4 text-muted-foreground">{meta}</span> : null}
+        </span>
+      </div>
+      {onExpand ? (
+        <button type="button" aria-label={expanded ? `Hide what ${label} includes` : `Show what ${label} includes`}
+          aria-expanded={Boolean(expanded)} onClick={() => onExpand(!expanded)}
+          className="inline-flex w-11 shrink-0 cursor-pointer items-center justify-center text-muted-foreground transition-colors duration-150 hover:bg-accent/40 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring">
+          <ChevronRight className={`h-4 w-4 transition-transform duration-150 motion-reduce:transition-none ${expanded ? "rotate-90" : ""}`} aria-hidden="true" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function ProposalRows({ nodes, extras, selected, disabled, onToggle }: {
+  nodes: ProposalNode[];
+  extras: RequestablePersonScope[];
+  selected: ReadonlySet<string>;
+  disabled: boolean;
+  onToggle: (scopeRef: string, select: boolean) => void;
+}) {
+  const [open, setOpen] = useState<ReadonlySet<string>>(() => new Set());
+  const inTree = new Set(proposalUniverse(nodes, []).map((scope) => scope.scopeRef));
+  const added = extras.filter((extra) => !inTree.has(extra.scopeRef));
+  const setExpanded = (ref: string, value: boolean) => setOpen((current) => {
+    const next = new Set(current);
+    if (value) next.add(ref);
+    else next.delete(ref);
+    return next;
+  });
+  return (
+    <div role="group" aria-label="What to ask for" data-testid="ask-proposal-rows"
+      className="divide-y divide-border/50 overflow-hidden rounded-[var(--app-card-radius-compact)] bg-background/80">
+      {nodes.map((node) => {
+        const state = proposalCheckState(node, selected);
+        const expanded = open.has(node.scope.scopeRef);
+        const label = proposalRowLabel(node.scope);
+        return (
+          <div key={node.scope.scopeRef}>
+            <ProposalRow label={label} state={state} disabled={disabled}
+              meta={node.children.length ? `${node.children.length} ${node.children.length === 1 ? "item" : "items"}` : null}
+              onToggle={() => onToggle(node.scope.scopeRef, state !== "checked")}
+              expanded={expanded}
+              onExpand={node.children.length ? (value) => setExpanded(node.scope.scopeRef, value) : undefined} />
+            {expanded ? (
+              <div role="group" aria-label={`${label} includes`} className="divide-y divide-border/40 border-t border-border/40">
+                {node.children.map((child) => {
+                  const on = selected.has(child.scopeRef) || selected.has(node.scope.scopeRef);
+                  return <ProposalRow key={child.scopeRef} nested label={proposalRowLabel(child)} disabled={disabled}
+                    state={on ? "checked" : "unchecked"} onToggle={() => onToggle(child.scopeRef, !on)} />;
+                })}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {added.map((extra) => {
+        const on = selected.has(extra.scopeRef);
+        return <ProposalRow key={extra.scopeRef} label={proposalRowLabel(extra)} disabled={disabled}
+          state={on ? "checked" : "unchecked"} onToggle={() => onToggle(extra.scopeRef, !on)} />;
+      })}
+    </div>
+  );
 }
 
 /**
@@ -143,7 +270,7 @@ function CatalogPicker({ personName, selected, onToggle, searchCatalog }: {
   );
 }
 
-export function AskProposalCard({ personName, proposal, ready, sending, error, onSend, searchCatalog, revealActions }: AskProposalCardProps) {
+export function AskProposalCard({ personName, proposal, ready, sending, error, onSend, searchCatalog, revealActions, catalog = EMPTY_CATALOG }: AskProposalCardProps) {
   const actionsRef = useRef<HTMLDivElement | null>(null);
   // Once per appearance: Send must never sit behind the composer. The first
   // reveal callback is kept, so a re-render never scrolls the chat again.
@@ -152,18 +279,36 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
     const element = actionsRef.current;
     if (element) reveal?.(element);
   }, [reveal]);
-  const [scopes, setScopes] = useState<RequestablePersonScope[]>(() => proposedScopes(proposal));
+  // The catalog arrives after the card; the tree is rebuilt from it, and the
+  // choice stays the person's: rows they changed keep their state.
+  const nodes = useMemo(() => proposalTree(proposal, catalog), [proposal, catalog]);
+  const [extras, setExtras] = useState<RequestablePersonScope[]>([]);
+  const [touched, setTouched] = useState<Map<string, boolean>>(() => new Map());
+  const selected = useMemo(() => {
+    let next = initialProposalSelection(nodes);
+    for (const [ref, value] of touched) next = toggleProposalRow(nodes, next, ref, value);
+    return next;
+  }, [nodes, touched]);
   const [durationHours, setDurationHours] = useState(proposal.durationHours);
   const [reason, setReason] = useState(proposal.reasonSuggestion);
   const [changing, setChanging] = useState(false);
-  const labels = scopes.map((scope) => scope.label || "Selected information");
+  const universe = proposalUniverse(nodes, extras);
+  const scopes = proposalSendScopes(universe, selected);
+  const chosen = proposalChosenCount(nodes, extras, selected);
+  const labels = proposalChosenLabels(nodes, extras, selected);
   const canSend = ready && !sending && scopes.length > 0 && scopes.length <= 50 && reason.trim().length >= MIN_REASON;
   const why = proposal.proposed.find((item) => item.why)?.why;
 
-  const toggle = (scope: RequestablePersonScope) => setScopes((current) =>
-    current.some((entry) => entry.scopeRef === scope.scopeRef)
-      ? current.filter((entry) => entry.scopeRef !== scope.scopeRef)
-      : [...current, scope]);
+  const setRow = (scopeRef: string, value: boolean) => setTouched((current) => {
+    const next = new Map(current);
+    next.delete(scopeRef);
+    next.set(scopeRef, value);
+    return next;
+  });
+  const toggle = (scope: RequestablePersonScope) => {
+    if (!universe.some((entry) => entry.scopeRef === scope.scopeRef)) setExtras((current) => [...current, scope]);
+    setRow(scope.scopeRef, !selected.has(scope.scopeRef));
+  };
 
   return (
     <section aria-label={`Ask ${firstName(personName)}`} data-testid="ask-proposal-card"
@@ -174,7 +319,7 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
         </span>
         <div className="min-w-0 flex-1">
           <p className="text-base font-semibold leading-6 tracking-[-0.015em] text-foreground [overflow-wrap:anywhere]" data-testid="ask-sentence">
-            {askSentence(personName, labels, durationHours)}
+            {labels.length ? askSentence(personName, labels, durationHours) : `Choose what to ask ${firstName(personName)} for`}
           </p>
           {reason.trim() ? (
             <p className="mt-1 text-sm leading-5 text-foreground/80 [overflow-wrap:anywhere]" data-testid="ask-reason">
@@ -187,9 +332,15 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
         </div>
       </div>
 
+      <ProposalRows nodes={nodes} extras={extras} selected={selected} disabled={sending} onToggle={setRow} />
+      <p className="text-xs font-medium text-muted-foreground" data-testid="ask-proposal-summary" aria-live="polite">
+        {chosen} {chosen === 1 ? "item" : "items"} · {proposalDurationLabel(durationHours)}
+      </p>
+
       {changing ? (
         <div className="space-y-3 rounded-[var(--app-card-radius-compact)] bg-background/72 p-3 backdrop-blur-xl">
-          <CatalogPicker personName={personName} selected={scopes} onToggle={toggle} searchCatalog={searchCatalog} />
+          <CatalogPicker personName={personName} selected={universe.filter((scope) => selected.has(scope.scopeRef))}
+            onToggle={toggle} searchCatalog={searchCatalog} />
           <div className="grid gap-3 sm:grid-cols-[10rem_minmax(0,1fr)]">
             <label className="block space-y-1.5 text-xs font-medium text-muted-foreground">
               For how long

@@ -140,6 +140,8 @@ export type SharedWithMeEntry = {
   label: string;
   purpose: string | null;
   expiresAt: number | null;
+  /** C7: the server's reading; absent on an older server, which reads as sensitive. */
+  sensitivity?: string | null;
 };
 
 export type PersonScopeCatalogPage = {

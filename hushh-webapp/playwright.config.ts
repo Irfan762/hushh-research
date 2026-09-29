@@ -106,8 +106,13 @@ export default defineConfig({
       // iPhone; its fixture builds its own document.
       // `consent-center-row.layout` is opted in because the Requests row's
       // ✗ / ✓ targets and its row button are tapped on an iPhone.
+      // `shared-with-you-card.layout` is opted in because the secure card is
+      // read on an iPhone first: its Hide and Copy targets, and the ask rows'
+      // keyboard and 44px targets, are measured in the engine the app ships in.
+      // Its fixture builds its own document.
       testMatch: [
         /consent-center-row\.layout\.spec\.ts/,
+        /shared-with-you-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,

@@ -382,16 +382,17 @@ describe("InformationRequestReviewView with and without progress", () => {
     mocks.readStoredConnector.mockResolvedValue({ connector_key_id: "test-connector" });
     mocks.decryptScopedExport.mockResolvedValue(MEMORY_TREE);
     render(<AgentStructuredExperienceView experience={restored} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View shared information" }));
-    const details = await screen.findByTestId("chat-shared-information");
+    // The approval shows the secure card at once: no reveal control to find.
+    const details = await screen.findByTestId("shared-with-you-values");
     expect(details).toHaveTextContent("Nopa");
+    expect(screen.queryByRole("button", { name: "View shared information" })).toBeNull();
     expect(() => assertNoInternalIds(details)).not.toThrow();
 
     mocks.getInformationRequest.mockResolvedValue(bundle("revoked", true));
     act(() => window.dispatchEvent(new Event("consent-state-changed")));
     expect(await screen.findByTestId("access-ended-notice"))
       .toHaveTextContent("Kushal stopped sharing Food preferences. One no longer uses it.");
-    expect(screen.queryByTestId("chat-shared-information")).toBeNull();
+    expect(screen.queryByTestId("shared-with-you-values")).toBeNull();
     expect(document.body.textContent).not.toContain("Nopa");
   });
 });
@@ -549,6 +550,59 @@ describe("One picks, you confirm", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Favorite restaurants" }));
     expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Food preferences and Favorite restaurants · 7 days");
     expect(mocks.create).not.toHaveBeenCalled();
+  });
+
+  it("makes every proposed item a row: a group opens, is tri-state, and Send carries exactly the choice", async () => {
+    // "lets request consent for legal entity": One proposed the domain and one of its fields.
+    const legal = [
+      { scopeRef: "scope-legal", label: "Legal Entity Domain", description: null, domain: "legal_entity", sensitivity: "standard",
+        wildcard: true, pathSegments: [] },
+      { scopeRef: "scope-entity", label: "Entity", description: null, domain: "legal_entity", sensitivity: "standard",
+        wildcard: false, pathSegments: ["entity"] },
+      { scopeRef: "scope-ein", label: "Employer id", description: null, domain: "legal_entity", sensitivity: "sensitive",
+        wildcard: false, pathSegments: ["ein"] },
+    ];
+    mocks.getViewer.mockResolvedValue({ ...viewer(), requestableScopes: legal });
+    mocks.create.mockResolvedValue({ personRef: person, bundleId, purpose: "Setting up the company account", durationSeconds: 168 * 3600,
+      cancelled: false, items: [
+        { requestId, scopeRef: "scope-entity", label: "Entity", sensitivity: "standard", status: "pending" },
+      ] });
+    const legalProposal = { proposed: [
+      { scopeRef: "scope-legal", label: "Legal Entity Domain", why: "Matches what you asked for" },
+      { scopeRef: "scope-entity", label: "Entity", why: null },
+    ], durationHours: 168, reasonSuggestion: "Setting up the company account" };
+    render(<AgentStructuredExperienceView experience={{ ...discovery, proposal: legalProposal }} />);
+
+    const group = await screen.findByRole("checkbox", { name: /Legal entity/ });
+    expect(screen.queryByText(/Domain/)).toBeNull();
+    expect(group).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByTestId("ask-proposal-summary")).toHaveTextContent("2 items · 7 days");
+
+    // Enter opens the group without changing the choice; Space toggles a row.
+    fireEvent.keyDown(group, { key: "Enter" });
+    expect(group).toHaveAttribute("aria-expanded", "true");
+    const ein = screen.getByRole("checkbox", { name: "Employer id" });
+    fireEvent.keyDown(ein, { key: " " });
+    expect(ein).toHaveAttribute("aria-checked", "false");
+    expect(group).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByTestId("ask-proposal-summary")).toHaveTextContent("1 item · 7 days");
+    expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Entity · 7 days");
+
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect(send).toBeEnabled());
+    fireEvent.click(send);
+    // The broad scope would still include what was taken out, so only the chosen child goes.
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ scopeRefs: ["scope-entity"] })));
+
+    cleanup();
+    render(<AgentStructuredExperienceView experience={{ ...discovery, proposal: legalProposal }} />);
+    const whole = await screen.findByRole("checkbox", { name: /Legal entity/ });
+    fireEvent.click(whole);
+    expect(whole).toHaveAttribute("aria-checked", "false");
+    expect(screen.getByTestId("ask-proposal-summary")).toHaveTextContent("0 items · 7 days");
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    fireEvent.click(whole);
+    expect(whole).toHaveAttribute("aria-checked", "true");
   });
 
   it("falls back to the catalog when there is no proposal", async () => {
