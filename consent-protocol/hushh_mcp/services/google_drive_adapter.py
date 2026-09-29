@@ -26,6 +26,7 @@ logger = drive_logger(__name__)
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
 DRIVE_BASE = "https://www.googleapis.com/drive/v3"
 METADATA_LIMIT = 256 * 1024
+MAX_FILE_LIST_PAGE_SIZE = 100
 ERROR_RESPONSE_LIMIT = 16 * 1024
 RETRYABLE_403_REASONS = frozenset({"rateLimitExceeded", "userRateLimitExceeded"})
 CONTENT_LIMIT = 4 * 1024 * 1024
@@ -334,7 +335,7 @@ class GoogleDriveAdapter:
                     and FILE_ID.fullmatch(params.get("driveId", "")) is not None
                 )
                 and set(params) <= {*LIST_FIXED, "q", "pageSize", "pageToken", "orderBy", "driveId"}
-                and re.fullmatch(r"[1-9]|1\d|2[0-5]", params.get("pageSize", "")) is not None
+                and re.fullmatch(r"[1-9]|[1-9][0-9]|100", params.get("pageSize", "")) is not None
                 and len(params.get("q", "")) <= 4096
                 and len(params.get("pageToken", "")) <= 1024
                 and params.get("orderBy", "modifiedTime desc") in LIST_ORDERS
@@ -663,7 +664,7 @@ class GoogleDriveAdapter:
         if (
             not isinstance(page_size, int)
             or isinstance(page_size, bool)
-            or not 1 <= page_size <= 25
+            or not 1 <= page_size <= MAX_FILE_LIST_PAGE_SIZE
         ):
             raise DriveReadError("invalid_argument")
         if drive_id is not None and (

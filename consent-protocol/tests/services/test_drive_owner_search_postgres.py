@@ -158,7 +158,8 @@ async def test_thousand_results_checkpoint_every_page_and_resume_new_worker_inst
     calls, concurrency = [], {"active": 0, "peak": 0}
 
     async def read(*, user_id, tool_name, arguments):
-        assert user_id == "owner" and arguments["pageSize"] == 25
+        assert user_id == "owner"
+        assert arguments["pageSize"] == (25 if tool_name == "list_shared_drives" else 100)
         concurrency["active"] += 1
         concurrency["peak"] = max(concurrency["peak"], concurrency["active"])
         await asyncio.sleep(0)
@@ -171,8 +172,8 @@ async def test_thousand_results_checkpoint_every_page_and_resume_new_worker_inst
         return ExternalMcpToolResult(
             False,
             {
-                "files": [file(n) for n in range(page * 25, (page + 1) * 25)],
-                "nextPageToken": str(page + 1) if page < 39 else None,
+                "files": [file(n) for n in range(page * 100, (page + 1) * 100)],
+                "nextPageToken": str(page + 1) if page < 9 else None,
                 "incompleteSearch": False,
             },
             False,
@@ -189,9 +190,9 @@ async def test_thousand_results_checkpoint_every_page_and_resume_new_worker_inst
         assert 1 <= len(calls) - before <= 4
     final = await store.status(user_id="owner", job_id=state["jobId"])
     assert final["status"] == "completed" and final["matched"] == 1000
-    assert final["pagesScanned"] == 41 and final["incompleteSearch"] is False
+    assert final["pagesScanned"] == 11 and final["incompleteSearch"] is False
     assert concurrency["peak"] == 1
-    assert len([call for call in calls if call[0] == "search_files"]) == 40
+    assert len([call for call in calls if call[0] == "search_files"]) == 10
     cursor, identifiers = None, []
     while True:
         page = await store.results(user_id="owner", job_id=state["jobId"], cursor=cursor)

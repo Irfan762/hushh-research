@@ -245,7 +245,8 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
                 False,
             )
         assert tool_name == "search_files"
-        assert arguments["pageSize"] == 25
+        page_size = arguments["pageSize"]
+        assert page_size == 100
         if "driveId" not in arguments:
             numbers = range(1, 26)
             next_token = None
@@ -253,8 +254,8 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
             assert arguments["driveId"] == "shared-drive-1"
             offset = int(arguments.get("pageToken") or "0")
             seen_shared_pages.append(offset)
-            numbers = range(26 + offset, min(26 + offset + 25, 526))
-            next_token = str(offset + 25) if offset + 25 < 500 else None
+            numbers = range(26 + offset, min(26 + offset + page_size, 526))
+            next_token = str(offset + page_size) if offset + page_size < 500 else None
         files = [
             {
                 "id": f"standup-file-{number}",
@@ -295,7 +296,7 @@ async def _complete_shared_drive_search(bulk, sharing, *, request_id):
     assert final["status"] == "completed"
     assert final["matched"] == 525
     assert final["incompleteSearch"] is False
-    assert seen_shared_pages == list(range(0, 500, 25))
+    assert seen_shared_pages == list(range(0, 500, 100))
     last = await store.reference(user_id="owner", job_id=state["jobId"], position=525)
     assert last["id"] == "standup-file-525"
     assert last["shortcutName"].startswith("Standup notes")
