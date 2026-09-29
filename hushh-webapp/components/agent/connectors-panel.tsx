@@ -255,6 +255,15 @@ function OwnerConnectorsPanel({
   const [calendarMessage, setCalendarMessage] = useState("");
   const [curatedBusy, setCuratedBusy] = useState(false);
   const [curatedMessage, setCuratedMessage] = useState("");
+  // Coming back from the provider's consent page with Back can restore this page
+  // from the bfcache with the in-flight flag still set; nothing is in flight then.
+  useEffect(() => {
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) setCuratedBusy(false);
+    };
+    window.addEventListener("pageshow", restored);
+    return () => window.removeEventListener("pageshow", restored);
+  }, []);
   const [pending, setPending] = useState<PendingDriveSelection | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [activeConnector, setActiveConnector] = useState<string | null>(initialConnector);

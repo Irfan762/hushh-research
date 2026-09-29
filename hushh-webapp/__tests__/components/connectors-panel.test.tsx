@@ -353,6 +353,19 @@ describe("supported connector catalog", () => {
       });
     });
 
+    it("re-enables Connect when the page is restored from the back/forward cache", async () => {
+      state.overview.mockResolvedValue(withFlag([hubspot]));
+      render(panel());
+      const connect = await screen.findByRole("button", { name: "Connect HubSpot" });
+      fireEvent.click(connect);
+      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled());
+      act(() => {
+        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
+    });
+
     it("refuses a non-https authorize URL", async () => {
       state.startOAuthConnect.mockResolvedValue({
         authorizeUrl: "http://evil.invalid/authorize",
