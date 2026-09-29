@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +53,7 @@ import { AgentTurnStreamPanel } from "@/components/agent/agent-turn-stream-panel
 import { AppStreamPanel } from "@/components/app-ui/stream-progress-panel";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { Check, MinusCircle, ShieldOff } from "@/components/icons";
+import { CONSENT_OUTCOME_LABELS, wireOutcomeForSentLabel } from "@/lib/consent/open-granted-person-information";
 
 const ASKED = "2026-09-28T13:49:00Z";
 const ENDS = "2026-10-05T12:00:00Z";
@@ -210,6 +213,11 @@ describe("living requester card body", () => {
     render(<SelectionChip label="Kushal shared Food preferences" outcome="granted" />);
     expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(checkMark);
     expect(new Set([checkMark, endedMark, declinedMark]).size).toBe(3);
+    // The chat hands every chip its outcome; without it a decline falls back
+    // to the check. A chip no card claimed reads its outcome from the label.
+    const workspace = readFileSync(path.join(process.cwd(), "components/agent/agent-chat-workspace.tsx"), "utf8");
+    expect(workspace).toContain("outcome={consentChipOutcome(message)}");
+    expect(wireOutcomeForSentLabel(CONSENT_OUTCOME_LABELS.denied)).toBe("denied");
   });
 
   it("words an expiry after sharing as ended on a day", () => {

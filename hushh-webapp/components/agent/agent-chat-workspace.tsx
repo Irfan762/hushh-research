@@ -6942,6 +6942,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       && (isAccessEndedOutcome(live) || Boolean(message.consentAccessEnded));
   };
 
+  // What a consent chip reports, so a decline draws the neutral mark, never
+  // the check (localhost run 4, R6). A chip no card claimed still carries the
+  // server's fixed label, which names its outcome.
+  const consentChipOutcome = (message: AgentMessage) => {
+    const tag = consentTags.get(message.id);
+    if (tag?.role === "chip") return tag.continuedOutcome;
+    return wireOutcomeForSentLabel(message.text.trim());
+  };
+
   const consentChipLabel = (message: AgentMessage): string => {
     const tag = consentTags.get(message.id);
     const card = outgoingRequestCardFor(message.id);
@@ -8067,7 +8076,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   {message.role === "assistant" && redactedAnswerIds.has(message.id) ? (
                     <AccessEndedNotice variant="message" {...accessEndedNoticeFor(message)} />
                   ) : message.kind === "selection" ? (
-                    <SelectionChip label={consentChipLabel(message)} ended={consentChipEnded(message)} />
+                    <SelectionChip
+                      label={consentChipLabel(message)}
+                      ended={consentChipEnded(message)}
+                      outcome={consentChipOutcome(message)}
+                    />
                   ) : (
                     <AgentBubble
                       message={message}
