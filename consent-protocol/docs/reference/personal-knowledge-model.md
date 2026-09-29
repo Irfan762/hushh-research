@@ -281,6 +281,44 @@ Each automatic write carries an `owner_auto_save_policy` receipt that records
 the enabled policy version rather than claiming that the owner reviewed that
 individual memory.
 
+### Explicit saves from chat
+
+When the owner asks One to save something ("save this to my memory"), One calls
+`add_to_pkm`. The tool saves nothing itself: it returns `status: handed_to_device` with
+`saved: false`, and for a pasted document (`whole_message=true`) the browser reads the
+owner's own message instead of a copy in the tool argument. The device then:
+
+1. prepares the text one source section per proposal (`granularity: "section"`, a
+   300 second budget), so a long document is not packed into six-section chunks the
+   eight-fact segmenter can only answer with "split";
+2. drops what the agents judged not to be facts (disclaimers, lists of unknowns) and
+   exact duplicates of what is already stored;
+3. writes every remaining card with an `owner_confirmed` receipt, except identifier-class
+   details and details that would change what the owner already shares, which wait for
+   the owner's tap on the receipt card; secrets are never written;
+4. reports a receipt built only from server-acknowledged commits (a `data_version`):
+   saved, updated, merged, already known, skipped as not facts, waiting for the owner,
+   failed, and sections not read. A section that could not be prepared is reported; it
+   does not stop the prepared sections from saving.
+
+One is told that receipt on the next turn, as counts and category names only, and its
+instruction forbids claiming a save without one. Every capture job has a deadline and
+always publishes a terminal status, so a memory status line can no longer stay on
+"Checking for details worth remembering" after the vault session lapses.
+
+### Memory evolves: superseded values stay in history
+
+A memory write whose merge agent chose create, extend or correct keeps the stored
+information current without losing any of it. When a stated value changes, the new
+value is current and the earlier one moves to a sibling `superseded` list with the time
+it was replaced (`hushh-webapp/lib/pkm/pkm-supersede-merge.ts`). Lists extend by union;
+a correction replaces a list and keeps the old one in history. A correction whose
+payload is not entity-shaped is applied (it used to be dropped while the save reported
+success). `superseded` is an internal branch in `contracts/pkm/internal-path-keys.v1.json`:
+it is encrypted with the domain, recoverable by the owner, and never requestable or
+shareable. Structured writers (runtime settings, connectors, financial replace) pass no
+memory merge decision and keep their plain merge, so no credential accumulates history.
+
 KYC onboarding has a separate first-party owner-confirmed path. It requires an
 unlocked private vault before the identity form is shown; an account without a
 vault is first sent through the vault-create flow. The person's `Save &
