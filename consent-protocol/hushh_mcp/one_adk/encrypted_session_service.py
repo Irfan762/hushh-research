@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from typing import Any
 
 from google.adk.events import Event
@@ -33,6 +34,26 @@ from hushh_mcp.services.chat_key import (
 
 logger = logging.getLogger(__name__)
 _SERIALIZER_BUILD_LOCK = threading.Lock()
+
+# Sessions already reported for stale sealed ``temp:`` values, by (app, user,
+# session). Reads never reseal a row, so a legacy row is decoded again by every
+# conversation-list poll until its next turn; measured 2026-09-28: 277 lines,
+# about 14 per turn, all from those polls. Process memory only, bounded.
+_REPORTED_STALE_TEMP_STATE: OrderedDict[tuple[str, str, str], None] = OrderedDict()
+_REPORTED_STALE_TEMP_STATE_LIMIT = 4096
+_REPORTED_STALE_TEMP_STATE_LOCK = threading.Lock()
+
+
+def _first_stale_temp_report(key: tuple[str, str, str]) -> bool:
+    """True the first time this process drops stale ``temp:`` values from ``key``'s row."""
+    with _REPORTED_STALE_TEMP_STATE_LOCK:
+        if key in _REPORTED_STALE_TEMP_STATE:
+            _REPORTED_STALE_TEMP_STATE.move_to_end(key)
+            return False
+        _REPORTED_STALE_TEMP_STATE[key] = None
+        if len(_REPORTED_STALE_TEMP_STATE) > _REPORTED_STALE_TEMP_STATE_LIMIT:
+            _REPORTED_STALE_TEMP_STATE.popitem(last=False)
+        return True
 
 
 def _invocation_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -190,7 +211,12 @@ class EncryptedAdkSessionService(BaseSessionService):
         for key in stale:
             session.state.pop(key, None)
         if stale:
-            logger.info("one_adk_session.sealed_temp_state_dropped count=%s", len(stale))
+            first = _first_stale_temp_report((app_name, user_id, session_id))
+            logger.log(
+                logging.INFO if first else logging.DEBUG,
+                "one_adk_session.sealed_temp_state_dropped count=%s",
+                len(stale),
+            )
         return session
 
     async def create_session(
