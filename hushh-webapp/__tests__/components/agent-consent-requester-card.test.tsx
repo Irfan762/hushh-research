@@ -49,7 +49,7 @@ import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
 import { AgentTurnStreamPanel } from "@/components/agent/agent-turn-stream-panel";
 import { AppStreamPanel } from "@/components/app-ui/stream-progress-panel";
 import { SelectionChip } from "@/components/agent/selection-chip";
-import { Check, ShieldOff } from "@/components/icons";
+import { Check, MinusCircle, ShieldOff } from "@/components/icons";
 
 const ASKED = "2026-09-28T13:49:00Z";
 const ENDS = "2026-10-05T12:00:00Z";
@@ -188,7 +188,7 @@ describe("living requester card body", () => {
 
   // Localhost run 2026-09-28 (screenshot 17): "Kushal stopped sharing Food
   // preferences" still carried the success check.
-  it("marks a stopped-sharing chip with the neutral ended icon, never the check", () => {
+  it("marks a stopped or declined chip with a neutral icon, never the check", () => {
     const svg = (node: ReactNode) => render(<>{node}</>).container.querySelector("svg")!.innerHTML;
     const checkMark = svg(<Check />);
     const endedMark = svg(<ShieldOff />);
@@ -198,10 +198,17 @@ describe("living requester card body", () => {
     expect(chip).toHaveAttribute("data-state", "ended");
     expect(chip.querySelector("svg")!.innerHTML).toBe(endedMark);
     cleanup();
+    // Localhost run 4 (R6): "Kushal declined" carried the check too.
+    const declinedMark = svg(<MinusCircle />);
+    cleanup();
+    render(<SelectionChip label="Kushal declined" outcome="denied" />);
+    expect(screen.getByTestId("selection-chip")).toHaveAttribute("data-state", "declined");
+    expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(declinedMark);
+    cleanup();
     // Negative control: a shared chip keeps its check.
-    render(<SelectionChip label="Kushal shared Food preferences" />);
+    render(<SelectionChip label="Kushal shared Food preferences" outcome="granted" />);
     expect(screen.getByTestId("selection-chip").querySelector("svg")!.innerHTML).toBe(checkMark);
-    expect(checkMark).not.toBe(endedMark);
+    expect(new Set([checkMark, endedMark, declinedMark]).size).toBe(3);
   });
 
   it("words an expiry after sharing as ended on a day", () => {
