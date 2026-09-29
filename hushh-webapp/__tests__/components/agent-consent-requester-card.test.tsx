@@ -605,6 +605,52 @@ describe("One picks, you confirm", () => {
     expect(whole).toHaveAttribute("aria-checked", "true");
   });
 
+  // Localhost run 4 (A2): "Request all of Kushal's food and dining
+  // information" listed "Food & dining information" and "Food preferences"
+  // flat. The broad item sorts past the viewer's first catalog page, so the
+  // card never knew what it covered.
+  it("nests a broad ask its first catalog page lacks, and Send carries the smallest set", async () => {
+    const food = [
+      { scopeRef: "scope-food-all", label: "Food & dining information", description: null, domain: "food", sensitivity: "standard",
+        wildcard: true, pathSegments: [] },
+      { scopeRef: "scope-food-prefs", label: "Food preferences", description: null, domain: "food", sensitivity: "standard",
+        wildcard: true, pathSegments: ["preferences"] },
+      { scopeRef: "scope-food-diet", label: "Dietary constraints", description: null, domain: "food", sensitivity: "standard",
+        wildcard: false, pathSegments: ["dietary_constraints"] },
+    ];
+    mocks.getViewer.mockResolvedValue({ ...viewer(), requestableScopes: [
+      { scopeRef: "scope-travel", label: "Trips", description: null, domain: "travel", sensitivity: "standard", wildcard: false, pathSegments: ["trips"] },
+    ] });
+    mocks.searchScopeCatalog.mockImplementation(async ({ query }: { query: string }) => ({
+      scopes: query.startsWith("Food") ? food : [], page: 1, hasMore: false, nextPage: null, totalCount: 3,
+    }));
+    const broad = { proposed: [
+      { scopeRef: "scope-food-all", label: "Food & dining information", why: "Matches what you asked for" },
+      { scopeRef: "scope-food-prefs", label: "Food preferences", why: null },
+    ], durationHours: 168, reasonSuggestion: "To view food and dining details" };
+    render(<AgentStructuredExperienceView experience={{ ...discovery, proposal: broad }} />);
+
+    // One group over what it covers, never the parent and child side by side.
+    const group = await screen.findByRole("checkbox", { name: "Food & dining information" });
+    await waitFor(() => expect(group).toHaveAttribute("aria-expanded", "false"));
+    expect(screen.getAllByTestId("ask-proposal-row")).toHaveLength(1);
+    expect(group).toHaveAttribute("aria-checked", "true");
+    const send = screen.getByRole("button", { name: "Send" });
+    await waitFor(() => expect(send).toBeEnabled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Show what Food & dining information includes" }));
+    const diet = screen.getByRole("checkbox", { name: "Dietary constraints" });
+    fireEvent.click(diet);
+    expect(group).toHaveAttribute("aria-checked", "mixed");
+    expect(screen.getByTestId("ask-sentence")).toHaveTextContent("Ask Kushal for Food preferences · 7 days");
+    fireEvent.click(diet);
+    expect(group).toHaveAttribute("aria-checked", "true");
+
+    fireEvent.click(send);
+    // Fully chosen, the group goes as its one broad item.
+    await waitFor(() => expect(mocks.create).toHaveBeenCalledWith(expect.objectContaining({ scopeRefs: ["scope-food-all"] })));
+  });
+
   it("falls back to the catalog when there is no proposal", async () => {
     render(<AgentStructuredExperienceView experience={discovery} />);
     expect(screen.queryByTestId("ask-proposal-card")).toBeNull();

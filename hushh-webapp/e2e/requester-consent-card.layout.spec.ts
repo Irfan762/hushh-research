@@ -17,7 +17,7 @@ let css: string;
 const PERSON = "1234567890abcdef";
 const ASKED = "2026-09-28T13:49:00Z";
 const ENDS = "2026-10-05T12:00:00Z";
-const STATES = ["ask", "waiting", "reading", "answered", "partial", "declined", "access-ended", "no-progress", "shared-details"];
+const STATES = ["ask", "broad-ask", "waiting", "reading", "answered", "partial", "declined", "access-ended", "no-progress", "shared-details"];
 
 type Status = "pending" | "granted" | "denied" | "revoked";
 function bundle(bundleId: string, items: Array<[string, Status]>, progress: Record<string, unknown> | null) {
@@ -103,11 +103,18 @@ for (const [width, height] of [[393, 852], [1440, 900]] as const)
       const body = BUNDLES[id];
       return body ? route.fulfill({ contentType: "application/json", body: JSON.stringify(body) }) : route.fulfill({ status: 404, body: "{}" });
     });
-    await page.route(`**/api/one/people/${PERSON}/scope-catalog*`, (route) => route.fulfill({
-      contentType: "application/json",
-      body: JSON.stringify({ scopes: [{ scopeRef: "scope-food", label: "Food preferences", domain: "lifestyle" },
-        { scopeRef: "scope-restaurants", label: "Favorite restaurants", domain: "lifestyle" }], page: 1, has_more: false, total_count: 2 }),
-    }));
+    await page.route(`**/api/one/people/${PERSON}/scope-catalog*`, (route) => {
+      const query = new URL(route.request().url()).searchParams.get("query") ?? "";
+      // A label search for the broad ask returns it with its place and what it covers.
+      const scopes = query.startsWith("Food") ? [
+        { scopeRef: "scope-food-all", label: "Food & dining information", domain: "food", wildcard: true, pathSegments: [] },
+        { scopeRef: "scope-food-prefs", label: "Food preferences", domain: "food", wildcard: true, pathSegments: ["preferences"] },
+        { scopeRef: "scope-food-diet", label: "Dietary constraints", domain: "food", wildcard: false, pathSegments: ["dietary_constraints"] },
+      ] : [{ scopeRef: "scope-food", label: "Food preferences", domain: "lifestyle" },
+        { scopeRef: "scope-restaurants", label: "Favorite restaurants", domain: "lifestyle" }];
+      return route.fulfill({ contentType: "application/json",
+        body: JSON.stringify({ scopes, page: 1, has_more: false, total_count: scopes.length }) });
+    });
     await page.route(`**/api/one/people/${PERSON}`, (route) => route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({ personRef: PERSON, displayName: "Kushal Trivedi", photoUrl: null, verifiedRole: null,
@@ -127,9 +134,26 @@ for (const [width, height] of [[393, 852], [1440, 900]] as const)
     await expect(page.locator("[data-state='partial']")).toContainText("Access ends Oct 5");
     await expect(page.locator("[data-state='access-ended']"))
       .toContainText("Kushal stopped sharing Food preferences. One no longer uses it.");
-    await expect(page.getByTestId("ask-sentence")).toHaveText("Ask Kushal for Food preferences · 7 days");
-    await expect(page.getByTestId("ask-reason")).toHaveText("To plan dinner together");
-    await expect(page.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+    const ask = page.locator("[data-state='ask']");
+    await expect(ask.getByTestId("ask-sentence")).toHaveText("Ask Kushal for Food preferences · 7 days");
+    await expect(ask.getByTestId("ask-reason")).toHaveText("To plan dinner together");
+    await expect(ask.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+
+    // A2: the broad ask is one group over what it covers, tri-state, and the
+    // summary follows the choice.
+    const broad = page.locator("[data-state='broad-ask']");
+    const group = broad.getByRole("checkbox", { name: "Food & dining information" });
+    await expect(group).toHaveAttribute("aria-expanded", "false");
+    await expect(broad.getByTestId("ask-proposal-row")).toHaveCount(1);
+    await expect(group).toHaveAttribute("aria-checked", "true");
+    await expect(broad.getByRole("button", { name: "Send", exact: true })).toBeEnabled();
+    await broad.getByRole("button", { name: "Show what Food & dining information includes" }).click();
+    await broad.getByRole("checkbox", { name: "Dietary constraints" }).click();
+    await expect(group).toHaveAttribute("aria-checked", "mixed");
+    await expect(broad.getByTestId("ask-proposal-summary")).toHaveText("1 item · 7 days");
+    for (const row of await broad.getByTestId("ask-proposal-row").all()) {
+      expect((await row.boundingBox())!.height).toBeGreaterThanOrEqual(44);
+    }
 
     const details = page.locator("[data-state='shared-details']");
     await expect(details).toContainText("Nopa");

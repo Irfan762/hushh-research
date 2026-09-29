@@ -21,6 +21,14 @@ export type ScopeProposalItem = {
   label: string;
   /** One short reason One picked it, when the server gave one. */
   why: string | null;
+  /**
+   * Where the item sits, when the server says (the catalog's own `domain`,
+   * `wildcard` and `pathSegments`). It is how the card nests a broad ask
+   * ("Food & dining information") over the items it covers.
+   */
+  domain?: string;
+  wildcard?: boolean;
+  pathSegments?: string[];
 };
 
 export type ScopeProposal = {
@@ -81,6 +89,26 @@ export function parseProposalDurationHours(record: Record<string, unknown>): num
   return DEFAULT_REQUEST_DURATION_HOURS;
 }
 
+const MAX_PATH_SEGMENTS = 12;
+
+/** Bounded path segments, or null for anything that is not a short list of short strings. */
+export function boundedPathSegments(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > MAX_PATH_SEGMENTS) return null;
+  const parts = value.map((part) => bounded(part, 80));
+  return parts.every((part): part is string => part !== null) ? parts : null;
+}
+
+/** The item's place in the catalog, only the fields the server actually sent. */
+function proposalHierarchy(item: Record<string, unknown>): Pick<ScopeProposalItem, "domain" | "wildcard" | "pathSegments"> {
+  const domain = bounded(item.domain, 80);
+  const pathSegments = boundedPathSegments(item.pathSegments ?? item.path_segments);
+  return {
+    ...(domain ? { domain } : {}),
+    ...(typeof item.wildcard === "boolean" ? { wildcard: item.wildcard } : {}),
+    ...(pathSegments ? { pathSegments } : {}),
+  };
+}
+
 /** A bounded proposal, or null when the payload carries none. */
 export function parseScopeProposal(content: unknown): ScopeProposal | null {
   const outer = asRecord(content);
@@ -93,7 +121,7 @@ export function parseScopeProposal(content: unknown): ScopeProposal | null {
     const label = bounded(item?.label, 120);
     if (!scopeRef || !label || seen.has(scopeRef)) return [];
     seen.add(scopeRef);
-    return [{ scopeRef, label, why: bounded(item?.why, 200) }];
+    return [{ scopeRef, label, why: bounded(item?.why, 200), ...proposalHierarchy(item!) }];
   });
   if (!proposed.length) return null;
   const reasonSuggestion = bounded(record.reason_suggestion ?? record.reasonSuggestion, 500) ?? "";

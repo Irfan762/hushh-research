@@ -21,7 +21,9 @@ import type { PersonScopeCatalogPage, RequestablePersonScope } from "@/lib/servi
 import { firstName, joinLabels } from "./request-progress";
 import {
   initialProposalSelection,
+  mergeProposalCatalog,
   proposalCheckState,
+  proposalLookups,
   proposalChosenCount,
   proposalChosenLabels,
   proposalRowLabel,
@@ -279,9 +281,33 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
     const element = actionsRef.current;
     if (element) reveal?.(element);
   }, [reveal]);
+  // A proposed item the loaded catalog lacks (a broad one sorts past its first
+  // page) is looked up by label, so the card still knows what it covers. Send
+  // waits for that, so it never sends a broad item and its children apart.
+  const lookups = useMemo(() => proposalLookups(proposal, catalog), [proposal, catalog]);
+  const lookupKey = lookups.join("\u0000");
+  const [found, setFound] = useState<{ key: string; scopes: RequestablePersonScope[] }>({ key: "", scopes: [] });
+  // The caller passes a fresh function each render; the lookup is keyed by
+  // its labels, not by that identity.
+  const search = useRef(searchCatalog);
+  useEffect(() => { search.current = searchCatalog; }, [searchCatalog]);
+  useEffect(() => {
+    if (!ready || !lookupKey) return;
+    const controller = new AbortController();
+    void Promise.allSettled(lookupKey.split("\u0000").map((label) => search.current(label, 1, controller.signal)))
+      .then((results) => {
+        if (controller.signal.aborted) return;
+        // A failed lookup leaves that item a plain row; it never blocks Send.
+        setFound({ key: lookupKey, scopes: results.flatMap((result) => result.status === "fulfilled" ? result.value.scopes : []) });
+      });
+    return () => controller.abort();
+  }, [ready, lookupKey]);
+  const placed = !lookupKey || found.key === lookupKey;
+  const known = useMemo(() => mergeProposalCatalog(catalog, found.key === lookupKey ? found.scopes : []),
+    [catalog, found, lookupKey]);
   // The catalog arrives after the card; the tree is rebuilt from it, and the
   // choice stays the person's: rows they changed keep their state.
-  const nodes = useMemo(() => proposalTree(proposal, catalog), [proposal, catalog]);
+  const nodes = useMemo(() => proposalTree(proposal, known), [proposal, known]);
   const [extras, setExtras] = useState<RequestablePersonScope[]>([]);
   const [touched, setTouched] = useState<Map<string, boolean>>(() => new Map());
   const selected = useMemo(() => {
@@ -296,7 +322,7 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
   const scopes = proposalSendScopes(universe, selected);
   const chosen = proposalChosenCount(nodes, extras, selected);
   const labels = proposalChosenLabels(nodes, extras, selected);
-  const canSend = ready && !sending && scopes.length > 0 && scopes.length <= 50 && reason.trim().length >= MIN_REASON;
+  const canSend = ready && placed && !sending && scopes.length > 0 && scopes.length <= 50 && reason.trim().length >= MIN_REASON;
   const why = proposal.proposed.find((item) => item.why)?.why;
 
   const setRow = (scopeRef: string, value: boolean) => setTouched((current) => {
@@ -369,7 +395,7 @@ export function AskProposalCard({ personName, proposal, ready, sending, error, o
       <div ref={actionsRef} data-testid="ask-proposal-actions" className="flex flex-wrap items-center gap-2">
         <MorphyButton type="button" size="sm" disabled={!canSend}
           onClick={() => onSend({ scopes, purpose: reason.trim(), durationHours })}>
-          {sending ? "Sending…" : !ready ? "Checking…" : "Send"}
+          {sending ? "Sending…" : !ready || !placed ? "Checking…" : "Send"}
         </MorphyButton>
         <MorphyButton type="button" size="sm" variant="none" disabled={sending}
           onClick={() => setChanging((current) => !current)}>

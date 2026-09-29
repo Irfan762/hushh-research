@@ -156,6 +156,12 @@ function catalogText(value: unknown, max: number): string | null {
   return typeof value === "string" && value.trim() && value.trim().length <= max ? value.trim() : null;
 }
 
+function catalogPathSegments(value: unknown): string[] | null {
+  if (!Array.isArray(value) || value.length > 12) return null;
+  const parts = value.map((part) => catalogText(part, 80));
+  return parts.every((part): part is string => part !== null) ? parts : null;
+}
+
 /** Accepts camelCase or snake_case; drops any entry without a ref and a human label. */
 export function parseScopeCatalogPage(payload: Record<string, unknown>, requestedPage: number): PersonScopeCatalogPage {
   const rawList = [payload.scopes, payload.items, payload.requestableScopes, payload.requestable_scopes]
@@ -167,12 +173,15 @@ export function parseScopeCatalogPage(payload: Record<string, unknown>, requeste
     const label = catalogText(entry?.label, 120);
     if (!entry || !scopeRef || !label || seen.has(scopeRef)) return [];
     seen.add(scopeRef);
+    const pathSegments = catalogPathSegments(entry.pathSegments ?? entry.path_segments);
     return [{
       scopeRef, label,
       description: catalogText(entry.description, 280),
       domain: catalogText(entry.domain, 80),
       sensitivity: catalogText(entry.sensitivity, 32),
       wildcard: entry.wildcard === true,
+      // Kept so a search hit can nest under the broad item that covers it.
+      ...(pathSegments ? { pathSegments } : {}),
     }];
   });
   const page = Number(payload.page);
