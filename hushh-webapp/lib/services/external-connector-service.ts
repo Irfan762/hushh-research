@@ -44,7 +44,8 @@ export type ConnectorFeatures = Partial<
     | "drive_document_indexing"
     | "drive_document_sharing"
     | "gmail_chat_reads"
-    | "google_drive_chat_reads",
+    | "google_drive_chat_reads"
+    | "curated_mcp_connectors",
     boolean
   >
 >;

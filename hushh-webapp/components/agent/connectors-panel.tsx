@@ -62,7 +62,10 @@ import {
 } from "@/lib/services/google-drive-picker-service";
 import { GmailReceiptsService } from "@/lib/services/gmail-receipts-service";
 import { GoogleCalendarService } from "@/lib/services/google-calendar-service";
-import type { DriveChatRecoveryReason } from "@/lib/agent/drive-oauth-chat-recovery";
+import {
+  saveCuratedConnectorSettingsHandoff,
+  type DriveChatRecoveryReason,
+} from "@/lib/agent/drive-oauth-chat-recovery";
 import { TrustedDocumentRules } from "@/components/consent/trusted-document-rules";
 import { CustomConnectorsSettings } from "@/components/agent/custom-connectors-settings";
 
@@ -84,6 +87,8 @@ type Props = {
   onClearRecovery?: () => Promise<void>;
 };
 const touch = "min-h-11 min-w-11 whitespace-normal";
+// Operator-registered OAuth connectors that sign in through the generic flow.
+const CURATED_OAUTH_CONNECTORS: ReadonlySet<string> = new Set(["hubspot"]);
 const labels: Record<string, string> = {
   not_connected: "Not connected",
   revoked: "Not connected",
@@ -248,6 +253,8 @@ function OwnerConnectorsPanel({
   const [calendarBusy, setCalendarBusy] = useState(false);
   const [calendarPopupPending, setCalendarPopupPending] = useState(false);
   const [calendarMessage, setCalendarMessage] = useState("");
+  const [curatedBusy, setCuratedBusy] = useState(false);
+  const [curatedMessage, setCuratedMessage] = useState("");
   const [pending, setPending] = useState<PendingDriveSelection | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
   const [activeConnector, setActiveConnector] = useState<string | null>(initialConnector);
@@ -1274,9 +1281,69 @@ function OwnerConnectorsPanel({
     drive?.available !== false &&
     overview?.features.google_drive_picker === true &&
     ["connected", "verifying"].includes(drive?.status ?? "");
+  const connectCurated = (connectorId: string, name: string) => {
+    if (!vaultOwnerToken || !user?.uid || curatedBusy) return;
+    if (Capacitor.isNativePlatform()) {
+      setCuratedMessage(`Connect ${name} on the web. It works here once connected.`);
+      return;
+    }
+    const ownerId = user.uid;
+    const token = vaultOwnerToken;
+    const signal = controller.current?.signal;
+    setCuratedBusy(true);
+    setCuratedMessage("");
+    void ExternalConnectorService.startOAuthConnect({
+      vaultOwnerToken: token,
+      connectorId,
+      redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
+      flow: "web",
+    })
+      .then((start) => {
+        if (signal?.aborted || currentToken.current !== token) return;
+        const authorizeUrl = new URL(start.authorizeUrl);
+        if (
+          authorizeUrl.protocol !== "https:" ||
+          !start.attemptId ||
+          start.connectorId !== connectorId
+        ) throw new Error("invalid_start");
+        saveCuratedConnectorSettingsHandoff({
+          ownerUserId: ownerId,
+          attemptId: start.attemptId,
+          curatedConnector: { connectorId },
+        });
+        window.location.assign(authorizeUrl.href);
+      })
+      .catch(() => {
+        if (signal?.aborted) return;
+        setCuratedMessage(`Could not start ${name}. Try again.`);
+        setCuratedBusy(false);
+      });
+  };
   const confirmAction = () => {
     const target = confirm;
     setConfirm(null);
+    if (target?.startsWith("curated:")) {
+      const connectorId = target.slice("curated:".length);
+      const token = vaultOwnerToken;
+      const signal = controller.current?.signal;
+      if (
+        connectorId !== activeConnector || !token || !signal || signal.aborted || curatedBusy
+      ) return;
+      setCuratedBusy(true);
+      void ExternalConnectorService.disconnect({ vaultOwnerToken: token, connectorId })
+        .then(async () => {
+          if (signal.aborted || currentToken.current !== token) return;
+          setCuratedMessage("Disconnected.");
+          await refresh(signal);
+        })
+        .catch(() => {
+          if (!signal.aborted) setCuratedMessage("Could not disconnect. Try again.");
+        })
+        .finally(() => {
+          if (!signal.aborted) setCuratedBusy(false);
+        });
+      return;
+    }
     if (target?.startsWith("plaid:") && activeConnector === "plaid") {
       const itemId = target.slice("plaid:".length);
       const financialData = financial.data?.data;
@@ -1463,23 +1530,48 @@ function OwnerConnectorsPanel({
             : undefined,
     },
     ...(overview?.connectors ?? [])
-      .filter((item, index, items) =>
-        !["hubspot", "notion"].includes(item.connectorId) &&
-        !["google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId) &&
-        items.findIndex((candidate) => candidate.connectorId === item.connectorId) === index,
-      )
-      .map((item): ConnectorListEntry => ({
-        id: item.connectorId,
-        name: item.displayName,
-        detail: item.status === "needs_reauth" ? "Sign-in needed" : undefined,
-        connected: !["not_connected", "revoked"].includes(item.status),
-        onOpen: !["not_connected", "revoked"].includes(item.status)
-          ? () => showConnector(item.connectorId)
-          : undefined,
-        trailingText: ["not_connected", "revoked"].includes(item.status)
-          ? labels[item.status]
-          : undefined,
-      })),
+      .filter((item, index, items) => {
+        if (["notion", "google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
+        if (items.findIndex((candidate) => candidate.connectorId === item.connectorId) !== index) return false;
+        // A curated connector shows only while its rollout is on and it can be
+        // connected here, or while it is connected so Disconnect stays reachable.
+        if (CURATED_OAUTH_CONNECTORS.has(item.connectorId))
+          return overview?.features.curated_mcp_connectors === true &&
+            (item.available !== false || !["not_connected", "revoked"].includes(item.status));
+        return true;
+      })
+      .map((item): ConnectorListEntry => {
+        const isConnected = !["not_connected", "revoked"].includes(item.status);
+        const curated = CURATED_OAUTH_CONNECTORS.has(item.connectorId);
+        const signInNeeded = item.status === "needs_reauth";
+        return {
+          id: item.connectorId,
+          name: item.displayName,
+          detail: signInNeeded ? "Sign-in needed" : undefined,
+          connected: isConnected,
+          onOpen: isConnected || curated ? () => showConnector(item.connectorId) : undefined,
+          action: !curated
+            ? undefined
+            : signInNeeded || !isConnected
+              ? {
+                  label: `${signInNeeded ? "Reconnect" : "Connect"} ${item.displayName}`,
+                  onClick: () => {
+                    showConnector(item.connectorId);
+                    connectCurated(item.connectorId, item.displayName);
+                  },
+                  disabled: curatedBusy || loading,
+                }
+              : {
+                  label: `Disconnect ${item.displayName}`,
+                  onClick: () => {
+                    showConnector(item.connectorId);
+                    setConfirm(`curated:${item.connectorId}`);
+                  },
+                  disabled: curatedBusy,
+                },
+          trailingText: !isConnected && !curated ? labels[item.status] : undefined,
+        };
+      }),
   ];
   const query = search.trim().toLocaleLowerCase();
   const matchingEntries = entries.filter(
@@ -2035,6 +2127,34 @@ function OwnerConnectorsPanel({
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
                 <p role="status" className="text-sm">{labels[selectedCatalog.status] ?? "Status unavailable"}</p>
+                {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) ? (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {["not_connected", "revoked", "needs_reauth"].includes(selectedCatalog.status) ? (
+                        <Button
+                          className={touch}
+                          disabled={curatedBusy || loading}
+                          onClick={() => connectCurated(selectedCatalog.connectorId, selectedCatalog.displayName)}
+                        >
+                          {selectedCatalog.status === "needs_reauth" ? "Reconnect" : "Connect"}
+                        </Button>
+                      ) : null}
+                      {!["not_connected", "revoked"].includes(selectedCatalog.status) ? (
+                        <Button
+                          className={touch}
+                          variant="outline"
+                          disabled={curatedBusy}
+                          onClick={() => setConfirm(`curated:${selectedCatalog.connectorId}`)}
+                        >
+                          Disconnect
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+                      {curatedBusy ? "Working…" : curatedMessage}
+                    </p>
+                  </>
+                ) : null}
               </section>
             )}
             {confirm && (
@@ -2049,6 +2169,8 @@ function OwnerConnectorsPanel({
                       ? "Disconnect Drive and remove its selected files from One? Existing Google sharing stays active until you revoke it. Mail stays connected."
                       : confirm === "calendar"
                         ? "Disconnect Calendar from One? Other connections stay active."
+                      : confirm.startsWith("curated:")
+                        ? "Disconnect this connector from One? Your data in that service is unchanged."
                       : confirm.startsWith("plaid:")
                         ? "Disconnect this bank and remove its connected financial records from your vault? Other banks stay connected."
                       : "Remove this file from One? The original in Google Drive is unchanged."}
@@ -2056,7 +2178,7 @@ function OwnerConnectorsPanel({
                 <div className="flex flex-wrap gap-2">
                   <Button
                     className={touch}
-                    disabled={mailBusy || driveBusy || plaidBusy || calendarBusy}
+                    disabled={mailBusy || driveBusy || plaidBusy || calendarBusy || curatedBusy}
                     onClick={confirmAction}
                   >
                     Confirm
