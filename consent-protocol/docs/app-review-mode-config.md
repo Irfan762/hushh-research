@@ -80,21 +80,14 @@ or a log):
 | `hushh-webapp/scripts/testing/export-reviewer-test-env.mjs` | The env resolver the others are loaded from |
 | Localhost backend | Start it from a shell that evaluated the resolver's output (`scripts/env/reviewer_mode.sh` prints the command); the overlay file still never holds the passphrase |
 
-**Known gap: the plain "Continue as reviewer" button on a UAT build.** Outside native test mode
-the button sends no credential, so on a backend with this change it gets `403`. That includes an
-Apple Beta App Review of a UAT-backed TestFlight build, if the reviewer uses the button. The
-proposed fix is a passphrase field behind the button: the reviewer already receives the vault
-passphrase in the beta review notes to unlock the vault, so the same value proves the mint. Until
-that ships, do not deploy this change to UAT while a TestFlight build is awaiting Apple beta
-review, or keep that review on a dedicated account that signs in normally.
-
-## Notes
-- This endpoint is included via the shared health router.
-- Frontend web requests can proxy through Next API routes.
-- Native iOS/Android clients can call backend directly.
-- No reviewer password is exposed to clients.
-- The passphrase is the mint credential on every non-production lane; there is no bare mint.
-- `UAT_SMOKE_*` and `KAI_TEST_*` are deprecated one-release aliases.
+**Where the reviewer button renders.** "Continue as reviewer" renders only in native test mode
+(`showReviewer` in `hushh-webapp/components/onboarding/AuthStep.tsx` requires the test bridge). That
+bridge exists only in `#if DEBUG` iOS builds, debuggable Android builds and injected automation
+bridges, so a Release TestFlight build or the UAT website never shows the button, whatever
+`APP_REVIEW_MODE` advertises. Requiring the credential therefore breaks no human sign-in path: a
+UAT-backed TestFlight build offers an Apple beta reviewer only the normal providers.
+Offering a reviewer sign-in to such a reviewer would be a new visible surface, a product decision
+this change does not make.
 
 ## Production: backend-only review (founder decision, 2026-09-29)
 
