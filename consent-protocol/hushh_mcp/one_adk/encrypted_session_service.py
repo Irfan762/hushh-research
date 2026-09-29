@@ -17,15 +17,12 @@ from typing import Any
 from google.adk.events import Event
 from google.adk.sessions import BaseSessionService, Session
 from google.adk.sessions.base_session_service import GetSessionConfig, ListSessionsResponse
+from google.adk.sessions.state import State
 from pydantic import BaseModel
 from pydantic_core import PydanticSerializationError
 
 from db.db_client import DatabaseExecutionError, get_db
 from hushh_mcp.one_adk.drive_result_privacy import redact_drive_session_json
-from hushh_mcp.one_adk.external_read_boundary import (
-    STATE_EXECUTION_SURFACE,
-    STATE_EXTERNAL_READ,
-)
 from hushh_mcp.one_adk.external_read_projection import durable_external_read_projection
 from hushh_mcp.services.chat_key import (
     CHAT_CIPHERTEXT_LIKE,
@@ -36,6 +33,35 @@ from hushh_mcp.services.chat_key import (
 
 logger = logging.getLogger(__name__)
 _SERIALIZER_BUILD_LOCK = threading.Lock()
+
+
+def _invocation_state(state: dict[str, Any]) -> dict[str, Any]:
+    """The ``temp:`` values of the running invocation.
+
+    ADK's contract is that ``temp:`` state lives for one invocation and is never
+    persisted; every stock session service strips it. This store seals the whole
+    Session document, so it has to drop these keys itself. Measured 2026-09-28
+    (run 598321cd): a sealed ``temp:hussh:consent_continuation`` made every later
+    turn in the chat re-render another person's shared block and skip the
+    revoke check, so One answered from it after the owner stopped sharing.
+    """
+    return {
+        key: value
+        for key, value in state.items()
+        if isinstance(key, str) and key.startswith(State.TEMP_PREFIX)
+    }
+
+
+def _without_invocation_state(session: Session) -> Session:
+    """A copy of ``session`` for sealing, without any ``temp:`` value."""
+    if not _invocation_state(session.state):
+        return session
+    durable = {
+        key: value
+        for key, value in session.state.items()
+        if not (isinstance(key, str) and key.startswith(State.TEMP_PREFIX))
+    }
+    return session.model_copy(update={"state": durable})
 
 
 def _prepare_deferred_model_serializers(value: Any) -> None:
@@ -123,7 +149,7 @@ class EncryptedAdkSessionService(BaseSessionService):
             ) from None
 
     def _encode(self, session: Session) -> dict[str, str]:
-        session = durable_external_read_projection(session)
+        session = _without_invocation_state(durable_external_read_projection(session))
         try:
             plain = session.model_dump_json(by_alias=True)
         except PydanticSerializationError as exc:
@@ -158,6 +184,13 @@ class EncryptedAdkSessionService(BaseSessionService):
         session = Session.model_validate_json(plain)
         if (session.app_name, session.user_id, session.id) != (app_name, user_id, session_id):
             raise ChatKeyMismatchError("Chat history did not open with this vault.")
+        # A row sealed before the fix may still hold an earlier turn's ``temp:``
+        # values; a new invocation must never start with them.
+        stale = _invocation_state(session.state)
+        for key in stale:
+            session.state.pop(key, None)
+        if stale:
+            logger.info("one_adk_session.sealed_temp_state_dropped count=%s", len(stale))
         return session
 
     async def create_session(
@@ -361,7 +394,11 @@ class EncryptedAdkSessionService(BaseSessionService):
             )
             if latest is None:
                 raise RuntimeError("Encrypted ADK session disappeared.")
+            running = _invocation_state(session.state)
             persisted_event = await super().append_event(latest, event)
+            # The stored snapshot has no ``temp:`` values; keep this invocation's.
+            for key, value in running.items():
+                latest.state.setdefault(key, value)
             session.state = latest.state
             session.events = latest.events
             self._set_revision(session, self._revision(latest))
@@ -397,16 +434,12 @@ class EncryptedAdkSessionService(BaseSessionService):
             )
             if latest is None:
                 raise RuntimeError("Encrypted ADK session disappeared.")
-            # These trusted invocation-local guards intentionally never reach
-            # storage. A CAS retry must not replace them with the redacted
-            # durable snapshot and reopen tools after an external read.
-            ephemeral = {
-                name: session.state[name]
-                for name in (STATE_EXECUTION_SURFACE, STATE_EXTERNAL_READ)
-                if name in session.state
-            }
+            # Invocation-local (``temp:``) values never reach storage, so the
+            # stored snapshot lacks them. A CAS retry must not drop them: that
+            # would reopen tools after an external read, among other guards.
+            running = _invocation_state(session.state)
             await super().append_event(latest, event)
-            latest.state.update(ephemeral)
+            latest.state.update(running)
             session.state = latest.state
             session.events = latest.events
             session.last_update_time = time.time()

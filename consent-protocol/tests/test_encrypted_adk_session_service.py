@@ -13,6 +13,7 @@ from db.db_client import DatabaseExecutionError
 from hushh_mcp.one_adk.encrypted_session_service import (
     EncryptedAdkSessionService,
     EncryptedAdkSessionUnavailableError,
+    session_payload_aad,
 )
 from tests.helpers.chat_keys import static_chat_cipher
 
@@ -315,3 +316,37 @@ async def test_overlapping_snapshots_preserve_both_committed_events(monkeypatch)
     after_retry = await service.get_session(app_name="one", user_id="owner", session_id="thread")
     assert after_retry is not None
     assert [event.id for event in after_retry.events].count("request_submission_source_1") == 1
+
+
+def test_a_row_sealed_with_invocation_state_opens_without_it(monkeypatch) -> None:
+    """Rows sealed before 2026-09-28 hold an answer turn's ``temp:`` record; a
+    new invocation must never start with it (the same-chat consent leak)."""
+    monkeypatch.setenv("APP_SIGNING_KEY", "a" * 32)
+    service = EncryptedAdkSessionService(static_chat_cipher())
+    session = Session(
+        id="thread-1",
+        app_name="hussh_one",
+        user_id="owner-1",
+        state={"hussh:kept": 1, "temp:hussh:consent_continuation": {"shared": "ref"}},
+        events=[],
+    )
+    legacy = service._cipher.seal(
+        session.model_dump_json(by_alias=True),
+        owner_id=session.user_id,
+        aad=session_payload_aad(session.app_name, session.id),
+    )
+    row = {
+        "payload_ciphertext": legacy.ciphertext,
+        "payload_iv": legacy.iv,
+        "payload_tag": legacy.tag,
+        "payload_algorithm": legacy.algorithm,
+    }
+    assert _decode_as(service, session, row).state == {"hussh:kept": 1}
+    # And nothing new is sealed with it, while the live session keeps it.
+    fresh = _decode_as(
+        service,
+        session,
+        {f"payload_{key}": value for key, value in service._encode(session).items()},
+    )
+    assert fresh.state == {"hussh:kept": 1}
+    assert "temp:hussh:consent_continuation" in session.state
