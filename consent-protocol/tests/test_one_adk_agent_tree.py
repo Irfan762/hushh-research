@@ -88,6 +88,7 @@ from hushh_mcp.one_adk.pending_email_draft import (
     STATE_PENDING_EMAIL_DRAFT,
     admit_pending_email_draft,
 )
+from hushh_mcp.one_adk.queued_input import club_queued_input
 from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
 from hushh_mcp.services.connections_service import ConnectionsError, ConnectionsService
 from hushh_mcp.services.live_voice_context import (
@@ -147,8 +148,13 @@ class TestAgentTreeShape:
         agent = build_one_root_agent()
         assert agent.name == "one"
         # Consent redaction runs first, so timing measures the request actually sent.
-        assert agent.canonical_before_model_callbacks[-1] is timed_one_before_model
-        assert agent.canonical_before_model_callbacks[0].__name__ == "_one_consent_before_model"
+        # Queued input joins last: the timing callback can still answer for the
+        # model (the read barrier), and a message must never be drained into a
+        # call that is not made.
+        callbacks = agent.canonical_before_model_callbacks
+        assert callbacks[0].__name__ == "_one_consent_before_model"
+        assert callbacks[1] is timed_one_before_model
+        assert callbacks[-1] is club_queued_input
         assert agent.after_model_callback is timed_one_after_model
         tool_names = {
             getattr(t, "name", getattr(t, "__name__", type(t).__name__)) for t in agent.tools
