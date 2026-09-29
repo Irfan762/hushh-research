@@ -98,9 +98,51 @@ Production has no runtime use for either, and `config/deploy-env-coverage.json` 
 every production deploy (its legacy-fallback loop); that is expected and binds nothing.
 
 **Never reuse the production reviewer as a UAT or dev `REVIEWER_UID`.** UAT and production share
-the Firebase authority `hushh-pda`, and UAT mints a review session with no credential. A UID
-configured there can be signed into from UAT, and the resulting Firebase session is also valid
-against the production API.
+the Firebase authority `hushh-pda`. A UID configured on UAT can be signed into from UAT, and the
+only thing keeping that session off production is the lane claim described below.
+
+## Lane containment: one Firebase authority (2026-09-29)
+
+**The lanes share one Firebase authority.** The UAT and production backends both hold
+`FIREBASE_ADMIN_CREDENTIALS_JSON` for project `hushh-pda`, so a Firebase ID token issued on
+either lane is cryptographically valid on both. Until this change a review session minted on UAT
+could be exchanged for an ID token and presented to the production API as the reviewer.
+
+What contains it now:
+
+1. **Every review-mode mint is marked.** `POST /api/app-config/review-mode/session` passes the
+   developer claim `hushh_review_mint: "<lane>"` to `create_custom_token`, where the lane is the
+   service's `ENVIRONMENT` (`dev`, `uat`, `development` on localhost). Firebase carries
+   custom-token developer claims into every ID token of that sign-in, including refreshed ones.
+2. **Every verifier refuses a marked token outside its own lane.**
+   `refuse_foreign_review_mint` in `api/utils/firebase_auth.py` refuses a token whose
+   `hushh_review_mint` is present and differs from this service's lane, and refuses every marked
+   token on production (`ENVIRONMENT=production` or `APP_RUNTIME_PROFILE=production`), whatever
+   the claim says. The refusal is the same `401 Invalid Firebase ID token` an invalid token gets,
+   and logs `one.auth.review_mint_rejected env=<this lane> minted_for=<claim>`, never the token.
+   Unmarked tokens (every ordinary Google, Apple, phone or trusted-device sign-in) are unaffected.
+3. **A review session cannot mint an unmarked token.** Two routes turn a signed-in session into a
+   fresh custom token that cannot inherit the claim: trusted-device approval
+   (`/api/account/trusted-device-authorizations`, exchanged at `.../exchange`) and the Hushh Tech
+   launch (`/api/v1/products/hushh-tech/launch/authorize`, exchanged at `.../launch/exchange`).
+   Both refuse any marked session, on every lane, at the step where the session is presented
+   (`403 TRUSTED_DEVICE_REVIEW_SESSION_REFUSED`, and `401 UNAUTHENTICATED` respectively).
+
+Verification paths and how each is covered:
+
+| Path | Coverage |
+| --- | --- |
+| `verify_firebase_bearer` (`api/utils/firebase_auth.py`), behind `require_firebase_auth`, `require_firebase_auth_read_only`, consent, notifications, session, SSE, agent chat, voice, voice actor proof, Hushh Tech and debug routes | Refuses directly |
+| `_verify_browser_enrollment_identity` (`api/routes/account.py`) | Refuses directly, and refuses any marked session |
+| `_verify_phone_claim_id_token` (`api/routes/account.py`, also used by `api/routes/ria.py`) | Refuses directly (a minted session is `custom`, not `phone`, so it already failed the provider check) |
+| `_require_recent_firebase_auth`, `_authorize_firebase_watermark` (`api/routes/hushh_tech.py`) | Refuse directly; the second also refuses any marked session |
+| `_recipient` (`api/routes/drive_sharing.py`) | Covered by its `require_firebase_auth_read_only` dependency on the same `Authorization` header, which runs first |
+| Next.js `validateFirebaseToken` (`hushh-webapp/lib/auth/validate.ts`) | Pre-check only; every route that uses it forwards the same header to a backend route above |
+
+What this does **not** do: it does not reach review sessions minted before the change. Those
+carry no claim, and their refresh tokens keep producing unmarked ID tokens. Revoking the UAT
+reviewer's refresh tokens ends them; production verifies with `check_revoked=True`, so a
+revocation takes effect there within the 60-second positive cache.
 
 The legacy production `REVIEWER_UID` value predating this decision (first version 2026-02-21)
 is a Firebase user with no sign-in provider, so only a minted token can reach it. It cannot be

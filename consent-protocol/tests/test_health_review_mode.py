@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -77,8 +78,11 @@ def test_review_mode_session_uses_reviewer_uid_when_app_review_enabled(monkeypat
 
     class _FakeFirebaseAuth:
         @staticmethod
-        def create_custom_token(uid: str, app: object | None = None):
+        def create_custom_token(
+            uid: str, developer_claims: dict | None = None, app: object | None = None
+        ):
             minted["uid"] = uid
+            minted["claims"] = developer_claims
             minted["app"] = app
             return b"custom-token"
 
@@ -114,8 +118,11 @@ def test_review_mode_session_accepts_reviewer_vault_passphrase_overlay(monkeypat
 
     class _FakeFirebaseAuth:
         @staticmethod
-        def create_custom_token(uid: str, app: object | None = None):
+        def create_custom_token(
+            uid: str, developer_claims: dict | None = None, app: object | None = None
+        ):
             minted["uid"] = uid
+            minted["claims"] = developer_claims
             minted["app"] = app
             return b"custom-token"
 
@@ -180,8 +187,11 @@ def test_review_mode_session_accepts_deprecated_uat_smoke_overlay(monkeypatch):
 
     class _FakeFirebaseAuth:
         @staticmethod
-        def create_custom_token(uid: str, app: object | None = None):
+        def create_custom_token(
+            uid: str, developer_claims: dict | None = None, app: object | None = None
+        ):
             minted["uid"] = uid
+            minted["claims"] = developer_claims
             minted["app"] = app
             return b"custom-token"
 
@@ -263,8 +273,11 @@ def _install_fake_minter(monkeypatch) -> dict[str, object]:
 
     class _FakeFirebaseAuth:
         @staticmethod
-        def create_custom_token(uid: str, app: object | None = None):
+        def create_custom_token(
+            uid: str, developer_claims: dict | None = None, app: object | None = None
+        ):
             minted["uid"] = uid
+            minted["claims"] = developer_claims
             minted["app"] = app
             return b"custom-token"
 
@@ -469,6 +482,27 @@ def test_review_mode_on_backend_without_passphrase_ignores_supplied_passphrase(m
 
     assert response.status_code == 200
     assert minted["uid"] == "reviewer_uid_123"
+
+
+@pytest.mark.parametrize("lane", ["dev", "uat", "development"])
+def test_review_mint_stamps_the_minting_lane(monkeypatch, lane):
+    """The lane claim is what lets every other lane refuse this session.
+
+    Firebase carries custom-token developer claims into the ID token, and
+    api/utils/firebase_auth.py refuses a token whose claim is not the
+    verifier's own lane (always, on production).
+    """
+    _clear_reviewer_env(monkeypatch)
+    monkeypatch.delenv("APP_RUNTIME_PROFILE", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", lane)
+    monkeypatch.setenv("REVIEWER_UID", "reviewer_uid_123")
+    monkeypatch.setenv("REVIEWER_VAULT_PASSPHRASE", "primary-passphrase")
+    minted = _install_fake_minter(monkeypatch)
+
+    response = _post_session("primary-passphrase")
+
+    assert response.status_code == 200
+    assert minted["claims"] == {"hushh_review_mint": lane}
 
 
 def _production_like_live(monkeypatch) -> None:

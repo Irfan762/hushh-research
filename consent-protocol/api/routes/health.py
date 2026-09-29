@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from api.middlewares.rate_limit import limiter
 from api.utils.firebase_admin import ensure_firebase_auth_admin, get_firebase_auth_app
+from api.utils.firebase_auth import review_mint_developer_claims
 
 logger = logging.getLogger(__name__)
 
@@ -355,8 +356,11 @@ async def issue_app_review_mode_session(request: Request):
     try:
         from firebase_admin import auth as firebase_auth
 
+        # The claim confines the resulting session to this lane: every other
+        # lane sharing the Firebase authority refuses it (api/utils/firebase_auth.py).
         custom_token = firebase_auth.create_custom_token(
             reviewer_uid,
+            review_mint_developer_claims(),
             app=get_firebase_auth_app(),
         )
         token_str = (
@@ -372,8 +376,10 @@ async def issue_app_review_mode_session(request: Request):
 
     client_ip = request.client.host if request.client else "unknown"
     logger.info(
-        "app_review_mode.session_issued reviewer_uid_present=true subject=%s project_id=%s client_ip=%s",
+        "app_review_mode.session_issued reviewer_uid_present=true subject=%s lane=%s "
+        "project_id=%s client_ip=%s",
         session_subject,
+        review_mint_developer_claims()["hushh_review_mint"],
         project_id or "unknown",
         client_ip,
     )
