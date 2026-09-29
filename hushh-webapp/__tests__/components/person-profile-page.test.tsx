@@ -1048,6 +1048,23 @@ describe("PersonProfilePage request catalog tools", () => {
     });
   });
 
+  // Run 4 (S3/U3): a grouped request on a later page read "2 items". The
+  // server now names the request's items, and the row says what was asked for.
+  it("titles a server history row by the item labels the server sends", async () => {
+    mocks.getViewer.mockResolvedValue(viewerProfile({ requestHistory: [] }));
+    mocks.getRequestHistory.mockResolvedValue({ bundles: [
+      { bundleId: "named", purpose: "Preparing the joint return", durationSeconds: 3600, createdAt: "2026-09-20T10:00:00+00:00",
+        cancelled: false, itemCount: 2, itemLabels: ["Tax record", "Portfolio"] },
+      // Negative control: a row with no labels keeps its count.
+      { bundleId: "unnamed", purpose: "Older request", durationSeconds: 3600, createdAt: "2026-09-19T10:00:00+00:00",
+        cancelled: false, itemCount: 3 },
+    ], nextCursor: null });
+    render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
+    expect(await screen.findByText("Tax record and Portfolio")).toBeInTheDocument();
+    expect(screen.queryByText("2 items")).toBeNull();
+    expect(screen.getByText("3 items")).toBeInTheDocument();
+  });
+
   it("does not display details returned for another person", async () => {
     const { toast } = await import("sonner");
     mocks.getViewer.mockResolvedValue(viewerProfile({

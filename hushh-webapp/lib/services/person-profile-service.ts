@@ -101,6 +101,8 @@ export type PersonRequestHistoryPage = {
     createdAt: string;
     cancelled: boolean;
     itemCount: number;
+    /** Human labels of the bundle's items, deduplicated, in request order. */
+    itemLabels?: string[];
   }>;
   nextCursor: string | null;
 };

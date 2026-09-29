@@ -90,9 +90,20 @@ function historyItemLabel(label: string | null | undefined): string {
   return humanSharedLabel(label) ?? "Shared information";
 }
 
-/** A request's title: what it asked for when known, otherwise how many items. */
-function historyTitle(labels: Array<string | null | undefined>, itemCount: number): string {
+/**
+ * A request's title: what it asked for when known, otherwise how many items.
+ * `itemLabels` is the server's own list of the request's items (deduplicated),
+ * so an older request on a later page still reads "Tax record and Portfolio"
+ * rather than "2 items" (run 4, S3/U3).
+ */
+function historyTitle(
+  labels: Array<string | null | undefined>,
+  itemCount: number,
+  itemLabels: readonly string[] = [],
+): string {
   if (labels.length === itemCount && itemCount > 0) return joinInformationLabels(labels.map(historyItemLabel), 2);
+  const named = itemLabels.filter((label) => typeof label === "string" && label.trim());
+  if (named.length) return joinInformationLabels(named.map(historyItemLabel), 2);
   return `${itemCount} ${itemCount === 1 ? "item" : "items"}`;
 }
 
@@ -152,12 +163,14 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       first: recent?.first ?? null,
       items: recent?.items ?? [],
       itemCount: summary.itemCount,
+      itemLabels: Array.isArray(summary.itemLabels) ? summary.itemLabels : [],
       purpose: summary.purpose,
       createdAt: summary.createdAt,
     };
   }) ?? recentHistoryGroups.slice((historyPage - 1) * 8, historyPage * 8).map((group) => ({
     ...group,
     itemCount: group.items.length,
+    itemLabels: [] as string[],
     purpose: group.first.purpose,
     createdAt: group.first.createdAt,
   }));
@@ -920,7 +933,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
               {historyGroups.length ? (
                 <SectionCard>
                   <div className="divide-y divide-border/60">
-                    {visibleHistoryGroups.map(({ bundleId, first, items, itemCount, purpose: requestPurpose, createdAt }) => {
+                    {visibleHistoryGroups.map(({ bundleId, first, items, itemCount, itemLabels, purpose: requestPurpose, createdAt }) => {
                       const details = bundleDetails[bundleId];
                       const statusItems = details?.items ?? (items.length === itemCount ? items : []);
                       const statuses = new Set(statusItems.map((item) => item.status));
@@ -930,6 +943,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                       const title = historyTitle(
                         statusItems.length ? statusItems.map((item) => item.label) : first ? [first.label] : [],
                         itemCount,
+                        itemLabels,
                       );
                       return (
                         <div key={bundleId} className="flex flex-wrap items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
