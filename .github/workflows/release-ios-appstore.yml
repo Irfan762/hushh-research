@@ -149,6 +149,17 @@ jobs:
           # deps must exist before any Swift Package Manager resolution.
           npm ci --prefix hushh-webapp
 
+      # verify:one-voice regenerates the capability graph through the
+      # consent-protocol Python package. Without its locked environment the
+      # generator dies on `import dotenv` and no dispatch can pass the contract
+      # gate. Same provisioning the TestFlight lane has had since 231c6e50f.
+      - name: Set up locked consent-protocol runtime
+        uses: ./consent-protocol/.github/actions/setup-python-uv
+        with:
+          python-version: "3.13"
+          protocol-dir: ./consent-protocol
+          sync-dev-group: "true"
+
       - name: Authenticate to Google Cloud (UAT)
         uses: google-github-actions/auth@v2
         with:
