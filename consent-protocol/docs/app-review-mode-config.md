@@ -169,7 +169,7 @@ What contains it now:
    Unmarked tokens (every ordinary Google, Apple, phone or trusted-device sign-in) are unaffected.
 3. **A review session cannot mint an unmarked token.** Two routes turn a signed-in session into a
    fresh custom token that cannot inherit the claim: trusted-device approval
-   (`/api/account/trusted-device-authorizations`, exchanged at `.../exchange`) and the Hushh Tech
+   (`/api/account/trusted-device-authorizations`, exchanged at `.../exchange`) and the Hussh Tech
    launch (`/api/v1/products/hushh-tech/launch/authorize`, exchanged at `.../launch/exchange`).
    Both refuse any marked session, on every lane, at the step where the session is presented
    (`403 TRUSTED_DEVICE_REVIEW_SESSION_REFUSED`, and `401 UNAUTHENTICATED` respectively).
@@ -178,7 +178,7 @@ Verification paths and how each is covered:
 
 | Path | Coverage |
 | --- | --- |
-| `verify_firebase_bearer` (`api/utils/firebase_auth.py`), behind `require_firebase_auth`, `require_firebase_auth_read_only`, consent, notifications, session, SSE, agent chat, voice, voice actor proof, Hushh Tech and debug routes | Refuses directly |
+| `verify_firebase_bearer` (`api/utils/firebase_auth.py`), behind `require_firebase_auth`, `require_firebase_auth_read_only`, consent, notifications, session, SSE, agent chat, voice, voice actor proof, Hussh Tech and debug routes | Refuses directly |
 | `_verify_browser_enrollment_identity` (`api/routes/account.py`) | Refuses directly, and refuses any marked session |
 | `_verify_phone_claim_id_token` (`api/routes/account.py`, also used by `api/routes/ria.py`) | Refuses directly (a minted session is `custom`, not `phone`, so it already failed the provider check) |
 | `_require_recent_firebase_auth`, `_authorize_firebase_watermark` (`api/routes/hushh_tech.py`) | Refuse directly; the second also refuses any marked session |
