@@ -906,6 +906,24 @@
     },
     {
       "circle_args": [],
+      "description": "Answer whether you can see the person's mail at all: whether their Gmail is connected, needs reconnecting, or is switched off for you. Use this for a question about access or capability -- 'can you see my email', 'is my Gmail connected', 'do you have access to my inbox'. Does not open the mailbox and returns no messages. The person's Hushh profile email is a different fact and never answers this: get_profile reports the address on their account, not whether a mailbox is connected. Use read_mail only when they want what their mail says.",
+      "firebase_plane": false,
+      "gateway_action_id": "email.chat.turn",
+      "name": "get_mail_access",
+      "parameters": {
+        "additionalProperties": false,
+        "description": "Nothing to ask. Whose mailbox is already decided by the owner token.",
+        "properties": {},
+        "type": "object"
+      },
+      "person_args": [],
+      "policy": "read",
+      "result_statuses": [],
+      "tier": null,
+      "ui_refresh": []
+    },
+    {
+      "circle_args": [],
       "description": "Fresh relationship (connected, request pending either way, or not connected) and Location readiness for one confirmed person. Read only.",
       "firebase_plane": false,
       "gateway_action_id": "location.open_people",
@@ -968,7 +986,7 @@
     },
     {
       "circle_args": [],
-      "description": "Read the person's own Hussh profile: display name, masked email, masked phone, whether a photo is set, verification, and active persona. Reads only; the raw email and phone are never returned.",
+      "description": "Read the person's own Hussh profile: display name, masked email, masked phone, whether a photo is set, verification, and active persona. Reads only; the raw email and phone are never returned. The email here is the address on their Hussh account, which they have whether or not a mailbox was ever connected: it is not evidence that you can see their mail, and a verified address does not mean Gmail access. For a question about reaching their mailbox, use get_mail_access instead.",
       "firebase_plane": false,
       "gateway_action_id": "route.profile",
       "name": "get_profile",

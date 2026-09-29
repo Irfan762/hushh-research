@@ -1058,3 +1058,126 @@ async def test_the_rows_carry_the_conversation_they_were_offered_under(monkeypat
     shown = result.public()
     assert shown["conversation_id"] == "conv-1"
     assert "conversation_id" not in result.model_public()
+
+
+# -- the capability question --------------------------------------------------
+#
+# Observed on UAT: "can you see my Gmail?" was answered with the Hussh profile
+# address. That is an identity the person has whether or not a mailbox was ever
+# connected, so it reported access that had not been established. The other wrong
+# answer is read_mail, which would open the inbox to answer a question about
+# access. get_mail_access exists so the honest answer has a tool.
+
+
+class GmailStatusDouble:
+    """Answers get_status from a script, and records that it was asked."""
+
+    def __init__(self, payload: dict[str, Any] | None = None, *, raises: bool = False):
+        self.payload = payload or {}
+        self.raises = raises
+        self.asked = 0
+
+    async def get_status(self, *, user_id: str) -> dict[str, Any]:
+        self.asked += 1
+        self.user_id = user_id
+        if self.raises:
+            raise RuntimeError("status backend down")
+        return dict(self.payload)
+
+
+def _access_spec():
+    return next(tool for tool in mail.TOOLS if tool.name == "get_mail_access")
+
+
+async def _access(
+    monkeypatch, gmail: GmailStatusDouble, *, admitted: bool = True, reads: bool = True
+):
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: admitted)
+    spec = _access_spec()
+    ctx = _ctx(gmail=gmail)
+    ctx.services[mail.MAIL_ADMISSION_SERVICE] = AdmissionDouble(reads)
+    return await spec.handler(ctx, spec.input_model())
+
+
+async def test_a_capability_question_is_answered_from_the_connection_not_the_inbox(monkeypatch):
+    """The whole point: no mailbox read to establish whether a mailbox is readable."""
+    calls: list[Any] = []
+    monkeypatch.setattr(mail, "run_delegated_mail_read", lambda *a, **k: calls.append(a))
+    gmail = GmailStatusDouble({"connected": True, "connection_state": "connected"})
+
+    result = await _access(monkeypatch, gmail)
+
+    assert gmail.asked == 1, "the owning status service is what answers this"
+    assert calls == [], "a status question must not open the mailbox"
+    assert result.model_public()["can_read"] is True
+
+
+async def test_the_address_and_the_scopes_never_reach_the_model(monkeypatch):
+    """`get_status` carries the raw google_email and the scope list. Neither is
+    what a capability question asked, and a raw address placed in the session's
+    context outlives the turn."""
+    gmail = GmailStatusDouble(
+        {
+            "connected": True,
+            "connection_state": "connected",
+            "google_email": "owner@example.com",
+            "google_sub": "sub-12345",
+            "scope_csv": "https://www.googleapis.com/auth/gmail.readonly",
+        }
+    )
+
+    seen = repr(await _access(monkeypatch, gmail))
+
+    assert "owner@example.com" not in seen
+    assert "sub-12345" not in seen
+    assert "gmail.readonly" not in seen
+
+
+@pytest.mark.parametrize(
+    ("payload", "reads", "reconnect"),
+    [
+        ({"connected": True, "connection_state": "needs_reauth"}, True, True),
+        # Connected and healthy, withheld by a switch: nothing for the person to
+        # reconnect, and telling them to would send them to fix what is not broken.
+        ({"connected": True, "connection_state": "connected"}, False, False),
+        ({"connected": False, "connection_state": "not_connected"}, True, False),
+    ],
+)
+async def test_only_a_real_expired_permission_asks_for_a_reconnect(
+    monkeypatch, payload, reads, reconnect
+):
+    result = await _access(monkeypatch, GmailStatusDouble(payload), reads=reads)
+    spoken = " ".join(result.spoken_facts).lower()
+    assert ("reconnect" in spoken) is reconnect
+
+
+async def test_a_switch_that_withholds_reading_is_not_reported_as_disconnected(monkeypatch):
+    """Two different facts. Collapsing them would have the person reconnect a
+    mailbox that is already connected."""
+    result = await _access(
+        monkeypatch,
+        GmailStatusDouble({"connected": True, "connection_state": "connected"}),
+        reads=False,
+    )
+
+    shown = result.model_public()
+    assert shown["connected"] is True and shown["can_read"] is False
+
+
+async def test_a_failed_status_check_refuses_rather_than_reporting_not_connected(monkeypatch):
+    """Reporting "not connected" on a backend failure tells the person their mail
+    is disconnected when nothing about the connection was established."""
+    result = await _access(monkeypatch, GmailStatusDouble(raises=True))
+
+    assert result.reason_code == "mail_status_unavailable"
+    assert "can't check" in " ".join(result.spoken_facts).lower()
+
+
+async def test_the_state_is_the_owning_services_verdict_not_a_second_opinion(monkeypatch):
+    """Re-deriving connectedness here would drift from the Connections screen."""
+    gmail = GmailStatusDouble({"connected": True, "connection_state": "needs_reauth"})
+
+    result = await _access(monkeypatch, gmail)
+
+    assert result.model_public()["state"] == "needs_reauth"
+    assert result.model_public()["can_read"] is False, "needs_reauth is not readable"

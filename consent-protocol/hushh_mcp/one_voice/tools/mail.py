@@ -84,6 +84,10 @@ _REJECT_DEFAULT = "I couldn't look at your mail just now."
 # take the mail list's place on screen.
 MAIL_OPEN_DISPATCHED = "mail_open_dispatched"
 
+# A capability answer, not a read. Distinct from the read statuses so a surface
+# never renders it as an empty mail list.
+MAIL_ACCESS_STATUS = "mail_access"
+
 
 class ReadMailInput(ToolInput):
     """The person's own question, forwarded to the planner unchanged.
@@ -446,7 +450,114 @@ async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
     )
 
 
+class MailAccessInput(ToolInput):
+    """Nothing to ask. Whose mailbox is already decided by the owner token."""
+
+
+class MailAccessResult(ToolResult):
+    """Whether One can read this mailbox -- established without reading it.
+
+    ``state`` is copied from the Gmail service's own ``connection_state`` rather
+    than re-derived here. The owning service already decides what a connection
+    row plus its revoked flag and token usability mean, and a second opinion in
+    this module would drift from the Connections screen the person can see.
+
+    Carries no address and no scope list. "Which mailbox" is not what a capability
+    question asks, the profile email is a different fact from mailbox access, and
+    a raw address in the model's context outlives the turn.
+    """
+
+    status: str = MAIL_ACCESS_STATUS
+    connected: bool = False
+    state: str = "not_connected"
+    can_read: bool = False
+
+    def model_public(self) -> dict[str, Any]:
+        """Capability facts, which is exactly what the question was about."""
+        return {
+            "status": self.status,
+            "connected": self.connected,
+            "state": self.state,
+            "can_read": self.can_read,
+            "spoken_facts": list(self.spoken_facts),
+        }
+
+
+async def _get_mail_access(ctx: ToolContext, args: MailAccessInput) -> ToolResult:
+    """Answer "can you see my Gmail?" from the connection, not from the inbox.
+
+    Without this, the question has no honest tool: ``get_profile`` returns the
+    Hussh profile's masked email, which is an identity One holds whether or not a
+    mailbox was ever connected, and ``read_mail`` would open the inbox to answer a
+    question about access. Both were observed -- the profile address was reported
+    as if it proved Gmail access.
+    """
+    gmail = ctx.services.get("gmail") or get_gmail_receipts_service()
+    try:
+        status = await gmail.get_status(user_id=ctx.user_id)
+    except Exception:  # noqa: BLE001 - provider text is never reflected
+        logger.warning("one_voice.mail_access reason=status_unavailable")
+        return Rejected(
+            reason_code="mail_status_unavailable",
+            spoken_facts=["I can't check your mail connection right now."],
+        )
+
+    state = str(status.get("connection_state") or "not_connected")
+    connected = bool(status.get("connected"))
+    admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
+    # Both gates are asked because they fail for different reasons and the person
+    # can act on only one of them. A withdrawn read is not a broken connection.
+    # Keyed on ``state``, not on ``connected``. The owning service derives one from
+    # the other so they agree today, but readability is the claim that must never
+    # be wrong in the optimistic direction: "I can read it" while the permission
+    # has expired sends the person off to look for a failure that is right here.
+    can_read = (
+        state == "connected"
+        and admission.mail_reads_enabled()
+        and connector_feature_enabled("gmail_chat_reads", ctx.user_id)
+    )
+
+    if state == "needs_reauth":
+        # The one case that legitimately asks for a reconnect.
+        spoken = (
+            "Your Gmail is connected but the permission expired, so I need you to reconnect it."
+        )
+    elif not connected:
+        spoken = "Your Gmail isn't connected yet, so I can't read your mail."
+    elif can_read:
+        spoken = "Yes -- your Gmail is connected and I can read it."
+    else:
+        # Connected and healthy, withheld by a switch. Saying "reconnect" here
+        # would send the person to fix something that is not broken.
+        spoken = "Your Gmail is connected, but mail reading is switched off for me right now."
+
+    return MailAccessResult(
+        connected=connected,
+        state=state,
+        can_read=can_read,
+        spoken_facts=[spoken],
+    )
+
+
 TOOLS: tuple[ToolSpec, ...] = (
+    ToolSpec(
+        name="get_mail_access",
+        gateway_action_id="email.chat.turn",
+        policy=ToolPolicy.read,
+        input_model=MailAccessInput,
+        output_model=MailAccessResult,
+        description=(
+            "Answer whether you can see the person's mail at all: whether their "
+            "Gmail is connected, needs reconnecting, or is switched off for you. "
+            "Use this for a question about access or capability -- 'can you see my "
+            "email', 'is my Gmail connected', 'do you have access to my inbox'. "
+            "Does not open the mailbox and returns no messages. The person's Hushh "
+            "profile email is a different fact and never answers this: get_profile "
+            "reports the address on their account, not whether a mailbox is "
+            "connected. Use read_mail only when they want what their mail says."
+        ),
+        handler=_get_mail_access,
+    ),
     ToolSpec(
         name="read_mail",
         gateway_action_id="email.chat.turn",
