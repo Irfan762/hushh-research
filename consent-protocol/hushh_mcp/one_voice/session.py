@@ -318,6 +318,23 @@ class VoiceSession:
         from hushh_mcp.one_voice.instruction import build_instruction
 
         declarations = registry.declarations()
+        # Nothing else observes this list. It is assembled here and handed to the
+        # provider; no endpoint returns it and no client frame carries it, so
+        # without this line a running deployment cannot be asked which
+        # capabilities a session was actually given -- only which ones its image
+        # ought to contain, which is an inference and reads identical when the
+        # catalog is wrong. Names only, and mail is named explicitly because a
+        # release that claims mail is live is exactly the claim worth checking.
+        mail_tools = sorted(
+            name
+            for name in (str(item.get("name") or "") for item in declarations)
+            if "mail" in name
+        )
+        logger.info(
+            "one_voice.session.tools count=%d mail=%s",
+            len(declarations),
+            ",".join(mail_tools) or "none",
+        )
         instruction = build_instruction(
             tool_declarations=declarations,
             screen_ids=list(OPENABLE_SCREENS),
