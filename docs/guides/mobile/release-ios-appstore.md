@@ -51,6 +51,49 @@ for `https://one.hushh.ai` and the production API:
   `ship-ios-testflight.yml` still builds a UAT binary only; do not run it for a
   production-backed release, or testers alternate between two databases.
 
+### App Review sign-in on a production-backed build (added 2026-09-29)
+
+A production-backed binary shows **no reviewer affordance**: production never advertises review
+mode and never mints a review session, and a production frontend build never asks
+(`consent-protocol/docs/app-review-mode-config.md` § *Production: backend-only review*). Apple
+signs in like anyone else, with a dedicated reviewer account.
+
+**One-time setup (a person, not automation).** Google or Apple sign-in and the on-device vault
+cannot be completed from a script, so the founder does this once:
+
+1. Create a dedicated Google account that Hussh owns, preferably a Google Workspace user under
+   `hushh.ai` with 2-Step Verification not enforced for that user, so Apple's review devices
+   are not challenged. Never use a personal account.
+2. Generate the vault passphrase straight into production Secret Manager, never on screen:
+   `python3 -c 'import secrets; print(secrets.token_urlsafe(24), end="")' | gcloud secrets create REVIEWER_VAULT_PASSPHRASE --project=hushh-pda --replication-policy=automatic --data-file=-`
+3. On an iPhone running the production-backed build, sign in with that Google account. At the
+   phone step, enter one unused number from `HUSHH_PROD_PHONE_TEST_NUMBERS` and the fixed code
+   `HUSHH_PROD_PHONE_TEST_CODE` (no SMS is sent). Create the vault with the passphrase (copy it
+   with `gcloud secrets versions access latest --secret=REVIEWER_VAULT_PASSPHRASE --project=hushh-pda | pbcopy`
+   and paste over Universal Clipboard), then finish onboarding.
+4. Point `REVIEWER_UID` in `hushh-pda` at the new account (look the UID up by the account's
+   email with Identity Toolkit `accounts:lookup`, and pipe it into
+   `gcloud secrets versions add REVIEWER_UID --project=hushh-pda --data-file=-`).
+5. Never configure this UID as `REVIEWER_UID` in UAT or dev. UAT and production share the
+   Firebase authority, and UAT mints review sessions with no credential.
+
+**App Store Connect → App Review Information** (entered by hand once; it carries forward to new
+versions, and this pipeline does not set it):
+
+- *Sign-in required*: the reviewer Google account's email and password.
+- *Notes*: "Sign in with **Continue with Google** using the account above. When the app asks
+  for your vault passphrase, enter: `<REVIEWER_VAULT_PASSPHRASE>`. If the app asks you to verify a
+  phone number, enter `<the claimed test number>` and code `<HUSHH_PROD_PHONE_TEST_CODE>`; no SMS
+  is sent." Fill the placeholders from `hushh-pda` Secret Manager at entry time; never commit or
+  paste the values anywhere else.
+
+**iPhone device gate (release journeys).** The journeys section (`HUSHH_PERF_ATTACHED_SECTION=journeys`)
+runs on the session already in the app's data container and unlocks the vault with
+`REVIEWER_VAULT_PASSPHRASE` from the process environment. Against production, read it from
+`hushh-pda`, and leave the session on the gate phone by signing in by hand (step 3).
+`hushh-webapp/scripts/perf/ios-reviewer-signin.sh` restores a session through the review-mode mint, so it
+cannot sign into production, by design. After a sign-out, sign in by hand again.
+
 The build still archives with **production APNs** entitlements (correct for *any* App Store binary —
 push on a store build routes through Apple's PRODUCTION APNs). That means the **shared Firebase project
 must hold a production APNs key** for push notifications to deliver on the released app.
