@@ -415,6 +415,7 @@ export function OneVoicePanel({
                 result={resultSlot.result}
                 tool={resultSlot.tool}
                 ok={resultSlot.ok}
+                onOpenMail={controller.openMail}
               />
             ) : null}
 

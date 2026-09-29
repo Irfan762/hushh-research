@@ -1,4 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -651,5 +657,152 @@ describe("ToolResultCard: Save My Soul", () => {
       "Partly stopped",
     );
     expect(sosHeadline("renamed", "success")).toBeNull();
+  });
+});
+
+
+describe("ToolResultCard: opening a mail original", () => {
+  const CONV = "22222222-2222-4222-8222-222222222222";
+
+  function mailResult(items: Record<string, unknown>[]): ToolResultPublic {
+    return {
+      status: "ok",
+      spoken_facts: ["I read your 3 newest messages."],
+      answer: "Priya needs the deck.",
+      sources: [{ source_ref: "mail:1", label: "Mail", kind: "message" }],
+      items,
+      coverage: { unit: "messages", returned: items.length, scope: "newest" },
+      offer_revision: 7,
+      conversation_id: CONV,
+    };
+  }
+
+  const THREE = [
+    { source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" },
+    // No subject and no sender. It used to be dropped, which renumbered the rows
+    // under it; the Open below must still send the server's ordinal 3.
+    { source_ref: "mail:2" },
+    { source_ref: "mail:3", subject: "Invoice", sender: "Acme" },
+  ];
+
+  it("sends the server's ordinal, the offer revision and the offer's conversation", async () => {
+    const calls: unknown[] = [];
+    const onOpenMail = async (input: unknown) => {
+      calls.push(input);
+      return {
+        sourceRef: "mail:3",
+        subject: "Invoice",
+        sender: "Acme",
+        receivedAt: null,
+        body: "The March invoice is attached.",
+        bodyTruncated: false,
+      };
+    };
+    render(
+      <ToolResultCard
+        result={mailResult(THREE)}
+        tool="read_mail"
+        ok
+        onOpenMail={onOpenMail}
+      />,
+    );
+
+    const buttons = screen.getAllByTestId("one-voice-mail-open");
+    expect(buttons).toHaveLength(3);
+    // The third row. Its ordinal is 3 even though the row above it is unlabelled
+    // -- the number comes from source_ref, never from a count of the DOM.
+    expect(buttons[2]).toHaveAttribute("data-ordinal", "3");
+    fireEvent.click(buttons[2]);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("The March invoice is attached."),
+      ).toBeInTheDocument();
+    });
+    expect(calls).toEqual([
+      { ordinal: 3, offerRevision: 7, conversationId: CONV },
+    ]);
+  });
+
+  it("closing returns to the same list in the same order", async () => {
+    const onOpenMail = async () => ({
+      sourceRef: "mail:1",
+      subject: "Q3 deck",
+      sender: "Priya",
+      receivedAt: null,
+      body: "Friday please.",
+      bodyTruncated: false,
+    });
+    render(
+      <ToolResultCard
+        result={mailResult(THREE)}
+        tool="read_mail"
+        ok
+        onOpenMail={onOpenMail}
+      />,
+    );
+    const order = () =>
+      Array.from(screen.getByLabelText("Mail").children).map((row) =>
+        row.getAttribute("data-source-ref"),
+      );
+    const before = order();
+
+    fireEvent.click(screen.getAllByTestId("one-voice-mail-open")[0]);
+    await waitFor(() =>
+      expect(screen.getByText("Friday please.")).toBeInTheDocument(),
+    );
+    // Expanding in place is what makes Back free: the list never unmounted.
+    expect(order()).toEqual(before);
+
+    fireEvent.click(screen.getAllByTestId("one-voice-mail-open")[0]);
+    await waitFor(() =>
+      expect(screen.queryByTestId("one-voice-mail-original")).toBeNull(),
+    );
+    expect(order()).toEqual(before);
+  });
+
+  it("says the list moved on rather than opening something else", async () => {
+    const onOpenMail = async () => {
+      throw Object.assign(new Error("stale"), { reason: "offer_superseded" });
+    };
+    render(
+      <ToolResultCard
+        result={mailResult(THREE)}
+        tool="read_mail"
+        ok
+        onOpenMail={onOpenMail}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByTestId("one-voice-mail-open")[0]);
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId("one-voice-mail-open-error"),
+      ).toHaveTextContent("This list has been replaced");
+    });
+  });
+
+  it("offers no Open control when the rows carry no offer to open against", () => {
+    const unbound = mailResult(THREE);
+    delete unbound.offer_revision;
+    render(
+      <ToolResultCard
+        result={unbound}
+        tool="read_mail"
+        ok
+        onOpenMail={async () => {
+          throw new Error("must not be called");
+        }}
+      />,
+    );
+    // Rows still render; there is simply nothing to resolve a position against.
+    expect(screen.getByLabelText("Mail").children).toHaveLength(3);
+    expect(screen.queryAllByTestId("one-voice-mail-open")).toHaveLength(0);
+  });
+
+  it("renders no Open control at all without a handler, so bare renders are unchanged", () => {
+    render(<ToolResultCard result={mailResult(THREE)} tool="read_mail" ok />);
+    expect(screen.queryAllByTestId("one-voice-mail-open")).toHaveLength(0);
   });
 });

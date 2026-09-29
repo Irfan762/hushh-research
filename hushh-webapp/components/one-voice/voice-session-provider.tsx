@@ -64,6 +64,7 @@ import {
   decideHalfDuplex,
 } from "@/lib/one-voice/audio/half-duplex";
 import { bytesFromBase64 } from "@/lib/one-voice/audio/pcm";
+import { MailOpenError, openOfferedMail } from "@/lib/one-voice/mail-open";
 import { LivePlaybackScheduler } from "@/lib/one-voice/audio/playback";
 import { isFirebasePlaneTool } from "@/lib/one-voice/confirmation";
 import type {
@@ -1303,6 +1304,29 @@ export function VoiceSessionProvider({
     [readState],
   );
 
+  const openMail = useCallback(
+    async (input: {
+      ordinal: number;
+      offerRevision: number;
+      conversationId: string;
+    }) => {
+      // The token is read from `latest.current` for the same reason start() does:
+      // the closure variable is a render-time snapshot, and this runs on a tap.
+      const token = latest.current.vaultOwnerToken;
+      if (!token) throw new MailOpenError("auth_missing");
+      // The conversation comes from the result that drew the row. Reading the
+      // live id here would resolve the position against whatever conversation a
+      // reconnect has since moved to, and open a different message.
+      return openOfferedMail({
+        vaultOwnerToken: token,
+        conversationId: input.conversationId,
+        ordinal: input.ordinal,
+        offerRevision: input.offerRevision,
+      });
+    },
+    [],
+  );
+
   const cancelPending = useCallback(() => {
     const session = sessionRef.current;
     const current = readState();
@@ -1357,6 +1381,7 @@ export function VoiceSessionProvider({
       interrupt,
       sendText,
       confirmPending,
+      openMail,
       cancelPending,
       chooseCandidate,
       clearView,
@@ -1371,6 +1396,7 @@ export function VoiceSessionProvider({
       interrupt,
       sendText,
       confirmPending,
+      openMail,
       cancelPending,
       chooseCandidate,
       clearView,
