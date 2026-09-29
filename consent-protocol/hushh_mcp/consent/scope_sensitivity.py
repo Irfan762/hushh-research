@@ -67,8 +67,8 @@ SENSITIVE_DOMAINS: frozenset[str] = frozenset(
 # sensitive is the path the device labels. Matched as whole words (after
 # camelCase and separator splitting), with a trailing plural "s" folded, so
 # "taxes" and "medications" match while "attaxis" or "syntax" do not.
-SENSITIVE_WORDS: frozenset[str] = sensitive_topic_words()
-SENSITIVE_PHRASES: frozenset[tuple[str, str]] = sensitive_topic_phrases()
+# Read on first use, never at import: the packed MCP server vendors this module
+# without contracts/, and an import-time read crashed its startup (2026-09-29).
 # PKM sensitivity tags that mean "sensitive". ``sensitivity_label`` on manifest
 # paths uses restricted / confidential; the catalog carries the word itself.
 SENSITIVE_TAGS: frozenset[str] = frozenset({"confidential", "restricted", "secret", "sensitive"})
@@ -91,9 +91,9 @@ def words_are_sensitive(segment: str) -> bool:
     if is_secret_shaped_key(segment):
         return True
     words = _words(segment)
-    if any(word in SENSITIVE_WORDS for word in words):
+    if any(word in sensitive_topic_words() for word in words):
         return True
-    return any(pair in SENSITIVE_PHRASES for pair in pairwise(words))
+    return any(pair in sensitive_topic_phrases() for pair in pairwise(words))
 
 
 def tag_is_sensitive(tag: object) -> bool:
@@ -123,7 +123,7 @@ def scope_sensitivity(scope: str | None, pkm_tags: Iterable[object] = ()) -> Sen
         return SENSITIVE
     # A phrase can straddle two segments ("social.security_number").
     joined: list[str] = [word for segment in segments for word in _words(segment)]
-    if any(pair in SENSITIVE_PHRASES for pair in pairwise(joined)):
+    if any(pair in sensitive_topic_phrases() for pair in pairwise(joined)):
         return SENSITIVE
     return STANDARD
 
