@@ -16,9 +16,11 @@ from hushh_mcp.consent.export_envelope import (
     connector_key_fingerprint,
     scope_handle_for_machine_scope,
 )
+from hushh_mcp.consent.field_sensitivity import field_sensitivity
 from hushh_mcp.consent.requestable_scope_policy import is_scope_requestable_by_others
 from hushh_mcp.consent.scope_labels import human_scope_label
 from hushh_mcp.consent.scope_sensitivity import scope_sensitivity
+from hushh_mcp.consent.share_collapse import collapse_covered_shares, share_order_key
 from hushh_mcp.services.consent_center_service import requester_identity_metadata
 from hushh_mcp.services.consent_db import ConsentDBService
 from hushh_mcp.services.consent_request_links import build_consent_request_url
@@ -341,6 +343,23 @@ def _share(
     }
 
 
+def outline_field_sensitivity(names: list[str], item_sensitivity: Any) -> list[dict[str, str]]:
+    """Per-field C7 sensitivity for a share's outline: names only, never a value.
+
+    Every field of a sensitive item is sensitive. In a standard item a field is
+    sensitive when its name is identifier-class (``field_sensitivity``): the
+    EIN inside "Legal entity" is sensitive although the item is standard (run 4,
+    S3). The client hides exactly these from the model and shows them in the
+    secure card.
+    """
+    whole = item_sensitivity != "standard"
+    return [
+        {"name": name, "sensitivity": "sensitive" if whole else field_sensitivity(name)}
+        for name in names
+        if isinstance(name, str) and name
+    ]
+
+
 def access_ended(progress: dict[str, Any] | None) -> bool:
     """True once any access this request granted has ended (revoked or run out)."""
     return bool(isinstance(progress, dict) and progress.get("ended_at"))
@@ -584,32 +603,57 @@ class InformationRequestService:
     async def _bundle(
         self, requester_user_id: str, bundle_id: str
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        bundles = await self._rows(
-            """SELECT bundle.*, profile.public_person_ref
+        # One round trip for the bundle and its items: the bundle primary key
+        # and the items' (bundle_id, scope_ref) unique index serve it.
+        rows = await self._rows(
+            """SELECT bundle.*, profile.public_person_ref,
+                      item.request_id AS item_request_id, item.scope_ref AS item_scope_ref,
+                      item.scope AS item_scope, item.label AS item_label,
+                      item.sensitivity AS item_sensitivity
                FROM one_information_request_bundles bundle
                JOIN actor_profiles profile ON profile.user_id = bundle.subject_user_id
+               LEFT JOIN one_information_request_items item ON item.bundle_id = bundle.bundle_id
                WHERE bundle.bundle_id = CAST(:bundle AS UUID)
                  AND bundle.requester_user_id = :requester
-               LIMIT 1""",
+               ORDER BY item.created_at, item.request_id""",
             {"bundle": bundle_id, "requester": requester_user_id},
         )
-        if not bundles:
+        if not rows:
             raise InformationRequestError("Information request was not found.", status_code=404)
-        items = await self._rows(
-            """SELECT request_id, scope_ref, scope, label, sensitivity FROM one_information_request_items
-               WHERE bundle_id = CAST(:bundle AS UUID) ORDER BY created_at, request_id""",
-            {"bundle": bundle_id},
-        )
-        return bundles[0], items
+        bundle = {key: value for key, value in rows[0].items() if not key.startswith("item_")}
+        items = [
+            {
+                "request_id": row["item_request_id"],
+                "scope_ref": row.get("item_scope_ref"),
+                "scope": row.get("item_scope"),
+                "label": row.get("item_label"),
+                "sensitivity": row.get("item_sensitivity"),
+            }
+            for row in rows
+            if row.get("item_request_id")
+        ]
+        return bundle, items
 
     async def get(self, *, requester_user_id: str, bundle_id: str) -> dict[str, Any]:
+        """Where one request stands, for the requester's card. Polled; kept cheap.
+
+        The requesting chat polls this while a request is open (166 polls of one
+        approved request in 18 minutes, localhost run 4). It reads a fixed four
+        indexed queries whatever the item count: the bundle, its items, every
+        state transition of those items (the same ledger read ``progress`` is
+        built from, so each item's status is its latest transition rather than
+        one more query per item), and the owner-scoped delivery records. No
+        catalog, profile or export is loaded.
+        """
         bundle, items = await self._bundle(requester_user_id, bundle_id)
         output = []
         now_ms = int(time.time() * 1000)
+        ledger_rows, notifications = await self._progress_rows(bundle, items)
+        latest: dict[str, dict[str, Any]] = {}
+        for row in sorted(ledger_rows, key=lambda row: _int_or_none(row.get("issued_at")) or 0):
+            latest[str(row.get("request_id") or "")] = row
         for item in items:
-            status = await self._consent.get_request_status(
-                str(bundle["subject_user_id"]), str(item["request_id"])
-            )
+            status = latest.get(str(item["request_id"]))
             action = str((status or {}).get("action") or "REQUESTED")
             # A request's decision deadline is not the expiry of a later grant.
             expires_at = (status or {}).get("expires_at")
@@ -648,35 +692,37 @@ class InformationRequestService:
             "durationSeconds": bundle["duration_seconds"],
             "cancelled": bundle.get("cancelled_at") is not None,
             "items": output,
-            "progress": await self._progress(bundle, items, now_ms),
+            "progress": build_request_progress(
+                bundle=bundle,
+                items=items,
+                ledger_rows=ledger_rows,
+                notification_rows=notifications,
+                now_ms=now_ms,
+            ),
         }
 
-    async def _progress(
-        self, bundle: dict[str, Any], items: list[dict[str, Any]], now_ms: int
-    ) -> dict[str, Any]:
+    async def _progress_rows(
+        self, bundle: dict[str, Any], items: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """The bundle's state transitions and delivery records, owner-bound.
+
+        Sequential on purpose: a poll holds one pool connection at a time, and
+        the local pool has four (the run 4 stall was pool starvation).
+        """
         subject_user_id = str(bundle["subject_user_id"])
         request_ids = [str(item["request_id"]) for item in items]
-        ledger_rows = (
-            await self._rows(
-                PROGRESS_LEDGER_SQL, {"subject": subject_user_id, "request_ids": request_ids}
-            )
-            if request_ids
-            else []
+        if not request_ids:
+            return [], []
+        ledger_rows = await self._rows(
+            PROGRESS_LEDGER_SQL, {"subject": subject_user_id, "request_ids": request_ids}
         )
-        notifications = [
-            row
-            for row in await self._consent.list_internal_request_events(
-                request_ids, actions=["NOTIFICATION_SENT", "NOTIFICATION_OPENED"]
-            )
-            if str(row.get("user_id") or "") == subject_user_id
-        ]
-        return build_request_progress(
-            bundle=bundle,
-            items=items,
-            ledger_rows=ledger_rows,
-            notification_rows=notifications,
-            now_ms=now_ms,
+        events = await self._consent.list_internal_request_events(
+            request_ids,
+            actions=["NOTIFICATION_SENT", "NOTIFICATION_OPENED"],
+            user_id=subject_user_id,
         )
+        notifications = [row for row in events if str(row.get("user_id") or "") == subject_user_id]
+        return ledger_rows, notifications
 
     async def verify_submission_receipt(
         self, *, requester_user_id: str, bundle_id: str, idempotency_key: str
@@ -727,6 +773,69 @@ class InformationRequestService:
             }
             for row in rows
         ]
+
+    async def pending_for_scope_refs(
+        self, *, requester_user_id: str, person_ref: str, scope_refs: list[str]
+    ) -> list[dict[str, Any]]:
+        """Open requests this person already sent ``person_ref`` for these items.
+
+        Newest first, one entry per bundle, naming only the items still waiting
+        on the owner (``scope_refs`` are the per-person catalog refs a request
+        stores). Labels and ids only; the owner's user id stays here. Used so
+        asking again says the request is already waiting instead of offering a
+        second Send (localhost run 4, A5).
+        """
+        refs = sorted({str(ref) for ref in scope_refs if ref})[:50]
+        if not refs or not person_ref:
+            return []
+        rows = await self._rows(
+            """SELECT bundle.bundle_id, bundle.purpose, bundle.duration_seconds,
+                      bundle.created_at, bundle.subject_user_id,
+                      item.request_id, item.scope_ref, item.scope, item.label
+               FROM one_information_request_bundles bundle
+               JOIN actor_profiles profile ON profile.user_id = bundle.subject_user_id
+               JOIN one_information_request_items item ON item.bundle_id = bundle.bundle_id
+               WHERE bundle.requester_user_id = :requester
+                 AND profile.public_person_ref = :person_ref
+                 AND bundle.cancelled_at IS NULL
+                 AND item.scope_ref = ANY(:scope_refs)
+               ORDER BY bundle.created_at DESC, item.created_at
+               LIMIT 100""",
+            {"requester": requester_user_id, "person_ref": person_ref, "scope_refs": refs},
+        )
+        if not rows:
+            return []
+        subject_user_id = str(rows[0]["subject_user_id"])
+        statuses = await self._consent.get_request_statuses(
+            subject_user_id, [str(row["request_id"]) for row in rows]
+        )
+        now_ms = int(time.time() * 1000)
+        bundles: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            status = statuses.get(str(row["request_id"])) or {}
+            deadline = status.get("poll_timeout_at") or status.get("expires_at")
+            waiting = str(status.get("action") or "") == "REQUESTED" and not (
+                deadline is not None and int(deadline) <= now_ms
+            )
+            if not waiting:
+                continue
+            bundle_id = str(row["bundle_id"])
+            entry = bundles.setdefault(
+                bundle_id,
+                {
+                    "bundleId": bundle_id,
+                    "purpose": row.get("purpose"),
+                    "durationSeconds": row.get("duration_seconds"),
+                    "sentAt": _iso_any(row.get("created_at")),
+                    "scopeRefs": [],
+                    "labels": [],
+                },
+            )
+            entry["scopeRefs"].append(str(row["scope_ref"]))
+            label = human_scope_label(str(row.get("scope") or ""), row.get("label"))
+            if label not in entry["labels"]:
+                entry["labels"].append(label)
+        return list(bundles.values())
 
     async def list_granted_shares(
         self,
@@ -807,6 +916,20 @@ class InformationRequestService:
                 people=people,
                 listed={share["requestId"] for share in granted},
                 now_ms=now_ms,
+            )
+        )
+        # One item per thing shared, in one stable order (run 4, S3): a grant a
+        # broader live grant from the same person covers is not listed twice.
+        granted = collapse_covered_shares(
+            granted,
+            scope_of=lambda share: str(share.get("_scope") or ""),
+            person_of=lambda share: str(share.get("_subject") or ""),
+            openable_of=lambda share: bool(share.get("decryptable")),
+        )
+        granted.sort(
+            key=lambda share: (
+                str(share.get("person") or "").casefold(),
+                *share_order_key(share.get("label"), share.get("sharedAt"), share.get("requestId")),
             )
         )
         await self._attach_field_outlines(requester_user_id, granted)
@@ -921,6 +1044,10 @@ class InformationRequestService:
                 continue
             for share in subject_shares:
                 share["fieldOutline"] = outlines.get(str(share.get("_scope") or "")) or []
+        for share in shares:
+            share["fields"] = outline_field_sensitivity(
+                share.get("fieldOutline") or [], share.get("sensitivity")
+            )
 
     async def cancel(self, *, requester_user_id: str, bundle_id: str) -> dict[str, Any]:
         bundle, items = await self._bundle(requester_user_id, bundle_id)

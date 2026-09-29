@@ -10,6 +10,7 @@ import {
 } from "@/components/icons/agents";
 import { SharedWithYouCard } from "@/components/agent/consent/shared-with-you-card";
 import { humanSharedLabel, type SharedWithMeCardItem } from "@/lib/agent/agui-structured-experiences";
+import { parseSharedFieldSensitivities } from "@/lib/consent/field-sensitivity";
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
 import { HelperText } from "@/components/app-ui/typography";
 import { Button } from "@/lib/morphy-ux/button";
@@ -32,6 +33,8 @@ type PersonShares = {
 
 /** A share-list entry as a secure-card item: names, dates and refs, never values. */
 export function sharedWithMeCardItem(share: SharedWithMeEntry): SharedWithMeCardItem {
+  // C7 per field: an identifier inside a standard item stays marked sensitive.
+  const fields = parseSharedFieldSensitivities(share.fields);
   return {
     key: share.requestId,
     grantRef: null,
@@ -42,6 +45,7 @@ export function sharedWithMeCardItem(share: SharedWithMeEntry): SharedWithMeCard
     sensitivity: share.sensitivity === "standard" ? "standard" : share.sensitivity ? "sensitive" : null,
     domain: null,
     fieldOutline: [],
+    ...(fields.length ? { fields } : {}),
     sharedAt: null,
     accessEndsAt: typeof share.expiresAt === "number" && share.expiresAt > 0
       ? new Date(share.expiresAt).toISOString() : null,

@@ -19,8 +19,14 @@ from uuid import UUID
 from db.db_client import get_db
 from hushh_mcp.consent.scope_generator import rank_scope_matches
 from hushh_mcp.consent.scope_labels import human_domain_label, human_scope_label
-from hushh_mcp.consent.scope_matcher import presentable_scope_entries, search_scope_entries
+from hushh_mcp.consent.scope_matcher import (
+    is_machine_entry,
+    is_record_field_entry,
+    presentable_scope_entries,
+    search_scope_entries,
+)
 from hushh_mcp.consent.scope_sensitivity import covers, scope_sensitivity
+from hushh_mcp.consent.share_collapse import collapse_covered_shares, share_order_key
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_db import ConsentDBService
 
@@ -88,6 +94,23 @@ def _scope_ref(public_person_ref: str, scope: str) -> str:
 MAX_OUTLINE_FIELDS = 12
 
 
+def _item_labels(raw: Any) -> list[str]:
+    """Human labels of a bundle's items, deduplicated, in request order."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    labels: list[str] = []
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        label = human_scope_label(str(entry.get("scope") or ""), entry.get("label"))
+        if label and label not in labels:
+            labels.append(label)
+    return labels[:50]
+
+
 def field_outline(scope: str, catalog: list[dict[str, Any]]) -> list[str]:
     """Names (never values) of what a grant on ``scope`` covers, for the C6 card.
 
@@ -99,6 +122,10 @@ def field_outline(scope: str, catalog: list[dict[str, Any]]) -> list[str]:
     names: list[str] = []
     for item in catalog:
         child = str(item.get("scope") or "")
+        # A record's schema field ("Events kind", "Events status") or app
+        # state is storage shape, not something the person shared (run 4, U3).
+        if child != scope and (is_record_field_entry(item) or is_machine_entry(item)):
+            continue
         label = human_scope_label(child, str(item.get("label") or ""))
         if child == scope:
             own_label = label
@@ -289,7 +316,11 @@ class PersonProfileService:
             SELECT bundle.bundle_id, bundle.purpose, bundle.duration_seconds,
                    bundle.created_at, bundle.cancelled_at,
                    (SELECT COUNT(*) FROM one_information_request_items item
-                    WHERE item.bundle_id = bundle.bundle_id) AS item_count
+                    WHERE item.bundle_id = bundle.bundle_id) AS item_count,
+                   (SELECT json_agg(json_build_object('scope', item.scope, 'label', item.label)
+                                    ORDER BY item.created_at, item.request_id)
+                    FROM one_information_request_items item
+                    WHERE item.bundle_id = bundle.bundle_id) AS item_names
             FROM one_information_request_bundles bundle
             WHERE bundle.requester_user_id = :viewer
               AND bundle.subject_user_id = :subject
@@ -302,7 +333,11 @@ class PersonProfileService:
                 SELECT bundle.bundle_id, bundle.purpose, bundle.duration_seconds,
                        bundle.created_at, bundle.cancelled_at,
                        (SELECT COUNT(*) FROM one_information_request_items item
-                        WHERE item.bundle_id = bundle.bundle_id) AS item_count
+                        WHERE item.bundle_id = bundle.bundle_id) AS item_count,
+                       (SELECT json_agg(json_build_object('scope', item.scope, 'label', item.label)
+                                        ORDER BY item.created_at, item.request_id)
+                        FROM one_information_request_items item
+                        WHERE item.bundle_id = bundle.bundle_id) AS item_names
                 FROM one_information_request_bundles bundle
                 WHERE bundle.requester_user_id = :viewer
                   AND bundle.subject_user_id = :subject
@@ -327,6 +362,9 @@ class PersonProfileService:
                     "createdAt": str(item["created_at"]),
                     "cancelled": item.get("cancelled_at") is not None,
                     "itemCount": int(item["item_count"]),
+                    # Human names, so the page says what was asked for instead
+                    # of "Request for 2 information items" (run 4, S3/U3).
+                    "itemLabels": _item_labels(item.get("item_names")),
                 }
                 for item in page
             ],
@@ -599,6 +637,17 @@ class PersonProfileService:
             bundle_by_request = {
                 str(item["request_id"]): str(item["bundle_id"]) for item in bundle_rows
             }
+            # The same one-item-per-share rule as the requester's Profile list
+            # (``list_granted_shares``), so the person page and Profile match.
+            active = collapse_covered_shares(
+                active,
+                scope_of=lambda grant: str(grant.get("scope") or ""),
+                person_of=lambda _grant: subject_user_id,
+                openable_of=lambda grant: (
+                    bool(grant.get("token_id"))
+                    and str(grant.get("request_id") or "") in bundle_by_request
+                ),
+            )
             for grant in active:
                 scope_projection = scope_by_name.get(str(grant.get("scope") or ""))
                 token_id = str(grant.get("token_id") or "")
@@ -620,6 +669,11 @@ class PersonProfileService:
                         "exportRevision": export_revisions.get(token_id),
                     }
                 )
+            grants.sort(
+                key=lambda grant: share_order_key(
+                    grant.get("label"), grant.get("issuedAt"), grant.get("requestId")
+                )
+            )
 
         request_rows = await asyncio.to_thread(
             lambda: [
@@ -682,7 +736,8 @@ class PersonProfileService:
                     "bundleId": str(item["bundle_id"]),
                     "requestId": item["request_id"],
                     "scopeRef": item["scope_ref"],
-                    "label": item["label"],
+                    # Human, never the stored "Tax Record Domain" (run 4, S3).
+                    "label": human_scope_label(str(item.get("scope") or ""), item.get("label")),
                     "sensitivity": scope_sensitivity(
                         str(item.get("scope") or ""), [item.get("sensitivity")]
                     ),

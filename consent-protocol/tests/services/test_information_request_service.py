@@ -75,11 +75,13 @@ class _Consent:
     async def get_consent_export(self, token_id: str):
         return self.exports.get(token_id)
 
-    async def list_internal_request_events(self, request_ids, *, actions=None):
+    async def list_internal_request_events(self, request_ids, *, actions=None, user_id=None):
         return [
             row
             for row in self.notifications
-            if row["request_id"] in request_ids and (not actions or row["action"] in actions)
+            if row["request_id"] in request_ids
+            and (not actions or row["action"] in actions)
+            and (user_id is None or row.get("user_id") == user_id)
         ]
 
     async def record_export_read_once(self, **event):
@@ -230,7 +232,11 @@ async def _granted_service() -> tuple[_Service, str, str]:
         "token_id": "tok_granted",
         # Approval replaces the request deadline with the grant's access expiry.
         "expires_at": 1_900_000_000_000,
+        "poll_timeout_at": None,
     }
+    # The ledger holds every row, as the real one does: the requester's poll
+    # reads each item's state from its latest transition there.
+    service.consent.ledger.append(service.consent.events[request_id])
     metadata = service.consent.events[request_id]["metadata"]
     service.consent.exports["tok_granted"] = {
         **_CURRENT_STRICT_EXPORT,

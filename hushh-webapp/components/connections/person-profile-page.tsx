@@ -43,6 +43,7 @@ import { humanSharedLabel, type SharedWithMeCardItem } from "@/lib/agent/agui-st
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { scopeItemsFromRequestable } from "@/lib/consent/consent-scope-items";
 import { selectedRequestScopes, toggleRequestScopes } from "@/lib/consent/request-scope-selection";
+import { joinInformationLabels } from "@/lib/consent/consent-owner-copy";
 import {
   PersonProfileService,
   mergePersonScopePage,
@@ -67,6 +68,44 @@ import { VOICE_CONFIRM_DATA_KEY } from "@/lib/voice/voice-action-card";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 
 type Props = { personRef: string; initialProfile: PublicPersonProfile | null };
+
+/**
+ * Where a request stands, in the requester's words. Localhost run 4 (S3)
+ * showed the raw "granted" state as a pill and "Tax Record Domain" as a title.
+ */
+const HISTORY_STATUS: Record<string, string> = {
+  pending: "Waiting",
+  granted: "Shared",
+  denied: "Declined",
+  revoked: "Stopped",
+  expired: "Expired",
+  cancelled: "Withdrawn",
+};
+
+function historyStatusLabel(status: string): string {
+  return HISTORY_STATUS[status] ?? "Check status";
+}
+
+function historyItemLabel(label: string | null | undefined): string {
+  return humanSharedLabel(label) ?? "Shared information";
+}
+
+/**
+ * A request's title: what it asked for when known, otherwise how many items.
+ * `itemLabels` is the server's own list of the request's items (deduplicated),
+ * so an older request on a later page still reads "Tax record and Portfolio"
+ * rather than "2 items" (run 4, S3/U3).
+ */
+function historyTitle(
+  labels: Array<string | null | undefined>,
+  itemCount: number,
+  itemLabels: readonly string[] = [],
+): string {
+  if (labels.length === itemCount && itemCount > 0) return joinInformationLabels(labels.map(historyItemLabel), 2);
+  const named = itemLabels.filter((label) => typeof label === "string" && label.trim());
+  if (named.length) return joinInformationLabels(named.map(historyItemLabel), 2);
+  return `${itemCount} ${itemCount === 1 ? "item" : "items"}`;
+}
 
 export function PersonProfilePage({ personRef, initialProfile }: Props) {
   const router = useRouter();
@@ -124,12 +163,14 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
       first: recent?.first ?? null,
       items: recent?.items ?? [],
       itemCount: summary.itemCount,
+      itemLabels: Array.isArray(summary.itemLabels) ? summary.itemLabels : [],
       purpose: summary.purpose,
       createdAt: summary.createdAt,
     };
   }) ?? recentHistoryGroups.slice((historyPage - 1) * 8, historyPage * 8).map((group) => ({
     ...group,
     itemCount: group.items.length,
+    itemLabels: [] as string[],
     purpose: group.first.purpose,
     createdAt: group.first.createdAt,
   }));
@@ -384,7 +425,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
 
   const openRequestReview = () => {
     if (!selectedScopes.length) {
-      toast.error("Choose at least one thing before reviewing the request.");
+      toast.error("Choose at least one item before reviewing the request.");
       return false;
     }
     if (!isVaultUnlocked) {
@@ -608,7 +649,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
           spokenSubject: null,
           sections: [
             { id: "shared", title: "Shared with you", summary: `${viewerProfile.grants.length} active` },
-            { id: "requestable", title: "Available to request", summary: `${viewerProfile.scopeCatalog?.totalCount ?? viewerProfile.requestableScopes.length} things you can ask for` },
+            { id: "requestable", title: "Available to request", summary: `${viewerProfile.scopeCatalog?.totalCount ?? viewerProfile.requestableScopes.length} items you can ask for` },
             { id: "history", title: "Request history", summary: `${historyGroups.length} ${historyGroups.length === 1 ? "request" : "requests"}` },
           ],
           actions: surfaceActions,
@@ -808,7 +849,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                       No information shared yet
                     </p>
                     <p className="text-xs text-muted-foreground max-w-sm">
-                      Information granted by this person will appear here once shared.
+                      Information this person shares with you appears here.
                     </p>
                   </div>
                 </SectionCard>
@@ -825,7 +866,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                 title="Available to request"
                 description={
                   <span className="text-sm">
-                    Choose only what is needed. The person reviews every request before access is granted.
+                    Choose only what is needed. The person reviews every request before anything is shared.
                   </span>
                 }
               />
@@ -892,17 +933,22 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
               {historyGroups.length ? (
                 <SectionCard>
                   <div className="divide-y divide-border/60">
-                    {visibleHistoryGroups.map(({ bundleId, first, items, itemCount, purpose: requestPurpose, createdAt }) => {
+                    {visibleHistoryGroups.map(({ bundleId, first, items, itemCount, itemLabels, purpose: requestPurpose, createdAt }) => {
                       const details = bundleDetails[bundleId];
                       const statusItems = details?.items ?? (items.length === itemCount ? items : []);
                       const statuses = new Set(statusItems.map((item) => item.status));
                       const grantedCount = statusItems.filter((item) => item.status === "granted").length;
                       const statusLabel = !statusItems.length ? "Check status"
-                        : statuses.size === 1 ? statusItems[0]!.status : `${grantedCount} of ${itemCount} granted`;
+                        : statuses.size === 1 ? historyStatusLabel(statusItems[0]!.status) : `${grantedCount} of ${itemCount} shared`;
+                      const title = historyTitle(
+                        statusItems.length ? statusItems.map((item) => item.label) : first ? [first.label] : [],
+                        itemCount,
+                        itemLabels,
+                      );
                       return (
                         <div key={bundleId} className="flex flex-wrap items-start justify-between gap-3 py-3 first:pt-0 last:pb-0">
                           <div className="min-w-0 flex-1">
-                            <p className="text-sm font-semibold">{itemCount === 1 && first ? first.label : `Request for ${itemCount} information items`}</p>
+                            <p className="text-sm font-semibold">{title}</p>
                             <p className="mt-1 text-sm text-muted-foreground">{requestPurpose}</p>
                             {createdAt ? (
                               <p className="mt-1 text-xs text-muted-foreground">
@@ -921,7 +967,7 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                                 effect="fade"
                                 disabled={loadingBundleId === bundleId}
                                 onClick={() => void loadBundleDetails(bundleId)}
-                                aria-label={`Details for ${itemCount === 1 && first ? first.label : `${itemCount} information items`}`}
+                                aria-label={`Details for ${title}`}
                               >
                                 {loadingBundleId === bundleId ? "Loading…" : "Details"}
                               </Button>
@@ -940,10 +986,10 @@ export function PersonProfilePage({ personRef, initialProfile }: Props) {
                           </div>
                           {details ? (
                             <p className="max-h-40 w-full overflow-y-auto text-xs text-muted-foreground" data-testid="person-profile-bundle-details">
-                              {details.items.map((entry) => `${entry.label} (${entry.status})`).join(", ")}
+                              {details.items.map((entry) => `${historyItemLabel(entry.label)} (${historyStatusLabel(entry.status).toLowerCase()})`).join(", ")}
                               {" · "}
                               {requestDurationLabel(Math.round(details.durationSeconds / 3600))}
-                              {details.cancelled ? " · cancelled" : ""}
+                              {details.cancelled ? " · withdrawn" : ""}
                             </p>
                           ) : null}
                         </div>

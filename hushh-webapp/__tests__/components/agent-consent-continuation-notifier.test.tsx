@@ -48,16 +48,21 @@ import { AgentConsentContinuationNotifier } from "@/components/agent/agent-conse
 import {
   clearSentInformationRequests,
   informationRequestPhase,
+  isConsentContinuationArmed,
   listSentInformationRequests,
   markConsentContinuationUnavailable,
+  mountInformationRequestCard,
   watchSentInformationRequest,
 } from "@/lib/agent/consent-continuation";
-import { dispatchConsentStateChanged } from "@/lib/consent/consent-events";
+import { CONSENT_STATE_CHANGED_EVENT, dispatchConsentStateChanged } from "@/lib/consent/consent-events";
+import { readInformationRequest } from "@/lib/consent/information-request-reads";
 
-function bundle(status: "pending" | "denied") {
+const BUNDLE_2 = "1f1e1d1c-1b1a-4918-9716-151413121110";
+
+function bundle(status: "pending" | "denied" | "granted", bundleId: string = BUNDLE) {
   return {
     personRef: "person-kushal",
-    bundleId: BUNDLE,
+    bundleId,
     purpose: "Plan dinner",
     durationSeconds: 604_800,
     cancelled: false,
@@ -65,10 +70,10 @@ function bundle(status: "pending" | "denied") {
   };
 }
 
-function waitOnKushal() {
+function waitOnKushal(bundleId: string = BUNDLE) {
   watchSentInformationRequest({
     ownerId: OWNER,
-    bundleId: BUNDLE,
+    bundleId,
     conversationId: "conversation-1",
     subjectRef: "person-kushal",
     personName: "Kushal",
@@ -112,6 +117,80 @@ describe("AgentConsentContinuationNotifier doorbell", () => {
     });
     // A flat 8s poll would have made one call here, not four.
     expect(mocks.getInformationRequest).toHaveBeenCalledTimes(5);
+  });
+
+  // Run 4 (R3): one approved request was polled 166 times in 18 minutes, two
+  // to four reads at once, because each surface read it on its own.
+  async function tenSecondsWithACardReading(cardRead: () => unknown): Promise<Record<string, number>> {
+    // A read takes a while on a busy pool (10-38s measured); here, 500ms.
+    mocks.getInformationRequest.mockImplementation(({ bundleId }: { bundleId: string }) =>
+      new Promise((resolve) => setTimeout(() => resolve(bundle("pending", bundleId)), 500)));
+    waitOnKushal(BUNDLE);
+    waitOnKushal(BUNDLE_2);
+    render(<AgentConsentContinuationNotifier />);
+    // Each tick, a card showing the first request reads it at the same moment.
+    cardRead();
+    await flush();
+    for (let tick = 0; tick < 5; tick += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+        cardRead();
+      });
+    }
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    const counts: Record<string, number> = {};
+    for (const [input] of mocks.getInformationRequest.mock.calls) {
+      const id = (input as { bundleId: string }).bundleId;
+      counts[id] = (counts[id] ?? 0) + 1;
+    }
+    return counts;
+  }
+
+  it("reads each waiting bundle once per tick, shared with any card reading it", async () => {
+    const counts = await tenSecondsWithACardReading(() =>
+      void readInformationRequest({ bundleId: BUNDLE, vaultOwnerToken: "owner-token" }));
+    // Six checks in ten seconds (at once, then every 2s): one read each, per bundle.
+    expect(counts).toEqual({ [BUNDLE]: 6, [BUNDLE_2]: 6 });
+  });
+
+  it("negative control: a card reading on its own doubles the reads of its bundle", async () => {
+    const counts = await tenSecondsWithACardReading(() =>
+      void mocks.getInformationRequest({ bundleId: BUNDLE, vaultOwnerToken: "owner-token" }));
+    expect(counts).toEqual({ [BUNDLE]: 12, [BUNDLE_2]: 6 });
+  });
+
+  // Run 4 (R3): an answered request whose card was on screen stayed "waiting",
+  // so it kept the 2s cadence and a card-wide refresh event every 10s.
+  it("stops the fast checks once a request is answered, and the card may still continue it", async () => {
+    mocks.getInformationRequest.mockImplementation(async ({ bundleId }: { bundleId: string }) =>
+      bundle(bundleId === BUNDLE ? "granted" : "pending", bundleId));
+    mocks.getAgentChatConsentOutcomes.mockResolvedValue({});
+    waitOnKushal(BUNDLE);
+    waitOnKushal(BUNDLE_2);
+    const releaseCard = mountInformationRequestCard(OWNER, BUNDLE);
+    const events: unknown[] = [];
+    const onEvent = (event: Event) => events.push((event as CustomEvent).detail);
+    window.addEventListener(CONSENT_STATE_CHANGED_EVENT, onEvent);
+    render(<AgentConsentContinuationNotifier />);
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    const reads = (id: string) => mocks.getInformationRequest.mock.calls
+      .filter(([input]) => (input as { bundleId: string }).bundleId === id).length;
+    // Answered on the first check: never read by the doorbell again.
+    expect(reads(BUNDLE)).toBe(1);
+    // Control: the request still waiting kept its 2s cadence meanwhile.
+    expect(reads(BUNDLE_2)).toBe(31);
+    expect(listSentInformationRequests(OWNER).map((request) => request.bundleId)).toEqual([BUNDLE_2]);
+    expect(isConsentContinuationArmed(OWNER, BUNDLE)).toBe(true);
+    expect(informationRequestPhase(OWNER, BUNDLE)).toBe("reading");
+    // No refresh events: the card takes the published reading instead.
+    expect(events).toEqual([]);
+    window.removeEventListener(CONSENT_STATE_CHANGED_EVENT, onEvent);
+    releaseCard();
   });
 
   it("checks at once on a push or live event for the waiting request", async () => {

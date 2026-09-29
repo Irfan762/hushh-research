@@ -34,7 +34,7 @@ vi.mock("@/components/consent/consent-scope-nested-list", () => ({
 }));
 
 import { AgentConsentContinuationContext, AgentStructuredExperienceView } from "@/components/agent/agent-structured-experience";
-import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
+import { armConsentContinuation, clearSentInformationRequests } from "@/lib/agent/consent-continuation";
 
 const person = "1234567890abcdef";
 const experience: ScopeDiscoveryExperience = {
@@ -489,6 +489,49 @@ describe("current-authority inline Chat catalog", () => {
     doorbell();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(continueWithOutcome).toHaveBeenCalledTimes(1);
+  });
+
+  // Run 4 (R3): every refetch re-ran the continuation and dropped it before
+  // its slow ledger check returned, so the answer never continued in place.
+  it("continues once even when refreshes land faster than its slow ledger check", async () => {
+    clearSentInformationRequests(null);
+    vi.useFakeTimers();
+    try {
+      const bundleId = "2f0e0d0c-0b0a-4908-8706-050403020100";
+      mocks.consentOutcomes.mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve({}), 3_000)));
+      mocks.getInformationRequest.mockResolvedValue({
+        bundleId, personRef: person, purpose: "Plan a dinner.", durationSeconds: 86400, cancelled: false,
+        items: [{ requestId: "request_slow", scopeRef: "scope-1", label: "Allergies", sensitivity: "sensitive", status: "denied" }],
+      });
+      armConsentContinuation(mocks.user.uid, bundleId);
+      const continueWithOutcome = vi.fn(async () => true);
+      render(
+        <AgentConsentContinuationContext.Provider value={{ conversationId: "conversation-1", continueWithOutcome }}>
+          <AgentStructuredExperienceView experience={{
+            type: "one.information_request_review.v1", personName: "Synthetic Recipient", purpose: "Plan a dinner.",
+            durationLabel: "1 day", direction: "outgoing", phase: "submitted", subjectRef: person, bundleId,
+            requestId: null, status: "pending", fields: [{ label: "Allergies", domain: "Health", sensitivity: "sensitive", requestId: "request_slow" }],
+          }} />
+        </AgentConsentContinuationContext.Provider>,
+      );
+      // A refresh every 2s (focus, events, readings), for 12s.
+      for (let tick = 0; tick < 6; tick += 1) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2_000);
+          window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
+            source: "information_request_updated", action: "CONSENT_DENIED", bundleId, requestId: "request_slow",
+          } }));
+        });
+      }
+      // Continued while the refreshes were still landing, exactly once.
+      expect(continueWithOutcome).toHaveBeenCalledTimes(1);
+      expect(continueWithOutcome).toHaveBeenCalledWith(expect.objectContaining({ bundleId, outcome: "denied" }));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(continueWithOutcome).toHaveBeenCalledTimes(1);
+    } finally {
+      mocks.consentOutcomes.mockImplementation(async () => ({}));
+      vi.useRealTimers();
+    }
   });
 
   it("never replays an answer for an old chat it did not see waiting", async () => {

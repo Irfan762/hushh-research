@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   handleApproveBundle: vi.fn(),
   handleDenyBundle: vi.fn(),
+  handleDecideBundle: vi.fn(),
   consentActionOptions: null as null | {
     onActionComplete?: (detail: {
       action: "approve" | "deny" | "revoke";
@@ -147,6 +148,7 @@ vi.mock("@/lib/consent", () => ({
     return {
     handleApprove: mocks.handleApprove,
     handleApproveBundle: mocks.handleApproveBundle,
+    handleDecideBundle: mocks.handleDecideBundle,
     handleDeny: mocks.handleDeny,
     handleDenyBundle: mocks.handleDenyBundle,
     handleRevoke: mocks.handleRevoke,
@@ -430,6 +432,7 @@ describe("ConsentCenterPage requestId deep links", () => {
     mocks.sharePreviewState = { status: "idle" };
     mocks.handleApproveBundle.mockResolvedValue(undefined);
     mocks.handleDenyBundle.mockResolvedValue(undefined);
+    mocks.handleDecideBundle.mockResolvedValue(undefined);
     mocks.connectionAccept.mockResolvedValue(undefined);
     mocks.connectionReject.mockResolvedValue(undefined);
     mocks.busyRequestIds = new Set();
@@ -519,13 +522,51 @@ describe("ConsentCenterPage requestId deep links", () => {
       await screen.findByRole("dialog", { name: "A member" }),
     ).toBeTruthy();
     // The sheet decides the whole request: every item still waiting, named
-    // and counted, not only the one that was tapped.
+    // and counted, not only the one that was tapped, each one choosable.
     expect(screen.getByText("Access · 10 items")).toBeTruthy();
-    const access = screen.getByText(/Professional detail 3, Professional detail 4/, {
-      selector: "dd",
+    const choice = screen.getByTestId("consent-bundle-choice");
+    expect(within(choice).getAllByRole("checkbox")).toHaveLength(10);
+    expect(within(choice).getByRole("checkbox", { name: "Professional detail 12" })).toBeChecked();
+    expect(within(choice).queryByRole("checkbox", { name: "Professional detail 1" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Allow" })).toBeEnabled();
+  });
+
+  // Localhost run 4 (R5): no owner surface could approve part of a request.
+  it("allows only the chosen items of a request and declines the rest", async () => {
+    const member = (id: string, label: string, scope: string) => ({
+      id, request_id: id, kind: "incoming_request", status: "pending", action: "REQUESTED",
+      allowed_next_action: "review_request", scope, scope_description: label,
+      counterpart_type: "person", counterpart_label: "Kushal Trivedi",
+      metadata: { bundle_id: "bundle-mixed", expiry_hours: 168 },
     });
-    expect(access).toHaveTextContent("Professional detail 12");
-    expect(access).not.toHaveTextContent("Professional detail 1,");
+    mocks.search = "tab=pending&bundleId=bundle-mixed&requestId=request-food";
+    mocks.listEntries.mockResolvedValue(pendingListResponse({
+      id: "bundle:bundle-mixed", bundle_id: "bundle-mixed", bundle_complete: true,
+      bundle_items: [
+        { request_id: "request-food", label: "Food preferences", status: "pending", entry: member("request-food", "Food preferences", "attr.food.preferences.*") },
+        { request_id: "request-events", label: "Events", status: "pending", entry: member("request-events", "Events", "attr.financial.events.*") },
+      ],
+      kind: "incoming_request", status: "pending", action: "REQUESTED", counterpart_type: "person",
+      counterpart_label: "Kushal Trivedi", metadata: { bundle_id: "bundle-mixed" },
+    }));
+    render(<ConsentCenterPage />);
+    const dialog = await screen.findByRole("dialog", { name: "Kushal Trivedi" });
+    expect(within(dialog).getAllByRole("checkbox")).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Financial events" }));
+    expect(screen.getByText("Access · 1 of 2 items")).toBeTruthy();
+    expect(screen.getByTestId("consent-bundle-choice-summary"))
+      .toHaveTextContent("Only Food preferences will be shared. Financial events won't be.");
+    fireEvent.click(screen.getByRole("button", { name: "Allow 1 of 2" }));
+
+    await waitFor(() => expect(mocks.handleDecideBundle).toHaveBeenCalledTimes(1));
+    const [allow, decline, options] = mocks.handleDecideBundle.mock.calls[0]!;
+    expect(allow.map((consent: { id: string }) => consent.id)).toEqual(["request-food"]);
+    expect(decline).toEqual(["request-events"]);
+    expect(options).toMatchObject({ bundleId: "bundle-mixed" });
+    // Negative control: a partial choice never becomes a whole Allow or a whole decline.
+    expect(mocks.handleApproveBundle).not.toHaveBeenCalled();
+    expect(mocks.handleDenyBundle).not.toHaveBeenCalled();
   });
 
   it("routes a cold document link only to its private review, never generic consent or voice decisions", async () => {

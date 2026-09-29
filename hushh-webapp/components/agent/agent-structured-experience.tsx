@@ -6,6 +6,8 @@ import { useVault } from "@/lib/vault/vault-context";
 import { usePersonInformationRequest } from "@/lib/consent/use-person-information-request";
 import { selectedRequestScopes, toggleRequestScopes } from "@/lib/consent/request-scope-selection";
 import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
+import { readInformationRequest, subscribeInformationRequest } from "@/lib/consent/information-request-reads";
+import { LIVE_ACCESS_EVENT_JOIN_MS } from "@/lib/consent/live-access-watch";
 import {
   informationRequestOutcome,
   type ConsentOutcome,
@@ -480,7 +482,7 @@ function ScopeDiscoveryView({
             {!profile ? !personRef ? "This saved card cannot be used to make a request. Ask One to check again." : !user ? "Sign in to check what is available." : !isVaultUnlocked ? "Unlock your vault to continue here." : "Checking what is currently available to request."
               : total === 0
               ? "Nothing is currently available to request."
-              : `${total} ${total === 1 ? "thing" : "things"} you can ask for. They decide what to share, and for how long.`}
+              : `${total} ${total === 1 ? "item" : "items"} you can ask for. They decide what to share, and for how long.`}
           </p>
         </div>
       </header>
@@ -571,10 +573,24 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
   const [refreshRevision, setRefreshRevision] = useState(0);
   const [answer, setAnswer] = useState<ConsentOutcome | null>(null);
   const continuation = useContext(AgentConsentContinuationContext);
+  // A reading another surface just made (the doorbell, the live-access watch)
+  // applies at once, with no read of this card's own: measured 2026-09-29, the
+  // chat knew "Reading…" at 19.1s while this card, waiting on its own read of
+  // a starved pool, still said "Seen" until 33.5s.
+  const publishedRef = useRef<InformationRequestBundle | null>(null);
+  const eventRefreshRef = useRef(false);
+  useEffect(() => {
+    if (!experience.bundleId || experience.phase !== "submitted") return;
+    return subscribeInformationRequest(experience.bundleId, (bundle) => {
+      publishedRef.current = bundle;
+      setRefreshRevision((revision) => revision + 1);
+    });
+  }, [experience.bundleId, experience.phase]);
 
   useEffect(() => {
     if (!experience.bundleId || experience.phase !== "submitted") return;
     const refresh = () => {
+      eventRefreshRef.current = true;
       setRefreshState("checking");
       setRefreshRevision((revision) => revision + 1);
     };
@@ -608,11 +624,18 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       setRefreshState("unavailable");
       return () => { active = false; };
     }
-    setRefreshState("checking");
-    void PersonProfileService.getInformationRequest({
+    const published = publishedRef.current;
+    publishedRef.current = null;
+    const fromEvent = eventRefreshRef.current;
+    eventRefreshRef.current = false;
+    if (!published) setRefreshState("checking");
+    // Shared with every other reader of this request: an event's listeners
+    // share one fresh read, and a re-render never adds one.
+    void (published ? Promise.resolve(published) : readInformationRequest({
       bundleId: experience.bundleId,
       vaultOwnerToken,
-    }).then((bundle) => {
+      ...(fromEvent ? { joinWithinMs: LIVE_ACCESS_EVENT_JOIN_MS } : {}),
+    })).then((bundle) => {
       if (!active) return;
       // A restored descriptor is only a display reference. If the current
       // authority lookup resolves a different person, reject it without
@@ -680,6 +703,14 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
   }, [isOutgoingSubmitted, user?.uid, experience.bundleId, experience.subjectRef, experience.personName,
     continuation?.conversationId, refreshState, current?.status]);
 
+  // One attempt at a time, and a re-render never cancels it. Measured
+  // 2026-09-29 (R3): every refetch re-ran this effect and dropped the attempt
+  // before its (slow) ledger check returned, so the answer never continued
+  // until the person left the chat and came back. Claiming is the guard
+  // against a second continuation; the server marker is the last word.
+  const continuingRef = useRef<string | null>(null);
+  const fieldsRef = useRef(current?.fields);
+  fieldsRef.current = current?.fields;
   useEffect(() => {
     const ownerId = user?.uid;
     const bundleId = experience.bundleId;
@@ -690,24 +721,28 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
     // Only an answer this tab was waiting for, or one the person opened from
     // its notice, continues; an old chat never replays by itself.
     if (!isConsentContinuationArmed(ownerId, bundleId)) return;
-    let active = true;
+    if (continuingRef.current === bundleId) return;
+    continuingRef.current = bundleId;
     void (async () => {
-      const done = await getAgentChatConsentOutcomes({ conversationId, vaultOwnerToken, vaultKey })
-        .catch(() => null);
-      if (!active || !done || bundleId.toLowerCase() in done) return;
-      if (!claimConsentContinuation(ownerId, bundleId)) return;
-      const started = await continuation.continueWithOutcome({
-        bundleId,
-        subjectRef,
-        outcome: answer,
-        domainFor: (requestId) => current?.fields.find((field) => field.requestId === requestId)?.domain
-          ?? experience.fields.find((field) => field.requestId === requestId)?.domain,
-      }).catch(() => false);
-      if (!started) releaseConsentContinuation(ownerId, bundleId);
+      try {
+        const done = await getAgentChatConsentOutcomes({ conversationId, vaultOwnerToken, vaultKey })
+          .catch(() => null);
+        if (!done || bundleId.toLowerCase() in done) return;
+        if (!claimConsentContinuation(ownerId, bundleId)) return;
+        const started = await continuation.continueWithOutcome({
+          bundleId,
+          subjectRef,
+          outcome: answer,
+          domainFor: (requestId) => fieldsRef.current?.find((field) => field.requestId === requestId)?.domain
+            ?? experience.fields.find((field) => field.requestId === requestId)?.domain,
+        }).catch(() => false);
+        if (!started) releaseConsentContinuation(ownerId, bundleId);
+      } finally {
+        if (continuingRef.current === bundleId) continuingRef.current = null;
+      }
     })();
-    return () => { active = false; };
-  }, [answer, continuation, current?.fields, experience.bundleId, experience.fields, experience.subjectRef,
-    isOutgoingSubmitted, isVaultUnlocked, refreshState, user?.uid, vaultKey, vaultOwnerToken]);
+  }, [answer, continuation, experience.bundleId, experience.fields, experience.subjectRef,
+    isOutgoingSubmitted, isVaultUnlocked, refreshRevision, refreshState, user?.uid, vaultKey, vaultOwnerToken]);
 
   const displayFields = current?.fields || experience.fields;
   const displayStatus = current?.status || experience.status;
@@ -830,7 +865,7 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       experienceType={experience.type}
       label={label}
       title={title}
-      summary={`${items.length} ${items.length === 1 ? "thing" : "things"} · ${experience.durationLabel}`}
+      summary={`${items.length} ${items.length === 1 ? "item" : "items"} · ${experience.durationLabel}`}
       icon={<ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />}
     >
       <p className="text-sm leading-6 text-foreground">{experience.purpose}</p>

@@ -204,9 +204,73 @@ def test_negative_control_without_synonyms_restaurant_finds_nothing():
         ("attr.food.preferences.entities._entities.kind", "Kind", "Food preferences kind"),
         ("attr.food.preferences.observations._items", "Observations", "Food preferences"),
         ("attr.professional.employment.status", None, "Employment status"),
+        # Localhost acceptance run 4 (S3, U3): machine labels a person read.
+        ("attr.tax_record.*", "Tax Record Domain", "Tax record"),
+        ("attr.legal_entity.*", "Legal Entity Domain", "Legal entity"),
+        ("attr.legal_entity.entity.fein", "Fein", "Federal EIN"),
+        ("attr.legal_entity.entity.naics_code", "Naics code", "Industry code (NAICS)"),
+        ("attr.legal_entity.entity.trade_name_dba", None, "Trade name (DBA)"),
     ],
 )
 def test_human_scope_labels(scope, stored, expected):
     from hushh_mcp.consent.scope_labels import human_scope_label
 
     assert human_scope_label(scope, stored) == expected
+
+
+def test_field_and_value_labels_match_their_shared_truth_table():
+    """The client's secure card reads the same contract ("C_CORP" -> "C corporation")."""
+    from hushh_mcp.consent.field_labels import human_value_label, known_field_label
+    from hushh_mcp.services.generated_contracts import generated_contract_path
+
+    contract = json.loads(generated_contract_path("consent", "field-labels.v1.json").read_text())
+    wrong = [
+        case
+        for case in contract["cases"]
+        if (known_field_label(case["key"]) if "key" in case else human_value_label(case["value"]))
+        != case["expected"]
+    ]
+    assert contract["cases"] and wrong == []
+
+
+@pytest.mark.parametrize("query", ["tax", "tax return", "refund", "irs", "filing"])
+def test_tax_words_find_the_tax_record(query):
+    """A3 (localhost run 4): "tax", "tax return" and "refund" found nothing."""
+    from hushh_mcp.consent.scope_matcher import search_scope_entries
+
+    catalog = [
+        *_catalog(),
+        {"scopeRef": "psr_tax", "label": "Tax record", "domain": "tax_record", "wildcard": True},
+        {"scopeRef": "psr_port", "label": "Portfolio", "domain": "financial"},
+    ]
+    found = search_scope_entries(catalog, query)
+    assert found and found[0]["scopeRef"] == "psr_tax"
+
+
+def test_machine_rows_never_reach_the_requester_catalog():
+    """A3 (localhost run 4): "Schema", "Holdings is editable", "Last updated"."""
+    from hushh_mcp.consent.scope_matcher import presentable_scope_entries
+
+    rows = [
+        {"scope": "attr.financial.summary.schema", "domain": "financial", "label": "Schema"},
+        {"scope": "attr.financial.summary.last_updated", "domain": "financial", "label": "x"},
+        {
+            "scope": "attr.financial.portfolio.holdings._items.is_editable",
+            "domain": "financial",
+            "label": "Holdings is editable",
+        },
+        {
+            "scope": "attr.financial.portfolio.holdings._items.symbol_kind",
+            "domain": "financial",
+            "label": "Holdings symbol kind",
+        },
+        {"scope": "attr.financial.summary.connection_count", "domain": "financial", "label": "y"},
+        {"scope": "attr.financial.summary.account_count", "domain": "financial", "label": "z"},
+        {
+            "scope": "attr.financial.portfolio.holdings._items.market_value",
+            "domain": "financial",
+            "label": "Holdings market value",
+        },
+    ]
+    kept = [row["label"] for row in presentable_scope_entries(rows)]
+    assert kept == ["Holdings market value"]

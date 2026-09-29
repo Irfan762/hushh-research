@@ -36,6 +36,22 @@ const discovery: ScopeDiscoveryExperience = {
   },
 };
 
+/**
+ * "Request all of Kushal's food and dining information" (localhost run 4, A2):
+ * the broad item and one it covers, neither on the viewer's first catalog
+ * page, so the card finds their place by searching.
+ */
+const broadAsk: ScopeDiscoveryExperience = {
+  ...discovery,
+  proposal: {
+    proposed: [
+      { scopeRef: "scope-food-all", label: "Food & dining information", why: "Matches what you asked for" },
+      { scopeRef: "scope-food-prefs", label: "Food preferences", why: null },
+    ],
+    durationHours: 168, reasonSuggestion: "To view food and dining details",
+  },
+};
+
 const SHARED = {
   preferences: { entities: {
     food_preferences: { kind: "preference", status: "active",
@@ -60,6 +76,7 @@ function Fixture() {
     <main className="min-h-dvh bg-background px-4 py-6 text-foreground">
       <div className="mx-auto flex max-w-3xl flex-col gap-8">
         <section data-state="ask" aria-label="ask"><AgentStructuredExperienceView experience={discovery} /></section>
+        <section data-state="broad-ask" aria-label="broad-ask"><AgentStructuredExperienceView experience={broadAsk} /></section>
         <ConsentCardPhaseContext.Provider value={(id) => phases.get(id) ?? null}>
           {STATES.map(({ state, bundleId }) => (
             <section key={state} data-state={state} aria-label={state}>

@@ -155,6 +155,40 @@ for (const dark of [false, true])
       expect(errors).toEqual([]);
     });
 
+// R5: the sheet lists a grouped request's items one per row, all chosen, and
+// says plainly what an Allow of part of it will do.
+for (const width of WIDTHS)
+  test(`the sheet's per-item choice fits and names a partial Allow at ${width}px`, async ({ page }) => {
+    await open(page, width, false);
+    const choice = page.getByTestId("consent-bundle-choice");
+    const rows = choice.getByTestId("consent-bundle-choice-row");
+    await expect(rows).toHaveCount(2);
+    await expect(choice.getByRole("checkbox")).toHaveCount(2);
+    for (const row of await rows.all()) {
+      const box = (await row.boundingBox())!;
+      expect(box.height, `${width}px choice row`).toBeGreaterThanOrEqual(44);
+    }
+    expect(await choice.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      return [...node.querySelectorAll("*")].some((child) => {
+        const bounds = child.getBoundingClientRect();
+        return bounds.width > 0 && (bounds.left < box.left - 1 || bounds.right > box.right + 1);
+      });
+    }), `${width}px choice overflows`).toBe(false);
+    await expect(page.getByTestId("bundle-choice-allow")).toHaveText("Allow");
+
+    // The whole row is the target, not only the box.
+    await rows.nth(1).click({ position: { x: (await rows.nth(1).boundingBox())!.width - 8, y: 20 } });
+    await expect(choice.getByRole("checkbox").nth(1)).not.toBeChecked();
+    await expect(choice).toContainText("Access · 1 of 2 items");
+    await expect(page.getByTestId("consent-bundle-choice-summary")).toContainText("Only Food preferences will be shared.");
+    await expect(page.getByTestId("bundle-choice-allow")).toHaveText("Allow 1 of 2");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+
+    const shotDir = process.env.CONSENT_ROW_SHOT_DIR;
+    if (shotDir) await choice.screenshot({ path: path.join(shotDir, `consent-bundle-choice-${width}.png`), animations: "disabled" });
+  });
+
 test("the row opens on tap, Enter and Space, and ✗ / ✓ never open it", async ({ page }) => {
   await open(page, 393, false);
   const body = page.locator("body");

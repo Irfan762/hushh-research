@@ -7,6 +7,10 @@
  * children are the catalog entries it covers, so "Legal entity" opens to show
  * "Entity" and either can be chosen.
  *
+ * A proposed item missing from that catalog is looked up by label on the
+ * server (`proposalLookups`) before Send is offered, so a broad ask still
+ * nests.
+ *
  * Coverage comes only from `covers` in `lib/consent/request-scope-selection.ts`
  * and the sent set only from `selectedRequestScopes`, the same rules the
  * catalog review uses: a fully chosen group is sent as its one broad scope,
@@ -27,6 +31,31 @@ export function proposalRowLabel(scope: Pick<RequestablePersonScope, "label">): 
   return humanSharedLabel(scope.label) ?? "Selected information";
 }
 
+/**
+ * Proposed items the loaded catalog does not hold, by label.
+ *
+ * The card's catalog is the viewer's first page, ranked narrowest first, so a
+ * broad item ("Food & dining information", `attr.food.*`) sorts last and is
+ * never on it (measured 2026-09-29: 251 items, 100 a page). Without its place
+ * in the catalog the card cannot nest anything under it, and a broad ask
+ * rendered its parent and child side by side. A server search by the item's
+ * own label returns it with its place, and the items it covers beside it.
+ */
+export function proposalLookups(proposal: ScopeProposal, catalog: readonly RequestablePersonScope[]): string[] {
+  const known = new Set(catalog.map((scope) => scope.scopeRef));
+  return [...new Set(proposal.proposed.filter((item) => !known.has(item.scopeRef)).map((item) => item.label))];
+}
+
+/** The loaded catalog plus what the lookups found, first seen wins. */
+export function mergeProposalCatalog(
+  catalog: readonly RequestablePersonScope[],
+  found: readonly RequestablePersonScope[],
+): RequestablePersonScope[] {
+  const all = new Map<string, RequestablePersonScope>();
+  for (const scope of [...catalog, ...found]) if (!all.has(scope.scopeRef)) all.set(scope.scopeRef, scope);
+  return [...all.values()];
+}
+
 export function proposalTree(
   proposal: ScopeProposal,
   catalog: readonly RequestablePersonScope[],
@@ -34,8 +63,11 @@ export function proposalTree(
   const byRef = new Map(catalog.map((scope) => [scope.scopeRef, scope]));
   const proposed = proposal.proposed.map<RequestablePersonScope>((item) => {
     const known = byRef.get(item.scopeRef);
-    return known ? { ...known, label: known.label || item.label } : {
-      scopeRef: item.scopeRef, label: item.label, description: null, domain: null, sensitivity: null, wildcard: false,
+    if (known) return { ...known, label: known.label || item.label, pathSegments: known.pathSegments ?? item.pathSegments };
+    // Not in the catalog: the proposal's own place, when the server sent one.
+    return {
+      scopeRef: item.scopeRef, label: item.label, description: null, domain: item.domain ?? null, sensitivity: null,
+      wildcard: item.wildcard === true, ...(item.pathSegments ? { pathSegments: item.pathSegments } : {}),
     };
   });
   const nodes: ProposalNode[] = [];

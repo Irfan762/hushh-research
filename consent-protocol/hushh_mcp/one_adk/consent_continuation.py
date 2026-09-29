@@ -41,6 +41,8 @@ import secrets
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from hushh_mcp.consent.field_labels import known_field_label
+from hushh_mcp.consent.field_sensitivity import field_sensitivity
 from hushh_mcp.one_adk.follow_up_suggestions import model_step_has_answer_text
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret, store_request_secret
 
@@ -196,6 +198,7 @@ async def admit_consent_continuation(
     ]
     person = person_name(str(bundle.get("personRef") or "")) or "they"
     shared_ref = ""
+    hidden: list[str] = []
     if outcome in SHARED_OUTCOMES:
         shared = payload.get("sharedInformation")
         text = shared.strip() if isinstance(shared, str) else ""
@@ -207,6 +210,7 @@ async def admit_consent_continuation(
         text, stripped = strip_sensitive_shared_information(text, _item_sensitivities(bundle))
         if stripped:
             logger.info("one.consent_sensitive_stripped count=%d", stripped)
+        hidden = hidden_outline(text)
         shared_ref = store_request_secret(text, ttl_seconds=SHARED_TEXT_TTL_SECONDS)
     elif payload.get("sharedInformation"):
         # Nothing was approved, so nothing of the other person's may ride along.
@@ -221,6 +225,8 @@ async def admit_consent_continuation(
             "sharedLabels": shared_labels,
             "declinedLabels": declined_labels,
             "sensitiveLabels": sensitive_labels,
+            # Shared, but only as names: the secure card holds the values.
+            "hiddenOutline": hidden,
         },
     }
     if outcome in SHARED_OUTCOMES:
@@ -321,23 +327,66 @@ def sensitive_outline_line(label: str, names: list[str]) -> str:
     )
 
 
+_FIELDS_OUTLINE = re.compile(
+    r"^- (?P<label>.+?): sensitive fields? \((?P<names>[^()]*)\)\. "
+    r"Shown to the person in the secure card on their device; "
+    r"the values are not shared with you\.$"
+)
+
+
+def sensitive_fields_line(label: str, names: list[str]) -> str:
+    """The model's view of a standard item's identifier fields: names, never values."""
+    unique = list(dict.fromkeys(names))
+    shown = unique[:_MAX_OUTLINE_NAMES]
+    more = len(unique) - len(shown)
+    listing = ", ".join(shown) + (f" and {more} more" if more > 0 else "")
+    plural = "s" if len(unique) != 1 else ""
+    return (
+        f"- {label}: sensitive field{plural} ({listing or 'unnamed'}). Shown to the person in "
+        "the secure card on their device; the values are not shared with you."
+    )
+
+
+def _line_keys_and_value(line: str, owner: str | None) -> tuple[list[str], str]:
+    """The key path and the value of one "- Label > key > key: value" line."""
+    body = line[len(f"- {owner}") :] if owner else line[2:] if line.startswith("- ") else line
+    path, _sep, value = body.partition(": ")
+    keys = [part.strip() for part in path.split(" > ") if part.strip()]
+    return keys, value
+
+
+def _field_name(keys: list[str]) -> str:
+    """A name-shaped outline entry for a field's key path, or "" when none is safe."""
+    leaf = next((key for key in reversed(keys) if not key.isdigit()), "")
+    name = known_field_label(leaf) or (leaf[:1].upper() + leaf[1:] if leaf else "")
+    return name if name and _OUTLINE_NAME.fullmatch(name) else ""
+
+
 def strip_sensitive_shared_information(
     text: str, sensitivities: Mapping[str, str]
 ) -> tuple[str, int]:
-    """Replace every sensitive item's lines with a names-only outline (C7).
+    """Replace every sensitive value with a names-only outline (C7, item and field level).
 
     ``text`` is the device's "- Label > path: value" lines. A line belongs to
-    the longest label it starts with. Lines of a sensitive label become one
-    outline line built from their key path names (never the part after the
-    colon), or from the device's own outline if that is what it sent. When any
-    item is sensitive, a line no standard label claims is dropped too. Returns
-    the text and the number of lines removed; nothing is logged here.
+    the longest label it starts with.
+
+    * Lines of a sensitive item become one outline line built from their key
+      path names (never the part after the colon), or from the device's own
+      outline if that is what it sent. When any item is sensitive, a line no
+      standard label claims is dropped too.
+    * Lines of a STANDARD item are checked field by field
+      (``field_sensitivity``): an identifier-class key (an EIN under "Legal
+      entity") or an identifier-shaped value is removed and named in one
+      "sensitive fields" line for that item; the rest of the item still reaches
+      the model so One can answer from it.
+
+    Returns the text and the number of lines removed; nothing is logged here.
     """
-    if not any(value == "sensitive" for value in sensitivities.values()):
-        return text, 0
+    any_sensitive_item = any(value == "sensitive" for value in sensitivities.values())
     labels = sorted((label for label in sensitivities if label), key=len, reverse=True)
     kept: list[str] = []
     outlines: dict[str, list[str]] = {}
+    hidden_fields: dict[str, list[str]] = {}
     stripped = 0
     for line in text.splitlines():
         owner = next(
@@ -348,8 +397,18 @@ def strip_sensitive_shared_information(
             ),
             None,
         )
-        if owner is not None and sensitivities.get(owner) == "standard":
-            kept.append(line)
+        standard_owner = owner is not None and sensitivities.get(owner) == "standard"
+        if standard_owner or (owner is None and not any_sensitive_item):
+            keys, value = _line_keys_and_value(line, owner)
+            if field_sensitivity(keys, value) == "standard":
+                kept.append(line)
+                continue
+            stripped += 1
+            if owner is not None:
+                name = _field_name(keys)
+                hidden_fields.setdefault(owner, [])
+                if name:
+                    hidden_fields[owner].append(name)
             continue
         if not line.strip():
             continue
@@ -361,13 +420,32 @@ def strip_sensitive_shared_information(
         if device and device.group("label") == owner:
             names.extend(_outline_names(device.group("names") or ""))
             continue
-        path = line[len(f"- {owner}") :].split(": ", 1)[0]
-        keys = [part.strip() for part in path.split(" > ") if part.strip()]
-        leaf = next((key for key in reversed(keys) if not key.isdigit()), "")
-        if leaf and _OUTLINE_NAME.fullmatch(leaf):
-            names.append(leaf[:1].upper() + leaf[1:])
+        keys, _value = _line_keys_and_value(line, owner)
+        name = _field_name(keys)
+        if name:
+            names.append(name)
     kept.extend(sensitive_outline_line(label, names) for label, names in outlines.items())
+    kept.extend(sensitive_fields_line(label, names) for label, names in hidden_fields.items())
     return "\n".join(kept), stripped
+
+
+def hidden_outline(text: str) -> list[str]:
+    """What the model may know was shared but cannot see: "Label (Field, Field)".
+
+    Read back from the stripped text itself, so the instruction names exactly
+    the outlines the model's block carries and nothing else.
+    """
+    hidden: list[str] = []
+    for line in text.splitlines():
+        match = _DEVICE_OUTLINE.fullmatch(line) or _FIELDS_OUTLINE.fullmatch(line)
+        if not match:
+            continue
+        names = _outline_names(match.group("names") or "")
+        label = _plain_name(match.group("label"))[:80]
+        entry = f"{label} ({', '.join(names)})" if names else label
+        if entry not in hidden:
+            hidden.append(entry)
+    return hidden[:20]
 
 
 def _label_list(labels: Any) -> str:
@@ -439,6 +517,20 @@ def consent_continuation_instruction(state_getter: Callable[[str], Any] | None) 
             "in one short line; never guess, restate or summarize those values, and do not "
             "say you cannot display them."
         )
+    hidden = "; ".join(
+        _plain_name(entry)[:200] for entry in (record.get("hiddenOutline") or [])[:20] if entry
+    )
+    if hidden:
+        # R4 (localhost run 4): a mixed request answered "No 2025 federal tax
+        # refund information was shared" while the tax item sat in the secure
+        # card. What the model cannot see was still shared.
+        field_note += (
+            f" Shared with the person but hidden from you, with values only in the secure card "
+            f"above: {hidden}. Answer every part of the question the block's values answer, and "
+            "for any part about these hidden items say in one short line that it is in the "
+            "secure card above. Never say that information was not shared, is missing, or was "
+            "not included: it was shared, you just cannot see it."
+        )
     if outcome in SHARED_OUTCOMES:
         shared = resolve_request_secret(record.get("shared"))
         if not isinstance(shared, str) or not shared.strip():
@@ -465,8 +557,10 @@ def consent_continuation_instruction(state_getter: Callable[[str], Any] | None) 
     if outcome == "denied":
         return (
             f"\n\nINFORMATION REQUEST ANSWERED: {name} declined the person's earlier request. "
-            "Tell the person plainly and briefly. Do not guess or infer what they would have "
-            "shared, and do not ask again unless the person wants to."
+            "Tell the person plainly and briefly, then offer exactly one concrete alternative "
+            f"in one short sentence: asking {name} for a narrower item, or asking again later. "
+            "Do not guess or infer what they would have shared, and do not send anything again "
+            "unless the person wants to."
         )
     if outcome == "expired":
         return (

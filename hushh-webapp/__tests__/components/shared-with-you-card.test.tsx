@@ -52,7 +52,15 @@ import {
   sharedValueRows,
   type SharedWithYouItemView,
 } from "@/components/agent/consent/shared-with-you-card-view";
-import { SharedWithYouCard } from "@/components/agent/consent/shared-with-you-card";
+import {
+  normalizeSharedItems,
+  SHARED_OPEN_TIMEOUT_MS,
+  SharedWithYouCard,
+} from "@/components/agent/consent/shared-with-you-card";
+import type { SharedWithMeCardItem } from "@/lib/agent/agui-structured-experiences";
+import { readInformationRequest, readSharedWithMe } from "@/lib/consent/information-request-reads";
+import { liveAccessWatchSnapshot } from "@/lib/consent/live-access-watch";
+import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
 import { onePerPersonSharedCard } from "@/components/agent/agent-turn-stream-panel";
 import {
   parseAgentActivityExperience,
@@ -119,6 +127,7 @@ function item(overrides: Partial<SharedWithYouItemView> = {}): SharedWithYouItem
 
 beforeEach(() => {
   vi.clearAllMocks();
+  clearSentInformationRequests(null);
   mocks.unlocked = true;
   mocks.readStoredConnector.mockResolvedValue({ connector_key_id: "ck_1" });
   mocks.getInformationRequest.mockResolvedValue(grantedBundle());
@@ -170,6 +179,32 @@ describe("the card's states", () => {
     expect(screen.queryByRole("button", { name: /^Copy/ })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show Tax record" }));
     expect(screen.getByText("85000")).toBeInTheDocument();
+  });
+
+  // Localhost run 4 (S3): an EIN inside a standard "Legal entity" item read
+  // like any other field. It is marked Sensitive and Hide masks it alone.
+  it("marks an identifier field inside a standard item and hides only that field", () => {
+    const legal = item({
+      key: "legal", label: "Legal entity", sensitive: false, fieldOutline: ["Federal EIN", "Trade name", "Registered agent"],
+      data: { fein: "12-3456789", trade_name: "Acme Coffee", registered_agent: "Jordan Lee" },
+      fields: [{ name: "Registered agent", sensitivity: "sensitive" }, { name: "Trade name", sensitivity: "standard" }],
+    });
+    render(<SharedWithYouCardView person={person} status="ready" items={[legal]} />);
+    expect(screen.queryByTestId("shared-with-you-sensitive")).toBeNull();
+    const marked = screen.getAllByTestId("shared-with-you-sensitive-field");
+    expect(marked).toHaveLength(2);
+    expect(marked[0]!.closest("[data-testid='shared-with-you-row']")).toHaveTextContent("Federal EIN");
+    fireEvent.click(screen.getByRole("button", { name: "Hide Legal entity" }));
+    expect(screen.queryByText("12-3456789")).toBeNull();
+    expect(screen.queryByText("Jordan Lee")).toBeNull();
+    expect(screen.getByText("Acme Coffee")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Trade name" })).toBeInTheDocument();
+    cleanup();
+    // Negative control: an ordinary standard item carries no mark and no Hide.
+    render(<SharedWithYouCardView person={person} status="ready"
+      items={[item({ key: "food", label: "Food preferences", sensitive: false, data: { cuisine: "Neapolitan pizza" } })]} />);
+    expect(screen.queryByTestId("shared-with-you-sensitive-field")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Hide/ })).toBeNull();
   });
 
   it("splits a record into field and value rows with no internal keys", () => {
@@ -320,5 +355,115 @@ describe("one card per person in a turn", () => {
     expect(kept.map((entry) => entry.id)).toEqual(["list", "brief", "show"]);
     const first = kept[0]!.experience as SharedWithMeCardExperience;
     expect(first.cards.map((entry) => entry.person.personRef)).toEqual(["kushal"]);
+  });
+});
+
+function taxItem(overrides: Partial<SharedWithMeCardItem> = {}): SharedWithMeCardItem {
+  return {
+    key: TAX_REQUEST, grantRef: TAX_REQUEST, bundleId: BUNDLE, requestId: TAX_REQUEST, label: "Tax record",
+    sensitivity: "sensitive", domain: null, fieldOutline: ["Filing year"], sharedAt: "2026-09-28T10:00:00Z",
+    accessEndsAt: null, purpose: null, status: "granted", ...overrides,
+  };
+}
+const MANISH = { personRef: PERSON, displayName: "Manish Sainani" };
+
+// Run 4 (R3, R8): the card dropped its open on every state change, so an
+// open needing three slow reads never finished ("Opening on this device…"
+// for over 20 minutes).
+describe("opening is idempotent and survives re-renders", () => {
+  it("completes one open across re-renders and unrelated consent events", async () => {
+    let releaseExports: (value: unknown) => void = () => undefined;
+    mocks.getInformationRequestExports.mockReturnValue(new Promise((resolve) => { releaseExports = resolve; }));
+    const view = render(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+    await waitFor(() => expect(mocks.getInformationRequestExports).toHaveBeenCalledTimes(1));
+    // A parent re-render with a new array of the same items, twice, and a
+    // consent event about something else entirely.
+    view.rerender(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+    view.rerender(<SharedWithYouCard person={MANISH} items={[{ ...taxItem() }]} />);
+    act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: { source: "feed_actionable" } })));
+    await act(async () => { releaseExports([exportFor(TAX_REQUEST, "attr.financial.tax_record.*")]); });
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("Married filing jointly");
+    expect(mocks.getInformationRequestExports).toHaveBeenCalledTimes(1);
+    expect(mocks.decryptScopedExport).toHaveBeenCalledTimes(1);
+  });
+
+  it("control: a lock is a real change, and the open it interrupted never shows", async () => {
+    let releaseExports: (value: unknown) => void = () => undefined;
+    mocks.getInformationRequestExports.mockReturnValue(new Promise((resolve) => { releaseExports = resolve; }));
+    const view = render(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+    await waitFor(() => expect(mocks.getInformationRequestExports).toHaveBeenCalledTimes(1));
+    mocks.unlocked = false;
+    view.rerender(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+    await act(async () => { releaseExports([exportFor(TAX_REQUEST, "attr.financial.tax_record.*")]); });
+    expect(screen.getByTestId("shared-with-you-card")).toHaveAttribute("data-status", "locked");
+    expect(screen.queryByText("Married filing jointly")).toBeNull();
+  });
+
+  it("a stalled open shows a calm retry, and the late result still lands", async () => {
+    vi.useFakeTimers();
+    try {
+      let releaseExports: (value: unknown) => void = () => undefined;
+      mocks.getInformationRequestExports.mockReturnValue(new Promise((resolve) => { releaseExports = resolve; }));
+      render(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByTestId("shared-with-you-card")).toHaveAttribute("data-status", "loading");
+      await act(async () => { await vi.advanceTimersByTimeAsync(SHARED_OPEN_TIMEOUT_MS); });
+      expect(screen.getByTestId("shared-with-you-card")).toHaveAttribute("data-status", "error");
+      expect(screen.getByRole("button", { name: /Try again/ })).toBeInTheDocument();
+      await act(async () => { releaseExports([exportFor(TAX_REQUEST, "attr.financial.tax_record.*")]); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByTestId("shared-with-you-values")).toHaveTextContent("Married filing jointly");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// Run 4 (P1b): sensitive values stayed on screen about 4 minutes after Stop
+// sharing in an already-shared card, which re-checked only on some event.
+describe("access ending clears the values at once", () => {
+  it("watches its bundle with the shared watch and clears on any reading of the stop", async () => {
+    render(<SharedWithYouCard person={MANISH} items={[taxItem()]} />);
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("85000");
+    expect(liveAccessWatchSnapshot().bundles).toEqual([BUNDLE]);
+    // Another surface (the chat, the doorbell, the watch's own tick) reads the stop.
+    mocks.getInformationRequest.mockResolvedValue(grantedBundle("revoked"));
+    await act(async () => { await readInformationRequest({ bundleId: BUNDLE, vaultOwnerToken: "owner-token" }); });
+    expect(screen.getByTestId("access-ended-notice")).toHaveTextContent("stopped sharing Tax record");
+    expect(screen.queryByText("85000")).toBeNull();
+    expect(mocks.getInformationRequestExports).toHaveBeenCalledTimes(1);
+  });
+
+  it("an already-shared item naming no bundle ends when its share leaves the list", async () => {
+    mocks.listSharedWithMe.mockResolvedValue([{ bundleId: BUNDLE, requestId: TAX_REQUEST, person: "Manish Sainani",
+      personRef: PERSON, profilePath: null, label: "Tax record", purpose: null, expiresAt: null }]);
+    render(<SharedWithYouCard person={MANISH} items={[taxItem({ bundleId: null, requestId: null })]} />);
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("85000");
+    expect(liveAccessWatchSnapshot()).toEqual({ bundles: [BUNDLE], shares: true });
+    // Control: the share still listed keeps the values.
+    await act(async () => { await readSharedWithMe({ vaultOwnerToken: "owner-token" }); });
+    expect(screen.getByText("85000")).toBeInTheDocument();
+    mocks.listSharedWithMe.mockResolvedValue([]);
+    await act(async () => { await readSharedWithMe({ vaultOwnerToken: "owner-token" }); });
+    expect(screen.getByTestId("access-ended-notice")).toBeInTheDocument();
+    expect(screen.queryByText("85000")).toBeNull();
+  });
+});
+
+// Run 4 (S3): "Work preferences" twice, and Profile and the person page
+// listing the same items in different orders.
+describe("one row per item, in one order everywhere", () => {
+  it("collapses copies of the same request or grant and sorts by label, then when shared", () => {
+    const work = (key: string, overrides: Partial<SharedWithMeCardItem> = {}) =>
+      taxItem({ key, grantRef: "request_work_1", requestId: "request_work_1", label: "Work preferences", ...overrides });
+    const entity = taxItem({ key: "entity", grantRef: "request_entity", requestId: "request_entity", label: "Entity" });
+    const legal = taxItem({ key: "legal", grantRef: "request_legal", requestId: "request_legal", label: "legal entity information" });
+    const older = taxItem({ key: "tax-old", grantRef: "request_tax_old", requestId: "request_tax_old", sharedAt: "2026-09-01T00:00:00Z" });
+    const profileOrder = normalizeSharedItems([legal, work("w1", { bundleId: null }), entity, work("w2"), older, taxItem()]);
+    const personPageOrder = normalizeSharedItems([taxItem(), work("w2"), older, entity, work("w1", { bundleId: null }), legal]);
+    expect(profileOrder).toEqual(personPageOrder);
+    expect(profileOrder.map((item) => item.key)).toEqual(["entity", "legal", "tax-old", TAX_REQUEST, "w2"]);
+    // The copy that can be opened wins over one that names no bundle.
+    expect(profileOrder.find((item) => item.label === "Work preferences")?.bundleId).toBe(BUNDLE);
   });
 });

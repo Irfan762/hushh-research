@@ -2519,7 +2519,10 @@ def _propose_scopes(
 
     still_unmatched: list[str] = []
     for spoken in unmatched:
-        best = match_scopes(requestable, spoken, limit=1, ignore_words=ignore_words)
+        # The question is context: "income" in a tax question is about taxes.
+        best = match_scopes(
+            requestable, spoken, limit=1, ignore_words=ignore_words, context=question
+        )
         if best:
             _add(dict(best[0].entry), best[0].why)
         else:
@@ -2597,6 +2600,83 @@ def _reason_suggestion(fields: str, question: str, ignore_words: tuple[str, ...]
     return _REASON_FALLBACK
 
 
+async def _already_pending(
+    user_id: str, person_ref: str, matched: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The newest request to this person still waiting on any of ``matched``."""
+    try:
+        waiting = await InformationRequestService().pending_for_scope_refs(
+            requester_user_id=user_id,
+            person_ref=person_ref,
+            scope_refs=[str(item.get("scopeRef") or "") for item in matched],
+        )
+    except Exception:  # noqa: BLE001 - a failed check must not block a new request
+        logger.warning("one.proposal_pending_check_unavailable")
+        return None
+    return waiting[0] if waiting else None
+
+
+def _already_pending_result(
+    waiting: dict[str, Any],
+    matched: list[dict[str, Any]],
+    *,
+    person_ref: str,
+    display_name: str,
+) -> dict[str, Any]:
+    """Report a request that is already waiting, with its living card; never a Send.
+
+    Carries no ``proposed`` list on purpose: that key renders a fresh ask card
+    with Send, which is exactly the defect.
+    """
+    labels = [str(label) for label in waiting.get("labels") or []] or _pending_scope_labels(matched)
+    seconds = int(waiting.get("durationSeconds") or 0)
+    days, hours = divmod(seconds // 3600, 24)
+    duration = (
+        f"{days} {'day' if days == 1 else 'days'}"
+        if days and not hours
+        else f"{seconds // 3600} {'hour' if seconds // 3600 == 1 else 'hours'}"
+    )
+    domain_by_label = {
+        str(item.get("label") or ""): str(item.get("domainLabel") or "Information")
+        for item in matched
+    }
+    logger.info("one.proposal_already_pending items=%d", len(labels))
+    return {
+        "status": "already_pending",
+        "person": {
+            "displayName": display_name,
+            "personRef": person_ref,
+            "profilePath": f"/people/{person_ref}",
+        },
+        "bundleId": waiting.get("bundleId"),
+        "fields": labels,
+        "purpose": waiting.get("purpose"),
+        "sentAt": waiting.get("sentAt"),
+        # The same descriptor the request card renders after Send, so the
+        # chat can show the living card for the request that is waiting.
+        "livingCard": {
+            "personName": display_name,
+            "purpose": waiting.get("purpose"),
+            "durationLabel": duration,
+            "status": "pending",
+            "direction": "outgoing",
+            "phase": "submitted",
+            "subjectRef": person_ref,
+            "bundleId": waiting.get("bundleId"),
+            "fields": [
+                {"label": label, "domain": domain_by_label.get(label, "Information")}
+                for label in labels
+            ],
+        },
+        "nextStep": (
+            f"Say in one short line that your request to {display_name} for "
+            f"{', '.join(labels[:5])} is already waiting on them, and that the request card "
+            "shows where it stands. Do not ask them to tap Send, do not offer to send it "
+            "again, and do not call another consent action."
+        ),
+    }
+
+
 async def list_pending_information_requests(tool_context: ToolContext) -> dict[str, Any]:
     """List the information requests waiting on the owner's decision: who asks, for what, until when.
 
@@ -2618,20 +2698,37 @@ async def list_pending_information_requests(tool_context: ToolContext) -> dict[s
             "status": "failed",
             "message": "Your pending requests are temporarily unavailable. Please try again.",
         }
-    request_ids = [str(item.get("requestId") or "") for item in pending if item.get("requestId")]
+    # The ids the app turns into the owner's pending cards (one per waiting
+    # item). A request with none cannot be shown as a card from here.
+    request_ids: list[str] = []
+    for item in pending:
+        ids = item.get("requestIds")
+        for request_id in ids if isinstance(ids, list) else [item.get("requestId")]:
+            text = str(request_id or "").strip()
+            if text and text not in request_ids:
+                request_ids.append(text)
+    request_ids = request_ids[:20]
+    if not pending:
+        next_step = "Nothing is waiting on them right now."
+    elif request_ids:
+        next_step = (
+            "Say who is asking and for what in one short line. The app shows each waiting "
+            "request as a card below your reply, with Allow and Don't allow; allowing is the "
+            "owner's tap, never yours. To decline one from here, name it and run "
+            'run_app_action("consent.deny") with its requestId; the app shows the confirmation.'
+        )
+    else:
+        next_step = (
+            "Say who is asking and for what. No card can be shown for these here, so do not "
+            "say a card is on screen; they can decide in the Consent Center."
+        )
     return {
         "status": "ok",
         "pendingRequests": pending,
         "count": len(pending),
         "pendingRequestIds": request_ids,
-        "nextStep": (
-            "Say who is asking and for what. The browser is showing each request as a card "
-            "with Approve and Deny; approving is the owner's tap. To decline one from here, "
-            'name it and run run_app_action("consent.deny") with its requestId; the app '
-            "shows the confirmation."
-            if pending
-            else "Nothing is waiting on them right now."
-        ),
+        "cardsShown": bool(request_ids),
+        "nextStep": next_step,
     }
 
 
@@ -2865,6 +2962,18 @@ async def propose_information_request(
                     "domain or name the exact fields you want. Nothing has been sent."
                 ),
             }
+        # A5 (localhost run 4): asked again while the same request waits on
+        # the same person, One said "tap Send" on a fresh card. What is
+        # already waiting is reported as waiting, with its living card.
+        waiting = await _already_pending(user_id, person_ref, matched)
+        if waiting is not None:
+            pending_refs = set(waiting["scopeRefs"])
+            if all(str(item.get("scopeRef")) in pending_refs for item in matched):
+                return _already_pending_result(
+                    waiting, matched, person_ref=person_ref, display_name=display_name
+                )
+            # Only part of it is waiting: propose the rest, never the same item twice.
+            matched = [item for item in matched if str(item.get("scopeRef")) not in pending_refs]
         # Contract C4: One authors the reason from the question (or passes the
         # person's own), and the person can edit it on the card before Send.
         # Only an empty one is filled here, from the person's words, and the

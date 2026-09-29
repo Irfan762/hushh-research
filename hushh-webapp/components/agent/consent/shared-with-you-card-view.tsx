@@ -22,6 +22,12 @@ import { cn } from "@/lib/utils";
 import { AccessEndedNotice } from "./access-ended-notice";
 import { firstName, formatDay } from "./request-progress";
 import { humanSharedDetails } from "./shared-details";
+import {
+  fieldSensitivity,
+  isNamedSensitiveField,
+  sensitiveFieldNameSet,
+  type SharedFieldSensitivity,
+} from "@/lib/consent/field-sensitivity";
 
 export type SharedWithYouCardStatus = "loading" | "locked" | "ready" | "error";
 export type SharedWithYouItemState = "loading" | "locked" | "ready" | "ended" | "unavailable" | "unopenable";
@@ -35,6 +41,8 @@ export type SharedWithYouItemView = {
   sensitive: boolean;
   /** Field names only, for the locked and loading outline. */
   fieldOutline: string[];
+  /** Each field's own C7 reading, when the server sent one (names only). */
+  fields?: SharedFieldSensitivity[];
   state: SharedWithYouItemState;
   endedReason?: "revoked" | "expired";
   endedAt?: string | null;
@@ -53,7 +61,8 @@ export type SharedWithYouCardViewProps = {
   className?: string;
 };
 
-export type SharedValueRow = { label: string | null; value: string };
+/** `sensitive` marks an identifier field (an EIN) inside a standard item. */
+export type SharedValueRow = { label: string | null; value: string; sensitive?: true };
 
 /** Initialisms read as people write them: "Ein" is "EIN". */
 const INITIALISMS = new Set(["ein", "ssn", "itin", "agi", "irs", "dob", "id", "zip", "iban", "swift", "vat", "gst", "pan", "llc", "w2", "w9", "url", "pin"]);
@@ -70,11 +79,24 @@ const MAX_OUTLINE_ROWS = 6;
  * are split back into a field and a value so each can be read and copied on
  * its own.
  */
-export function sharedValueRows(data: unknown, heading: string): SharedValueRow[] {
+export function sharedValueRows(
+  data: unknown,
+  heading: string,
+  fields?: readonly SharedFieldSensitivity[],
+): SharedValueRow[] {
+  const named = sensitiveFieldNameSet(fields);
+  // C7 field level, the same rule the device applies before One reads
+  // anything: an identifier key or an identifier-shaped value, or a field the
+  // server's `fields[]` names sensitive.
+  const mark = (label: string | null, value: string): SharedValueRow => {
+    const sensitive = fieldSensitivity(label ? [label] : [], value) === "sensitive"
+      || isNamedSensitiveField(named, label);
+    return { label: label ? displayFieldLabel(label) : null, value, ...(sensitive ? { sensitive: true as const } : {}) };
+  };
   return humanSharedDetails(data, heading).flatMap((row) => row.values.map((value) => {
     const prefix = `${row.label}: `;
-    if (value.startsWith(prefix)) return { label: displayFieldLabel(row.label), value: value.slice(prefix.length) };
-    return { label: row.label.toLowerCase() === heading.toLowerCase() ? null : displayFieldLabel(row.label), value };
+    if (value.startsWith(prefix)) return mark(row.label, value.slice(prefix.length));
+    return mark(row.label.toLowerCase() === heading.toLowerCase() ? null : row.label, value);
   }));
 }
 
@@ -112,22 +134,47 @@ function CopyValueButton({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ValueRows({ rows, hidden, itemLabel }: { rows: SharedValueRow[]; hidden: boolean; itemLabel: string }) {
+function ValueRows({ rows, hidden, itemLabel, itemSensitive }: {
+  rows: SharedValueRow[];
+  hidden: boolean;
+  itemLabel: string;
+  /** The whole item is sensitive; otherwise only rows marked `sensitive` hide. */
+  itemSensitive: boolean;
+}) {
   return (
     <dl className="divide-y divide-border/50" data-testid="shared-with-you-values" data-hidden={hidden ? "true" : "false"}>
-      {rows.map((row, index) => (
-        <div key={`${row.label ?? ""}:${index}`} className={ROW} data-testid="shared-with-you-row">
-          <div className="min-w-0 flex-1">
-            {row.label ? <dt className="text-xs leading-5 text-muted-foreground">{row.label}</dt> : null}
-            <dd className="text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
-              {hidden
-                ? <span aria-label="Hidden" className="select-none tracking-[0.2em] text-muted-foreground">••••••</span>
-                : row.value}
-            </dd>
+      {rows.map((row, index) => {
+        const masked = hidden && (itemSensitive || Boolean(row.sensitive));
+        // A field-level mark only inside a standard item: a sensitive item
+        // already says so once, above its rows.
+        const fieldMark = !itemSensitive && Boolean(row.sensitive);
+        return (
+          <div key={`${row.label ?? ""}:${index}`} className={ROW} data-testid="shared-with-you-row"
+            data-sensitive-field={fieldMark ? "true" : undefined}>
+            <div className="min-w-0 flex-1">
+              {row.label || fieldMark ? (
+                <dt className="flex min-w-0 flex-wrap items-center gap-x-1.5 text-xs leading-5 text-muted-foreground">
+                  {row.label ? <span className="min-w-0">{row.label}</span> : null}
+                  {fieldMark ? (
+                    <span data-testid="shared-with-you-sensitive-field"
+                      className="inline-flex shrink-0 items-center gap-1 font-medium">
+                      <ShieldCheck className="size-3 shrink-0" aria-hidden="true" />
+                      Sensitive
+                      <span className="sr-only"> · not shared with One’s model</span>
+                    </span>
+                  ) : null}
+                </dt>
+              ) : null}
+              <dd className="text-sm leading-6 text-foreground [overflow-wrap:anywhere]">
+                {masked
+                  ? <span aria-label="Hidden" className="select-none tracking-[0.2em] text-muted-foreground">••••••</span>
+                  : row.value}
+              </dd>
+            </div>
+            {masked ? null : <CopyValueButton label={row.label ?? itemLabel} value={row.value} />}
           </div>
-          {hidden ? null : <CopyValueButton label={row.label ?? itemLabel} value={row.value} />}
-        </div>
-      ))}
+        );
+      })}
     </dl>
   );
 }
@@ -171,9 +218,12 @@ function SharedItem({ item, personName, status, onRetry }: {
 }) {
   const [hidden, setHidden] = useState(false);
   const dates = sharedDatesLine(item.sharedAt, item.accessEndsAt);
-  const rows = item.state === "ready" && item.data ? sharedValueRows(item.data, item.label) : [];
+  const rows = item.state === "ready" && item.data ? sharedValueRows(item.data, item.label, item.fields) : [];
   const headingId = `shared-item-${item.key.replace(/[^A-Za-z0-9_-]/g, "")}`;
-  const canHide = item.state === "ready" && item.sensitive && rows.length > 0;
+  // A standard item can still hold an identifier field (an EIN under "Legal
+  // entity"): Hide then masks those fields and leaves the rest readable.
+  const canHide = item.state === "ready" && rows.length > 0
+    && (item.sensitive || rows.some((row) => row.sensitive));
 
   return (
     <article aria-labelledby={headingId} data-testid="shared-with-you-item" data-item-state={item.state}
@@ -222,7 +272,7 @@ function SharedItem({ item, personName, status, onRetry }: {
         ) : (
           <div className="overflow-hidden rounded-[var(--app-card-radius-compact)] bg-muted/40">
             {item.state === "ready" && rows.length ? (
-              <ValueRows rows={rows} hidden={hidden} itemLabel={item.label} />
+              <ValueRows rows={rows} hidden={hidden} itemLabel={item.label} itemSensitive={item.sensitive} />
             ) : item.state === "ready" ? (
               <p className={cn(ROW, "text-sm text-muted-foreground")}>Nothing readable was shared.</p>
             ) : (

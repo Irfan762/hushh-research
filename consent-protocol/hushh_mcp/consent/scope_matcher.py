@@ -68,9 +68,37 @@ _MACHINE_SEGMENTS = frozenset(
         "thought_count",
         "timings_ms",
         "token_counts",
+        # Record-keeping and sync plumbing the requester read as information
+        # in localhost acceptance run 4 (A3): "Schema", "Last updated",
+        # "Holdings is editable", "Holdings symbol kind", "Connection count",
+        # "Account count", and their siblings in the same live catalog.
+        "account_count",
+        "connection_count",
+        "debate_eligible",
+        "identifier_type",
+        "imported_at",
+        "institution_count",
+        "institution_price_as_of",
+        "is_editable",
+        "is_sec_common_equity_ticker",
+        "last_synced_at",
+        "last_updated",
+        "lots_count",
+        "metadata_confidence",
+        "needs_relink_count",
+        "saved_at",
+        "savedat",
+        "schema",
+        "security_listing_status",
+        "source_type",
+        "symbol_kind",
+        "symbol_quality",
+        "symbol_source",
+        "symbol_trust_reason",
+        "symbol_trust_tier",
     }
 )
-_MACHINE_SUFFIXES = ("_fallback", "_diagnostics", "_hash")
+_MACHINE_SUFFIXES = ("_fallback", "_diagnostics", "_hash", "_synced_at", "_imported_at")
 
 # Words that carry no subject. Person names are removed by the caller.
 _STOPWORDS = frozenset(
@@ -205,13 +233,20 @@ class SynonymGroup:
     domains: frozenset[str]
     triggers: frozenset[str]
     related: frozenset[str] = frozenset()
+    # Domains this subject is more specific than. When a question triggers
+    # this group, a row in one of them that matched only by synonym is not
+    # evidence: a tax question that also says "income" is still about taxes.
+    outranks: frozenset[str] = frozenset()
 
 
-def _group(domains: Iterable[str], triggers: str, related: str = "") -> SynonymGroup:
+def _group(
+    domains: Iterable[str], triggers: str, related: str = "", outranks: Iterable[str] = ()
+) -> SynonymGroup:
     return SynonymGroup(
         domains=frozenset(domains),
         triggers=frozenset(stem(word) for word in triggers.split()),
         related=frozenset(stem(word) for word in related.split()),
+        outranks=frozenset(outranks),
     )
 
 
@@ -257,6 +292,17 @@ SYNONYM_GROUPS: tuple[SynonymGroup, ...] = (
         "professional job jobs work working career company employer employment title "
         "role skill skills resume office colleague occupation profession industry",
         "experience",
+    ),
+    # Before "financial": the loop takes the first group a word triggers, and
+    # a tax question must reach the tax record, never Portfolio (run 4, R3:
+    # "adjusted gross income" proposed Portfolio; "tax", "tax return" and
+    # "refund" found nothing).
+    _group(
+        {"tax_record", "tax_records", "tax", "taxes", "tax_return", "tax_returns"},
+        "tax taxes irs refund refunds filing filings file return returns agi adjusted gross "
+        "deduction deductions withholding w2 w9 1040 1099 cpa",
+        "record federal state",
+        outranks={"financial"},
     ),
     _group(
         {"financial"},
@@ -405,11 +451,15 @@ def match_scopes(
     limit: int | None = 5,
     use_synonyms: bool = True,
     ignore_words: Iterable[str] = (),
+    context: str = "",
 ) -> list[ScopeMatch]:
     """Rank catalog rows for ``query``. Empty when nothing genuinely matches.
 
     ``ignore_words`` drops words that name the person being asked about, so
     "Kushal Trivedi's favorite restaurant" is not matched on "kushal".
+    ``context`` (the person's whole question) only decides which subject is
+    more specific: "income" asked inside a tax question never reaches a
+    financial row by synonym. It never adds a match of its own.
     """
     ignored = {stem(word) for raw in ignore_words for word in _WORD.findall(str(raw).lower())}
     query_tokens = [word for word in tokens(query) if word not in ignored]
@@ -419,10 +469,23 @@ def match_scopes(
     surface: dict[str, str] = {}
     for raw in _WORD.findall(str(query or "").lower()):
         surface.setdefault(stem(raw), raw)
+    said = {*query_tokens, *(word for word in tokens(context) if word not in ignored)}
+    outranked = (
+        {
+            domain
+            for group in SYNONYM_GROUPS
+            if group.triggers.intersection(said)
+            for domain in group.outranks
+        }
+        if use_synonyms
+        else set()
+    )
     matches = []
     for entry in entries:
         match = _score_entry(entry, query_tokens, use_synonyms=use_synonyms)
         if match is None:
+            continue
+        if match.via == "synonym" and str(entry.get("domain") or "").lower() in outranked:
             continue
         spoken = tuple(surface.get(term, term) for term in match.matched_terms)
         matches.append(ScopeMatch(match.entry, match.score, spoken, match.via))

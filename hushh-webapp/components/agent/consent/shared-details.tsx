@@ -55,10 +55,64 @@ function readsOnItsOwn(value: string): boolean {
   return /[.!?]$/.test(value) || value.length > 60;
 }
 
-/** "food_preferences" and "foodPreferences" read as "Food preferences". */
+/**
+ * Field keys whose word-by-word reading is wrong. Localhost run 4 (S3) showed
+ * "Fein", "Naics code", "Trade name dba" and "Street 1" on a legal entity.
+ */
+const FIELD_LABELS: Record<string, string> = {
+  fein: "Federal EIN",
+  naics: "NAICS code",
+  naics_code: "NAICS code",
+  sic_code: "SIC code",
+  dba: "Doing business as",
+  trade_name_dba: "Trade name (DBA)",
+  street_1: "Street address",
+  street_2: "Address line 2",
+  address_line_1: "Street address",
+  address_line_2: "Address line 2",
+  zip: "ZIP code",
+  zip_code: "ZIP code",
+  dob: "Date of birth",
+  agi: "Adjusted gross income",
+};
+
+/** Initialisms read as people write them: "Ein" is "EIN". */
+const INITIALISMS = new Set(["ein", "ssn", "itin", "tin", "agi", "irs", "dob", "zip", "iban", "swift", "vat", "gst", "llc", "llp", "naics", "sic", "dba", "url", "pin", "usa"]);
+
+function sentenceCase(words: string[]): string {
+  const text = words.map((word) => INITIALISMS.has(word) ? word.toUpperCase() : word).join(" ");
+  return text ? text[0]!.toUpperCase() + text.slice(1) : text;
+}
+
+/** "food_preferences" and "foodPreferences" read as "Food preferences"; "fein" reads "Federal EIN". */
 export function humanizeKey(key: string): string {
   const spaced = key.replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_\-.]+/g, " ").trim().toLowerCase();
-  return spaced ? spaced[0]!.toUpperCase() + spaced.slice(1) : key;
+  if (!spaced) return key;
+  const known = FIELD_LABELS[spaced.replace(/ /g, "_")];
+  return known ?? sentenceCase(spaced.split(" "));
+}
+
+/** Enum values a person would say differently ("C_CORP" is a C corporation). */
+const ENUM_VALUES: Record<string, string> = {
+  C_CORP: "C corporation",
+  S_CORP: "S corporation",
+  B_CORP: "B corporation",
+  SOLE_PROP: "Sole proprietorship",
+  NON_PROFIT: "Nonprofit",
+};
+/** A stored enum ("MARRIED_FILING_JOINTLY"): capitals and digits joined by underscores. */
+const UPPER_SNAKE = /^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$/;
+
+/**
+ * A stored enum reads as words ("C_CORP" is "C corporation",
+ * "MARRIED_FILING_JOINTLY" is "Married filing jointly"). Anything else is the
+ * person's own value and is shown exactly as saved.
+ */
+export function humanValue(value: string): string {
+  const known = ENUM_VALUES[value];
+  if (known) return known;
+  if (!UPPER_SNAKE.test(value)) return value;
+  return sentenceCase(value.toLowerCase().split("_"));
 }
 
 const MAX_ROWS = 40;
@@ -98,7 +152,7 @@ export function humanSharedDetails(data: unknown, fallbackLabel: string): Shared
   };
   const walk = (node: unknown, label: string, field: string | null, depth: number) => {
     if (depth > MAX_DEPTH || node === null || node === undefined) return;
-    if (typeof node === "string") return pushScalar(label, field, node.trim(), true);
+    if (typeof node === "string") return pushScalar(label, field, humanValue(node.trim()), true);
     if (typeof node === "number" && Number.isFinite(node)) return pushScalar(label, field, String(node), false);
     if (typeof node === "boolean") return pushScalar(label, field, node ? "Yes" : "No", false);
     if (Array.isArray(node)) {

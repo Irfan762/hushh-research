@@ -39,7 +39,6 @@ import {
   releaseConsentContinuation,
   revealConsentContinuationReply,
   setInformationRequestPhase,
-  startAccessEndedWatch,
   tagAnswersFromLiveAccess,
   tagConsentContinuationMessages,
   useInformationRequestPhaseReader,
@@ -57,7 +56,7 @@ import {
   wireOutcomeForSentLabel,
   type ConsentOutcome,
 } from "@/lib/consent/open-granted-person-information";
-import { PersonProfileService } from "@/lib/services/person-profile-service";
+import type { InformationRequestBundle } from "@/lib/services/person-profile-service";
 import { FEED_ATTENTION_LABEL } from "@/lib/agent/feed-attention";
 import { useFeedAttentionTurn } from "@/lib/agent/use-feed-attention-turn";
 import {
@@ -345,6 +344,8 @@ import {
 } from "@/lib/services/drive-owner-compilation-service";
 import { exportPrivateDriveMarkdown } from "@/lib/utils/private-markdown-export";
 import { CONSENT_STATE_CHANGED_EVENT, dispatchConsentStateChanged } from "@/lib/consent/consent-events";
+import { subscribeInformationRequest } from "@/lib/consent/information-request-reads";
+import { wakeLiveAccessWatch, watchLiveAccess } from "@/lib/consent/live-access-watch";
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { deriveVoiceRouteScreen } from "@/lib/voice/route-screen-derivation";
 import { useRootChatDeferredReady } from "@/lib/navigation/use-root-chat-deferred-ready";
@@ -6898,6 +6899,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   useEffect(() => {
     continuedOutcomesRef.current = continuedOutcomes;
   }, [continuedOutcomes]);
+  const liveBundleOutcomesRef = useRef(liveBundleOutcomes);
+  useEffect(() => {
+    liveBundleOutcomesRef.current = liveBundleOutcomes;
+  }, [liveBundleOutcomes]);
 
   // Sharing ended: hide every answer One gave while it was live, now, not at
   // the next reload. Tag them here by the server's own rule, then bring the
@@ -6911,6 +6916,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         cards: collectOutgoingRequestCards(current),
         continued: continuedOutcomesRef.current,
       }),
+      // Another request's access that is still live bounds what this one hides.
+      liveOutcomes: liveBundleOutcomesRef.current,
     }));
     const ownerId = user?.uid;
     const threadId = conversationIdRef.current;
@@ -6929,67 +6936,60 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }).catch(() => undefined);
   }, [user?.uid]);
 
-  // Answers from shared information: re-read the ledger while that access is
-  // live, about every 10s for as long as the chat is visible, paused while
-  // hidden, and at once on a push, a live event or a return to the app. A
-  // stop or a lapse hides every answer from it and ends the card within
+  // Answers from shared information: watch that access while it is live,
+  // through the one app-wide live-access watch (about 5s for a minute after
+  // the answer, then 10s, while visible, and at once on a push, a live event
+  // or a return to the app). This chat reads each reading of those bundles,
+  // whoever made it, so a bundle the card also shows is read once per tick.
+  // A stop or a lapse hides every answer from it and ends the card within
   // seconds. Decrypted information itself is never kept past its turn.
   useEffect(() => {
     const token = vaultOwnerToken;
     if (!hasChatAccess || !token || !watchedAccessBundleKey) return;
     const bundles = watchedAccessBundleKey.split(",");
     let active = true;
-    const inFlight = new Set<string>();
-    const check = (only?: string) => {
-      for (const bundleId of only ? [only] : bundles) {
-        if (inFlight.has(bundleId)) continue;
-        inFlight.add(bundleId);
-        void PersonProfileService.getInformationRequest({ bundleId, vaultOwnerToken: token })
-          .then((bundle) => {
-            if (!active || bundle.bundleId.toLowerCase() !== bundleId) return;
-            const outcome = informationRequestOutcome(bundle);
-            let changed = false;
-            setLiveBundleOutcomes((current) => {
-              if (current[bundleId] === outcome) return current;
-              changed = true;
-              return { ...current, [bundleId]: outcome };
-            });
-            // The card for this request reads its own status: tell it now,
-            // so it turns to "Access ended" with the answers, not later.
-            // Idempotent, and an ended bundle leaves the watch, so this runs
-            // once per stop without depending on when the updater above ran.
-            if (isAccessEndedOutcome(outcome)) hideAnswersFromEndedAccess(bundleId, token);
-            if (changed && isAccessEndedOutcome(outcome)) {
-              dispatchConsentStateChanged({
-                source: "information_request_updated",
-                origin: "chat_access_watch",
-                bundleId,
-                requestId: bundle.items[0]?.requestId ?? "",
-                action: outcome === "expired" ? "TIMEOUT" : "CONSENT_REVOKED",
-              });
-            }
-          })
-          .catch(() => undefined)
-          .finally(() => inFlight.delete(bundleId));
+    const onReading = (bundleId: string) => (bundle: InformationRequestBundle) => {
+      if (!active || bundle.bundleId.toLowerCase() !== bundleId) return;
+      const outcome = informationRequestOutcome(bundle);
+      let changed = false;
+      setLiveBundleOutcomes((current) => {
+        if (current[bundleId] === outcome) return current;
+        changed = true;
+        return { ...current, [bundleId]: outcome };
+      });
+      // The card for this request reads its own status: tell it now,
+      // so it turns to "Access ended" with the answers, not later.
+      // Idempotent, and an ended bundle leaves the watch, so this runs
+      // once per stop without depending on when the updater above ran.
+      if (isAccessEndedOutcome(outcome)) hideAnswersFromEndedAccess(bundleId, token);
+      if (changed && isAccessEndedOutcome(outcome)) {
+        dispatchConsentStateChanged({
+          source: "information_request_updated",
+          origin: "chat_access_watch",
+          bundleId,
+          requestId: bundle.items[0]?.requestId ?? "",
+          action: outcome === "expired" ? "TIMEOUT" : "CONSENT_REVOKED",
+        });
       }
     };
-    const watch = startAccessEndedWatch({
-      check,
-      isVisible: () => typeof document === "undefined" || document.visibilityState !== "hidden",
-    });
+    const releases = bundles.flatMap((bundleId) => [
+      subscribeInformationRequest(bundleId, onReading(bundleId)),
+      watchLiveAccess({ bundleId, vaultOwnerToken: token }),
+    ]);
     const onConsentChanged = (event: Event) => {
       const detail = (event as CustomEvent<Record<string, unknown>>).detail;
       if (detail?.origin === "chat_access_watch") return;
       const bundleId = String(detail?.bundleId || "").toLowerCase();
       // A push or live event about one of these requests, or a consent change
       // that names none: check now and return to the fast cadence.
-      if (!bundleId || bundles.includes(bundleId)) watch.wake();
+      if (!bundleId || bundles.includes(bundleId)) wakeLiveAccessWatch();
     };
-    watch.wake();
+    // A chat that opens on a live answer checks it at once.
+    wakeLiveAccessWatch();
     window.addEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
     return () => {
       active = false;
-      watch.stop();
+      releases.forEach((release) => release());
       window.removeEventListener(CONSENT_STATE_CHANGED_EVENT, onConsentChanged);
     };
   }, [hasChatAccess, hideAnswersFromEndedAccess, watchedAccessBundleKey, vaultOwnerToken]);
@@ -7037,6 +7037,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const live = tag ? liveBundleOutcomes[tag.bundleId] : null;
     return tag?.role === "chip" && isSharedOutcome(tag.continuedOutcome)
       && (isAccessEndedOutcome(live) || Boolean(message.consentAccessEnded));
+  };
+
+  // What a consent chip reports, so a decline draws the neutral mark, never
+  // the check (localhost run 4, R6). A chip no card claimed still carries the
+  // server's fixed label, which names its outcome.
+  const consentChipOutcome = (message: AgentMessage) => {
+    const tag = consentTags.get(message.id);
+    if (tag?.role === "chip") return tag.continuedOutcome;
+    return wireOutcomeForSentLabel(message.text.trim());
   };
 
   const consentChipLabel = (message: AgentMessage): string => {
@@ -8350,7 +8359,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   {message.role === "assistant" && redactedAnswerIds.has(message.id) ? (
                     <AccessEndedNotice variant="message" {...accessEndedNoticeFor(message)} />
                   ) : message.kind === "selection" ? (
-                    <SelectionChip label={consentChipLabel(message)} ended={consentChipEnded(message)} />
+                    <SelectionChip
+                      label={consentChipLabel(message)}
+                      ended={consentChipEnded(message)}
+                      outcome={consentChipOutcome(message)}
+                    />
                   ) : (
                     <AgentBubble
                       message={message}

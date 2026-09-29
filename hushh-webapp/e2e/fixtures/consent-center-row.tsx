@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Badge } from "../../components/ui/badge";
 import {
@@ -10,6 +11,7 @@ import {
   pendingBundleSummary,
 } from "../../components/consent/consent-pending-row";
 import { consentEntryInformationLabel } from "../../lib/consent/consent-owner-copy";
+import { bundleAllowLabel, ConsentBundleChoice } from "../../components/consent/consent-bundle-choice";
 import type { ConsentCenterEntry } from "../../lib/services/consent-center-service";
 
 /**
@@ -79,6 +81,30 @@ const ROWS: Array<{ entry: ConsentCenterEntry; decides: boolean }> = [
   { entry: single("location", "Smirthika Dharmalingam", "one_location.live", "Live location"), decides: false },
 ];
 
+/** The sheet's per-item choice on a grouped request (R5), as the sheet draws it. */
+const CHOICE_ITEMS = [
+  { key: "request-food", label: "Food preferences" },
+  { key: "request-events", label: "Financial events from the 2025 federal tax return and brokerage statements" },
+];
+
+function BundleChoiceFixture() {
+  const [chosen, setChosen] = useState<ReadonlySet<string>>(() => new Set(CHOICE_ITEMS.map((item) => item.key)));
+  const count = CHOICE_ITEMS.filter((item) => chosen.has(item.key)).length;
+  return (
+    <section data-testid="bundle-choice-fixture" className="mt-6 px-4">
+      <dl className="grid gap-x-6 gap-y-4 px-1 py-1 sm:grid-cols-2">
+        <ConsentBundleChoice items={CHOICE_ITEMS} chosen={chosen} onToggle={(key, include) => setChosen((current) => {
+          const next = new Set(current);
+          if (include) next.add(key);
+          else next.delete(key);
+          return next;
+        })} />
+      </dl>
+      <p data-testid="bundle-choice-allow">{bundleAllowLabel(CHOICE_ITEMS.length, count)}</p>
+    </section>
+  );
+}
+
 function Fixture() {
   return (
     <main className="app-page-shell min-h-dvh bg-background py-4 text-foreground" data-app-density="compact" data-app-surface="one">
@@ -110,6 +136,7 @@ function Fixture() {
             })}
           </SettingsGroup>
         </SettingsPresentationProvider>
+        <BundleChoiceFixture />
       </div>
     </main>
   );

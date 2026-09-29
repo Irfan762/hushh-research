@@ -23,6 +23,34 @@ review**. By default it stops *before* the final, irreversible "Submit for App S
 > tested. The binary is *identical* to the TestFlight binary — only the App Store version +
 > submission layer differs.
 
+### Backend target (`backend_target`, added 2026-09-29)
+
+The workflow input `backend_target` (dispatcher flag `--backend`) chooses the backend the binary
+talks to. `uat` is the default and is everything described above. `production` builds a binary
+for `https://one.hushh.ai` and the production API:
+
+- The production workload identity (`environment: production`, from `main`) reads only the
+  routing values from `hushh-pda`: `BACKEND_URL`, `APP_FRONTEND_ORIGIN`,
+  `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`, `NEXT_PUBLIC_FIREBASE_MEASUREMENT_ID` (the production
+  analytics stream). It also reads `NEXT_PUBLIC_FIREBASE_PROJECT_ID` and
+  `NEXT_PUBLIC_FIREBASE_APP_ID`, only to compare them.
+- Everything else (ASC key, distribution certificate, `GoogleService-Info.plist`, Firebase web
+  identity, Maps keys) still comes from `hushh-pda-uat`, as before. That is valid because both
+  projects point at the one shared Firebase app, and the run **refuses** if the two projects'
+  Firebase project id or app id differ.
+- The run refuses if the production `BACKEND_URL` resolves to a UAT or loopback host, and the
+  project is prepared with `ios:prepare:prod`. That ends in `verify-ios-bundled-backend.sh`, which
+  requires every native plugin's `backendUrl` to equal the production backend.
+- **User impact:** a person's vault and records live in the database of the backend their binary
+  talks to. A person who used a UAT-backed App Store build and updates to a production-backed one
+  signs in with the same Firebase identity, but reaches the production database. Treat the first
+  production-backed release as a decision about those people's information, not only a build flag.
+- **TestFlight for the same binary:** every non-dry run also uploads a `testflight-upload-receipt`
+  artifact. `gh workflow run resume-ios-testflight.yml --ref main -f upload_run_id=<App Store run id>`
+  then distributes that exact build to the internal and external TestFlight groups.
+  `ship-ios-testflight.yml` still builds a UAT binary only; do not run it for a
+  production-backed release, or testers alternate between two databases.
+
 The build still archives with **production APNs** entitlements (correct for *any* App Store binary —
 push on a store build routes through Apple's PRODUCTION APNs). That means the **shared Firebase project
 must hold a production APNs key** for push notifications to deliver on the released app.
@@ -35,7 +63,8 @@ For an internal TestFlight build (no review), use the sibling pipeline: `ship-io
 - **Dispatcher:** `scripts/release/dispatch-ios-appstore.mjs` (resolves SHA, confirms, dispatches, watches).
 - **Runner:** GitHub-hosted `macos-15`, Xcode 26.3 — GCP has no macOS instances and local builds
   hang inside iCloud Drive, so only the *dispatch* runs on your machine; the Apple build runs in CI.
-- **Target:** bundle `com.hushh.app`, version `1.3.6`, **UAT** backend + Firebase (`hushh-pda`),
+- **Target:** bundle `com.hushh.app`, marketing version from `MARKETING_VERSION` in the pbxproj
+  (`1.4.0` on 2026-09-29), `backend_target` backend (default **UAT**) + Firebase (`hushh-pda`),
   ASC app id `6757718917`.
 
 ## The final command

@@ -68,7 +68,8 @@ export interface BundleDecisionOptions {
 /** One progress state for a whole grouped decision. */
 export interface BundleDecisionProgress {
   key: string;
-  kind: "approve" | "deny";
+  /** "decide" allows part of a request and declines the rest. */
+  kind: "approve" | "deny" | "decide";
   done: number;
   total: number;
 }
@@ -745,7 +746,7 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
    */
   const settleBundle = useCallback(
     async (
-      kind: "approve" | "deny",
+      kind: BundleDecisionProgress["kind"],
       requestIds: string[],
       runOne: (index: number) => Promise<void>,
       options: BundleDecisionOptions,
@@ -753,8 +754,8 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
       const total = requestIds.length;
       const progressKey =
         options.bundleId || `bundle-${requestIds[0] || kind}`;
-      const failed = kind === "approve" ? APPROVE_FAILED : DENY_FAILED;
-      const verb = kind === "approve" ? "Allowing" : "Declining";
+      const failed = kind === "deny" ? DENY_FAILED : APPROVE_FAILED;
+      const verb = kind === "approve" ? "Allowing" : kind === "deny" ? "Declining" : "Saving";
       const report = (done: number) => {
         setBundleProgress({ key: progressKey, kind, done, total });
         if (!options.quiet && total > 1) {
@@ -782,7 +783,9 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
               options.successMessage ||
                 (kind === "approve"
                   ? "Allowed. They can open it now."
-                  : "Declined. Nothing was shared."),
+                  : kind === "deny"
+                    ? "Declined. Nothing was shared."
+                    : "Shared what you chose. The rest was declined."),
               { id: progressKey, duration: 3000 },
             );
           }
@@ -795,7 +798,9 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
           succeeded > 0
             ? kind === "approve"
               ? `Shared ${succeeded} of ${total}. Try the rest again.`
-              : `Declined ${succeeded} of ${total}. Try the rest again.`
+              : kind === "deny"
+                ? `Declined ${succeeded} of ${total}. Try the rest again.`
+                : `Saved ${succeeded} of ${total} choices. Try the rest again.`
             : ownerFacingConsentError(firstError, failed);
         if (!options.quiet) {
           toast.error(message, { id: progressKey, duration: 5000 });
@@ -846,6 +851,42 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
       );
     },
     [handleDeny, settleBundle, userId]
+  );
+
+  /**
+   * Allow part of one grouped request and decline the rest (acceptance R5).
+   *
+   * The owner chose which items to share; each chosen item goes through the
+   * same per-item approve call as a whole-request Allow, each other item
+   * through the per-item deny call, all under one bounded settle and one
+   * progress state. The requester's card then reads "partly shared" from the
+   * items' own statuses. With nothing held back it is a plain Allow, and with
+   * nothing chosen a plain decline.
+   */
+  const handleDecideBundle = useCallback(
+    async (
+      allow: PendingConsent[],
+      denyRequestIds: string[],
+      options: BundleDecisionOptions = {}
+    ): Promise<void> => {
+      if (!userId) return;
+      if (!denyRequestIds.length) return handleApproveBundle(allow, options);
+      if (!allow.length) return handleDenyBundle(denyRequestIds, options);
+      if (!vaultKey) {
+        // Same refusal as a whole Allow: nothing is decided until it can all be.
+        throw new Error("Unlock your vault first.");
+      }
+      await settleBundle(
+        "decide",
+        [...allow.map((consent) => consent.id), ...denyRequestIds],
+        (index) =>
+          index < allow.length
+            ? handleApprove(allow[index]!, { quiet: true })
+            : handleDeny(denyRequestIds[index - allow.length]!, { quiet: true }),
+        options
+      );
+    },
+    [handleApprove, handleApproveBundle, handleDeny, handleDenyBundle, settleBundle, userId, vaultKey]
   );
 
   /**
@@ -935,6 +976,7 @@ export function useConsentActions(options: UseConsentActionsOptions = {}) {
     // Actions
     handleApprove,
     handleApproveBundle,
+    handleDecideBundle,
     handleDeny,
     handleDenyBundle,
     handleRevoke,

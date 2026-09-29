@@ -44,6 +44,11 @@ BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100"
         "attr.personal.passport_number",
         "attr.personal.socialSecurityNumber",
         "attr.documents.drivers_license",
+        # An identifier FIELD is sensitive in any domain (run 4, S3): the EIN
+        # was standard as "Fein" under a standard Legal entity domain.
+        "attr.legal_entity.entity.fein",
+        "attr.professional.employer.routing_number",
+        "attr.social.date_of_birth",
         # Health or medical
         "attr.health.*",
         "attr.medical_history.medications",
@@ -72,6 +77,8 @@ def test_anything_it_cannot_classify_is_sensitive(scope: str | None) -> None:
         "attr.entertainment.movies",
         "attr.shopping.wishlist",
         "attr.professional.employment.status",
+        "attr.legal_entity.*",
+        "attr.legal_entity.entity.trade_name_dba",
     ],
 )
 def test_everyday_information_is_standard(scope: str) -> None:
@@ -87,6 +94,24 @@ def test_a_pkm_tag_makes_a_standard_scope_sensitive(tag: str) -> None:
 def test_a_tag_never_downgrades_a_sensitive_scope(tag: str | None) -> None:
     assert scope_sensitivity("attr.tax_record.*", [tag]) == "sensitive"
     assert scope_sensitivity("attr.food.preferences.*", [tag]) == "standard"
+
+
+def test_the_field_rule_matches_its_shared_truth_table() -> None:
+    """The client reads the same contract; both must agree case by case."""
+    import json
+
+    from hushh_mcp.consent.field_sensitivity import field_sensitivity
+    from hushh_mcp.services.generated_contracts import generated_contract_path
+
+    contract = json.loads(
+        generated_contract_path("consent", "field-sensitivity.v1.json").read_text()
+    )
+    wrong = [
+        case
+        for case in contract["cases"]
+        if (field_sensitivity(case["key"], case["value"]) == "sensitive") != case["sensitive"]
+    ]
+    assert contract["cases"] and wrong == []
 
 
 def _catalog(entries: list[dict[str, Any]]) -> dict[str, str]:
@@ -155,7 +180,7 @@ def test_scope_catalog_route_exposes_sensitivity_per_item(monkeypatch) -> None:
 
     assert response.status_code == 200
     by_label = {item["label"]: item["sensitivity"] for item in response.json()["items"]}
-    assert by_label["Tax record information"] == "sensitive"
+    assert by_label["Tax record"] == "sensitive"
     assert by_label["Food preferences"] == "standard"
     assert by_label["Refund"] == "sensitive"
     assert "Tax Record Domain" not in by_label
@@ -177,7 +202,7 @@ class _BundleService(InformationRequestService):
         return {"action": "CONSENT_GRANTED", "request_id": request_id, "expires_at": None}
 
     @staticmethod
-    async def _notifications(_request_ids, *, actions=None) -> list[dict[str, Any]]:
+    async def _notifications(_request_ids, *, actions=None, user_id=None) -> list[dict[str, Any]]:
         return []
 
     async def _bundle(self, requester_user_id: str, bundle_id: str):
@@ -225,10 +250,10 @@ def test_request_progress_route_exposes_sensitivity_on_items_and_fields(monkeypa
     assert response.status_code == 200
     body = response.json()
     assert [(item["label"], item["sensitivity"]) for item in body["items"]] == [
-        ("Tax record information", "sensitive"),
+        ("Tax record", "sensitive"),
         ("Food preferences", "standard"),
     ]
     assert [(field["label"], field["sensitivity"]) for field in body["progress"]["fields"]] == [
-        ("Tax record information", "sensitive"),
+        ("Tax record", "sensitive"),
         ("Food preferences", "standard"),
     ]

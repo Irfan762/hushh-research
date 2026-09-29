@@ -148,7 +148,7 @@ async def test_shares_carry_the_card_fields_and_never_a_raw_scope_or_value() -> 
     assert "cancelled_at IS NULL" not in service.sql[0]
 
     tax = by_request["one_person_tax"]
-    assert tax["label"] == "Tax record information"
+    assert tax["label"] == "Tax record"
     assert tax["sensitivity"] == "sensitive"
     assert tax["fieldOutline"] == [
         "Filing year",
@@ -174,6 +174,53 @@ async def test_shares_carry_the_card_fields_and_never_a_raw_scope_or_value() -> 
     text = json.dumps(shares)
     assert "attr." not in text and "_scope" not in text and "_subject" not in text
     assert "Tax Record Domain" not in text
+    # One stable order on every surface: person, then label, then when shared.
+    labels = [share["label"] for share in shares]
+    assert labels == sorted(labels, key=str.casefold)
+    # C7 per field: every field of a sensitive item is sensitive.
+    assert {field["sensitivity"] for field in tax["fields"]} == {"sensitive"}
+
+
+def test_a_grant_a_broader_live_grant_covers_is_listed_once() -> None:
+    """The run 4 ledger shapes: a wildcard asked for beside its own branches."""
+    from hushh_mcp.consent.share_collapse import collapse_covered_shares
+
+    def share(scope: str, subject: str, openable: bool = True) -> dict[str, Any]:
+        return {"_scope": scope, "_subject": subject, "decryptable": openable}
+
+    shares = [
+        share("attr.legal_entity.entity.*", "manish"),
+        share("attr.legal_entity.*", "manish"),
+        share("attr.professional.work_preferences.entities._entities.summary", "kushal"),
+        share("attr.professional.*", "kushal"),
+        share("attr.food.preferences.*", "kushal"),
+        share("attr.food.preferences.*", "kushal"),
+        # A grant the device cannot open never absorbs one it can.
+        share("attr.tax_record.*", "manish", openable=False),
+        share("attr.tax_record.refund", "manish"),
+        # Another person's broader grant never absorbs this person's.
+        share("attr.food.*", "manish"),
+    ]
+
+    def collapse(items: list[dict[str, Any]]) -> list[tuple[str, str]]:
+        return [
+            (item["_scope"], item["_subject"])
+            for item in collapse_covered_shares(
+                items,
+                scope_of=lambda item: item["_scope"],
+                person_of=lambda item: item["_subject"],
+                openable_of=lambda item: item["decryptable"],
+            )
+        ]
+
+    assert collapse(shares) == [
+        ("attr.legal_entity.*", "manish"),
+        ("attr.professional.*", "kushal"),
+        ("attr.food.preferences.*", "kushal"),
+        ("attr.tax_record.*", "manish"),
+        ("attr.tax_record.refund", "manish"),
+        ("attr.food.*", "manish"),
+    ]
 
 
 def test_one_card_per_person_with_human_labels_and_no_values() -> None:
@@ -223,6 +270,7 @@ def test_one_card_per_person_with_human_labels_and_no_values() -> None:
         "label": "Tax record information",
         "sensitivity": "sensitive",
         "fieldOutline": ["Filing year", "Refund"],
+        "fields": [],
         "sharedAt": "2026-09-21T12:00:00+00:00",
         "accessEndsAt": "2026-10-21T12:00:00+00:00",
         "purpose": "To ensure information sharing works",

@@ -734,6 +734,14 @@ async def test_request_creates_pending_for_owner_and_replay_is_idempotent(client
     assert len(spoken) == 1
     assert {row["requesterLabel"] for row in spoken} == {REQUESTER_LABEL}
     assert "attr." not in json.dumps(spoken)
+    # O4 (localhost run 4): the owner's chat handed the app "bundle:<uuid>",
+    # which the pending lookup cannot find, so no card appeared. The ids it
+    # hands out now are the ledger's own, and the lookup resolves each one.
+    assert len(spoken[0]["requestIds"]) == 2
+    assert spoken[0]["requestId"] == spoken[0]["requestIds"][0]
+    for request_id in spoken[0]["requestIds"]:
+        assert not request_id.startswith("bundle:")
+        await _owner_lookup(client, request_id)
 
 
 @pytest.mark.asyncio

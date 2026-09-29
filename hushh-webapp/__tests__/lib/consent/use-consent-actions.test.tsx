@@ -268,6 +268,47 @@ describe("useConsentActions grouped decisions", () => {
   });
 });
 
+describe("useConsentActions partial decisions", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  // Localhost run 4 (R5): the owner could only allow or decline a whole
+  // request. Allowing part of it approves the chosen items and declines the
+  // rest, each through its own per-item call, under the same bound.
+  it("approves the chosen items and declines the rest, bounded, in one progress state", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const settle = async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      inFlight -= 1;
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    };
+    mocks.approvePendingConsent.mockImplementation(settle);
+    mocks.denyPendingConsent.mockImplementation(settle);
+    const { result } = renderHook(() => useConsentActions({ userId: "user-1" }));
+
+    await act(async () => {
+      await result.current.handleDecideBundle(
+        [consent("req-food"), consent("req-diet")],
+        ["req-events", "req-tax"],
+        { bundleId: "bundle-mixed", successMessage: "Kushal can now see your Food preferences and Diet. Events and Tax weren't shared." },
+      );
+    });
+
+    expect(mocks.approvePendingConsent.mock.calls.map(([input]) => input.requestId).sort()).toEqual(["req-diet", "req-food"]);
+    expect(mocks.denyPendingConsent.mock.calls.map(([input]) => input.requestId).sort()).toEqual(["req-events", "req-tax"]);
+    expect(maxInFlight).toBeLessThanOrEqual(BUNDLE_DECISION_CONCURRENCY);
+    expect(result.current.bundleProgress).toBeNull();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      "Kushal can now see your Food preferences and Diet. Events and Tax weren't shared.",
+      expect.objectContaining({ id: "bundle-mixed" }),
+    );
+  });
+});
+
 describe("useConsentActions owner-facing toasts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
