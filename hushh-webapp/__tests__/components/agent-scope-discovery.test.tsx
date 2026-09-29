@@ -154,6 +154,9 @@ describe("current-authority inline Chat catalog", () => {
     expect(await screen.findByText("Waiting for Synthetic Recipient's approval")).toBeInTheDocument();
     expect(onInformationRequestSubmitted).toHaveBeenCalledWith({
       bundleId, subjectRef: person, idempotencyKey: expect.any(String),
+      // The sent card itself, labels only, so the chat shows "Request sent"
+      // whether or not its history receipt is recorded.
+      review: expect.objectContaining({ phase: "submitted", bundleId, subjectRef: person }),
     });
     expect(JSON.stringify(onInformationRequestSubmitted.mock.calls)).not.toContain("Synthetic analyst");
     expect(mocks.getInformationRequest).toHaveBeenCalledWith({ bundleId, vaultOwnerToken: "test-owner-token" });
@@ -163,7 +166,7 @@ describe("current-authority inline Chat catalog", () => {
     act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
       source: "information_request_updated", action: "CONSENT_GRANTED", bundleId, requestId,
     } })));
-    expect(await screen.findByTestId("chat-shared-information")).toHaveTextContent("Synthetic analyst");
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("Synthetic analyst");
     expect(mocks.getInformationRequestExports).toHaveBeenCalledWith({ bundleId, vaultOwnerToken: "test-owner-token" });
 
     await act(async () => {
@@ -367,7 +370,7 @@ describe("current-authority inline Chat catalog", () => {
     expect(screen.getByText("Consent approved")).toBeInTheDocument();
   });
 
-  it("opens an approved value inside Chat using the stored browser connector", async () => {
+  it("shows an approved value inside Chat at once, using the stored browser connector", async () => {
     const restored: InformationRequestReviewExperience = {
       type: "one.information_request_review.v1", personName: "Synthetic Recipient",
       purpose: "Review approved information.", durationLabel: "2 days",
@@ -395,8 +398,9 @@ describe("current-authority inline Chat catalog", () => {
     mocks.decryptScopedExport.mockResolvedValue({ professional: { role: "Synthetic analyst" } });
 
     render(<AgentStructuredExperienceView experience={restored} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View shared information" }));
-    expect(await screen.findByTestId("chat-shared-information")).toHaveTextContent("Synthetic analyst");
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("Synthetic analyst");
+    // No reveal control: the secure card is the answer (CONTRACT-2 decision 2).
+    expect(screen.queryByRole("button", { name: "View shared information" })).toBeNull();
     expect(mocks.readStoredConnector).toHaveBeenCalledTimes(1);
     expect(mocks.decryptScopedExport).toHaveBeenCalledTimes(1);
     mocks.getInformationRequest.mockResolvedValue({
@@ -405,7 +409,7 @@ describe("current-authority inline Chat catalog", () => {
       items: [{ requestId: "request_12345678", scopeRef: "scope-1", label: "Professional role", sensitivity: "standard", status: "revoked" }],
     });
     act(() => window.dispatchEvent(new Event("consent-state-changed")));
-    await waitFor(() => expect(screen.queryByTestId("chat-shared-information")).toBeNull());
+    await waitFor(() => expect(screen.queryByTestId("shared-with-you-values")).toBeNull());
     expect(await screen.findByText("Revoked")).toBeInTheDocument();
   });
 
@@ -447,7 +451,7 @@ describe("current-authority inline Chat catalog", () => {
     act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
       source: "information_request_updated", action: "CONSENT_GRANTED", bundleId: restored.bundleId, requestId: "request_12345678",
     } })));
-    expect(await screen.findByTestId("chat-shared-information")).toHaveTextContent("Synthetic analyst");
+    expect(await screen.findByTestId("shared-with-you-values")).toHaveTextContent("Synthetic analyst");
     expect(mocks.decryptScopedExport).toHaveBeenCalledTimes(1);
   });
 
@@ -527,9 +531,8 @@ describe("current-authority inline Chat catalog", () => {
     }]);
 
     render(<AgentStructuredExperienceView experience={restored} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View shared information" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("could not be opened");
-    expect(screen.queryByTestId("chat-shared-information")).toBeNull();
+    expect(await screen.findByRole("alert")).toHaveTextContent(/couldn.t be opened/);
+    expect(screen.queryByTestId("shared-with-you-values")).toBeNull();
     expect(mocks.decryptScopedExport).not.toHaveBeenCalled();
   });
 
@@ -550,16 +553,15 @@ describe("current-authority inline Chat catalog", () => {
     mocks.getInformationRequestExports.mockReturnValue(new Promise(done => { resolveExports = done; }));
 
     const view = render(<AgentStructuredExperienceView experience={restored} />);
-    fireEvent.click(await screen.findByRole("button", { name: "View shared information" }));
     await waitFor(() => expect(mocks.getInformationRequestExports).toHaveBeenCalled());
     mocks.unlocked = false;
     view.rerender(<AgentStructuredExperienceView experience={restored} />);
     await act(async () => resolveExports([]));
     expect(mocks.decryptScopedExport).not.toHaveBeenCalled();
-    expect(screen.queryByTestId("chat-shared-information")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("shared-with-you-values")).not.toBeInTheDocument();
   });
 
-  it("does not auto-open another granted item after the notified item is revoked", async () => {
+  it("opens only what is still shared after the notified item is revoked", async () => {
     const restored: InformationRequestReviewExperience = {
       type: "one.information_request_review.v1", personName: "Synthetic Recipient",
       purpose: "Review approved information.", durationLabel: "2 days",
@@ -578,23 +580,35 @@ describe("current-authority inline Chat catalog", () => {
         { requestId: "request_22345678", scopeRef: "scope-2", label: "Professional title", sensitivity: "standard", status: "granted" },
       ],
     });
-    let resolveGrant!: (value: ReturnType<typeof bundle>) => void;
-    mocks.getInformationRequest.mockResolvedValueOnce(bundle("pending"))
-      .mockReturnValueOnce(new Promise(done => { resolveGrant = done; }))
-      .mockResolvedValue(bundle("revoked"));
+    const exportFor = (requestId: string, scopeRef: string, scope: string) => ({
+      requestId, scopeRef,
+      encryptedExport: {
+        request_id: requestId, scope, export_revision: 1,
+        export_envelope: { version: 2, export_id: `export-${requestId}`, aad: {
+          version: 2, app_id: "agent_one", grant_id: requestId, export_id: `export-${requestId}`,
+          revision: 1, machine_scope: scope, scope_handle: "scope-handle",
+          recipient_key_fingerprint: "fingerprint", payload_algorithm: "AES-256-GCM",
+          expires_at_ms: Date.now() + 3600_000,
+        } },
+      },
+    });
+    mocks.getInformationRequestExports.mockResolvedValue([
+      exportFor("request_12345678", "scope-1", "attr.professional.role"),
+      exportFor("request_22345678", "scope-2", "attr.professional.title"),
+    ]);
+    mocks.decryptScopedExport.mockResolvedValue({ professional: { title: "Synthetic lead" } });
+    mocks.getInformationRequest.mockResolvedValue(bundle("revoked"));
     render(<AgentStructuredExperienceView experience={restored} />);
-    await waitFor(() => expect(mocks.getInformationRequest).toHaveBeenCalledTimes(1));
-    act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
-      source: "information_request_updated", action: "CONSENT_GRANTED", bundleId: restored.bundleId, requestId: "request_12345678",
-    } })));
-    await waitFor(() => expect(mocks.getInformationRequest).toHaveBeenCalledTimes(2));
     act(() => window.dispatchEvent(new CustomEvent("consent-state-changed", { detail: {
       source: "information_request_updated", action: "REVOKED", bundleId: restored.bundleId, requestId: "request_12345678",
     } })));
-    await act(async () => resolveGrant(bundle("granted")));
-    await waitFor(() => expect(mocks.getInformationRequest).toHaveBeenCalledTimes(3));
-    expect(mocks.getInformationRequestExports).not.toHaveBeenCalled();
-    expect(mocks.decryptScopedExport).not.toHaveBeenCalled();
+    const values = await screen.findByTestId("shared-with-you-values");
+    expect(values).toHaveTextContent("Synthetic lead");
+    // The revoked item is never opened, not even for a moment.
+    const opened = mocks.decryptScopedExport.mock.calls.map(([arg]) => (arg as { exportPackage: { request_id: string } }).exportPackage.request_id);
+    expect(opened.length).toBeGreaterThan(0);
+    expect(opened.every((id) => id === "request_22345678")).toBe(true);
+    expect(screen.getByTestId("shared-with-you-card").textContent).not.toContain("Professional role");
   });
 
   it("does not refresh current status for an unbound historical card", async () => {

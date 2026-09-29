@@ -31,6 +31,8 @@ import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { FeedRow } from "@/components/feed/feed-row";
 import { FeedActionableRow } from "@/components/feed/feed-actionable-row";
 import { FeedPushPrompt } from "@/components/feed/feed-push-prompt";
+import { OwnerConsentUnlockPrompt } from "@/components/consent/owner-consent-unlock-prompt";
+import { collapseConsentBundleRows } from "@/lib/feed/feed-consent-grouping";
 import {
   SettingsGroup,
   SettingsPresentationProvider,
@@ -278,6 +280,7 @@ function FeedPageSession({
     retry: retryActionables,
     hasClearableSmsEmergencies,
     clearSmsEmergencies,
+    consentUnlockPrompt,
   } = useFeedActionables();
 
   // Counts only -- never who, and never what any item says. The Feed is a list
@@ -454,7 +457,9 @@ function FeedPageSession({
       );
     }
     previousItemsRef.current = new Map(merged.map((item) => [item.id, item]));
-    return merged;
+    // One request is one row in history too: per-item consent rows that share
+    // a bundle fold into the newest of them.
+    return collapseConsentBundleRows(merged);
   }, [
     data,
     pagination.additionalItems,
@@ -703,36 +708,6 @@ function FeedPageSession({
               </div>
             ) : null}
 
-            {canClear ? (
-              <div className="flex w-full justify-end pt-3" aria-live="polite">
-                <StockButton
-                  type="button"
-                  variant="secondary"
-                  size="compact"
-                  onClick={() => {
-                    if (!clearArmed) {
-                      setClearArmed(true);
-                      return;
-                    }
-                    void handleClearAll();
-                  }}
-                  disabled={clearing}
-                  aria-label={
-                    clearArmed
-                      ? "Confirm clear feed notifications on this device"
-                      : "Clear feed notifications on this device"
-                  }
-                  className="w-auto max-w-full whitespace-nowrap bg-destructive/10 px-4 text-destructive hover:bg-destructive/15"
-                >
-                  {clearing
-                    ? "Clearing…"
-                    : clearArmed
-                      ? "Confirm clear"
-                      : "Clear on this device"}
-                </StockButton>
-              </div>
-            ) : null}
-
             {hasHistory
               ? dayGroups.map((group) => (
                   <section key={group.label} aria-label={group.label}>
@@ -776,9 +751,47 @@ function FeedPageSession({
                 </Button>
               </div>
             ) : null}
+            {/* Clearing is housekeeping, not a task: it sits quietly after the
+                history, never under a "Needs you" row where it read as a
+                reply to that request. It turns destructive only once armed. */}
+            {canClear ? (
+              <div className="flex w-full justify-center pt-4" aria-live="polite">
+                <StockButton
+                  type="button"
+                  variant="secondary"
+                  size="compact"
+                  onClick={() => {
+                    if (!clearArmed) {
+                      setClearArmed(true);
+                      return;
+                    }
+                    void handleClearAll();
+                  }}
+                  disabled={clearing}
+                  aria-label={
+                    clearArmed
+                      ? "Confirm clear feed notifications on this device"
+                      : "Clear feed notifications on this device"
+                  }
+                  data-testid="feed-clear-on-device"
+                  className={
+                    clearArmed
+                      ? "w-auto max-w-full whitespace-nowrap bg-destructive/10 px-4 text-destructive hover:bg-destructive/15"
+                      : "w-auto max-w-full whitespace-nowrap bg-transparent px-4 text-[color:var(--app-secondary-label)] hover:bg-foreground/[0.04]"
+                  }
+                >
+                  {clearing
+                    ? "Clearing…"
+                    : clearArmed
+                      ? "Confirm clear"
+                      : "Clear on this device"}
+                </StockButton>
+              </div>
+            ) : null}
           </AppPageContentRegion>
         </SettingsPresentationProvider>
       </div>
+      <OwnerConsentUnlockPrompt prompt={consentUnlockPrompt} />
     </AppPageShell>
   );
 }

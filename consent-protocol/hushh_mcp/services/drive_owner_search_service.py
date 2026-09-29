@@ -72,6 +72,24 @@ _MONTH_WORDS = {
     )
 }
 _TITLE_DATE = re.compile(r"(?<!\d)(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?!\d)")
+_TERM_COORDINATOR = re.compile(r"(?:,|and|or|&|,\s*(?:and|or|&))", re.I)
+
+
+def _coordinated_alternatives(terms: list[str], purpose: str) -> bool:
+    """Use OR only when the requester explicitly lists separate subjects."""
+    if not 2 <= len(terms) <= 3:
+        return False
+    matches = []
+    for term in terms:
+        match = _term_pattern(term.casefold()).search(purpose)
+        if match is None:
+            return False
+        matches.append(match)
+    ordered = sorted(matches, key=lambda match: match.start())
+    return all(
+        _TERM_COORDINATOR.fullmatch(purpose[left.end() : right.start()].strip())
+        for left, right in zip(ordered[:-1], ordered[1:], strict=True)
+    )
 
 
 def _request_kind_clause(kind: str) -> str | None:
@@ -124,6 +142,25 @@ def _note_candidate(checkpoint: dict, match: dict, *, folder_scoped: bool) -> bo
         or _subject_matches(checkpoint, name)
         or _subject_matches(checkpoint, alias)
     )
+
+
+def _shareability(source: dict) -> dict:
+    """Carry Drive's owner-specific permission fact into the frozen review.
+
+    An omitted capability is not permission to share. The sharing worker
+    rechecks an affirmative capability against current Drive state.
+    """
+    capabilities = source.get("capabilities")
+    encryption = source.get("clientEncryptionDetails")
+    if encryption is not None and (
+        not isinstance(encryption, dict) or encryption.get("encryptionState") != "unencrypted"
+    ):
+        return {"shareable": False, "unavailableReason": "source_not_shareable"}
+    if isinstance(capabilities, dict) and capabilities.get("canShare") is True:
+        return {"shareable": True}
+    if isinstance(capabilities, dict) and capabilities.get("canShare") is False:
+        return {"shareable": False, "unavailableReason": "source_not_shareable"}
+    return {"shareable": False, "unavailableReason": "shareability_unverified"}
 
 
 def _counter(checkpoint: dict, key: str, amount: int = 1) -> None:
@@ -276,20 +313,30 @@ def compile_request_queries(
     if parsed.exact_title:
         subject = f"name = {quote_literal(parsed.exact_title)}"
     elif parsed.terms:
-        # OR preserves files whose title or text uses only one of the planner's
-        # terms; the owner decides the final set from the complete preview.
-        terms = [
-            variant
-            for term in parsed.terms
-            for variant in (
-                ("standup", "stand up", "stand-up")
-                if term.casefold() in {"standup", "stand-up", "stand up"}
-                else (term,)
+        # Keep full-text evidence from Drive while requiring every distinct
+        # subject term the planner selected. Standup spellings are one term.
+        groups = [
+            "("
+            + " or ".join(
+                compile_search_terms([variant])
+                for variant in (
+                    ("standup", "stand up", "stand-up")
+                    if term.casefold() in {"standup", "stand-up", "stand up"}
+                    else (term,)
+                )
             )
+            + ")"
+            for term in parsed.terms
         ]
-        subject = (
-            "(" + " or ".join(compile_search_terms([term]) for term in dict.fromkeys(terms)) + ")"
+        # Separate categories such as "contracts and invoices" are a union:
+        # no single file needs both words. Otherwise, preserve the planner's
+        # all-terms-match contract for one described subject.
+        joiner = (
+            " or "
+            if _coordinated_alternatives(parsed.terms, purpose.get("purpose", ""))
+            else " and "
         )
+        subject = "(" + joiner.join(groups) + ")"
     else:
         subject = None
     clauses = [*([subject] if subject else []), *base]
@@ -487,11 +534,15 @@ class DriveOwnerSearchService:
         plan,
         require_current,
         timezone="UTC",
+        authority_mode="owner",
     ):
         """Start or resume the owner-approved request's durable metadata search."""
+        if authority_mode not in {"owner", "trusted_auto"}:
+            raise DriveReadError("invalid_argument")
         await require_current()
         query = purpose["purpose"]
         request = self._request(query, timezone)
+        await self.store.clear_legacy_completed_request(user_id=user_id, request_id=request_id)
         existing = await self.store.by_client(user_id=user_id, client_request_id=request_id)
         if existing is not None:
             if existing["status"] not in {"failed", "limited", "stopped"}:
@@ -510,6 +561,8 @@ class DriveOwnerSearchService:
                 "query_index": 0,
                 "request_origin_id": request_id,
                 "request_revision": request_revision,
+                "authority_mode": authority_mode,
+                "request_shareability_version": 1,
                 "request_file_kind": plan.get("file_kind", "any"),
                 "request_subject_terms": plan.get("terms", []),
                 "request_exact_title": plan.get("exact_title"),
@@ -821,6 +874,17 @@ class DriveOwnerSearchService:
             if not _note_candidate(checkpoint, match, folder_scoped=folder_scoped):
                 _counter(checkpoint, "excludedByNoteTypeCount")
                 continue
+            if (
+                folder_scoped
+                and not checkpoint.get("request_notes")
+                and not _subject_matches(checkpoint, match["name"])
+                and not _subject_matches(checkpoint, match.get("shortcut_name", ""))
+            ):
+                # A topical parent is discovery evidence, not evidence that
+                # every descendant is a requested file. Direct fullText
+                # results remain available even when the title is generic.
+                _counter(checkpoint, "excludedByTopicCount")
+                continue
             if not period_matches(match):
                 _counter(checkpoint, "excludedByDateCount")
                 continue
@@ -838,6 +902,7 @@ class DriveOwnerSearchService:
                     ),
                     **({"resourceKey": key} if key else {}),
                     "openUrl": match["open_url"],
+                    **_shareability(source),
                 }
             )
         return files, incomplete
@@ -1046,6 +1111,15 @@ class DriveOwnerSearchService:
                 await self.store.release(job, error="provider_unavailable", retryable=True)
             )
         except DriveReadError as error:
+            if str(error) == "background_preparation_required":
+                # The owner can re-enable background Drive access without
+                # losing an already committed search checkpoint or batches.
+                if require_current:
+                    try:
+                        await require_current()
+                    except DriveReadError:
+                        pass
+                return finish(await self.store.pause_for_background(job))
             if str(error) == "search_superseded":
                 await self.store.release(job, error="connection_changed")
                 return finish("superseded")

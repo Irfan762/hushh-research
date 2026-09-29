@@ -827,10 +827,16 @@ describe("Connect — People", () => {
     fireEvent.click(screen.getByRole("button", { name: "My connections (1)" }));
     const connectionName =
       await within(myConnections).findByText("Scoped Friend");
-    const connectionAction = connectionName.closest("button");
-    expect(connectionAction).toBeTruthy();
+    // The whole row is the target. The name sits on the row's content layer,
+    // beside its one full-row action rather than inside a title-only button.
+    const connectionRow = connectionName.closest<HTMLElement>(
+      '[data-row-surface="overlay"]',
+    );
+    expect(
+      connectionRow?.querySelectorAll('[data-slot="settings-row-action"]'),
+    ).toHaveLength(1);
 
-    fireEvent.click(connectionAction!);
+    fireEvent.click(connectionName);
 
     expect(mocks.routerPush).toHaveBeenCalledWith(
       "/people/person-ref-scoped?from=%2Fone%2Fconnect",

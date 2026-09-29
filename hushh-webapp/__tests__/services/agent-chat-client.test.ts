@@ -101,7 +101,10 @@ import {
   parseRestoredTurnActivity,
   getAgentChatHistory,
   listAgentChatConversations,
+  InformationRequestReceiptError,
+  isRetryableReceiptStatus,
   recordAgentChatInformationRequest,
+  recordAgentChatInformationRequestWithRetry,
   streamAgentChat,
   streamAgentIntro,
   type SpecialistDirectiveEvent,
@@ -413,6 +416,65 @@ describe("AG-UI Agent One client", () => {
       conversationId: "thread-1", sourceActivityId: "discover-call",
       bundleId, idempotencyKey: "synthetic-receipt-key", vaultOwnerToken: "owner-token",
     })).rejects.toThrow();
+  });
+  // Regression (localhost run 2026-09-28): Send on the new ask card got 404
+  // "Discovery card not found." twice, then the continuation got 409.
+  it("sends the ask card's live tool call id as the receipt source, retries the race, and stops on a refusal", async () => {
+    const bundleId = "11111111-1111-1111-1111-111111111111";
+    const PERSON_REF = "11111111-1111-4111-8111-111111111111";
+    const onStructuredExperience = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "propose-call", toolCallName: "propose_information_request" } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "propose-call", content: JSON.stringify({
+        status: "proposal_ready",
+        person: { displayName: "Sarah Chen", personRef: PERSON_REF, profilePath: `/people/${PERSON_REF}` },
+        fields: ["Food preferences"], purpose: "dinner planning", durationHours: 168,
+        proposed: [{ scope: "psr_food", label: "Food preferences", why: null }],
+        duration_default: "7d", reason_suggestion: "dinner planning",
+      }) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Where should we eat?",
+      vaultOwnerToken: "fixture", handlers: { onStructuredExperience } });
+    expect(onStructuredExperience).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "one.scope_discovery.v1", proposal: expect.any(Object) }), "propose-call");
+    const activityId = onStructuredExperience.mock.calls[0][1] as string;
+
+    const descriptor = { activityType: "one.information_request_review.v1", content: {
+      direction: "outgoing", phase: "submitted", status: "pending", personName: "Sarah Chen",
+      purpose: "dinner planning", durationLabel: "7 days", subjectRef: PERSON_REF, bundleId,
+      fields: [{ requestId: "request_12345678", label: "Food preferences",
+        domain: "Information", sensitivity: "standard", status: "pending" }],
+    } };
+    const input = { vaultKey: TEST_VAULT_KEY, conversationId: "thread-1", sourceActivityId: activityId,
+      bundleId, idempotencyKey: "synthetic-receipt-key", vaultOwnerToken: "owner-token" };
+    const sleep = vi.fn(async () => undefined);
+    vi.mocked(ApiService.apiFetch).mockClear();
+    vi.mocked(ApiService.apiFetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "Discovery card not found." }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ descriptor }), { status: 200 }));
+    await expect(recordAgentChatInformationRequestWithRetry(input, { sleep })).resolves.toMatchObject({
+      phase: "submitted", bundleId, subjectRef: PERSON_REF,
+    });
+    expect(ApiService.apiFetch).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(ApiService.apiFetch).mock.calls) {
+      expect(call[0]).toBe("/api/one/agent-chat/history/thread-1/information-requests");
+      // Locators only: the card id the server matches, the bundle and the key. Never a card body.
+      expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({
+        source_activity_id: "propose-call", bundle_id: bundleId, idempotency_key: "synthetic-receipt-key",
+      });
+    }
+
+    // A final refusal is not retried, and reports its status for the log.
+    vi.mocked(ApiService.apiFetch).mockClear();
+    vi.mocked(ApiService.apiFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "Request recipient did not match discovery." }), { status: 409 }));
+    const refused = await recordAgentChatInformationRequestWithRetry(input, { sleep }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(InformationRequestReceiptError);
+    expect((refused as InformationRequestReceiptError).status).toBe(409);
+    expect(ApiService.apiFetch).toHaveBeenCalledTimes(1);
+    expect(isRetryableReceiptStatus(404)).toBe(true);
+    expect(isRetryableReceiptStatus(null)).toBe(true);
+    expect(isRetryableReceiptStatus(403)).toBe(false);
   });
   it("shows Drive search progress without exposing the private tool request", async () => {
     const onToolStart = vi.fn();

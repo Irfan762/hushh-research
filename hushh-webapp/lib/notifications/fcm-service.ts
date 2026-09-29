@@ -53,7 +53,7 @@ const IOS_DEFAULT_NOTIFICATION_ACTION =
  */
 export const DOCUMENT_SHARE_NOTIFICATION_COPY = {
   title: "Document request",
-  body: "Open One to review.",
+  body: "Open One for next steps.",
 } as const;
 
 function normalizedDocumentShareType(

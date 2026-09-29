@@ -120,3 +120,93 @@ async def test_request_consent_without_scope_returns_scope_required():
     # The hint must steer callers to discovery/search, never to a bundle.
     assert "search_user_scopes" in payload["hint"]
     assert "scope_bundle" not in payload["hint"]
+
+
+# --- One picks, the person confirms (consent lifecycle Contract C4) ----------
+# UAT 2026-09-28: "What is Kushal Trivedi's favorite restaurant?" took three
+# model calls and showed 100 of 251 raw rows; "restaurant" matched nothing.
+
+
+def _catalog() -> list[dict]:
+    return [
+        {"scopeRef": "psr_food", "label": "Food preferences", "domain": "food"},
+        {"scopeRef": "psr_goals", "label": "Fitness goals", "domain": "health"},
+        {"scopeRef": "psr_sleep", "label": "Sleep", "domain": "health"},
+        {"scopeRef": "psr_movies", "label": "Favorite movies", "domain": "entertainment"},
+        {
+            "scopeRef": "psr_food_all",
+            "label": "Food & dining information",
+            "domain": "food",
+            "wildcard": True,
+        },
+    ]
+
+
+def test_favorite_restaurant_proposes_food_preferences():
+    from hushh_mcp.consent.scope_matcher import match_scopes
+
+    best = match_scopes(
+        _catalog(),
+        "What is Kushal Trivedi's favorite restaurant?",
+        ignore_words=["Kushal Trivedi"],
+    )
+    # Narrowest food row first (least privilege), never the movies row that
+    # only shares the word "favorite".
+    assert [match.entry["scopeRef"] for match in best] == ["psr_food", "psr_food_all"]
+    assert best[0].why == '"restaurant" relates to food & dining'
+
+
+def test_training_proposes_a_fitness_goal():
+    from hushh_mcp.consent.scope_matcher import match_scopes
+
+    best = match_scopes(_catalog(), "what is he training for", limit=1)
+    assert best[0].entry["scopeRef"] == "psr_goals"
+    assert best[0].why == '"training" relates to health & wellness'
+
+
+def test_unknown_question_matches_nothing_and_falls_back_to_top_domains():
+    from hushh_mcp.consent.scope_matcher import fallback_scopes, match_scopes
+
+    assert match_scopes(_catalog(), "blood type") == []
+    fallback = fallback_scopes(_catalog(), limit=3)
+    # Largest domains first; the whole-domain row represents food.
+    assert [match.entry["scopeRef"] for match in fallback] == [
+        "psr_food_all",
+        "psr_sleep",
+        "psr_movies",
+    ]
+    assert {match.via for match in fallback} == {"fallback"}
+
+
+def test_negative_control_without_synonyms_restaurant_finds_nothing():
+    from hushh_mcp.consent.scope_matcher import match_scopes
+
+    assert match_scopes(_catalog(), "favorite restaurant", use_synonyms=False) == []
+
+
+@pytest.mark.parametrize(
+    ("scope", "stored", "expected"),
+    [
+        (
+            "attr.food.preferences.entities.entities.summary",
+            "Preferences Entities Entities Summary",
+            "Food preferences",
+        ),
+        ("attr.food.*", "Food Domain", "Food & dining information"),
+        ("attr.health.fitness_goals.*", "Fitness Goals", "Fitness goals"),
+        ("attr.professional.employment.entities.entities.title", None, "Employment title"),
+        ("attr.ria.*", None, "RIA information"),
+        # An authored label is a semantic judgement and is never rewritten.
+        ("attr.food.weeknight", "Go-to weeknight spots", "Go-to weeknight spots"),
+        # A record's metadata field is domain-qualified, never a bare "Kind"
+        # (proposed as a scope on localhost, 2026-09-28); its content fields
+        # name the record set; a real attribute outside a collection is kept.
+        ("attr.food.preferences.entities._entities.kind", "Kind", "Food preferences kind"),
+        ("attr.food.preferences.observations._items", "Observations", "Food preferences"),
+        ("attr.professional.employment.status", None, "Employment status"),
+    ],
+)
+def test_human_scope_labels(scope, stored, expected):
+    from hushh_mcp.consent.scope_labels import human_scope_label
+
+    assert human_scope_label(scope, stored) == expected

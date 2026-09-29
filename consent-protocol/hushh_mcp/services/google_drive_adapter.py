@@ -67,12 +67,14 @@ SHARE_METADATA_FIELDS = (
 # Metadata-only live read for a file with no readable text (a video, an image,
 # an archive, a folder): what it is and where to open it, never its bytes.
 FACT_FIELDS = (
-    "id,name,mimeType,modifiedTime,createdTime,driveId,resourceKey,size,webViewLink,trashed"
+    "id,name,mimeType,modifiedTime,createdTime,driveId,resourceKey,size,webViewLink,trashed,"
+    "capabilities(canShare),clientEncryptionDetails(encryptionState)"
 )
 # Live search: one bounded files.list shape, never a caller-chosen field set.
 LIST_FIELDS = (
     "nextPageToken,incompleteSearch,files(id,name,mimeType,modifiedTime,createdTime,driveId,"
-    "resourceKey,webViewLink,shortcutDetails(targetId,targetMimeType,targetResourceKey))"
+    "resourceKey,webViewLink,capabilities(canShare),clientEncryptionDetails(encryptionState),"
+    "shortcutDetails(targetId,targetMimeType,targetResourceKey))"
 )
 # Drive sorts each key ascending unless told "desc"; live results are newest
 # first by the file time the owner asked about. modifiedTime is the default and
@@ -555,6 +557,19 @@ class GoogleDriveAdapter:
             )
         ):
             raise DriveReadError("provider_response_invalid")
+        capabilities = result.get("capabilities")
+        if capabilities is not None and (
+            not isinstance(capabilities, dict)
+            or capabilities.get("canShare") is not None
+            and type(capabilities["canShare"]) is not bool
+        ):
+            raise DriveReadError("provider_response_invalid")
+        encryption = result.get("clientEncryptionDetails")
+        if encryption is not None and (
+            not isinstance(encryption, dict)
+            or not isinstance(encryption.get("encryptionState"), str)
+        ):
+            raise DriveReadError("provider_response_invalid")
         return {
             "id": file_id,
             "title": name[:1024],
@@ -569,6 +584,16 @@ class GoogleDriveAdapter:
             if isinstance(size, str) and re.fullmatch(r"[0-9]{1,20}", size)
             else None,
             "viewUrl": link if isinstance(link, str) and link.startswith("https://") else None,
+            **(
+                {"capabilities": {"canShare": capabilities["canShare"]}}
+                if isinstance(capabilities, dict) and "canShare" in capabilities
+                else {}
+            ),
+            **(
+                {"clientEncryptionDetails": {"encryptionState": encryption["encryptionState"]}}
+                if isinstance(encryption, dict)
+                else {}
+            ),
         }
 
     async def get_share_metadata(

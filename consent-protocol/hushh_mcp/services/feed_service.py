@@ -109,6 +109,12 @@ _SAFE_METADATA_KEYS = frozenset(
         # one row where that distinction matters most. A short, bounded enum
         # written by our own service, carrying nothing about the person.
         "share_kind",
+        # One Feed item per person-to-person request (migration 259): which
+        # request it is, and what was asked for in human words, so the item
+        # reads "<Name> wants your <labels> · <reason>" and can act inline.
+        "bundle_id",
+        "requested_labels",
+        "requested_count",
     }
 )
 

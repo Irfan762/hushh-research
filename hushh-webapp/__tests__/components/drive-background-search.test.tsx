@@ -138,6 +138,7 @@ describe("durable Drive search UI", () => {
       counts: { ...partial.counts, processed: 71, skipped: 0, pending: 1 }, issues: [] });
     render(<DriveRecentSharing />);
     await screen.findByText("71 of 72 files available");
+    expect(screen.getByText("Sharing incomplete")).toBeTruthy();
     expect(screen.getByText("62 newly shared")).toBeTruthy();
     expect(screen.getByText("9 already had access")).toBeTruthy();
     expect(screen.getByText(/Google Drive was unavailable/)).toBeTruthy();
@@ -174,7 +175,11 @@ describe("durable Drive search UI", () => {
     await screen.findByText("250 of 250 file shares complete");
     expect(screen.getByText("Files are ready")).toBeTruthy();
     expect(screen.queryByText(/needs attention|Sharing partial|0 failed/)).toBeNull();
-    expect(state.bulk.bulkShareStatus).toHaveBeenCalledWith(state.token, completed.shareId, expect.any(Function));
+    // The card paints from the recent-shares row on its first commit and only
+    // then refreshes by id from a passive effect, so the text above is no proof
+    // the refresh ran. Wait for the call itself; under CI load React can yield
+    // before flushing that effect (reproduced 1 in 240 locally).
+    await waitFor(() => expect(state.bulk.bulkShareStatus).toHaveBeenCalledWith(state.token, completed.shareId, expect.any(Function)));
     expect(state.bulk.bulkSharesForSearch).not.toHaveBeenCalled();
   });
 

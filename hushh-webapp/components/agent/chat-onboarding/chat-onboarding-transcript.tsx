@@ -41,6 +41,8 @@ export type ChatOnboardingBubbleMessage = {
   role: "assistant" | "user";
   text: string;
   timestamp: string;
+  /** When the turn was first shown (epoch ms), for the centered time separators. */
+  sentAtMs?: number;
   status: "streaming" | "done";
   ephemeral: true;
   renderAsPlainAssistantMessage: true;
@@ -213,6 +215,7 @@ function OnboardingTurnView({
   animate,
   delayMs,
   timestamp,
+  shownAtMs,
   chipsLive,
   busy,
   autoFocusChips,
@@ -225,11 +228,12 @@ function OnboardingTurnView({
   animate: boolean;
   delayMs: number;
   timestamp: string | undefined;
+  shownAtMs: number | undefined;
   chipsLive: boolean;
   busy: boolean;
   autoFocusChips: boolean;
   renderBubble: (message: ChatOnboardingBubbleMessage) => ReactNode;
-  onShown: (turnId: string, timeLabel: string) => void;
+  onShown: (turnId: string, timeLabel: string, shownAtMs?: number) => void;
   onChip: (chipId: ChatOnboardingChipId) => void;
   onConnect: (action: ChatOnboardingConnectAction, trigger: HTMLButtonElement) => void;
 }) {
@@ -239,6 +243,8 @@ function OnboardingTurnView({
   );
   const [extrasReady, setExtrasReady] = useState(!typed);
   const [shownAt] = useState(() => timestamp ?? formatTimeLabel());
+  // A turn restamped on remount keeps its first time; a first showing is now.
+  const [firstShownAtMs] = useState(() => shownAtMs ?? (timestamp ? undefined : Date.now()));
 
   useEffect(() => {
     if (phase === "waiting") {
@@ -256,11 +262,11 @@ function OnboardingTurnView({
 
   useEffect(() => {
     if (phase === "waiting") return;
-    onShown(turn.id, shownAt);
+    onShown(turn.id, shownAt, firstShownAtMs);
     if (extrasReady) return;
     const timer = window.setTimeout(() => setExtrasReady(true), estimateTypingMs(turn.text));
     return () => window.clearTimeout(timer);
-  }, [phase, extrasReady, onShown, turn.id, turn.text, shownAt]);
+  }, [phase, extrasReady, onShown, turn.id, turn.text, shownAt, firstShownAtMs]);
 
   if (phase === "waiting") return null;
   return (
@@ -270,6 +276,7 @@ function OnboardingTurnView({
         role: turn.role,
         text: turn.text,
         timestamp: shownAt,
+        sentAtMs: firstShownAtMs,
         status: phase === "streaming" ? "streaming" : "done",
         ephemeral: true,
         renderAsPlainAssistantMessage: true,
@@ -319,6 +326,7 @@ export function ChatOnboardingTurns({
         animate={animate}
         delayMs={delayMs}
         timestamp={controller.shownTurns.get(turn.id)}
+        shownAtMs={controller.shownTurnTimes.get(turn.id)}
         chipsLive={chipsLive}
         busy={controller.busy}
         autoFocusChips={chipsLive && chipChosen}

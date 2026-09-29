@@ -12,38 +12,41 @@ import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   WarningIcon as AlertTriangle,
   BriefcaseIcon as BriefcaseBusiness,
-  AddressBookIcon as ContactRound,
-  FingerprintIcon as Fingerprint,
-  KeyIcon as KeyRound,
   SpinnerGapIcon as Loader2,
-  LogOutIcon as LogOut,
-  MailIcon as Mail,
-  MicrophoneIcon as Mic,
-  DesktopIcon as Monitor,
-  PhoneIcon as Phone,
-  PaletteIcon as Palette,
   ArrowsClockwiseIcon as RefreshCw,
-  SendIcon as SendHorizontal,
-  TrashIcon as Trash2,
   UserCircleIcon as User,
   ShieldCheck,
   ScrollText,
 } from "@/components/icons";
 import {
+  AccentRowIcon,
   AccountProfileIcon,
+  AppearanceRowIcon,
   ConsentAgentIcon,
   ConnectedSystemsAgentIcon,
+  DeleteRowIcon,
   DeveloperToolsProfileIcon,
   DevicesProfileIcon,
+  DisconnectRowIcon,
+  DiscoverableRowIcon,
   FingerprintProfileIcon,
   GmailAgentIcon,
+  InboxRowIcon,
+  KeyRowIcon,
   LocationAgentIcon,
+  MarketplaceAgentIcon,
   MemoryAgentIcon,
+  PassphraseRowIcon,
+  PhoneRowIcon,
   PreferencesProfileIcon,
   InviteFriendsProfileIcon,
+  ResetRowIcon,
   SecurityProfileIcon,
   SignOutProfileIcon,
   SupportProfileIcon,
+  SyncRowIcon,
+  VaultRowIcon,
+  VoiceRowIcon,
   WalletAgentIcon,
 } from "@/components/icons/agents";
 import { toast } from "sonner";
@@ -184,6 +187,7 @@ import {
 } from "@/lib/services/consent-center-service";
 import {
   SupportService,
+  SupportDeliveryUncertainError,
   type SupportMessageKind,
 } from "@/lib/services/support-service";
 import { ReferralsPanel } from "@/components/profile/referrals-panel";
@@ -401,10 +405,6 @@ function normalizeSupportKind(value: string | null): SupportMessageKind | null {
     return value;
   }
   return null;
-}
-
-function isValidReplyEmail(value: string): boolean {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function normalizeProfileVaultReturnTo(value: string | null): string | null {
@@ -708,13 +708,9 @@ function ProfilePageContent({
   const [supportKind, setSupportKind] =
     useState<SupportMessageKind>("support_request");
   const [supportMessage, setSupportMessage] = useState("");
-  const [supportReplyEmail, setSupportReplyEmail] = useState("");
   const [supportMessageError, setSupportMessageError] = useState<string | null>(
     null,
   );
-  const [supportReplyEmailError, setSupportReplyEmailError] = useState<
-    string | null
-  >(null);
   const [supportComposerState, setSupportComposerState] =
     useState<SupportComposerState>({ status: "editing" });
   const [gmailActionBusy, setGmailActionBusy] = useState<
@@ -729,7 +725,6 @@ function ProfilePageContent({
   >(null);
   const vaultUnlockCompletingRef = useRef(false);
   const supportMessageRef = useRef<HTMLTextAreaElement | null>(null);
-  const supportReplyEmailRef = useRef<HTMLInputElement | null>(null);
   const supportSuccessHeadingRef = useRef<HTMLHeadingElement | null>(null);
 
   const legacyProfileRedirectHref = useMemo(
@@ -763,15 +758,11 @@ function ProfilePageContent({
   const supportRouteKind = supportComposeKind ?? supportQueryKind;
   const sendingSupportMessage = supportComposerState.status === "sending";
   const supportPresentation = SUPPORT_INTENT_PRESENTATION[supportKind];
-  const hasAccountReplyEmail = Boolean(user?.email?.trim());
-  const effectiveReplyEmail = hasAccountReplyEmail
-    ? user?.email?.trim() || ""
-    : supportReplyEmail.trim();
+  const effectiveReplyEmail = user?.emailVerified ? user.email?.trim() || "" : "";
   const supportReplyLine = effectiveReplyEmail
     ? `Replies go to ${effectiveReplyEmail}`
-    : "No reply mail added.";
+    : "Verify an account email to receive a reply.";
   const supportMessageErrorId = "support-message-error";
-  const supportReplyEmailErrorId = "support-reply-email-error";
   const supportSendStatusId = "support-send-status";
   const profileNativeRouteId = useMemo(
     () =>
@@ -809,7 +800,6 @@ function ProfilePageContent({
     if (!supportRouteKind || supportRouteKind === supportKind) return;
     setSupportKind(supportRouteKind);
     setSupportMessageError(null);
-    setSupportReplyEmailError(null);
   }, [supportKind, supportRouteKind]);
 
   const legacySupportRouteHref = useMemo(() => {
@@ -1851,7 +1841,6 @@ function ProfilePageContent({
     // validation below still runs on it -- a dictated message that is too
     // short is refused exactly like a typed one.
     const trimmedMessage = (messageOverride ?? supportMessage).trim();
-    const trimmedReplyEmail = supportReplyEmail.trim();
     const presentation = SUPPORT_INTENT_PRESENTATION[supportKind];
 
     if (trimmedMessage.length < 10) {
@@ -1859,17 +1848,6 @@ function ProfilePageContent({
       setSupportComposerState({ status: "editing" });
       supportMessageRef.current?.focus();
       return { kind: "too_short" };
-    }
-
-    if (
-      !hasAccountReplyEmail &&
-      trimmedReplyEmail &&
-      !isValidReplyEmail(trimmedReplyEmail)
-    ) {
-      setSupportReplyEmailError("Enter a valid mail.");
-      setSupportComposerState({ status: "editing" });
-      supportReplyEmailRef.current?.focus();
-      return { kind: "invalid_reply_email" };
     }
 
     if (typeof navigator !== "undefined" && navigator.onLine === false) {
@@ -1881,7 +1859,6 @@ function ProfilePageContent({
     }
 
     setSupportMessageError(null);
-    setSupportReplyEmailError(null);
     setSupportComposerState({ status: "sending" });
     try {
       const idToken = await user.getIdToken();
@@ -1893,8 +1870,6 @@ function ProfilePageContent({
         kind: supportKind,
         subject: presentation.internalSubject,
         message: trimmedMessage,
-        userEmail: user.email?.trim() || trimmedReplyEmail || null,
-        userDisplayName: user.displayName,
         persona: personaState?.active_persona || null,
         pageUrl,
       });
@@ -1911,10 +1886,12 @@ function ProfilePageContent({
       setSupportMessage("");
       return { kind: "accepted" };
     } catch (error) {
-      console.error("[ProfilePage] Failed to send support message:", error);
+      console.error("[ProfilePage] Support delivery failed:", error instanceof SupportDeliveryUncertainError ? "uncertain" : "failed");
       setSupportComposerState({
         status: "error",
-        message: "We couldn't send your message. Try again.",
+        message: error instanceof SupportDeliveryUncertainError
+          ? "We couldn't confirm delivery. Please wait before trying again."
+          : "We couldn't send your message. Try again.",
       });
       return { kind: "failed" };
     }
@@ -2014,6 +1991,7 @@ function ProfilePageContent({
         user.uid,
         targetMethod,
         wrapperId ?? "default",
+        vaultOwnerToken ?? undefined,
       );
       setVaultMethod(targetMethod);
       toast.success(
@@ -2050,6 +2028,7 @@ function ProfilePageContent({
         user.uid,
         "passphrase",
         "default",
+        vaultOwnerToken ?? undefined,
       );
       setVaultMethod("passphrase");
       toast.success("Primary unlock updated to passphrase.");
@@ -3399,7 +3378,8 @@ function ProfilePageContent({
           onClick={() => router.push(ROUTES.CONSENTS)}
         />
         <SettingsRow
-          icon={ContactRound}
+          icon={DiscoverableRowIcon}
+          iconTone="capability"
           title="Find and connect me by phone number"
           description={contactDiscoverableStatusText}
           trailing={
@@ -3416,7 +3396,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={MarketplaceAgentIcon}
+          iconTone="capability"
           title="Marketplace visibility"
           description={marketplaceStatusText}
           trailing={
@@ -3448,8 +3429,8 @@ function ProfilePageContent({
     <div className="profile-account-content">
       <SettingsGroup title="Identity">
         <SettingsRow
-          icon={User}
-          iconTone="blue"
+          icon={AccountProfileIcon}
+          iconTone="capability"
           title="Display name"
           description={user.displayName || "Not available"}
           trailing={
@@ -3472,14 +3453,14 @@ function ProfilePageContent({
           </div>
         ) : null}
         <SettingsRow
-          icon={Mail}
-          iconTone="orange"
+          icon={GmailAgentIcon}
+          iconTone="capability"
           title="Mail"
           description={user.email || "Not available"}
         />
         <SettingsRow
-          icon={Phone}
-          iconTone="green"
+          icon={PhoneRowIcon}
+          iconTone="capability"
           title="Phone number"
           description={phoneSummaryText}
           trailing={
@@ -3515,8 +3496,8 @@ function ProfilePageContent({
       </SettingsGroup>
       <SettingsGroup title="Account actions">
         <SettingsRow
-          icon={RefreshCw}
-          iconTone="orange"
+          icon={ResetRowIcon}
+          iconTone="capability"
           className="profile-account-reset-row"
           title="Reset account"
           description={resetRowDescription}
@@ -3524,7 +3505,8 @@ function ProfilePageContent({
           onClick={() => void handleResetClick()}
         />
         <SettingsRow
-          icon={Trash2}
+          icon={DeleteRowIcon}
+          iconTone="capability"
           className="profile-account-delete-row"
           testId="profile-account-delete-row"
           title={deleteButtonLabel}
@@ -3541,7 +3523,8 @@ function ProfilePageContent({
     <div className="space-y-4">
       <SettingsGroup>
         <SettingsRow
-          icon={Monitor}
+          icon={AppearanceRowIcon}
+          iconTone="capability"
           title="Appearance"
           description="Light, dark, or system."
           trailing={
@@ -3553,7 +3536,8 @@ function ProfilePageContent({
           stackTrailingOnMobile
         />
         <SettingsRow
-          icon={Palette}
+          icon={AccentRowIcon}
+          iconTone="capability"
           title="Accent"
           description="Choose the app accent."
           trailing={
@@ -3608,7 +3592,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={Mic}
+          icon={VoiceRowIcon}
+          iconTone="capability"
           title="Voice"
           description="What One's voice can do, and its safety controls."
           chevron
@@ -3673,7 +3658,6 @@ function ProfilePageContent({
             className="h-[52px] w-full rounded-[16px] bg-[color:var(--app-accent)] text-[17px] font-semibold leading-[22px] text-white shadow-none hover:bg-[color:var(--app-accent)] focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
             onClick={() => {
               setSupportComposerState({ status: "editing" });
-              setSupportReplyEmail("");
               updateProfileView({ panel: null, detail: null }, "replace");
             }}
           >
@@ -3707,7 +3691,6 @@ function ProfilePageContent({
                   if (!nextKind) return;
                   setSupportKind(nextKind);
                   setSupportMessageError(null);
-                  setSupportReplyEmailError(null);
                   if (supportComposerState.status === "error") {
                     setSupportComposerState({ status: "editing" });
                   }
@@ -3763,53 +3746,12 @@ function ProfilePageContent({
             ) : null}
           </div>
 
-          {!hasAccountReplyEmail ? (
-            <div className="mt-4 space-y-1.5">
-              <label
-                htmlFor="support-reply-email"
-                className="text-[15px] font-semibold leading-5 text-foreground"
-              >
-                Mail for reply (optional)
-              </label>
-              <Input
-                id="support-reply-email"
-                ref={supportReplyEmailRef}
-                type="email"
-                inputMode="email"
-                autoComplete="email"
-                value={supportReplyEmail}
-                onChange={(event) => {
-                  setSupportReplyEmail(event.target.value);
-                  if (supportReplyEmailError) setSupportReplyEmailError(null);
-                  if (supportComposerState.status === "error") {
-                    setSupportComposerState({ status: "editing" });
-                  }
-                }}
-                placeholder="name@example.com"
-                disabled={sendingSupportMessage}
-                aria-invalid={Boolean(supportReplyEmailError)}
-                aria-describedby={
-                  supportReplyEmailError ? supportReplyEmailErrorId : undefined
-                }
-                className="h-12 rounded-[12px] border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-standard)] px-4 text-[16px] leading-[22px] shadow-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] disabled:opacity-70"
-              />
-              {supportReplyEmailError ? (
-                <p
-                  id={supportReplyEmailErrorId}
-                  role="alert"
-                  className="px-1 text-[13px] leading-[18px] text-destructive"
-                >
-                  {supportReplyEmailError}
-                </p>
-              ) : null}
-            </div>
-          ) : null}
-
-          {effectiveReplyEmail ? (
-            <p className="mt-3 text-[13px] leading-[18px] text-muted-foreground">
-              {supportReplyLine}
-            </p>
-          ) : null}
+          <p className="mt-3 text-[13px] leading-[18px] text-muted-foreground">
+            {supportReplyLine}
+          </p>
+          <p className="mt-1 text-[13px] leading-[18px] text-muted-foreground">
+            Your message goes to One support, with an internal copy to our support lead. No automatic receipt is sent.
+          </p>
 
           {supportComposerState.status === "error" ? (
             <p
@@ -3848,7 +3790,8 @@ function ProfilePageContent({
     <div className="space-y-4 sm:space-y-5">
       <SettingsGroup>
         <SettingsRow
-          icon={Mail}
+          icon={GmailAgentIcon}
+          iconTone="capability"
           title="Connection"
           description={gmailSettingsDescription}
           trailing={<Badge variant="secondary">{gmailStatusLabel}</Badge>}
@@ -3862,7 +3805,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Actions"
           description="Sync, receipts, or disconnect."
           chevron
@@ -3895,8 +3839,8 @@ function ProfilePageContent({
       <SettingsGroup title="Vault">
         {vaultAccess.needsVaultCreation ? (
           <SettingsRow
-            icon={KeyRound}
-            iconTone="blue"
+            icon={VaultRowIcon}
+            iconTone="capability"
             title="Create your vault"
             description="Secure saved details."
             chevron
@@ -3915,8 +3859,8 @@ function ProfilePageContent({
           <>
             {vaultMethod ? (
               <SettingsRow
-                icon={KeyRound}
-                iconTone="blue"
+                icon={VaultRowIcon}
+                iconTone="capability"
                 title="Default unlock"
                 description={defaultUnlockDescription}
                 trailing={
@@ -3967,8 +3911,8 @@ function ProfilePageContent({
             ) : null}
             {!vaultAccess.canMutateSecureData ? (
               <SettingsRow
-                icon={KeyRound}
-                iconTone="blue"
+                icon={VaultRowIcon}
+                iconTone="capability"
                 title="Unlock vault"
                 description="Change methods or passphrase."
                 chevron
@@ -3978,8 +3922,8 @@ function ProfilePageContent({
 
             {vaultAccess.canMutateSecureData && recommendedQuickMethod ? (
               <SettingsRow
-                icon={Fingerprint}
-                iconTone="purple"
+                icon={FingerprintProfileIcon}
+                iconTone="capability"
                 title={
                   enrolledPasskeyWrappers.length > 0
                     ? `Add another ${readableQuickMethod(recommendedQuickMethod)}`
@@ -4004,8 +3948,8 @@ function ProfilePageContent({
               return (
                 <SettingsRow
                   key={vaultWrapperKey(wrapper)}
-                  icon={Fingerprint}
-                  iconTone="purple"
+                  icon={FingerprintProfileIcon}
+                  iconTone="capability"
                   title={
                     enrolledPasskeyWrappers.length > 1
                       ? `Passkey ${index + 1}`
@@ -4066,8 +4010,8 @@ function ProfilePageContent({
 
             {vaultMethod ? (
               <SettingsRow
-                icon={RefreshCw}
-                iconTone="orange"
+                icon={PassphraseRowIcon}
+                iconTone="capability"
                 title="Change passphrase"
                 description="Update vault protection."
                 disabled={switchingVaultMethod}
@@ -4077,8 +4021,8 @@ function ProfilePageContent({
             ) : null}
 
             <SettingsRow
-              icon={KeyRound}
-              iconTone="indigo"
+              icon={KeyRowIcon}
+              iconTone="capability"
               title="BYOK and passkeys"
               description="Additional key methods are being verified."
               disabled
@@ -4103,7 +4047,8 @@ function ProfilePageContent({
           stackTrailingOnMobile
         />
         <SettingsRow
-          icon={SendHorizontal}
+          icon={InboxRowIcon}
+          iconTone="capability"
           title="Inbox"
           description={
             gmail.status?.google_email
@@ -4114,7 +4059,8 @@ function ProfilePageContent({
           }
         />
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Latest sync"
           description={gmailLastSyncText}
           trailing={
@@ -4139,7 +4085,8 @@ function ProfilePageContent({
     <SettingsGroup title="Actions">
       {gmailPresentation.isConnected ? (
         <SettingsRow
-          icon={RefreshCw}
+          icon={SyncRowIcon}
+          iconTone="capability"
           title="Sync now"
           description="Fetch new receipt mail messages and refresh extracted records."
           disabled={gmailActionsBusy || !gmailPresentation.isConnected}
@@ -4163,7 +4110,8 @@ function ProfilePageContent({
       )}
 
       <SettingsRow
-        icon={RefreshCw}
+        icon={SyncRowIcon}
+        iconTone="capability"
         title="Refresh status"
         description="Re-check your Mail connection, sync status, and inbox details."
         disabled={gmailActionsBusy}
@@ -4182,7 +4130,8 @@ function ProfilePageContent({
 
       {gmailPresentation.isConnected ? (
         <SettingsRow
-          icon={Trash2}
+          icon={DisconnectRowIcon}
+          iconTone="capability"
           title="Disconnect Mail"
           description="Revoke Mail, stop future syncs, and delete Mail receipt data."
           tone="destructive"
@@ -4475,7 +4424,8 @@ function ProfilePageContent({
         content: (
           <SettingsGroup title={PROFILE_LABELS.accountAccess}>
             <SettingsRow
-              icon={LogOut}
+              icon={SignOutProfileIcon}
+              iconTone="capability"
               title="Sign out"
               description="Sign out on this device."
               onClick={() => void handleSignOut()}

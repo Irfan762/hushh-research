@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import { CHAT_USER_BUBBLE_CLASSNAME } from "../../components/agent/chat-message-styles";
 import {
   ChatOnboardingDailyTip,
   ChatOnboardingTurns,
@@ -18,7 +19,9 @@ import {
  * action and daily tip, inside the chat's reading column. The assistant bubble
  * is a stand-in with AgentBubble's exact width and type classes (the real one
  * pulls the whole signed-in workspace into the bundle); the onboarding pieces
- * under test are the real modules.
+ * under test are the real modules. The person's own turn wears the shipped
+ * accent bubble (CHAT_USER_BUBBLE_CLASSNAME), so text selection on it is
+ * measured against the real fill.
  */
 const TURNS: ChatOnboardingTurn[] = [
   { id: "t1", role: "assistant", text: welcomeText("Kushal"), anchor: null },
@@ -45,6 +48,7 @@ function Harness() {
     turns: [...TURNS, EXPLANATION],
     activeChipTurnId: "t3",
     shownTurns: new Map([...TURNS, EXPLANATION].map((turn) => [turn.id, "9:41 AM"])),
+    shownTurnTimes: new Map(),
     markShown: () => undefined,
     busy: false,
     onChip: () => undefined,
@@ -69,7 +73,13 @@ function Harness() {
               }
             >
               <div className="min-w-0 max-w-[90%] sm:max-w-[min(82%,48rem)]">
-                <div className="px-1 py-2 text-sm leading-6">{message.text}</div>
+                {message.role === "user" ? (
+                  <div className={`text-sm leading-6 ${CHAT_USER_BUBBLE_CLASSNAME}`}>
+                    <span className="whitespace-pre-wrap break-words">{message.text}</span>
+                  </div>
+                ) : (
+                  <div className="px-1 py-2 text-sm leading-6">{message.text}</div>
+                )}
               </div>
             </div>
           )}
