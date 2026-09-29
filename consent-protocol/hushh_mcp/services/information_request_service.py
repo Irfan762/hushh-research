@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
@@ -17,10 +18,13 @@ from hushh_mcp.consent.export_envelope import (
 )
 from hushh_mcp.consent.requestable_scope_policy import is_scope_requestable_by_others
 from hushh_mcp.consent.scope_labels import human_scope_label
+from hushh_mcp.consent.scope_sensitivity import scope_sensitivity
 from hushh_mcp.services.consent_center_service import requester_identity_metadata
 from hushh_mcp.services.consent_db import ConsentDBService
 from hushh_mcp.services.consent_request_links import build_consent_request_url
 from hushh_mcp.services.person_profile_service import PersonProfileService, requester_principal
+
+logger = logging.getLogger(__name__)
 
 UNREQUESTABLE_MESSAGE = "That information can't be requested from another person."
 
@@ -246,6 +250,9 @@ def build_request_progress(
             {
                 "scope": item.get("scope"),
                 "label": human_scope_label(str(item.get("scope") or ""), item.get("label")),
+                "sensitivity": scope_sensitivity(
+                    str(item.get("scope") or ""), [item.get("sensitivity")]
+                ),
                 "status": state["status"],
             }
         )
@@ -275,6 +282,62 @@ def build_request_progress(
         "access_ends_at": _iso_ms(max(access_ends)) if access_ends else None,
         "ended_at": _iso_ms(max(ended)) if ended else None,
         "fields": fields,
+    }
+
+
+# The ledger sweep for unlisted grants reads each person's grants; bound it.
+_MAX_SWEPT_PEOPLE = 20
+
+
+def _active_grant(status: dict[str, Any] | None, now_ms: int) -> bool:
+    if not status or str(status.get("action") or "") != "CONSENT_GRANTED":
+        return False
+    expires_at = status.get("expires_at")
+    return not (expires_at and int(expires_at) <= now_ms)
+
+
+def _share(
+    *,
+    subject_user_id: str,
+    person_ref: str,
+    display_name: str,
+    bundle_id: str | None,
+    request_id: str,
+    scope: str,
+    stored_label: Any,
+    stored_sensitivity: Any,
+    scope_ref: Any,
+    purpose: Any,
+    status: dict[str, Any],
+) -> dict[str, Any]:
+    """One current share, as the requester's surfaces name it. Never a value.
+
+    ``_scope`` and ``_subject`` are internal and removed before it leaves the
+    service; the raw scope never crosses the API or reaches the model.
+    """
+    expires_at = status.get("expires_at")
+    return {
+        "bundleId": bundle_id,
+        "requestId": request_id,
+        # The opaque handle the device opens the export by (C6 ``grantRef``).
+        "grantRef": request_id,
+        "decryptable": bool(bundle_id),
+        "person": display_name or "Hussh member",
+        "personRef": person_ref,
+        "profilePath": f"/people/{person_ref}?section=shared#shared-with-you"
+        if person_ref
+        else None,
+        "label": human_scope_label(scope, stored_label)
+        if scope
+        else str(stored_label or "") or "Shared information",
+        "sensitivity": scope_sensitivity(scope, [stored_sensitivity]),
+        "scopeRef": scope_ref,
+        "purpose": purpose,
+        "expiresAt": expires_at,
+        "sharedAt": _iso_ms(status.get("issued_at")),
+        "accessEndsAt": _iso_ms(expires_at),
+        "_scope": scope,
+        "_subject": subject_user_id,
     }
 
 
@@ -563,7 +626,10 @@ class InformationRequestService:
                     "scopeRef": item["scope_ref"],
                     # The same name the request card and progress use.
                     "label": human_scope_label(str(item.get("scope") or ""), item.get("label")),
-                    "sensitivity": item.get("sensitivity"),
+                    # C7: the continuation admission strips values by this.
+                    "sensitivity": scope_sensitivity(
+                        str(item.get("scope") or ""), [item.get("sensitivity")]
+                    ),
                     "status": "expired"
                     if is_expired
                     else {
@@ -669,7 +735,21 @@ class InformationRequestService:
         person_ref: str | None = None,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        """Active information shares granted to this user by connections."""
+        """Information connections currently share with this user: labels, never values.
+
+        The consent ledger is the authority, not the bundle's own state: a
+        request withdrawn after one of its items was approved still shares that
+        item until the owner stops it, so withdrawn bundles are read too. Grants
+        no request row names are swept from the ledger afterwards (CONTRACT-2
+        C6), so nothing currently shared is missing from the card.
+
+        Each share carries what the "Shared with you" card needs (C6): a human
+        label, its C7 ``sensitivity``, a ``fieldOutline`` of names only, when it
+        was shared and until when, and the refs the device opens it by
+        (``bundleId`` plus ``grantRef``, the request id the exports endpoint
+        keys by). ``decryptable`` is false only for a grant no request names,
+        which no existing path can open.
+        """
         normalized_person_ref = str(person_ref or "").strip()
         person_filter = (
             "AND profile.public_person_ref = :person_ref" if normalized_person_ref else ""
@@ -684,7 +764,6 @@ class InformationRequestService:
                LEFT JOIN actor_identity_cache identity ON identity.user_id = bundle.subject_user_id
                JOIN one_information_request_items item ON item.bundle_id = bundle.bundle_id
                WHERE bundle.requester_user_id = :requester
-                 AND bundle.cancelled_at IS NULL
                  {person_filter}
                ORDER BY bundle.created_at DESC, item.created_at
                LIMIT :limit""",  # nosec B608 - static SQL fragments only; every value is a bound parameter.
@@ -696,34 +775,152 @@ class InformationRequestService:
         )
         now_ms = int(time.time() * 1000)
         granted: list[dict[str, Any]] = []
+        people: dict[str, tuple[str, str]] = {}
         for row in rows:
-            status = await self._consent.get_request_status(
-                str(row["subject_user_id"]), str(row["request_id"])
+            subject_user_id = str(row["subject_user_id"])
+            people.setdefault(
+                subject_user_id,
+                (str(row.get("public_person_ref") or ""), str(row.get("display_name") or "")),
             )
-            if not status or str(status.get("action") or "") != "CONSENT_GRANTED":
+            status = await self._consent.get_request_status(subject_user_id, str(row["request_id"]))
+            if not _active_grant(status, now_ms):
                 continue
-            expires_at = status.get("expires_at")
-            if expires_at and int(expires_at) <= now_ms:
-                continue
-            person_ref = str(row.get("public_person_ref") or "")
             granted.append(
-                {
-                    "bundleId": str(row["bundle_id"]),
-                    "requestId": str(row["request_id"]),
-                    "person": str(row.get("display_name") or "Hussh member"),
-                    "personRef": person_ref,
-                    "profilePath": f"/people/{person_ref}?section=shared#shared-with-you"
-                    if person_ref
-                    else None,
-                    "label": human_scope_label(str(row.get("scope") or ""), row.get("label"))
-                    if row.get("scope")
-                    else row.get("label") or "Shared information",
-                    "scopeRef": row.get("scope_ref"),
-                    "purpose": row.get("purpose"),
-                    "expiresAt": expires_at,
-                }
+                _share(
+                    subject_user_id=subject_user_id,
+                    person_ref=str(row.get("public_person_ref") or ""),
+                    display_name=str(row.get("display_name") or ""),
+                    bundle_id=str(row["bundle_id"]),
+                    request_id=str(row["request_id"]),
+                    scope=str(row.get("scope") or ""),
+                    stored_label=row.get("label"),
+                    stored_sensitivity=row.get("sensitivity"),
+                    scope_ref=row.get("scope_ref"),
+                    purpose=row.get("purpose"),
+                    status=status or {},
+                )
             )
+        granted.extend(
+            await self._unlisted_grants(
+                requester_user_id=requester_user_id,
+                person_ref=normalized_person_ref,
+                people=people,
+                listed={share["requestId"] for share in granted},
+                now_ms=now_ms,
+            )
+        )
+        await self._attach_field_outlines(requester_user_id, granted)
+        for share in granted:
+            share.pop("_scope", None)
+            share.pop("_subject", None)
         return granted
+
+    async def _unlisted_grants(
+        self,
+        *,
+        requester_user_id: str,
+        person_ref: str,
+        people: dict[str, tuple[str, str]],
+        listed: set[str],
+        now_ms: int,
+    ) -> list[dict[str, Any]]:
+        """Active grants to this requester that no request row listed (C6 item 4)."""
+        try:
+            viewer = await self._viewer(requester_user_id)
+        except InformationRequestError:
+            return []
+        if person_ref and not any(ref == person_ref for ref, _name in people.values()):
+            subjects = await self._rows(
+                """SELECT profile.user_id, profile.public_person_ref, identity.display_name
+                   FROM actor_profiles profile
+                   LEFT JOIN actor_identity_cache identity ON identity.user_id = profile.user_id
+                   WHERE profile.public_person_ref = :person_ref LIMIT 1""",
+                {"person_ref": person_ref},
+            )
+            for subject in subjects:
+                people[str(subject["user_id"])] = (
+                    str(subject.get("public_person_ref") or ""),
+                    str(subject.get("display_name") or ""),
+                )
+        principal = requester_principal(str(viewer["public_person_ref"]))
+        unlisted: list[dict[str, Any]] = []
+        for subject_user_id, (subject_ref, display_name) in list(people.items())[
+            :_MAX_SWEPT_PEOPLE
+        ]:
+            if person_ref and subject_ref != person_ref:
+                continue
+            for token in await self._consent.get_active_tokens(subject_user_id, agent_id=principal):
+                request_id = str(token.get("request_id") or "")
+                if (
+                    not request_id
+                    or request_id in listed
+                    or not _active_grant({**token, "action": "CONSENT_GRANTED"}, now_ms)
+                ):
+                    continue
+                listed.add(request_id)
+                metadata = token.get("metadata") if isinstance(token.get("metadata"), dict) else {}
+                claimed_bundle = str(metadata.get("bundle_id") or "")
+                bundle = (
+                    await self._rows(
+                        """SELECT bundle.bundle_id, bundle.purpose, item.scope_ref,
+                              item.label, item.sensitivity
+                       FROM one_information_request_bundles bundle
+                       JOIN one_information_request_items item
+                         ON item.bundle_id = bundle.bundle_id
+                       WHERE bundle.bundle_id::text = :bundle
+                         AND bundle.requester_user_id = :requester
+                         AND item.request_id = :request
+                       LIMIT 1""",
+                        {
+                            "bundle": claimed_bundle,
+                            "requester": requester_user_id,
+                            "request": request_id,
+                        },
+                    )
+                    if claimed_bundle
+                    else []
+                )
+                found = bundle[0] if bundle else {}
+                unlisted.append(
+                    _share(
+                        subject_user_id=subject_user_id,
+                        person_ref=subject_ref,
+                        display_name=display_name,
+                        bundle_id=str(found["bundle_id"]) if found else None,
+                        request_id=request_id,
+                        scope=str(token.get("scope") or ""),
+                        stored_label=found.get("label") or metadata.get("human_label"),
+                        stored_sensitivity=found.get("sensitivity"),
+                        scope_ref=found.get("scope_ref"),
+                        purpose=found.get("purpose") or metadata.get("reason"),
+                        status=token,
+                    )
+                )
+        return unlisted
+
+    async def _attach_field_outlines(
+        self, requester_user_id: str, shares: list[dict[str, Any]]
+    ) -> None:
+        """Names of the fields each share covers, from the owner's catalog (labels only)."""
+        by_subject: dict[str, list[dict[str, Any]]] = {}
+        for share in shares:
+            share.setdefault("fieldOutline", [])
+            by_subject.setdefault(str(share.get("_subject") or ""), []).append(share)
+        for subject_user_id, subject_shares in by_subject.items():
+            if not subject_user_id:
+                continue
+            try:
+                outlines = await asyncio.to_thread(
+                    self._profiles.field_outlines,
+                    requester_user_id,
+                    subject_user_id,
+                    [str(share.get("_scope") or "") for share in subject_shares],
+                )
+            except Exception:  # noqa: BLE001 - an outline is a courtesy; the card still renders
+                logger.warning("one.shared_with_me_outline_unavailable")
+                continue
+            for share in subject_shares:
+                share["fieldOutline"] = outlines.get(str(share.get("_scope") or "")) or []
 
     async def cancel(self, *, requester_user_id: str, bundle_id: str) -> dict[str, Any]:
         bundle, items = await self._bundle(requester_user_id, bundle_id)

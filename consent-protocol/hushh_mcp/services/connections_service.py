@@ -26,6 +26,7 @@ from db.db_client import get_db
 from hushh_mcp.consent.internal_path_keys import is_internal_manifest_path
 from hushh_mcp.consent.requestable_scope_policy import is_scope_requestable_by_others
 from hushh_mcp.consent.scope_labels import human_scope_label
+from hushh_mcp.consent.scope_sensitivity import covers, scope_sensitivity
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.services.connection_graph_service import (
     ORIGIN_DIRECT_REQUEST,
@@ -810,9 +811,21 @@ class ConnectionsService:
         never enter this projection.
         """
         safe_entries: list[dict[str, Any]] = []
-        for entry in self._scope_entries_lookup(counterpart_user_id):
-            if not isinstance(entry, dict):
-                continue
+        raw_entries = [
+            entry
+            for entry in self._scope_entries_lookup(counterpart_user_id)
+            if isinstance(entry, dict)
+        ]
+        # C7: every PKM sensitivity tag in the owner's catalog, by scope. A
+        # wildcard inherits the tags of every branch it covers, because a grant
+        # on it shares those branches too.
+        tagged = [
+            (str(entry.get("scope") or "").strip(), tag)
+            for entry in raw_entries
+            for tag in (entry.get("sensitivity_label"), entry.get("sensitivity"))
+            if tag
+        ]
+        for entry in raw_entries:
             scope = str(entry.get("scope") or "").strip()
             if not self._is_requestable_dynamic_scope(scope):
                 # Manifest metadata can contain collection markers, but only
@@ -840,7 +853,10 @@ class ConnectionsService:
                     "domain": str(entry.get("domain") or "") or None,
                     "path": str(entry.get("path") or "") or None,
                     "wildcard": bool(entry.get("wildcard")),
-                    "sensitivity": str(entry.get("sensitivity") or "") or None,
+                    "sensitivity": scope_sensitivity(
+                        scope,
+                        [tag for tagged_scope, tag in tagged if covers(scope, tagged_scope)],
+                    ),
                 }
             )
         return safe_entries

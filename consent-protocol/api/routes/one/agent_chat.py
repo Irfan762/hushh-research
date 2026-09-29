@@ -73,6 +73,10 @@ from hushh_mcp.one_adk.pending_email_draft import (
     admit_pending_email_draft,
 )
 from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
+from hushh_mcp.one_adk.shared_with_me_card import (
+    SHARED_WITH_ME_CARD_KIND,
+    project_shared_with_me_card,
+)
 from hushh_mcp.one_adk.text_attachments import history_text_attachments
 from hushh_mcp.one_adk.turn_completion import (
     newest_turn_answered,
@@ -863,6 +867,47 @@ def _safe_information_request_descriptor(
     return None
 
 
+def _safe_shared_with_me_descriptor(
+    event: Any, selected_parts: list[Any] | None = None
+) -> dict[str, Any] | None:
+    """Restore the "Shared with you" card (CONTRACT-2 C6) from its sealed tool result.
+
+    The card carries labels, field names, dates and the refs the device opens
+    each item by; it never carried a value. Each card is re-validated field by
+    field, so a stored result cannot smuggle anything else into history.
+    """
+    parts = (
+        selected_parts
+        if selected_parts is not None
+        else (getattr(getattr(event, "content", None), "parts", None) or [])
+    )
+    for part in parts:
+        function_response = getattr(part, "function_response", None)
+        if (
+            function_response is None
+            or getattr(function_response, "name", "") != "list_information_shared_with_me"
+        ):
+            continue
+        result = _record(getattr(function_response, "response", None)) or {}
+        for key in ("result", "content", "data"):
+            nested = _record(result.get(key))
+            if nested and nested.get("status"):
+                result = nested
+                break
+        raw_cards = result.get("cards")
+        if result.get("status") != "ok" or not isinstance(raw_cards, list):
+            return None
+        cards = [
+            card
+            for raw in raw_cards[:20]
+            if (card := project_shared_with_me_card(_record(raw))) is not None
+        ]
+        if not cards:
+            return None
+        return {"activityType": SHARED_WITH_ME_CARD_KIND, "content": {"cards": cards}}
+    return None
+
+
 def _safe_proposal_source(
     event: Any, selected_parts: list[Any] | None = None
 ) -> dict[str, Any] | None:
@@ -1488,6 +1533,8 @@ def _safe_agent_history_metadata(
             descriptor = _safe_submitted_information_request_descriptor(event, [part])
         if descriptor is None:
             descriptor = _safe_information_request_descriptor(event, [part])
+        if descriptor is None:
+            descriptor = _safe_shared_with_me_descriptor(event, [part])
         if descriptor is None:
             descriptor = _safe_document_request_descriptor(event, [part])
         if descriptor is None:
