@@ -165,7 +165,10 @@ import { copyTextToClipboard } from "@/components/agent/chat-markdown-link";
 import { AgentMarkdown } from "@/components/agent/agent-markdown";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
-import { CHAT_USER_BUBBLE_CLASSNAME } from "@/components/agent/chat-message-styles";
+import {
+  CHAT_USER_BUBBLE_CLASSNAME,
+  ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME,
+} from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
@@ -2111,13 +2114,6 @@ export function AgentBubble({
     </div>
   );
 }
-
-/**
- * Muse-style assistant surface, scoped to One's chat. The shared
- * `CHAT_ASSISTANT_BODY_CLASSNAME` stays as it is for the product introduction.
- */
-const ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME =
-  "rounded-[24px] bg-[color:var(--one-chat-bubble)] px-[18px] py-3 text-[15px] leading-[1.6] text-foreground";
 
 /** The centered date/time line that opens a group of messages. */
 function ChatTimeSeparatorRow({ separator }: { separator: ChatTimeSeparator }) {
