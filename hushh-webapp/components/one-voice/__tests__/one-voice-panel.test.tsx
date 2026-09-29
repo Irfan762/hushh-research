@@ -212,6 +212,59 @@ describe("OneVoicePanel", () => {
     expect(screen.queryByTestId("one-voice-tool-result-headline")).toBeNull();
   });
 
+  it("a spoken open keeps the mail list on screen", () => {
+    const mailFrames: ServerFrame[] = [
+      ready,
+      { type: "tool.started", call_id: "m1", tool: "read_mail", args_public: {} },
+      {
+        type: "tool.result",
+        call_id: "m1",
+        tool: "read_mail",
+        status: "ok",
+        ok: true,
+        result_public: {
+          status: "ok",
+          spoken_facts: ["I read your 2 newest messages."],
+          answer: "Two findings.",
+          sources: [],
+          items: [
+            { source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" },
+            { source_ref: "mail:2", subject: "March invoice", sender: "Acme" },
+          ],
+          coverage: { unit: "messages", returned: 2, scope: "newest" },
+          offer_revision: 7,
+          conversation_id: "conv_1",
+        },
+      },
+      // "Open the second one" dispatches; it does not answer. Rendering it as a
+      // card would replace the list with a result that has nothing to show, and
+      // take away the very rows the ordinal refers to.
+      { type: "tool.started", call_id: "m2", tool: "open_mail", args_public: {} },
+      {
+        type: "tool.result",
+        call_id: "m2",
+        tool: "open_mail",
+        status: "mail_open_dispatched",
+        ok: true,
+        result_public: {
+          status: "mail_open_dispatched",
+          spoken_facts: ["Opening it."],
+          ordinal: 2,
+          offer_revision: 7,
+          conversation_id: "conv_1",
+        },
+      },
+    ];
+    const state = replay(mailFrames);
+    render(<OneVoicePanel state={state} controller={controller()} />);
+
+    const card = screen.getByTestId("one-voice-tool-result");
+    expect(card).toHaveAttribute("data-tool", "read_mail");
+    expect(screen.getByLabelText("Mail").children).toHaveLength(2);
+    expect(screen.getByText("Two findings.")).toBeInTheDocument();
+    expect(card.textContent).not.toContain("Opening it.");
+  });
+
   it("hides a confirmation_required result behind the pending card and confirms through the controller", async () => {
     const control = controller();
     const state = replay([

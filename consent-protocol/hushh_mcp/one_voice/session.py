@@ -32,6 +32,7 @@ from hushh_mcp.one_voice.pending_actions import (
     PendingActionStore,
 )
 from hushh_mcp.one_voice.tickets import TicketClaims
+from hushh_mcp.one_voice.tools import mail as mail_tools
 from hushh_mcp.one_voice.tools import registry
 from hushh_mcp.one_voice.tools.base import (
     EntityContext,
@@ -1030,6 +1031,21 @@ class VoiceSession:
                         "screen": public.get("screen"),
                         "circle_id": public.get("circle_id"),
                         "user_id": public.get("user_id"),
+                    },
+                )
+            )
+        if public.get("status") == mail_tools.MAIL_OPEN_DISPATCHED:
+            # The surface opens the row through its own authenticated resolver.
+            # Nothing about the message passes through the relay or the model; this
+            # carries only which row, from which offer, in which conversation.
+            await self._send(
+                protocol.ui_directive(
+                    directive_id=uuid.uuid4().hex[:12],
+                    kind="open_mail",
+                    payload={
+                        "ordinal": public.get("ordinal"),
+                        "offer_revision": public.get("offer_revision"),
+                        "conversation_id": public.get("conversation_id"),
                     },
                 )
             )

@@ -210,7 +210,9 @@ export type UiDirectiveKind =
   | "publish_location_envelopes"
   | "request_os_permission"
   | "open_share_sheet"
-  | "focus_pending_action";
+  | "focus_pending_action"
+  /** Open the original message at a position already on screen. */
+  | "open_mail";
 export type UiDirectiveFrame = {
   type: "ui_directive";
   directive_id: string;

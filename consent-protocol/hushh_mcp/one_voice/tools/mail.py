@@ -79,6 +79,11 @@ _REJECT_SPOKEN = {
 }
 _REJECT_DEFAULT = "I couldn't look at your mail just now."
 
+# A dispatch, not an answer. The client opens the row it names through the same
+# resolver a tap uses, so this result has nothing of its own to show and must not
+# take the mail list's place on screen.
+MAIL_OPEN_DISPATCHED = "mail_open_dispatched"
+
 
 class ReadMailInput(ToolInput):
     """The person's own question, forwarded to the planner unchanged.
@@ -360,6 +365,74 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
     )
 
 
+class OpenMailInput(ToolInput):
+    """The position the person named, and nothing else.
+
+    No message id: the model has never been told one, and a position is the only
+    mail reference it can hold honestly.
+    """
+
+    ordinal: int = Field(
+        ge=1,
+        le=25,
+        description=(
+            "The position the person named in the list of mail you last showed them "
+            "('open the second one' is 2). Use this to show them the original "
+            "message. It does not read the mailbox again and it does not summarise; "
+            "the surface opens the exact message it already offered at that "
+            "position. Never guess a position that was not in that list."
+        ),
+    )
+
+
+class MailOpenDispatched(ToolResult):
+    """Ask the surface to open a row it is already showing.
+
+    Carries no mail: the opening is done by the same authenticated resolver a tap
+    uses, so nothing about the message passes through here and nothing about it
+    reaches the model. The ordinal, the offer revision and the conversation travel
+    so the surface resolves the position against the offer it drew, not against
+    whatever list is current.
+    """
+
+    status: str = MAIL_OPEN_DISPATCHED
+    ordinal: int = 0
+    offer_revision: int = 0
+    conversation_id: str = ""
+
+    def model_public(self) -> dict[str, Any]:
+        """A receipt. The model does not need the binding and cannot use it."""
+        return {"status": self.status, "spoken_facts": list(self.spoken_facts)}
+
+
+async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
+    admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
+    if not admission.mail_reads_enabled():
+        return _unavailable("voice_mail_reads_disabled")
+
+    offer = ctx.entities.offered_mail
+    if offer is None or not ctx.entities.offered_mail_is_fresh():
+        return Rejected(
+            reason_code="mail_offer_expired",
+            spoken_facts=["That list is a while old. Ask me again and I'll take a fresh look."],
+        )
+    # Presence only. The message itself is fetched by the surface through the
+    # resolver, so this handler performs no provider read and cannot duplicate one.
+    if ctx.entities.offered_mail_message_id(args.ordinal) is None:
+        shown = len(offer.message_ids)
+        noun = "message" if shown == 1 else "messages"
+        return Rejected(
+            reason_code="mail_ordinal_not_offered",
+            spoken_facts=[f"I only showed you {shown} {noun}. Which one did you mean?"],
+        )
+    return MailOpenDispatched(
+        ordinal=args.ordinal,
+        offer_revision=offer.revision,
+        conversation_id=ctx.conversation_id,
+        spoken_facts=["Opening it."],
+    )
+
+
 TOOLS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="read_mail",
@@ -377,5 +450,20 @@ TOOLS: tuple[ToolSpec, ...] = (
         ),
         handler=_read_mail,
         ui_refresh=("mail",),
+    ),
+    ToolSpec(
+        name="open_mail",
+        gateway_action_id="email.chat.turn",
+        policy=ToolPolicy.read,
+        input_model=OpenMailInput,
+        output_model=MailOpenDispatched,
+        description=(
+            "Show the person the original message at a position in the list of mail "
+            "you last showed them, when they ask to open it. Opens what is already "
+            "on screen: it does not search, does not read the mailbox again, does "
+            "not summarise, and does not mark anything read. Use read_mail instead "
+            "when they want to know what a message says rather than to see it."
+        ),
+        handler=_open_mail,
     ),
 )

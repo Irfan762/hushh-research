@@ -1389,6 +1389,35 @@
     },
     {
       "circle_args": [],
+      "description": "Show the person the original message at a position in the list of mail you last showed them, when they ask to open it. Opens what is already on screen: it does not search, does not read the mailbox again, does not summarise, and does not mark anything read. Use read_mail instead when they want to know what a message says rather than to see it.",
+      "firebase_plane": false,
+      "gateway_action_id": "email.chat.turn",
+      "name": "open_mail",
+      "parameters": {
+        "additionalProperties": false,
+        "description": "The position the person named, and nothing else.\n\nNo message id: the model has never been told one, and a position is the only\nmail reference it can hold honestly.",
+        "properties": {
+          "ordinal": {
+            "description": "The position the person named in the list of mail you last showed them ('open the second one' is 2). Use this to show them the original message. It does not read the mailbox again and it does not summarise; the surface opens the exact message it already offered at that position. Never guess a position that was not in that list.",
+            "maximum": 25,
+            "minimum": 1,
+            "title": "Ordinal",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ordinal"
+        ],
+        "type": "object"
+      },
+      "person_args": [],
+      "policy": "read",
+      "result_statuses": [],
+      "tier": null,
+      "ui_refresh": []
+    },
+    {
+      "circle_args": [],
       "description": "Open a screen in the app. Navigation only; it changes nothing. Use it for 'show my map', 'open Location settings', 'show my people', 'open my profile', 'open Save My Soul', 'start location setup'.",
       "firebase_plane": false,
       "gateway_action_id": "route.one_location",

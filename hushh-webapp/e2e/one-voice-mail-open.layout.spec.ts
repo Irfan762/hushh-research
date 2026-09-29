@@ -301,3 +301,86 @@ test("a replaced list says so instead of opening another message", async ({
   ]);
   expect(runtimeErrors).toEqual([]);
 });
+
+/**
+ * A spoken open, through the same consumer as a tap.
+ *
+ * The page dispatches the `one-voice:open-mail` directive event the provider
+ * emits, so the card's listener, the same `openOfferedMail` call and the same
+ * POST all run in a real browser. What this does not cover is the relay chain
+ * that produces the event -- socket frame to reducer to provider to dispatch --
+ * which needs the full provider and a faked socket; that part is covered by the
+ * node tests, not here.
+ */
+async function speakOpen(
+  page: Page,
+  detail: { ordinal: number; offerRevision?: number; conversationId?: string },
+) {
+  return page.evaluate(
+    ({ ordinal, offerRevision, conversationId }) =>
+      new Promise<[string, string | undefined]>((resolve) => {
+        window.dispatchEvent(
+          new CustomEvent("one-voice:open-mail", {
+            detail: {
+              ordinal,
+              offerRevision: offerRevision ?? 7,
+              conversationId:
+                conversationId ?? "22222222-2222-4222-8222-222222222222",
+              settle: (status: string, reason?: string) =>
+                resolve([status, reason]),
+            },
+          }),
+        );
+      }),
+    detail,
+  );
+}
+
+test("a spoken open shows the exact message and settles on the render", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 430, height: 900 });
+  const { requests, runtimeErrors } = await mount(page, false);
+  const before = await rowOrder(page);
+
+  const settled = await speakOpen(page, { ordinal: 3 });
+
+  await expect(page.getByTestId("one-voice-mail-original")).toContainText(
+    "Invoice 4471 for March is now 14 days overdue.",
+  );
+  // The same request a tap makes, with the same binding.
+  expect(requests).toEqual([
+    {
+      conversation_id: CONVERSATION_ID,
+      ordinal: 3,
+      offer_revision: OFFER_REVISION,
+    },
+  ]);
+  // Settled once the message is on screen, not when the handler returned.
+  expect(settled).toEqual(["opened", undefined]);
+  // The list is still there, in order: a spoken open must not take away the rows
+  // the ordinal refers to.
+  expect(await rowOrder(page)).toEqual(before);
+  expect(runtimeErrors).toEqual([]);
+});
+
+test("a spoken open for a replaced list is refused before any request", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 430, height: 900 });
+  const { requests, runtimeErrors } = await mount(page, false);
+
+  const stale = await speakOpen(page, { ordinal: 3, offerRevision: 6 });
+  const foreign = await speakOpen(page, {
+    ordinal: 3,
+    conversationId: "11111111-1111-4111-8111-111111111111",
+  });
+
+  expect(stale).toEqual(["failed", "offer_mismatch"]);
+  expect(foreign).toEqual(["failed", "offer_mismatch"]);
+  // Position three of another list is not position three of this one, and the
+  // refusal lands before the network rather than after a wrong answer.
+  expect(requests).toEqual([]);
+  await expect(page.getByTestId("one-voice-mail-original")).toHaveCount(0);
+  expect(runtimeErrors).toEqual([]);
+});

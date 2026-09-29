@@ -14,11 +14,22 @@
  * AND the device permission is granted.
  */
 
-import { useCallback, useId, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { AlertCircle, Check, Info, Loader2 } from "@/components/icons";
 import { Button } from "@/components/ui/button";
 
 import { formatRelativeTime } from "@/lib/format/relative-time";
+import {
+  ONE_VOICE_OPEN_MAIL_EVENT,
+  type OneVoiceOpenMailDetail,
+} from "@/lib/one-voice/directives";
 import type { OpenedMailMessage } from "@/lib/one-voice/mail-open";
 import { AvatarBubble } from "@/lib/morphy-ux/ui/surface-primitives";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
@@ -908,20 +919,20 @@ function MailDetail({
   const canOpen =
     Boolean(onOpenMail) && offerRevision !== null && Boolean(conversationId);
 
-  const toggle = useCallback(
-    async (ref: string, ordinal: number) => {
+  const openAt = useCallback(
+    async (
+      ordinal: number,
+      settle?: (status: "opened" | "failed", reason?: string) => void,
+    ) => {
+      const ref = `mail:${ordinal}`;
       const ticket = ++requestRef.current;
-      if (openRef === ref) {
-        setOpenRef(null);
-        setMessage(null);
-        setFailure(null);
-        setLoading(false);
-        return;
-      }
       setOpenRef(ref);
       setMessage(null);
       setFailure(null);
-      if (!onOpenMail || offerRevision === null || !conversationId) return;
+      if (!onOpenMail || offerRevision === null || !conversationId) {
+        settle?.("failed", "no_resolver");
+        return;
+      }
       setLoading(true);
       try {
         const opened = await onOpenMail({
@@ -929,17 +940,65 @@ function MailDetail({
           offerRevision,
           conversationId,
         });
-        if (requestRef.current !== ticket) return;
+        if (requestRef.current !== ticket) {
+          settle?.("failed", "superseded");
+          return;
+        }
         setMessage(opened);
+        // Settled on the render, not on the dispatch: a resolved handler is not
+        // evidence the person is looking at the message.
+        settle?.("opened");
       } catch (error) {
-        if (requestRef.current !== ticket) return;
+        if (requestRef.current !== ticket) {
+          settle?.("failed", "superseded");
+          return;
+        }
         setFailure(mailOpenMessage(error));
+        settle?.("failed", "open_failed");
       } finally {
         if (requestRef.current === ticket) setLoading(false);
       }
     },
-    [conversationId, offerRevision, onOpenMail, openRef],
+    [conversationId, offerRevision, onOpenMail],
   );
+
+  const toggle = useCallback(
+    async (ref: string, ordinal: number) => {
+      if (openRef === ref) {
+        // Closing is Back. The list never unmounted, so its order and the
+        // person's place in it need no restoring.
+        requestRef.current += 1;
+        setOpenRef(null);
+        setMessage(null);
+        setFailure(null);
+        setLoading(false);
+        return;
+      }
+      await openAt(ordinal);
+    },
+    [openAt, openRef],
+  );
+
+  // A spoken "open the second one" arrives here, so it runs the same code a tap
+  // does. A directive naming a different offer or conversation is refused before
+  // any request: its position two is not this list's position two.
+  useEffect(() => {
+    const onDirective = (event: Event) => {
+      const detail = (event as CustomEvent<OneVoiceOpenMailDetail>).detail;
+      if (!detail) return;
+      if (
+        detail.offerRevision !== offerRevision ||
+        detail.conversationId !== conversationId
+      ) {
+        detail.settle?.("failed", "offer_mismatch");
+        return;
+      }
+      void openAt(detail.ordinal, detail.settle);
+    };
+    window.addEventListener(ONE_VOICE_OPEN_MAIL_EVENT, onDirective);
+    return () =>
+      window.removeEventListener(ONE_VOICE_OPEN_MAIL_EVENT, onDirective);
+  }, [conversationId, offerRevision, openAt]);
 
   const items = rows(result.items);
   const cited = new Set(

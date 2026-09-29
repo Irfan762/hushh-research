@@ -7,7 +7,7 @@
  * that tells the person their mail is empty when the read simply failed.
  */
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   MailOpenError,
@@ -129,5 +129,93 @@ describe("mail-open: what it refuses to believe", () => {
       message: { subject: "Hi", body: "text", body_truncated: "yes" },
     });
     expect(parsed?.bodyTruncated).toBe(false);
+  });
+});
+
+describe("the open_mail directive", () => {
+  it("settles on the surface showing the message, not on the dispatch", async () => {
+    const { executeDirective, ONE_VOICE_OPEN_MAIL_EVENT } = await import(
+      "@/lib/one-voice/directives"
+    );
+    const seen: unknown[] = [];
+    const running = executeDirective(
+      "open_mail",
+      { ordinal: 2, offer_revision: 7, conversation_id: CONV },
+      {
+        pathname: "/",
+        dispatchEvent: (event) => {
+          const detail = (event as CustomEvent).detail;
+          seen.push({ ordinal: detail.ordinal, revision: detail.offerRevision });
+          // The surface answers only once it has rendered.
+          setTimeout(() => detail.settle("opened"), 0);
+        },
+      },
+    );
+
+    await expect(running).resolves.toMatchObject({
+      handled: true,
+      status: "opened",
+    });
+    expect(seen).toEqual([{ ordinal: 2, revision: 7 }]);
+    expect(ONE_VOICE_OPEN_MAIL_EVENT).toBe("one-voice:open-mail");
+  });
+
+  it("reports failure when the surface says it could not show it", async () => {
+    const { executeDirective } = await import("@/lib/one-voice/directives");
+    await expect(
+      executeDirective(
+        "open_mail",
+        { ordinal: 1, offer_revision: 7, conversation_id: CONV },
+        {
+          pathname: "/",
+          dispatchEvent: (event) =>
+            (event as CustomEvent).detail.settle("failed", "offer_mismatch"),
+        },
+      ),
+    ).resolves.toMatchObject({ status: "failed", reason: "offer_mismatch" });
+  });
+
+  it("refuses an unbound reference instead of opening whatever is current", async () => {
+    const { executeDirective } = await import("@/lib/one-voice/directives");
+    const dispatched: unknown[] = [];
+    const helpers = {
+      pathname: "/",
+      dispatchEvent: (event: Event) => dispatched.push(event),
+    };
+    for (const payload of [
+      { ordinal: 2, offer_revision: 7 },
+      { ordinal: 2, conversation_id: CONV },
+      { offer_revision: 7, conversation_id: CONV },
+      { ordinal: 0, offer_revision: 7, conversation_id: CONV },
+      { ordinal: 26, offer_revision: 7, conversation_id: CONV },
+      { ordinal: "2", offer_revision: 7, conversation_id: CONV },
+    ]) {
+      await expect(
+        executeDirective("open_mail", payload, helpers),
+      ).resolves.toMatchObject({ status: "failed", reason: "unbound_reference" });
+    }
+    expect(dispatched).toEqual([]);
+  });
+
+  it("times out to failed when nothing is listening", async () => {
+    vi.useFakeTimers();
+    try {
+      const { executeDirective, OPEN_MAIL_SETTLE_TIMEOUT_MS } = await import(
+        "@/lib/one-voice/directives"
+      );
+      const running = executeDirective(
+        "open_mail",
+        { ordinal: 1, offer_revision: 7, conversation_id: CONV },
+        { pathname: "/", dispatchEvent: () => undefined },
+      );
+      await vi.advanceTimersByTimeAsync(OPEN_MAIL_SETTLE_TIMEOUT_MS + 10);
+      // Nothing rendered, so One is told nothing was shown rather than assuming.
+      await expect(running).resolves.toMatchObject({
+        status: "failed",
+        reason: "not_shown",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

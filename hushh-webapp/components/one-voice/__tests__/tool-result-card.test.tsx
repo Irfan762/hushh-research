@@ -806,3 +806,105 @@ describe("ToolResultCard: opening a mail original", () => {
     expect(screen.queryAllByTestId("one-voice-mail-open")).toHaveLength(0);
   });
 });
+
+describe("ToolResultCard: a spoken open runs the same code as a tap", () => {
+  const CONV = "22222222-2222-4222-8222-222222222222";
+  const ROWS = [
+    { source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" },
+    { source_ref: "mail:2", subject: "March invoice", sender: "Acme" },
+  ];
+
+  function result(): ToolResultPublic {
+    return {
+      status: "ok",
+      spoken_facts: ["I read your 2 newest messages."],
+      answer: "Two findings.",
+      sources: [],
+      items: ROWS,
+      coverage: { unit: "messages", returned: 2, scope: "newest" },
+      offer_revision: 7,
+      conversation_id: CONV,
+    };
+  }
+
+  async function speakOpen(detail: Record<string, unknown>) {
+    const { ONE_VOICE_OPEN_MAIL_EVENT } = await import(
+      "@/lib/one-voice/directives"
+    );
+    const settled: Array<[string, string | undefined]> = [];
+    window.dispatchEvent(
+      new CustomEvent(ONE_VOICE_OPEN_MAIL_EVENT, {
+        detail: {
+          offerRevision: 7,
+          conversationId: CONV,
+          ...detail,
+          settle: (status: string, reason?: string) =>
+            settled.push([status, reason]),
+        },
+      }),
+    );
+    return settled;
+  }
+
+  it("opens the row the directive names, through the same resolver", async () => {
+    const calls: unknown[] = [];
+    render(
+      <ToolResultCard
+        result={result()}
+        tool="read_mail"
+        ok
+        onOpenMail={async (input) => {
+          calls.push(input);
+          return {
+            sourceRef: "mail:2",
+            subject: "March invoice",
+            sender: "Acme",
+            receivedAt: null,
+            body: "Invoice 4471 is overdue.",
+            bodyTruncated: false,
+          };
+        }}
+      />,
+    );
+
+    const settled = await speakOpen({ ordinal: 2 });
+
+    await waitFor(() =>
+      expect(screen.getByText("Invoice 4471 is overdue.")).toBeInTheDocument(),
+    );
+    // The same controller call a tap makes, with the same binding.
+    expect(calls).toEqual([
+      { ordinal: 2, offerRevision: 7, conversationId: CONV },
+    ]);
+    // Settled once the message is on screen, not when the handler returned.
+    await waitFor(() => expect(settled).toEqual([["opened", undefined]]));
+    // The list is still there: a spoken open does not take away the rows the
+    // ordinal refers to.
+    expect(screen.getByLabelText("Mail").children).toHaveLength(2);
+  });
+
+  it("refuses a directive for a list this card is not showing, without asking", async () => {
+    const calls: unknown[] = [];
+    render(
+      <ToolResultCard
+        result={result()}
+        tool="read_mail"
+        ok
+        onOpenMail={async (input) => {
+          calls.push(input);
+          throw new Error("must not be called");
+        }}
+      />,
+    );
+
+    const stale = await speakOpen({ ordinal: 2, offerRevision: 6 });
+    const foreign = await speakOpen({ ordinal: 2, conversationId: "other" });
+
+    expect(stale).toEqual([["failed", "offer_mismatch"]]);
+    expect(foreign).toEqual([["failed", "offer_mismatch"]]);
+    // Position two of another list is not position two of this one, and the
+    // refusal happens before any request rather than after a wrong answer.
+    expect(calls).toEqual([]);
+    expect(screen.queryByTestId("one-voice-mail-original")).toBeNull();
+  });
+});
