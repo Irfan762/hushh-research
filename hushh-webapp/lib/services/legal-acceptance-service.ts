@@ -6,6 +6,11 @@
 // sign-in is the acceptance and is recorded silently. There is no in-app
 // re-acceptance prompt.
 //
+// A sign-in writes only when the served version is not already the person's
+// latest acceptance: the first sign-in, and the first sign-in after a version
+// change. Read-only reviewer automation never writes it; the account's next
+// ordinary sign-in records the served version instead.
+//
 // The version identity is read from the legal document source, never typed
 // here. `currentLegalDocumentVersions` is the single place that knows the
 // source's shape.
@@ -17,6 +22,7 @@ import {
   type LegalDocumentType,
 } from "@/lib/legal/legal-documents";
 import { apiJson } from "@/lib/services/api-client";
+import { shouldSkipReviewerBackgroundWritesForAutomation } from "@/lib/testing/native-test";
 
 export type LegalAcceptanceDocumentId = LegalDocumentType;
 export type LegalAcceptanceSurface = "web" | "native";
@@ -55,7 +61,32 @@ export function currentLegalAcceptanceSurface(): LegalAcceptanceSurface {
   return Capacitor.isNativePlatform() ? "native" : "web";
 }
 
+/**
+ * True when the person's latest acceptance of every served document is the
+ * served version. Versions are compared for equality, not order: labels may be
+ * numbers or dates, and a mismatch in either direction means the person is now
+ * agreeing to a text they have not accepted before.
+ */
+export function hasAcceptedCurrentLegalVersions(
+  acceptances: readonly LegalDocumentVersion[],
+): boolean {
+  return currentLegalDocumentVersions().every((current) =>
+    acceptances.some(
+      (accepted) =>
+        accepted.document_id === current.document_id &&
+        accepted.document_version === current.document_version &&
+        accepted.effective_date === current.effective_date,
+    ),
+  );
+}
+
 type AuthUser = Pick<User, "uid" | "getIdToken">;
+
+function acceptanceState(
+  payload: Partial<LegalAcceptanceState> | undefined,
+): LegalAcceptanceState {
+  return { acceptances: Array.isArray(payload?.acceptances) ? payload.acceptances : [] };
+}
 
 async function bearer(user: AuthUser): Promise<string> {
   const token = await user.getIdToken();
@@ -64,6 +95,16 @@ async function bearer(user: AuthUser): Promise<string> {
 }
 
 export const LegalAcceptanceService = {
+  /** The person's latest accepted version of each document. */
+  async getAcceptanceState(user: AuthUser): Promise<LegalAcceptanceState> {
+    const token = await bearer(user);
+    const payload = await apiJson<Partial<LegalAcceptanceState> | undefined>(
+      LEGAL_ACCEPTANCE_PATH,
+      { method: "GET", headers: { Authorization: `Bearer ${token}` } },
+    );
+    return acceptanceState(payload);
+  },
+
   async recordAcceptance(user: AuthUser): Promise<LegalAcceptanceState> {
     const token = await bearer(user);
     const payload = await apiJson<Partial<LegalAcceptanceState> | undefined>(
@@ -80,16 +121,26 @@ export const LegalAcceptanceService = {
         }),
       },
     );
-    return { acceptances: Array.isArray(payload?.acceptances) ? payload.acceptances : [] };
+    return acceptanceState(payload);
   },
 
   /**
-   * Record the sign-in screen's agreement once the sign-in succeeds. Never
-   * throws: a failed write never blocks sign-in, and the next successful
-   * sign-in records the served versions again (the write is idempotent per
-   * version).
+   * Record the sign-in screen's agreement once the sign-in succeeds, only when
+   * the served versions are not already the person's latest acceptance.
+   *
+   * Never throws: a failed read or write never blocks sign-in. A failed read
+   * falls through to the write, which the server keeps idempotent per version,
+   * so a real person's acceptance is never lost to a flaky read.
+   *
+   * Read-only, preparation-only and action-bounded reviewer automation shares
+   * a fixture account and must not write it (the harness refuses any such
+   * request). Skipping defers the record rather than dropping it: the account's
+   * next ordinary sign-in still finds the served version missing and records it.
    */
   async recordSignInAcceptance(user: AuthUser): Promise<void> {
+    if (shouldSkipReviewerBackgroundWritesForAutomation()) return;
+    const state = await this.getAcceptanceState(user).catch(() => null);
+    if (state && hasAcceptedCurrentLegalVersions(state.acceptances)) return;
     await this.recordAcceptance(user).catch(() => undefined);
   },
 };
