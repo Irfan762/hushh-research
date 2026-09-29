@@ -9,6 +9,7 @@
 
 export const ApiService = {
   async apiFetch(path: string, init?: RequestInit): Promise<Response> {
+    // eslint-disable-next-line no-restricted-syntax -- Synthetic browser transport; intercepted by Playwright.
     return fetch(path, {
       ...init,
       headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
@@ -18,5 +19,3 @@ export const ApiService = {
     return { Authorization: `Bearer ${vaultOwnerToken}` };
   },
 };
-
-export default { ApiService };
