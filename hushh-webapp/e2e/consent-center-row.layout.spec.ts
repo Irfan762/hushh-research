@@ -69,6 +69,12 @@ async function open(page: Page, width: number, dark: boolean) {
   await page.goto("http://localhost/consent-center-row");
   await page.addScriptTag({ content: script });
   await awaitProductFont(page);
+  // React renders the fixture asynchronously; measure only once all five rows exist,
+  // otherwise a slow run (e.g. after other specs) measures a partial list.
+  await page
+    .locator("[data-testid='consent-entry-row'],[data-testid='consent-bundle-row']")
+    .nth(4)
+    .waitFor();
 }
 
 type RowMeasure = {
