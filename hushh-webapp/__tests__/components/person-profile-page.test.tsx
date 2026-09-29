@@ -967,7 +967,23 @@ describe("PersonProfilePage request catalog tools", () => {
     });
     render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
     fireEvent.click(await screen.findByRole("button", { name: "Details for Employment status" }));
-    expect(await screen.findByTestId("person-profile-bundle-details")).toHaveTextContent("Employment status (pending) · 7 days");
+    expect(await screen.findByTestId("person-profile-bundle-details")).toHaveTextContent("Employment status (waiting) · 7 days");
+  });
+
+  // Localhost run 4 (S3): the history read "Tax Record Domain" beside a raw "granted" pill.
+  it("names a history row and its state in human words, never a machine label or state", async () => {
+    mocks.getViewer.mockResolvedValue(viewerProfile({
+      requestHistory: [{
+        bundleId: "bundle-tax", requestId: "req-tax", scopeRef: "scope-tax", label: "Tax Record Domain",
+        sensitivity: "sensitive", purpose: "To ensure information sharing works", durationSeconds: 7 * 24 * 3600,
+        createdAt: null, expiresAt: null, status: "granted",
+      }],
+    }));
+    render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
+    expect(await screen.findByText("Tax record")).toBeInTheDocument();
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+    const history = screen.getByRole("heading", { name: "Request history" }).closest("section")!;
+    expect(history.textContent).not.toMatch(/domain|granted/i);
   });
 
   it("groups a multi-field request into one history row with one action", async () => {
@@ -987,8 +1003,8 @@ describe("PersonProfilePage request catalog tools", () => {
     }));
     render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
 
-    expect(await screen.findByText("Request for 12 information items")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Details for 12 information items" })).toHaveLength(1);
+    expect(await screen.findByText("Professional detail 1 and 11 more")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Details for Professional detail 1 and 11 more" })).toHaveLength(1);
     expect(screen.queryByText("Professional detail 2")).toBeNull();
   });
 
@@ -1022,11 +1038,11 @@ describe("PersonProfilePage request catalog tools", () => {
       ? { bundles: [{ bundleId: "older", purpose: "Older request", durationSeconds: 3600, createdAt: "2026-09-19T10:00:00+00:00", cancelled: false, itemCount: 2 }], nextCursor: null }
       : { bundles: [{ bundleId: "large", purpose: "Professional review", durationSeconds: 3600, createdAt: "2026-09-20T10:00:00+00:00", cancelled: false, itemCount: 150 }], nextCursor: "next-page" });
     render(<PersonProfilePage personRef="actual-public-ref" initialProfile={null} />);
-    expect(await screen.findByText("Request for 150 information items")).toBeInTheDocument();
+    expect(await screen.findByText("150 items")).toBeInTheDocument();
     expect(screen.getByText("Check status")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Next" }));
-    expect(await screen.findByText("Request for 2 information items")).toBeInTheDocument();
-    expect(screen.queryByText("Request for 150 information items")).toBeNull();
+    expect(await screen.findByText("2 items")).toBeInTheDocument();
+    expect(screen.queryByText("150 items")).toBeNull();
     expect(mocks.getRequestHistory).toHaveBeenLastCalledWith({
       personRef: "actual-public-ref", idToken: "id-token", cursor: "next-page", limit: 8,
     });

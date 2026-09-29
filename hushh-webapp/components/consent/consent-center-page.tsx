@@ -403,7 +403,14 @@ function lifecycleLabel(index: number) {
  * never sees. Named actions get their own sentence; anything unnamed still
  * falls back to the humanised action so a new row type is never blank.
  */
+/** The owner's words for each step, never the protocol's ("Consent granted"). */
 const LIFECYCLE_EVENT_LABELS: Record<string, string> = {
+  CONSENT_GRANTED: "Allowed",
+  CONSENT_DENIED: "Declined",
+  REVOKED: "Stopped sharing",
+  CANCELLED: "Withdrawn",
+  TIMEOUT: "Expired",
+  REQUESTED: "Requested",
   EXPORT_READ: "Opened",
 };
 

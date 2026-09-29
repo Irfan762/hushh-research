@@ -480,7 +480,7 @@ function ScopeDiscoveryView({
             {!profile ? !personRef ? "This saved card cannot be used to make a request. Ask One to check again." : !user ? "Sign in to check what is available." : !isVaultUnlocked ? "Unlock your vault to continue here." : "Checking what is currently available to request."
               : total === 0
               ? "Nothing is currently available to request."
-              : `${total} ${total === 1 ? "thing" : "things"} you can ask for. They decide what to share, and for how long.`}
+              : `${total} ${total === 1 ? "item" : "items"} you can ask for. They decide what to share, and for how long.`}
           </p>
         </div>
       </header>
@@ -830,7 +830,7 @@ function InformationRequestReviewView({ experience }: { experience: InformationR
       experienceType={experience.type}
       label={label}
       title={title}
-      summary={`${items.length} ${items.length === 1 ? "thing" : "things"} · ${experience.durationLabel}`}
+      summary={`${items.length} ${items.length === 1 ? "item" : "items"} · ${experience.durationLabel}`}
       icon={<ConsentAgentIcon className="h-7 w-7" aria-hidden="true" />}
     >
       <p className="text-sm leading-6 text-foreground">{experience.purpose}</p>

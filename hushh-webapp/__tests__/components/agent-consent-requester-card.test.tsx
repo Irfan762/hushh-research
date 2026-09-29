@@ -294,6 +294,20 @@ describe("human-readable shared details", () => {
     ] }]);
   });
 
+  // Localhost run 4 (S3): a legal entity read "Fein", "Naics code" and "C_CORP".
+  it("names known fields as people write them and reads a stored enum as words", () => {
+    const rows = sharedItemRows([{ requestId: "r1", label: "Legal entity", data: {
+      fein: "12-3456789", naics_code: "541511", trade_name_dba: "Acme Labs", street_1: "1 Main St",
+      entity_type: "C_CORP", filing_status: "MARRIED_FILING_JOINTLY", handle: "kushal_t",
+    } }]);
+    expect(rows[0]!.values).toEqual([
+      "Federal EIN: 12-3456789", "NAICS code: 541511", "Trade name (DBA): Acme Labs", "Street address: 1 Main St",
+      "Entity type: C corporation", "Filing status: Married filing jointly",
+      // Negative control: the person's own value is never rewritten.
+      "Handle: kushal_t",
+    ]);
+  });
+
   it("collapses long values behind Show more", () => {
     const long = "Vegetarian ".repeat(30).trim();
     render(<SharedDetailsList values={[{ requestId: "r1", label: "Diet", data: { diet: long } }]} />);
