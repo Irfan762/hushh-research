@@ -166,6 +166,23 @@ def native_registration_admitted(connector: Any, owner: str) -> bool:
     )
 
 
+def _curated_tool_allowlist(connector: Any) -> CatalogPolicy | None:
+    """The registry row's tool allowlist, if it declares one.
+
+    A declared list is exact (an empty list admits no tools). No list means the
+    operator did not restrict the server's catalog; review still applies.
+    """
+    allowed = (getattr(connector, "capability_policy", None) or {}).get("tools")
+    if not isinstance(allowed, list):
+        return None
+    names = frozenset(item for item in allowed if isinstance(item, str))
+
+    def admitted(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [item for item in catalog if item.get("name") in names]
+
+    return admitted
+
+
 async def _resolve_curated_connection(owner: str, connector: Any) -> ResolvedMcpConnection:
     """Bind an operator-registered OAuth connector (refreshing if near expiry).
 
@@ -197,15 +214,24 @@ async def _resolve_curated_connection(owner: str, connector: Any) -> ResolvedMcp
         or any(ord(c) < 32 or ord(c) == 127 for c in token)
     ):
         raise ExternalMcpError("Reconnect this service.", code="MCP_CREDENTIAL_INVALID")
+    # A token refresh bumps credential_version but is not a change of authority,
+    # so it must not invalidate an open review card or an in-flight call: bind on
+    # the connection generation (moves on connect, reconnect and disconnect) and
+    # the live policy hash instead. Headers always come from the fresh resolve.
     binding = McpConnectionBinding(
         owner,
         connector.connector_id,
         int(row["connection_generation"]),
-        int(row["credential_version"]),
+        1,
         connector.mcp_endpoint,
+        (curated_policy_hash(connector),),
     )
     validate_mcp_endpoint(binding.endpoint)
-    return ResolvedMcpConnection(binding, {"Authorization": f"Bearer {token}"})
+    return ResolvedMcpConnection(
+        binding,
+        {"Authorization": f"Bearer {token}"},
+        catalog_policy=_curated_tool_allowlist(connector),
+    )
 
 
 async def resolve_registered_connection(

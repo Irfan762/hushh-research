@@ -1553,9 +1553,34 @@ async def test_curated_oauth_resolves_reviewed_bearer_binding(registry_harness, 
     result = await resolve_registered_connection(registry_harness.context, "hubspot")
     adapter.current_credential.assert_awaited_once_with(connector_id="hubspot", user_id="owner")
     assert result.headers == {"Authorization": "Bearer synthetic-token"}
-    assert result.binding.generation == 5 and result.binding.credential_version == 7
+    assert result.binding.generation == 5
+    assert result.binding.authority_revision == (hash_,)
     assert result.review_policy == "always"
     assert "synthetic-token" not in repr(result)
+
+
+async def test_curated_oauth_binding_survives_a_token_refresh(registry_harness, monkeypatch):
+    row = dict(
+        status="connected", connection_generation=5, credential_version=7, verified_policy_hash=None
+    )
+    _, adapter, hash_ = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    row["verified_policy_hash"] = hash_
+    before = await resolve_registered_connection(registry_harness.context, "hubspot")
+    # A refresh advances credential_version and swaps the access token, nothing else.
+    refreshed = dict(row, credential_version=8)
+    adapter.current_credential.return_value = (refreshed, {"accessToken": "refreshed-token"})
+    after = await resolve_registered_connection(registry_harness.context, "hubspot")
+    assert after.binding == before.binding
+    assert after.headers == {"Authorization": "Bearer refreshed-token"}
+    # A reconnect (new generation) is a real change of authority.
+    adapter.current_credential.return_value = (
+        dict(row, connection_generation=6),
+        {"accessToken": "synthetic-token"},
+    )
+    reconnected = await resolve_registered_connection(registry_harness.context, "hubspot")
+    assert reconnected.binding != before.binding
 
 
 @pytest.mark.parametrize("failure", ["unverified", "stale_hash", "verifying", "no_token"])
@@ -1590,3 +1615,58 @@ async def test_curated_oauth_maps_reconnect_required_to_credential_expired(
     with pytest.raises(ExternalMcpError) as error:
         await resolve_registered_connection(registry_harness.context, "hubspot")
     assert error.value.code == "MCP_CREDENTIAL_EXPIRED"
+
+
+async def test_curated_oauth_catalog_is_limited_to_the_registry_allowlist(
+    registry_harness, monkeypatch
+):
+    from hushh_mcp.services.external_connector_curated_oauth import curated_policy_hash
+
+    row = dict(
+        status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
+    )
+    definition, _, hash_without_allowlist = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    definition.capability_policy = {
+        "version": 1,
+        "chat": "reviewed",
+        "tools": ["search_crm_objects"],
+    }
+    # Editing the allowlist never changes the reconnect hash.
+    assert curated_policy_hash(definition) == hash_without_allowlist
+    row["verified_policy_hash"] = hash_without_allowlist
+    resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
+    catalog = [{"name": "search_crm_objects"}, {"name": "create_landing_page"}]
+    assert resolved.catalog_policy is not None
+    assert resolved.catalog_policy(catalog) == [{"name": "search_crm_objects"}]
+
+
+async def test_curated_oauth_without_an_allowlist_leaves_the_catalog_unrestricted(
+    registry_harness, monkeypatch
+):
+    row = dict(
+        status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
+    )
+    _, _, hash_ = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    row["verified_policy_hash"] = hash_
+    resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
+    assert resolved.catalog_policy is None
+
+
+async def test_curated_oauth_empty_allowlist_admits_no_tools(registry_harness, monkeypatch):
+    row = dict(
+        status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
+    )
+    definition, _, _ = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    definition.capability_policy = {"version": 1, "chat": "reviewed", "tools": []}
+    from hushh_mcp.services.external_connector_curated_oauth import curated_policy_hash
+
+    row["verified_policy_hash"] = curated_policy_hash(definition)
+    resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
+    assert resolved.catalog_policy is not None
+    assert resolved.catalog_policy([{"name": "search_crm_objects"}]) == []

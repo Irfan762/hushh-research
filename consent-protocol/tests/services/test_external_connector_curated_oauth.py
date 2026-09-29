@@ -850,3 +850,72 @@ async def test_disconnect_skips_revocation_when_nothing_to_revoke(service):
     result = await service.disconnect(connector_id="hubspot", user_id="u1")
     assert result["revocationOutcome"] == "not_attempted"
     service.lifecycle.record_revocation.assert_not_awaited()
+
+
+def test_curated_policy_hash_ignores_the_tool_allowlist_but_not_the_chat_marker(connector):
+    baseline = oauth.curated_policy_hash(connector)
+    narrowed = replace(
+        connector,
+        capability_policy={**connector.capability_policy, "tools": ["search_crm_objects"]},
+    )
+    assert oauth.curated_policy_hash(narrowed) == baseline
+    widened = replace(
+        connector, capability_policy={**connector.capability_policy, "tools": ["a", "b", "c"]}
+    )
+    assert oauth.curated_policy_hash(widened) == baseline
+    unmarked = replace(connector, capability_policy={"version": 1})
+    assert oauth.curated_policy_hash(unmarked) != baseline
+
+
+# --- verify ------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_verify_proves_the_bearer_reaches_the_endpoint_before_marking_verified(
+    service, connector, monkeypatch
+):
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.current_credential = AsyncMock(
+        return_value=(
+            {"connection_generation": 4, "credential_version": 9},
+            {"accessToken": "synthetic-token"},
+        )
+    )
+    list_tools = AsyncMock(return_value=[{"name": "search_crm_objects"}])
+    monkeypatch.setattr(oauth, "list_tools", list_tools)
+    service.lifecycle.mark_verified = AsyncMock(return_value=True)
+
+    assert await service.verify(connector_id="hubspot", user_id="u1") is True
+
+    list_tools.assert_awaited_once_with(
+        endpoint=MCP_ENDPOINT, headers={"Authorization": "Bearer synthetic-token"}
+    )
+    service.lifecycle.mark_verified.assert_awaited_once_with(
+        user_id="u1",
+        connector_id="hubspot",
+        generation=4,
+        version=9,
+        policy_hash=oauth.curated_policy_hash(connector),
+    )
+
+
+@pytest.mark.asyncio
+async def test_verify_does_not_mark_verified_when_the_server_rejects_the_token(
+    service, connector, monkeypatch
+):
+    from hushh_mcp.services.external_mcp_client import ExternalMcpAuthError
+
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.current_credential = AsyncMock(
+        return_value=(
+            {"connection_generation": 4, "credential_version": 9},
+            {"accessToken": "synthetic-token"},
+        )
+    )
+    monkeypatch.setattr(oauth, "list_tools", AsyncMock(side_effect=ExternalMcpAuthError()))
+    service.lifecycle.mark_verified = AsyncMock(return_value=True)
+
+    with pytest.raises(ExternalMcpAuthError):
+        await service.verify(connector_id="hubspot", user_id="u1")
+
+    service.lifecycle.mark_verified.assert_not_awaited()

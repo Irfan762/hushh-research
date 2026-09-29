@@ -94,7 +94,12 @@ def curated_policy_hash(connector: ExternalMcpConnectorDefinition) -> str:
         "oauth_scopes": sorted(connector.oauth_scopes),
         "oauth_client_id_env": connector.oauth_client_id_env,
         "oauth_client_secret_env": connector.oauth_client_secret_env,
-        "capability_policy": connector.capability_policy,
+        # The tool allowlist only narrows which tools chat may offer; it does
+        # not change what the person authorized, so editing it must not force
+        # every connected user to sign in again.
+        "capability_policy": {
+            key: value for key, value in connector.capability_policy.items() if key != "tools"
+        },
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
