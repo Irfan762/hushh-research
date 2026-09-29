@@ -477,7 +477,10 @@ class InformationRequestService:
                 scope=scope["scope"],
                 action="REQUESTED",
                 request_id=request_id,
-                scope_description=scope.get("description") or scope.get("label"),
+                # An authored description first; otherwise the same human name
+                # the requester's card shows, never a raw stored label.
+                scope_description=scope.get("description")
+                or human_scope_label(str(scope["scope"]), scope.get("label")),
                 expires_at=expires_at,
                 poll_timeout_at=expires_at,
                 metadata={
@@ -558,7 +561,8 @@ class InformationRequestService:
                 {
                     "requestId": item["request_id"],
                     "scopeRef": item["scope_ref"],
-                    "label": item["label"],
+                    # The same name the request card and progress use.
+                    "label": human_scope_label(str(item.get("scope") or ""), item.get("label")),
                     "sensitivity": item.get("sensitivity"),
                     "status": "expired"
                     if is_expired
@@ -711,7 +715,9 @@ class InformationRequestService:
                     "profilePath": f"/people/{person_ref}?section=shared#shared-with-you"
                     if person_ref
                     else None,
-                    "label": row.get("label") or "Shared information",
+                    "label": human_scope_label(str(row.get("scope") or ""), row.get("label"))
+                    if row.get("scope")
+                    else row.get("label") or "Shared information",
                     "scopeRef": row.get("scope_ref"),
                     "purpose": row.get("purpose"),
                     "expiresAt": expires_at,
