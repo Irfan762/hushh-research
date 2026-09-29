@@ -210,6 +210,12 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
   direct tap, a card whose payload has an identifier-class key or value
   (`contracts/consent/field-sensitivity.v1.json`) or whose save would change what the owner
   already shares, and it never writes a reserved, degraded, secret or `do_not_save` card.
+- Reconciliation context, not a decision: for each section the device offers up to ten
+  of the owner's existing entity summaries chosen by local word overlap
+  (`AgentPkmContextStore.findReconciliationCandidates`) as `simulated_state.memories`.
+  The merge agent alone decides create, extend, correct or no_op. A `no_op` that names
+  the stored entity it matched is reported as already known; the host never
+  re-derives a merge mode.
 - Display only: `classifyMergeOutcome` (`hushh-webapp/lib/pkm/pkm-supersede-merge.ts`)
   labels each acknowledged write as new, updated, merged or already known from the stored
   state the write merged into. It decides nothing about meaning.
