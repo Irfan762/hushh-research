@@ -189,10 +189,12 @@ export function ownerConsentRequestActionable(
   const decisionActions: FeedActionButton[] = request.complete
     ? [
         {
+          // One tap: the decline waits behind a five-second Undo toast
+          // (lib/consent/deferred-consent-decline.ts), which replaces the old
+          // armed second tap, the same as the Consent Center's ✗.
           key: "deny",
           label: "Don't allow",
           tone: "ghost",
-          confirm: true,
           run: async () => {
             if (await handlers.deny(request)) handlers.onDecided(request.key);
           },
@@ -396,6 +398,24 @@ export function useFeedActionables(): UseFeedActionablesResult {
       return next;
     });
   }, []);
+  const unmarkConsentSettled = useCallback((key: string) => {
+    setSettledConsentKeys((current) => {
+      if (!current.has(key)) return current;
+      const next = new Set(current);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  const { declineWithUndo: declineConsentWithUndo } = consentDecision;
+  // Don't allow hides the row at once; Undo or a failed deny brings it back.
+  const declineConsentRequest = useCallback(
+    (request: OwnerConsentRequest) =>
+      declineConsentWithUndo(request, {
+        onHide: () => markConsentSettled(request.key),
+        onRestore: () => unmarkConsentSettled(request.key),
+      }),
+    [declineConsentWithUndo, markConsentSettled, unmarkConsentSettled],
+  );
   useEffect(() => {
     setSettledConsentKeys(new Set());
   }, [userId]);
@@ -730,7 +750,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
         items.push(
           ownerConsentRequestActionable(request, {
             allow: consentDecision.allow,
-            deny: consentDecision.deny,
+            deny: declineConsentRequest,
             openDetails: () => router.push(request.detailsHref),
             onDecided: markConsentSettled,
             sortAt:
@@ -1228,7 +1248,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
   }, [
     appTaskState.tasks,
     consentDecision.allow,
-    consentDecision.deny,
+    declineConsentRequest,
     markConsentSettled,
     settledConsentKeys,
     connectionRequests,

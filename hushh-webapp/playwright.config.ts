@@ -104,7 +104,10 @@ export default defineConfig({
       // `text-attachment-viewer.layout` is opted in because the pasted-text
       // sheet, its own scroll box and the scroll after Send are read on an
       // iPhone; its fixture builds its own document.
+      // `consent-center-row.layout` is opted in because the Requests row's
+      // ✗ / ✓ targets and its row button are tapped on an iPhone.
       testMatch: [
+        /consent-center-row\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
