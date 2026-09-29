@@ -49,7 +49,7 @@ export const PROBE_FAILURE_COPY: Record<ProbeFailureReason, { title: string; nex
 const FAILURES = Object.keys(PROBE_FAILURE_COPY) as ProbeFailureReason[];
 const MAX_TOOLS = 100;
 // Controls and direction or width overrides can hide or reorder text.
-const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f​-‏‪-‮⁠-⁤⁦-⁩﻿]/g;
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)

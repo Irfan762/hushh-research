@@ -27,6 +27,7 @@ still verified by the governed SDK toolset, never by this probe.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import re
 import ssl
@@ -72,7 +73,9 @@ _DESCRIPTION_LIMIT = 240
 _KNOWN_CAPABILITIES = ("tools", "resources", "prompts", "logging", "completions")
 # C0/C1 controls, zero-width and bidirectional overrides can hide or reorder
 # text in a card; none of them carry meaning a person needs to read.
-_UNSAFE_TEXT = re.compile("[\x00-\x1f\x7f-\x9f​-‏‪-‮⁠-⁤⁦-⁩﻿]")
+_UNSAFE_TEXT = re.compile(
+    "[\x00-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]"
+)
 _RESOURCE_METADATA = re.compile(r'resource_metadata\s*=\s*"([^"]{1,2048})"', re.I)
 
 FAILURE_TEXT: dict[str, tuple[str, str]] = {
@@ -361,10 +364,8 @@ async def _speak_mcp(
             seen_cursors.add(cursor)
     if session_id:
         # Best effort only; a server that ignores DELETE keeps a short-lived idle session.
-        try:
+        with contextlib.suppress(Exception):
             await client.request("DELETE", url, headers=session_headers)
-        except Exception:  # noqa: BLE001, S110 - cleanup must not change the probe result
-            pass
     return result, tools, count
 
 
