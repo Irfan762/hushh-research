@@ -355,6 +355,14 @@ describe("supported connector catalog", () => {
       );
     });
 
+    it("treats a connection stuck before verification as needing sign-in", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "verifying" }]));
+      render(panel());
+      expect(await screen.findByRole("button", { name: "Reconnect HubSpot" })).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Disconnect HubSpot" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/choose files/)).not.toBeInTheDocument();
+    });
+
     it("offers Reconnect when sign-in is needed", async () => {
       state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "needs_reauth" }]));
       render(panel());

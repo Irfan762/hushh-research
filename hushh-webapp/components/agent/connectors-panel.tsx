@@ -1543,7 +1543,10 @@ function OwnerConnectorsPanel({
       .map((item): ConnectorListEntry => {
         const isConnected = !["not_connected", "revoked"].includes(item.status);
         const curated = CURATED_OAUTH_CONNECTORS.has(item.connectorId);
-        const signInNeeded = item.status === "needs_reauth";
+        // A curated connection stuck before verification cannot be used by Kai,
+        // so it reads as needing sign-in rather than as connected.
+        const signInNeeded =
+          item.status === "needs_reauth" || (curated && item.status === "verifying");
         return {
           id: item.connectorId,
           name: item.displayName,
@@ -2126,17 +2129,21 @@ function OwnerConnectorsPanel({
                 <h3 className="font-semibold">{selectedCatalog.displayName}</h3>
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
-                <p role="status" className="text-sm">{labels[selectedCatalog.status] ?? "Status unavailable"}</p>
+                <p role="status" className="text-sm">
+                  {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) && selectedCatalog.status === "verifying"
+                    ? "Sign-in needed"
+                    : (labels[selectedCatalog.status] ?? "Status unavailable")}
+                </p>
                 {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) ? (
                   <>
                     <div className="flex flex-wrap gap-2">
-                      {["not_connected", "revoked", "needs_reauth"].includes(selectedCatalog.status) ? (
+                      {["not_connected", "revoked", "needs_reauth", "verifying"].includes(selectedCatalog.status) ? (
                         <Button
                           className={touch}
                           disabled={curatedBusy || loading}
                           onClick={() => connectCurated(selectedCatalog.connectorId, selectedCatalog.displayName)}
                         >
-                          {selectedCatalog.status === "needs_reauth" ? "Reconnect" : "Connect"}
+                          {["needs_reauth", "verifying"].includes(selectedCatalog.status) ? "Reconnect" : "Connect"}
                         </Button>
                       ) : null}
                       {!["not_connected", "revoked"].includes(selectedCatalog.status) ? (
