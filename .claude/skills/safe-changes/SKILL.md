@@ -1180,7 +1180,17 @@ ls /tmp/art/App.xcarchive/dSYMs
 ```
 
 Every framework listed must either have a matching `.framework.dSYM` in that `dSYMs` listing or be
-one of the four Google names. A dynamic library that is neither is a real symbolication gap.
+one of the named exceptions. A dynamic library that is neither is a real symbolication gap.
+
+**Follow-up (2026-09-29, App Store dry run 36618634474).** The guard went red on
+`Embedded framework LinkKit ships with no dSYM`. Plaid's `LinkKit` (plaid-link-ios 7.1.2, an SPM
+`binaryTarget`) had landed on 2026-09-22, two weeks after the allow-list, and no lane that ran in
+between carried the guard. It was the fifth exception, not a regression: no plaid-link-ios tag
+ships a dSYM, the binary is stripped to its export trie, and the TestFlight export's own
+"Upload Symbols Failed" line named UUID `01485993-…`, which equals Plaid's prebuilt binary. The
+lesson: **adding a binary SDK is a decision about this allow-list**, taken in the same change, with
+that evidence. A guard that only one lane runs finds the gap on a release day. The TestFlight lane
+still has no equivalent step, which R14 above says it should.
 
 Then mutation-test the guard, because a passing new check proves nothing (R22). Against a mock
 archive, all five must hold: healthy passes; a deleted `App.app.dSYM` fails; a dSYM whose UUIDs no

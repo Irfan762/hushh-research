@@ -553,7 +553,14 @@ jobs:
           # genuinely will not symbolicate. That is an accepted loss we cannot close
           # from here (see R29), not a harmless one. This step exists so that permanent
           # noise can never hide the failure that matters: OUR dSYM going missing.
-          ALLOWED_WITHOUT_DSYM="FirebaseAnalytics GoogleAppMeasurement GoogleAppMeasurementIdentitySupport GoogleAdsOnDeviceConversion"
+          #
+          # LinkKit (Plaid, plaid-link-ios 7.1.2, an SPM binaryTarget added 2026-09-22
+          # for native Plaid Link) is the same class: a closed-source dynamic library,
+          # stripped to its export trie, and no plaid-link-ios release from 7.0.0-beta1
+          # to 7.1.2 carries a dSYM. The shipped UUID (01485993-...) equals Plaid's
+          # prebuilt binary, so nothing of ours is being dropped. Adding a binary SDK
+          # means deciding its entry here; this list is the record of that decision.
+          ALLOWED_WITHOUT_DSYM="FirebaseAnalytics GoogleAppMeasurement GoogleAppMeasurementIdentitySupport GoogleAdsOnDeviceConversion LinkKit"
 
           test -f "$APP_BIN" || { echo "::error::No app binary at $APP_BIN"; exit 1; }
           if [ ! -d "$APP_DSYM" ]; then
@@ -580,7 +587,7 @@ jobs:
               [ -e "$fw" ] || continue
               name="$(basename "$fw" .framework)"
               case " $ALLOWED_WITHOUT_DSYM " in
-                *" $name "*) echo "  skip  $name (vendor static binary; upstream ships no dSYM)"; continue ;;
+                *" $name "*) echo "  skip  $name (closed-source vendor binary; upstream ships no dSYM)"; continue ;;
               esac
               if [ -d "${ARCHIVE}/dSYMs/${name}.framework.dSYM" ]; then
                 echo "  ok    $name"
