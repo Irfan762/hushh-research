@@ -958,4 +958,33 @@ describe("sensitive information never reaches the model (CONTRACT-2 C7)", () => 
     expect(text).not.toContain("85000");
     expect(text).toContain("Dinner notes: 4 fields");
   });
+
+  // Localhost run 4 (S3): the EIN was standard as "Fein" under "Legal entity",
+  // so a Legal entity follow-up sent it to the model. Field level, it leaves
+  // as its name only, in the exact line the server's strip writes and reads back.
+  it("sends an identifier field inside a standard item as its name only", () => {
+    const text = formatSharedInformationForAgent([{
+      requestId: "r1", label: "Legal entity", sensitivity: "standard",
+      data: { entity: { fein: "12-3456789", trade_name_dba: "Acme Coffee", notes: "Card 4111 1111 1111 1111 on file" } },
+    }]);
+    expect(text).not.toContain("12-3456789");
+    expect(text).not.toContain("4111");
+    expect(text).toContain("- Legal entity > entity > trade name dba: Acme Coffee");
+    expect(text).toContain("- Legal entity: sensitive fields (Federal EIN, Notes). Shown to the person in "
+      + "the secure card on their device; the values are not shared with you.");
+  });
+
+  it("withholds a field the server's fields[] names sensitive, even when the rule would not", () => {
+    const data = { registered_agent: "Jordan Lee", trade_name: "Acme Coffee" };
+    const marked = formatSharedInformationForAgent([{
+      requestId: "r1", label: "Legal entity", sensitivity: "standard", data,
+      fields: [{ name: "Registered agent", sensitivity: "sensitive" }, { name: "Trade name", sensitivity: "standard" }],
+    }]);
+    expect(marked).not.toContain("Jordan Lee");
+    expect(marked).toContain("- Legal entity: sensitive field (Registered agent).");
+    expect(marked).toContain("Acme Coffee");
+    // Negative control: without fields[], an ordinary field is sent as before.
+    expect(formatSharedInformationForAgent([{ requestId: "r1", label: "Legal entity", sensitivity: "standard", data }]))
+      .toContain("Jordan Lee");
+  });
 });

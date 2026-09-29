@@ -144,6 +144,8 @@ export type SharedWithMeEntry = {
   expiresAt: number | null;
   /** C7: the server's reading; absent on an older server, which reads as sensitive. */
   sensitivity?: string | null;
+  /** C7 per field, names only; untrusted until parsed by `parseSharedFieldSensitivities`. */
+  fields?: unknown;
 };
 
 export type PersonScopeCatalogPage = {

@@ -1,5 +1,6 @@
 import type { PersonScopeCatalog } from "@/lib/services/person-profile-service";
 import { parseScopeProposal, type ScopeProposal } from "./scope-proposal";
+import { parseSharedFieldSensitivities, type SharedFieldSensitivity } from "@/lib/consent/field-sensitivity";
 import {
   parseConnectorReadReceipt,
   parseWorkspaceConnectorSetup,
@@ -194,6 +195,11 @@ export type SharedWithMeCardItem = {
   sensitivity: "sensitive" | "standard" | null;
   domain: string | null;
   fieldOutline: string[];
+  /**
+   * Each outlined field's own C7 reading: an identifier field inside a
+   * standard item (an EIN under "Legal entity") is sensitive. Names only.
+   */
+  fields?: SharedFieldSensitivity[];
   sharedAt: string | null;
   accessEndsAt: string | null;
   purpose: string | null;
@@ -683,6 +689,7 @@ function parseSharedWithMeItems(value: unknown, fallbackPurpose: string | null):
     const declared = boundedString(item.sensitivity, 32)?.toLowerCase();
     const status = boundedString(item.status, 32)?.toLowerCase();
     const outline = item.fieldOutline ?? item.field_outline;
+    const fields = parseSharedFieldSensitivities(item.fields);
     return [{
       key,
       grantRef,
@@ -699,6 +706,7 @@ function parseSharedWithMeItems(value: unknown, fallbackPurpose: string | null):
       purpose: boundedString(item.purpose, 500) ?? fallbackPurpose,
       status: status === "granted" || status === "revoked" || status === "expired" ? status : null,
       ...(item.decryptable === false ? { decryptable: false } : {}),
+      ...(fields.length ? { fields } : {}),
     }];
   });
 }
@@ -836,14 +844,6 @@ export function parseAgentToolResultExperience(
       : null;
   }
   if (toolName === "propose_information_request") {
-    // C4: a proposal names the person and One's pick; it renders as the ask
-    // card over the catalog. Older servers still return a draft review.
-    if (Array.isArray(result?.proposed) || Array.isArray(asRecord(result?.proposal)?.proposed)) {
-      const discovery = parseScopeDiscovery({ ...result, status: "ok" });
-      if (discovery?.proposal) return discovery;
-    }
-    return parseInformationRequestProposal(content);
-  }
     // A5 (localhost run 4): asked again while the same request waits, the
     // server reports it as waiting with the living card's descriptor. It
     // renders that request's card, never an ask card with Send.
@@ -852,6 +852,14 @@ export function parseAgentToolResultExperience(
       return living && living.direction === "outgoing" && living.phase === "submitted" && living.bundleId
         ? living : null;
     }
+    // C4: a proposal names the person and One's pick; it renders as the ask
+    // card over the catalog. Older servers still return a draft review.
+    if (Array.isArray(result?.proposed) || Array.isArray(asRecord(result?.proposal)?.proposed)) {
+      const discovery = parseScopeDiscovery({ ...result, status: "ok" });
+      if (discovery?.proposal) return discovery;
+    }
+    return parseInformationRequestProposal(content);
+  }
   if (toolName === "propose_document_request") {
     const result = unwrapToolResult(content);
     return result?.status === "proposal_ready" ? parseDocumentRequestReview(content) : null;

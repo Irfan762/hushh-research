@@ -15,7 +15,7 @@ import { awaitProductFont, productFontStyle, stripAppFontFaces } from "./fixture
 let script: string;
 let css: string;
 
-const STATES = ["chat", "decrypted", "loading", "locked", "ended", "error", "unopenable", "profile", "ask"];
+const STATES = ["chat", "decrypted", "loading", "locked", "ended", "error", "unopenable", "profile", "legal", "ask"];
 
 test.beforeAll(async () => {
   const root = process.cwd();
@@ -141,6 +141,15 @@ for (const theme of ["light", "dark"] as const)
       await expect(decrypted).toContainText("Neapolitan pizza");
       await decrypted.getByRole("button", { name: "Show Tax record" }).click();
       await expect(decrypted).toContainText("C-Corporation");
+
+      // An identifier inside a standard item (run 4, S3): the EIN alone is
+      // marked Sensitive, and Hide masks it while the trade name stays.
+      const legal = page.locator("[data-state='legal']");
+      await expect(legal.getByTestId("shared-with-you-sensitive-field")).toHaveCount(1);
+      await expect(legal.locator("[data-sensitive-field='true']")).toContainText("Federal EIN");
+      await legal.getByRole("button", { name: "Hide Legal entity" }).click();
+      await expect(legal).not.toContainText("00-0000000");
+      await expect(legal).toContainText("Acme Coffee");
 
       // The ask rows: preselected, the group opens, tri-state, live summary, exact Send.
       const ask = page.locator("[data-state='ask']");

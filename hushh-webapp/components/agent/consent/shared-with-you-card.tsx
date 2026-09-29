@@ -73,6 +73,7 @@ export function sharedItemBaseView(item: SharedWithMeCardItem, nowMs: number): S
     purpose: item.purpose,
     sensitive: resolveSharedSensitivity({ sensitivity: item.sensitivity, domain: item.domain, label: item.label }) === "sensitive",
     fieldOutline: item.fieldOutline,
+    ...(item.fields?.length ? { fields: item.fields } : {}),
     state: ended ? "ended" : item.decryptable === false ? "unopenable" : "loading",
     endedReason: item.status === "revoked" ? "revoked" : "expired",
     endedAt: item.accessEndsAt,
@@ -137,7 +138,7 @@ export function SharedWithYouCard({ person, items: rawItems, variant = "chat", c
   // same items keeps every open that is in flight.
   const itemsSignature = JSON.stringify(rawItems.map((item) => [item.key, item.bundleId, item.requestId,
     item.grantRef, item.label, item.status, item.sharedAt, item.accessEndsAt, item.decryptable,
-    item.sensitivity, item.domain, item.purpose, item.fieldOutline]));
+    item.sensitivity, item.domain, item.purpose, item.fieldOutline, item.fields]));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const items = useMemo(() => normalizeSharedItems(rawItems), [itemsSignature]);
 

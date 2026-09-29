@@ -181,6 +181,32 @@ describe("the card's states", () => {
     expect(screen.getByText("85000")).toBeInTheDocument();
   });
 
+  // Localhost run 4 (S3): an EIN inside a standard "Legal entity" item read
+  // like any other field. It is marked Sensitive and Hide masks it alone.
+  it("marks an identifier field inside a standard item and hides only that field", () => {
+    const legal = item({
+      key: "legal", label: "Legal entity", sensitive: false, fieldOutline: ["Federal EIN", "Trade name", "Registered agent"],
+      data: { fein: "12-3456789", trade_name: "Acme Coffee", registered_agent: "Jordan Lee" },
+      fields: [{ name: "Registered agent", sensitivity: "sensitive" }, { name: "Trade name", sensitivity: "standard" }],
+    });
+    render(<SharedWithYouCardView person={person} status="ready" items={[legal]} />);
+    expect(screen.queryByTestId("shared-with-you-sensitive")).toBeNull();
+    const marked = screen.getAllByTestId("shared-with-you-sensitive-field");
+    expect(marked).toHaveLength(2);
+    expect(marked[0]!.closest("[data-testid='shared-with-you-row']")).toHaveTextContent("Federal EIN");
+    fireEvent.click(screen.getByRole("button", { name: "Hide Legal entity" }));
+    expect(screen.queryByText("12-3456789")).toBeNull();
+    expect(screen.queryByText("Jordan Lee")).toBeNull();
+    expect(screen.getByText("Acme Coffee")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Copy Trade name" })).toBeInTheDocument();
+    cleanup();
+    // Negative control: an ordinary standard item carries no mark and no Hide.
+    render(<SharedWithYouCardView person={person} status="ready"
+      items={[item({ key: "food", label: "Food preferences", sensitive: false, data: { cuisine: "Neapolitan pizza" } })]} />);
+    expect(screen.queryByTestId("shared-with-you-sensitive-field")).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Hide/ })).toBeNull();
+  });
+
   it("splits a record into field and value rows with no internal keys", () => {
     const rows = sharedValueRows({ ...TAX_VALUES, mem_65725402299c: { id: "x" }, __export_metadata: { scope: "attr.tax" } }, "Tax record");
     expect(rows).toEqual([

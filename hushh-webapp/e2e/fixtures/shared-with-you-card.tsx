@@ -29,6 +29,13 @@ const FOOD: SharedWithYouItemView = {
   data: { cuisine: "Neapolitan pizza", diet: "Vegetarian", notes: "Prefers a quiet table away from the kitchen and books ahead on weekends." },
 };
 
+/** A standard item holding an identifier field (run 4, S3): the EIN alone is marked. */
+const LEGAL_ENTITY: SharedWithYouItemView = {
+  key: "legal", label: "Legal entity", sharedAt: SHARED, accessEndsAt: UNTIL, purpose: null, sensitive: false,
+  fieldOutline: ["Federal EIN", "Trade name"], state: "ready",
+  data: { fein: "00-0000000", trade_name_dba: "Acme Coffee", entity_type: "C_CORP" },
+};
+
 const STATES: Array<{ state: string; status: SharedWithYouCardStatus; items: SharedWithYouItemView[]; variant?: "chat" | "profile" }> = [
   { state: "decrypted", status: "ready", items: [TAX, FOOD] },
   { state: "loading", status: "loading", items: [{ ...TAX, state: "loading", data: null }] },
@@ -37,6 +44,7 @@ const STATES: Array<{ state: string; status: SharedWithYouCardStatus; items: Sha
   { state: "error", status: "error", items: [TAX] },
   { state: "unopenable", status: "ready", items: [{ ...TAX, label: "Tax record information", state: "unopenable", data: null }] },
   { state: "profile", status: "ready", items: [TAX, FOOD], variant: "profile" },
+  { state: "legal", status: "ready", items: [LEGAL_ENTITY] },
 ];
 
 const LEGAL: RequestablePersonScope[] = [
