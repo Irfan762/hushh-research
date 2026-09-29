@@ -51,6 +51,12 @@ type ChatOnboardingSession = {
    */
   shownTurns: ReadonlyMap<string, string>;
   /**
+   * When each turn was first shown (epoch ms). Drives the transcript's
+   * centered time separators; kept beside the label so the label stays the
+   * exact string the person saw.
+   */
+  shownTurnTimes: ReadonlyMap<string, number>;
+  /**
    * The conversation onboarding happened in, once it has an id. A finished
    * onboarding stays in that conversation; a new chat starts clean.
    */
@@ -62,6 +68,7 @@ const EMPTY_SESSION: ChatOnboardingSession = {
   durable: undefined,
   machine: null,
   shownTurns: new Map(),
+  shownTurnTimes: new Map(),
   homeConversationId: null,
 };
 
@@ -69,17 +76,24 @@ export const useChatOnboardingSession = create<
   ChatOnboardingSession & {
     reset: (userId: string | null) => void;
     patch: (next: Partial<ChatOnboardingSession>) => void;
-    markShown: (turnId: string, timeLabel: string) => void;
+    markShown: (turnId: string, timeLabel: string, shownAtMs?: number) => void;
   }
 >((set) => ({
   ...EMPTY_SESSION,
-  reset: (userId) => set({ ...EMPTY_SESSION, shownTurns: new Map(), userId }),
+  reset: (userId) =>
+    set({ ...EMPTY_SESSION, shownTurns: new Map(), shownTurnTimes: new Map(), userId }),
   patch: (next) => set(next),
-  markShown: (turnId, timeLabel) =>
+  markShown: (turnId, timeLabel, shownAtMs) =>
     set((state) =>
       state.shownTurns.has(turnId)
         ? state
-        : { shownTurns: new Map([...state.shownTurns, [turnId, timeLabel]]) },
+        : {
+            shownTurns: new Map([...state.shownTurns, [turnId, timeLabel]]),
+            shownTurnTimes:
+              typeof shownAtMs === "number"
+                ? new Map([...state.shownTurnTimes, [turnId, shownAtMs]])
+                : state.shownTurnTimes,
+          },
     ),
 }));
 
@@ -151,7 +165,8 @@ export type ChatOnboardingController = {
   /** The one assistant turn whose chips are live, if any. */
   activeChipTurnId: string | null;
   shownTurns: ReadonlyMap<string, string>;
-  markShown: (turnId: string, timeLabel: string) => void;
+  shownTurnTimes: ReadonlyMap<string, number>;
+  markShown: (turnId: string, timeLabel: string, shownAtMs?: number) => void;
   /** True while a save to memory is in flight: chips are inert. */
   busy: boolean;
   onChip: (chipId: ChatOnboardingChipId) => void;
@@ -304,6 +319,7 @@ export function useChatOnboarding(input: {
     turns: visible?.turns ?? [],
     activeChipTurnId: activeChipTurnId(visible),
     shownTurns: session.shownTurns,
+    shownTurnTimes: session.shownTurnTimes,
     markShown: session.markShown,
     busy: visible?.step === "saving",
     onChip,

@@ -49,7 +49,9 @@ describe("Agent One chat workspace wiring contract", () => {
     expect(source).not.toContain("function PostSetupWelcomeCard(");
     expect(source).not.toContain("AgentFirstRunActions");
     expect(source).toMatch(
-      /renderBubble=\{\(message: ChatOnboardingBubbleMessage\) => \(\s*<AgentBubble message=\{message\}/,
+      // A centered time separator may open the group; the turn itself is still
+      // the workspace's own AgentBubble.
+      /renderBubble=\{\(message: ChatOnboardingBubbleMessage\) => \((?:(?!renderBubble)[\s\S]){0,400}?<AgentBubble message=\{message\} \/>/,
     );
     // Only an explicitly armed name answer is kept from the model; everything
     // else typed in the composer is an ordinary turn.

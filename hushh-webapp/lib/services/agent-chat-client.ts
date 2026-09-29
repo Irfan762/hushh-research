@@ -104,8 +104,9 @@ export type AgentChatConversation = {
   model?: string | null;
   message_count: number;
   created_at?: string | null;
-  updated_at?: string | null;
-  last_message_at?: string | null;
+  /** ADK session times arrive as epoch seconds; older rows may be ISO strings. */
+  updated_at?: string | number | null;
+  last_message_at?: string | number | null;
 };
 
 export type AgentChatToolEvent = {

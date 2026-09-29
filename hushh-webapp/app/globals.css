@@ -5350,6 +5350,122 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
   }
 }
 
+/* One chat surface (Muse-inspired layout, 2026-09-29). Scoped to the chat
+   workspace, its history column/drawer and the Get the app prompt through
+   [data-one-chat-surface]; no other page reads these tokens. Light is a clean
+   white canvas with soft grey bubbles, dark a neutral near-black with raised
+   greys. The accent (user bubbles, focus) stays One's own blue. */
+[data-one-chat-surface] {
+  --one-chat-canvas: #ffffff;
+  /* One surface with the chat, as in the reference: the hairline divides. */
+  --one-chat-sidebar: #ffffff;
+  --one-chat-search-border: rgba(0, 0, 0, 0.12);
+  --one-chat-search-bg: transparent;
+  --one-chat-divider: rgba(0, 0, 0, 0.075);
+  --one-chat-bubble: #ebebee;
+  --one-chat-raised: #ffffff;
+  --one-chat-menu: #ffffff;
+  --one-chat-field: rgba(0, 0, 0, 0.045);
+  --one-chat-field-strong: rgba(0, 0, 0, 0.07);
+  --one-chat-row-hover: rgba(0, 0, 0, 0.04);
+  --one-chat-row-active: rgba(0, 0, 0, 0.07);
+  --one-chat-meta: rgba(60, 60, 67, 0.64);
+  --one-chat-composer: #ffffff;
+  --one-chat-composer-border: rgba(0, 0, 0, 0.1);
+  --one-chat-get-app-stage: color-mix(in oklab, var(--app-accent) 16%, #ffffff);
+  --one-chat-get-app-bezel: color-mix(in oklab, var(--app-accent) 10%, #ffffff);
+}
+
+.dark [data-one-chat-surface],
+[data-one-chat-surface].dark {
+  --one-chat-canvas: #171717;
+  --one-chat-sidebar: #171717;
+  --one-chat-search-border: rgba(255, 255, 255, 0.12);
+  --one-chat-search-bg: rgba(255, 255, 255, 0.04);
+  --one-chat-divider: rgba(255, 255, 255, 0.08);
+  --one-chat-bubble: #242424;
+  --one-chat-raised: #202020;
+  --one-chat-menu: #2e2e30;
+  --one-chat-field: rgba(255, 255, 255, 0.06);
+  --one-chat-field-strong: rgba(255, 255, 255, 0.1);
+  --one-chat-row-hover: rgba(255, 255, 255, 0.05);
+  --one-chat-row-active: rgba(255, 255, 255, 0.09);
+  --one-chat-meta: rgba(235, 235, 245, 0.55);
+  --one-chat-composer: #2a2a2a;
+  --one-chat-composer-border: rgba(255, 255, 255, 0.06);
+  --one-chat-get-app-stage: #2a2a2f;
+  --one-chat-get-app-bezel: #3a3a40;
+}
+
+/* The composer: a quiet rounded field on the canvas, as in the reference.
+   Focus keeps One's accent ring so keyboard users always see where they are. */
+[data-one-chat-surface] .agent-chat-composer-surface {
+  /* A full pill on one line; once the draft wraps, a fixed 28px corner (as in
+     the reference) so the first and last lines are never cut by the curve. */
+  border-radius: 1.75rem !important;
+  border-color: var(--one-chat-composer-border) !important;
+  background: var(--one-chat-composer) !important;
+  box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.28) !important;
+}
+
+.dark [data-one-chat-surface] .agent-chat-composer-surface {
+  box-shadow: 0 12px 34px -16px rgba(0, 0, 0, 0.7) !important;
+}
+
+[data-one-chat-surface] .agent-chat-composer-surface:focus-within {
+  border-color: color-mix(in oklab, var(--app-accent) 55%, transparent) !important;
+  background: var(--one-chat-composer) !important;
+  box-shadow:
+    0 10px 30px -18px rgba(0, 0, 0, 0.28),
+    0 0 0 3px color-mix(in oklab, var(--app-accent) 18%, transparent) !important;
+}
+
+/* Copy / like / dislike on a settled answer. With a fine pointer on a wide
+   screen they sit beside the bubble, vertically centred, and appear on hover
+   or keyboard focus (as in the reference); touch screens keep the always-on
+   row under the answer. Exactly one of the two copies is ever displayed. */
+[data-one-chat-surface] .one-chat-hover-actions {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) and (min-width: 768px) {
+  [data-one-chat-surface] .one-chat-hover-actions {
+    display: flex;
+    position: absolute;
+    top: 50%;
+    left: 100%;
+    margin-left: 0.5rem;
+    width: max-content;
+    translate: 0 -50%;
+    opacity: 0;
+    transition: opacity 150ms ease;
+  }
+
+  [data-one-chat-surface] [data-message-role="assistant"]:hover .one-chat-hover-actions,
+  [data-one-chat-surface] .one-chat-hover-actions:focus-within {
+    opacity: 1;
+  }
+
+  [data-one-chat-surface] [data-agent-response-actions="inline"][data-hover-twin="true"] {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-one-chat-surface] .one-chat-hover-actions {
+    transition: none;
+  }
+}
+
+/* While the desktop history column is showing, the fixed bottom navigation
+   centres over the conversation column instead of the whole window, so it
+   lines up with the composer and never sits over the sidebar footer. */
+@media (min-width: 1024px) {
+  html[data-one-chat-sidebar="open"] [data-app-bottom-shell] {
+    left: 15rem;
+  }
+}
+
 /* Reduced motion keeps the shell present and keyboard-safe, but removes the
    scroll-driven hide transform and all control transitions from this shared
    surface. */
