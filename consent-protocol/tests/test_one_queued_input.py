@@ -258,7 +258,13 @@ def test_reconnect_reads_each_outcome_after_the_run_settled():
     registry.enqueue(OWNER, THREAD, "client-msg-0001", "joins")
     registry.drain(OWNER, THREAD, "run-a")
     registry.enqueue(OWNER, THREAD, "client-msg-0002", "comes back")
-    registry.close_run(OWNER, THREAD, "run-a")
+    # The background run and the stream each close the run, in either order;
+    # both see the same settlement, so the stream's notice is never empty.
+    first = registry.close_run(OWNER, THREAD, "run-a")
+    assert registry.close_run(OWNER, THREAD, "run-a") == first
+    assert first.delivered == ("client-msg-0001",)
+    assert first.returned == ("client-msg-0002",)
+    assert registry.close_run(OWNER, THREAD, "run-a") == queued_input.Settlement()
 
     receipts = registry.status(
         OWNER, THREAD, ["client-msg-0001", "client-msg-0002", "client-msg-0003"]

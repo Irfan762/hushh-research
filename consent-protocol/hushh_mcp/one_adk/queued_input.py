@@ -64,6 +64,7 @@ MAX_OUTCOMES_PER_CONVERSATION = 64
 # Longer than any run can hold a chat key (``chat_key.MAX_BINDING_SECONDS``).
 # An inbox this old belongs to a run that died before it could settle.
 MAX_RUN_SECONDS = 600
+MAX_SETTLED_RUNS = 256
 _CLIENT_ID = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 
 Status = Literal["queued", "delivered", "returned", "withdrawn", "unknown"]
@@ -124,6 +125,10 @@ class QueuedInputRegistry:
         # while a stopped run finishes and the next one waits behind it.
         self._inboxes: dict[_Key, list[_Inbox]] = {}
         self._outcomes: dict[_Key, OrderedDict[str, _Outcome]] = {}
+        # A run is closed twice: by the stream when it sees the terminal event
+        # and by the background run when it ends. Either may be first, so the
+        # first close keeps its settlement for the second, which takes it.
+        self._settled: OrderedDict[tuple[_Key, str], Settlement] = OrderedDict()
 
     # ── run lifecycle ────────────────────────────────────────────────────────
     def open_run(
@@ -137,13 +142,13 @@ class QueuedInputRegistry:
             runs.append(_Inbox(run_id=run_id, accepting=accepting, opened_at=self._clock()))
 
     def close_run(self, owner_id: str, conversation_id: str, run_id: str) -> Settlement:
-        """End a run's inbox. Idempotent: a second close returns an empty settlement."""
+        """End a run's inbox. The second close returns the same settlement; later ones nothing."""
         key = (owner_id, conversation_id)
         with self._lock:
             runs = self._inboxes.get(key, [])
             inbox = next((item for item in runs if item.run_id == run_id), None)
             if inbox is None:
-                return Settlement()
+                return self._settled.pop((key, run_id), Settlement())
             runs.remove(inbox)
             if not runs:
                 self._inboxes.pop(key, None)
@@ -151,7 +156,13 @@ class QueuedInputRegistry:
                 inbox.returned.append(item.client_message_id)
                 self._record(key, item.client_message_id, "returned")
             inbox.pending.clear()
-            return Settlement(delivered=tuple(inbox.delivered), returned=tuple(inbox.returned))
+            settlement = Settlement(
+                delivered=tuple(inbox.delivered), returned=tuple(inbox.returned)
+            )
+            self._settled[(key, run_id)] = settlement
+            while len(self._settled) > MAX_SETTLED_RUNS:
+                self._settled.popitem(last=False)
+            return settlement
 
     # ── person-facing operations ─────────────────────────────────────────────
     def enqueue(
