@@ -65,10 +65,17 @@ describe("explicit memory save", () => {
         enters_next_export_revision: true, summary: "", affected_grant_ids: [], affected_export_ids: [] } }),
       card("unknowns", { write_mode: "do_not_save" }),
       card("secret", { validation_hints: ["sensitive_credential"] }),
+      card("restated", { write_mode: "do_not_save", merge_decision: { merge_mode: "no_op",
+        target_entity_path: "profile.entities.role_senior" } }),
     ]);
     expect(partition.save.map((item) => item.card_id)).toEqual(["role", "pay"]);
     expect(partition.needsOwner.map((item) => item.card_id)).toEqual(["passport", "shared"]);
     expect(partition.skipped.map((item) => item.card_id)).toEqual(["unknowns", "secret"]);
+    // A restatement the merge agent matched to a stored detail is "already known", not a skip.
+    expect(partition.known.map((item) => item.card_id)).toEqual(["restated"]);
+    const timedOut = partitionExplicitSaveCards([card("late", { preview_degraded: true })]);
+    expect(timedOut.unreadable.map((item) => item.card_id)).toEqual(["late"]);
+    expect(timedOut.skipped).toEqual([]);
   });
 
   it("counts only acknowledged commits; a success without a revision is a failure", () => {

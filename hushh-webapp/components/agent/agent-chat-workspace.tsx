@@ -5206,6 +5206,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               vaultKey,
               vaultOwnerToken: token,
               findDuplicate: (candidate) => AgentPkmContextStore.findLocalDuplicate({ userId, candidate }),
+              findReconciliationCandidates: (passage) =>
+                AgentPkmContextStore.findReconciliationCandidates({ userId, text: passage }),
               beforeEffect: guard.assertCurrent,
               isEffectCurrent: guard.isCurrent,
               mayPublish: guard.isCurrent,

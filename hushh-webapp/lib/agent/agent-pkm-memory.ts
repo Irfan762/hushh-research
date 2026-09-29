@@ -19,6 +19,7 @@ import {
 import {
   AgentPkmContextStore,
   type AgentPkmContextCoverage,
+  type PkmReconciliationCandidate,
 } from "@/lib/agent/agent-pkm-context-store";
 import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
 import { humanizeMemorySegment } from "@/lib/pkm/humanize-segment";
@@ -311,6 +312,8 @@ export async function previewAgentPkmMemory(params: {
   ingestionId?: string;
   chunkIndex?: number;
   memoryProfile?: "general" | "kyc_identity_v1";
+  /** Existing details the merge agent may extend or correct (explicit saves). */
+  reconciliationCandidates?: readonly PkmReconciliationCandidate[];
   signal?: AbortSignal;
   isEffectCurrent?: () => boolean;
 }): Promise<AgentPkmPreviewResponse & { cards: AgentPkmPreviewCard[] }> {
@@ -334,6 +337,9 @@ export async function previewAgentPkmMemory(params: {
       current_domains: params.currentDomains,
       current_manifests: (params.currentManifests || []).filter(Boolean).slice(0, 256),
       memory_profile: params.memoryProfile || "general",
+      ...(params.reconciliationCandidates?.length
+        ? { simulated_state: { memories: params.reconciliationCandidates.slice(0, 10) } }
+        : {}),
     }),
   });
 

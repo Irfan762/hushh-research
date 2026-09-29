@@ -62,6 +62,10 @@ export type PkmSaveReceipt = {
 export type ExplicitSavePartition = {
   save: AgentPkmPreviewCard[];
   needsOwner: AgentPkmPreviewCard[];
+  /** The merge agent matched an existing detail and chose no_op: already known. */
+  known: AgentPkmPreviewCard[];
+  /** From a section whose preparation degraded (timeout, fallback): never saved, never "skipped". */
+  unreadable: AgentPkmPreviewCard[];
   skipped: AgentPkmPreviewCard[];
 };
 
@@ -124,8 +128,14 @@ export function buildPkmSaveReceipt(params: {
     });
   }
   receipt.skipped += params.partition.skipped.length;
+  receipt.unchanged += params.partition.known.length;
   for (const block of params.coverage) {
     receipt.unchanged += block.duplicateCount ?? 0;
+    // A degraded section is unread even when it returned cards.
+    if (block.preparationIssue) {
+      receipt.unprepared += 1;
+      continue;
+    }
     if (block.accountedFactCount > 0) continue;
     if (block.disposition === "intentionally_ignored") receipt.skipped += 1;
     else if (block.preparationIssue || block.disposition === "failed" || block.disposition === "review_required") {

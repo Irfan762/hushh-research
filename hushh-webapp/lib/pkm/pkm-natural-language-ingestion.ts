@@ -8,6 +8,7 @@ import {
   type AgentPkmPreviewResponse,
   type AgentPkmSaveResult,
 } from "@/lib/agent/agent-pkm-memory";
+import type { PkmReconciliationCandidate } from "@/lib/agent/agent-pkm-context-store";
 import type { PkmWriteAuthorization } from "@/lib/personal-knowledge-model/mutation-plan";
 import {
   PKM_PROPOSAL_CHARS, planPkmSourceChunks, planPkmSourceSections, planPkmSourceSelection, sourceChunkRange, sourceChunkText,
@@ -295,6 +296,12 @@ export async function prepareNaturalLanguagePkm(params: {
    */
   findDuplicate?: (candidate: string) => PkmNaturalLanguageDuplicateMatch;
   /**
+   * Existing details related to one passage, so the merge agent can extend or
+   * correct instead of creating a second copy. Local selection; see
+   * AgentPkmContextStore.findReconciliationCandidates.
+   */
+  findReconciliationCandidates?: (passage: string) => readonly PkmReconciliationCandidate[];
+  /**
    * Prepare only this previously reported block of `message` (a per-section
    * retry). Coverage ranges stay in `message` coordinates.
    */
@@ -423,6 +430,7 @@ export async function prepareNaturalLanguagePkm(params: {
         ingestionId,
         chunkIndex: (requestSequence += 1),
         memoryProfile: params.memoryProfile,
+        reconciliationCandidates: params.findReconciliationCandidates?.(chunk),
         signal: preparationController.signal,
         isEffectCurrent: params.isEffectCurrent,
       });

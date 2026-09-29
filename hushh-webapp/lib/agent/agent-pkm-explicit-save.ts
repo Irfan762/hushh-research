@@ -33,6 +33,7 @@ import {
   type ExplicitSavePartition,
   type PkmSaveReceipt,
 } from "@/lib/agent/pkm-save-receipt";
+import type { PkmReconciliationCandidate } from "@/lib/agent/agent-pkm-context-store";
 import { fieldKeyIsSensitive, valueIsIdentifierShaped } from "@/lib/consent/field-sensitivity";
 import type { PkmUserConfirmation } from "@/lib/personal-knowledge-model/mutation-plan";
 import {
@@ -54,6 +55,18 @@ function isSecretRejected(card: AgentPkmPreviewCard): boolean {
   return (card.validation_hints || []).some((hint) => String(hint).startsWith("sensitive_"));
 }
 
+/**
+ * The merge agent's own decision that this repeats something stored: no_op
+ * with the existing entity it matched. Its untargeted no_op means "not durable"
+ * and stays a skip. Measured live 2026-09-29: 72 of 73 no_op cards on a re-paste
+ * named a target; 10 of 11 on a first paste did not.
+ */
+function isRestatementOfKnownDetail(card: AgentPkmPreviewCard): boolean {
+  const decision = (card.merge_decision ?? {}) as { merge_mode?: unknown; target_entity_path?: unknown; target_entity_id?: unknown };
+  const mode = String(card.merge_mode || decision.merge_mode || "").trim().toLowerCase();
+  return mode === "no_op" && Boolean(String(decision.target_entity_path || decision.target_entity_id || "").trim());
+}
+
 function hasIdentifierField(value: unknown, path: string[] = []): boolean {
   if (Array.isArray(value)) return value.some((item) => hasIdentifierField(item, path));
   if (value && typeof value === "object") {
@@ -68,9 +81,17 @@ function hasIdentifierField(value: unknown, path: string[] = []): boolean {
 export function partitionExplicitSaveCards(
   cards: readonly AgentPkmPreviewCard[],
 ): ExplicitSavePartition {
-  const partition: ExplicitSavePartition = { save: [], needsOwner: [], skipped: [] };
+  const partition: ExplicitSavePartition = { save: [], needsOwner: [], known: [], unreadable: [], skipped: [] };
   for (const card of cards) {
-    if (isReservedPkmCard(card) || isDegradedPreviewCard(card) || isSecretRejected(card)) {
+    if (isRestatementOfKnownDetail(card)) {
+      partition.known.push(card);
+      continue;
+    }
+    if (isDegradedPreviewCard(card)) {
+      partition.unreadable.push(card);
+      continue;
+    }
+    if (isReservedPkmCard(card) || isSecretRejected(card)) {
       partition.skipped.push(card);
       continue;
     }
@@ -104,6 +125,7 @@ export async function runExplicitPkmSave(params: {
   vaultKey: string;
   vaultOwnerToken: string;
   findDuplicate?: (candidate: string) => PkmNaturalLanguageDuplicateMatch;
+  findReconciliationCandidates?: (passage: string) => readonly PkmReconciliationCandidate[];
   domainTitles?: ReadonlyMap<string, string>;
   beforeEffect?: () => Promise<void>;
   isEffectCurrent?: () => boolean;
@@ -121,6 +143,7 @@ export async function runExplicitPkmSave(params: {
     allowEmpty: true,
     granularity: "section",
     findDuplicate: params.findDuplicate,
+    findReconciliationCandidates: params.findReconciliationCandidates,
     preparationBudgetMs: params.preparationBudgetMs ?? EXPLICIT_SAVE_PREPARATION_BUDGET_MS,
     beforeEffect: params.beforeEffect,
     isEffectCurrent: params.isEffectCurrent,
