@@ -1011,3 +1011,32 @@ async def test_the_offer_revision_reaches_the_screen_and_not_the_model(monkeypat
     assert isinstance(result.public()["offer_revision"], int)
     assert "offer_revision" not in result.model_public()
     assert "offer_revision" not in json.dumps(result.model_public())
+
+
+def test_resolving_a_person_in_between_does_not_invalidate_the_mail_offer(open_app, monkeypatch):
+    """`offer_revision` on EntityContext is shared with people and circles.
+
+    `offer_people` bumps the same counter `offer_mail` does, so validating a tap
+    against the live counter rather than against the offer's own stamped revision
+    would refuse every Open that happened after an unrelated "which Priya did you
+    mean" -- a failure that looks exactly like a superseded list and is not one.
+    """
+    monkeypatch.delenv(ONE_VOICE_MAIL_READS_ENABLED_ENV, raising=False)
+    client, entities = open_app
+    offer = entities.offered_mail
+    assert offer is not None
+    stamped = offer.revision
+
+    # An unrelated disambiguation, which bumps the shared counter.
+    entities.offer_people(["u-priya", "u-priyanka"])
+    assert entities.offer_revision > stamped
+    assert entities.offered_mail is not None
+    assert entities.offered_mail.revision == stamped, "the mail offer must not move"
+
+    response = client.post(
+        "/api/one/voice/mail/open",
+        json={"conversation_id": CONV, "ordinal": 1, "offer_revision": stamped},
+    )
+
+    assert response.status_code == 200, response.text
+    assert _FakeReader.calls[-1]["operation"][1]["message_ids"] == ["id-first"]
