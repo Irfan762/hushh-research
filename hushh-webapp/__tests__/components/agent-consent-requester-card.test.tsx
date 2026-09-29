@@ -395,6 +395,41 @@ describe("InformationRequestReviewView with and without progress", () => {
     expect(card.querySelector("[aria-current='step']")).toHaveAttribute("data-step", "reading");
   });
 
+  // A5 (localhost run 4): asked again while the request waited, One offered a
+  // fresh ask card with Send. The server now reports it as already waiting;
+  // this is its exact output (test_consent_lifecycle_chat.py, TestPropose).
+  it("renders an already waiting request as its living card, with no Send", async () => {
+    const PERSON_REF = "11111111-1111-4111-8111-111111111111";
+    const BUNDLE = "0f0e0d0c-0b0a-4908-8706-050403020100";
+    const alreadyPending = {
+      status: "already_pending",
+      person: { displayName: "Sarah Chen", personRef: PERSON_REF, profilePath: `/people/${PERSON_REF}` },
+      bundleId: BUNDLE,
+      fields: ["Favorite cuisine"],
+      purpose: "To pick a restaurant for dinner",
+      sentAt: "2026-09-29T06:30:00+00:00",
+      livingCard: {
+        personName: "Sarah Chen", purpose: "To pick a restaurant for dinner", durationLabel: "7 days",
+        status: "pending", direction: "outgoing", phase: "submitted", subjectRef: PERSON_REF, bundleId: BUNDLE,
+        fields: [{ label: "Favorite cuisine", domain: "Information" }],
+      },
+      nextStep: "Say in one short line that your request to Sarah Chen for Favorite cuisine is already waiting on them, and that the request card shows where it stands. Do not ask them to tap Send, do not offer to send it again, and do not call another consent action.",
+    };
+    const experience = parseAgentToolResultExperience("propose_information_request", alreadyPending);
+    expect(experience).toMatchObject({
+      type: "one.information_request_review.v1", direction: "outgoing", phase: "submitted",
+      subjectRef: PERSON_REF, bundleId: BUNDLE, status: "pending",
+    });
+    mocks.getInformationRequest.mockResolvedValue({ ...bundle("pending", true), personRef: PERSON_REF, bundleId: BUNDLE });
+    render(<AgentStructuredExperienceView experience={experience!} />);
+    const card = await screen.findByTestId("requester-progress");
+    expect(card).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /send/i })).toBeNull();
+    // Negative control: without its descriptor nothing renders, never an ask card.
+    expect(parseAgentToolResultExperience("propose_information_request",
+      { ...alreadyPending, livingCard: undefined })).toBeNull();
+  });
+
   // Run 4 (R1): the chat knew "Reading…" at 19.1s, but the card waited on its
   // own read of a starved pool and still said "Seen" until 33.5s.
   it("shows Reading… from the doorbell's reading at once, even while its own reads stall", async () => {

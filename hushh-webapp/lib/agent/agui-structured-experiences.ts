@@ -844,6 +844,14 @@ export function parseAgentToolResultExperience(
     }
     return parseInformationRequestProposal(content);
   }
+    // A5 (localhost run 4): asked again while the same request waits, the
+    // server reports it as waiting with the living card's descriptor. It
+    // renders that request's card, never an ask card with Send.
+    if (result?.status === "already_pending") {
+      const living = parseInformationRequestReview(result.livingCard);
+      return living && living.direction === "outgoing" && living.phase === "submitted" && living.bundleId
+        ? living : null;
+    }
   if (toolName === "propose_document_request") {
     const result = unwrapToolResult(content);
     return result?.status === "proposal_ready" ? parseDocumentRequestReview(content) : null;
