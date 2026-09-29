@@ -14,9 +14,10 @@ Move app-review-mode control from frontend build-time variables to backend runti
 
 ## Environment Variables (backend)
 - `APP_REVIEW_MODE`  
-  Truthy values: `1`, `true`, `yes`, `on`. Ignored in production (see below).
+  Truthy values: `1`, `true`, `yes`, `on`. Advertises the reviewer button; it no longer lets the
+  session route mint without a credential. Ignored in production (see below).
 - `REVIEWER_UID`
-- `REVIEWER_VAULT_PASSPHRASE` (non-production reviewer smoke bypass only)
+- `REVIEWER_VAULT_PASSPHRASE` (non-production only): the credential the session route requires.
 
 ## Response
 - When disabled:
@@ -33,9 +34,17 @@ Move app-review-mode control from frontend build-time variables to backend runti
 }
 ```
 
-## Session mint response
+## Session mint request and response
 
 `POST /api/app-config/review-mode/session`
+
+```json
+{
+  "subject": "reviewer",
+  "smoke_passphrase": "<the reviewer's vault passphrase>",
+  "reviewer_uid": "<optional: a configured reviewer uid>"
+}
+```
 
 ```json
 {
@@ -43,12 +52,48 @@ Move app-review-mode control from frontend build-time variables to backend runti
 }
 ```
 
+### The mint requires the reviewer credential (2026-09-29)
+
+Outside production the route mints only for a request that proves a configured reviewer pair:
+`smoke_passphrase` must equal that pair's `REVIEWER_VAULT_PASSPHRASE` (or the counterpart's),
+compared in constant time as UTF-8 bytes, under the route's existing `10/minute` limit. A request
+naming a configured `reviewer_uid` must carry **that** pair's passphrase. A bare request, a wrong
+passphrase, or a backend holding no passphrase gets `403 Review session credential required`,
+whatever `APP_REVIEW_MODE` says, and logs `app_review_mode.session_refused
+reason=credential_missing|credential_mismatch|credential_not_configured`. Neither the passphrase
+nor the token is ever logged. The `?local=1` offline answer sits behind the same check, so it no
+longer discloses `REVIEWER_UID` to an unauthenticated caller.
+
+The rate limit keys unauthenticated callers by remote address and is per process unless
+`RATE_LIMIT_STORAGE_URI` points at shared storage, so it bounds guessing per instance rather than
+across the fleet. The passphrase must stay long enough that this does not matter.
+
+Callers and where each gets the credential (process env or the env resolver only, never a file
+or a log):
+
+| Caller | Credential source |
+| --- | --- |
+| Native test bootstrap (`hushh-webapp/components/app-ui/native-test-bootstrap.tsx`), iOS and Android test bridges, `hushh-webapp/scripts/perf/ios-reviewer-signin.sh`, perf cards | Bridge `vaultPassphrase` from launch arguments, fed from `REVIEWER_VAULT_PASSPHRASE` / `HUSHH_UI_TEST_REVIEWER_VAULT_PASSPHRASE` in process env |
+| Reviewer rehearsal harness (`.codex/skills/reviewer-app-testing/scripts/reviewer-session-harness.mjs`) | Bridge `reviewerSessionPassphrase`, a mint-only field, so the locked-vault context can authenticate without enabling auto-unlock |
+| "Continue as reviewer" in native test mode (`hushh-webapp/components/onboarding/AuthStep.tsx`) | The same bridge fields |
+| `hushh-webapp/scripts/perf/resolve-reviewer-uid.mjs` | Process env, already |
+| `hushh-webapp/scripts/testing/export-reviewer-test-env.mjs` | The env resolver the others are loaded from |
+| Localhost backend | Start it from a shell that evaluated the resolver's output (`scripts/env/reviewer_mode.sh` prints the command); the overlay file still never holds the passphrase |
+
+**Known gap: the plain "Continue as reviewer" button on a UAT build.** Outside native test mode
+the button sends no credential, so on a backend with this change it gets `403`. That includes an
+Apple Beta App Review of a UAT-backed TestFlight build, if the reviewer uses the button. The
+proposed fix is a passphrase field behind the button: the reviewer already receives the vault
+passphrase in the beta review notes to unlock the vault, so the same value proves the mint. Until
+that ships, do not deploy this change to UAT while a TestFlight build is awaiting Apple beta
+review, or keep that review on a dedicated account that signs in normally.
+
 ## Notes
 - This endpoint is included via the shared health router.
 - Frontend web requests can proxy through Next API routes.
 - Native iOS/Android clients can call backend directly.
 - No reviewer password is exposed to clients.
-- The passphrase bypass exists only so UAT/browser smoke can mint the same reviewer token without creating another user.
+- The passphrase is the mint credential on every non-production lane; there is no bare mint.
 - `UAT_SMOKE_*` and `KAI_TEST_*` are deprecated one-release aliases.
 
 ## Production: backend-only review (founder decision, 2026-09-29)
@@ -98,8 +143,9 @@ Production has no runtime use for either, and `config/deploy-env-coverage.json` 
 every production deploy (its legacy-fallback loop); that is expected and binds nothing.
 
 **Never reuse the production reviewer as a UAT or dev `REVIEWER_UID`.** UAT and production share
-the Firebase authority `hushh-pda`. A UID configured on UAT can be signed into from UAT, and the
-only thing keeping that session off production is the lane claim described below.
+the Firebase authority `hushh-pda`. A UID configured on UAT can be signed into from UAT by anyone
+holding its passphrase, and the only thing keeping that session off production is the lane claim
+described below.
 
 ## Lane containment: one Firebase authority (2026-09-29)
 
