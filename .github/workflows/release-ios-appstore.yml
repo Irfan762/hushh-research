@@ -617,6 +617,33 @@ jobs:
             -authenticationKeyIssuerID "${ASC_ISSUER_ID}" \
             2>&1 | tee "${RUNNER_TEMP}/xcodebuild-export.log"
 
+      # The same uploaded build can go to the TestFlight groups through
+      # resume-ios-testflight.yml, which reads this receipt (same shape the
+      # TestFlight lane writes). That is how a production-backed build reaches
+      # testers without the UAT-only TestFlight lane building a second binary.
+      - name: Preserve uploaded build identity for TestFlight distribution
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ steps.build_number.outputs.next_build }}
+        run: |
+          set -euo pipefail
+          RELEASE_SHA="$(git rev-parse HEAD)" python3 - <<'PY'
+          import json, os, pathlib, re
+          version = re.search(r'MARKETING_VERSION\s*=\s*([^;]+)', pathlib.Path(os.environ['PBXPROJ']).read_text()).group(1).strip()
+          receipt = dict(source_sha=os.environ['RELEASE_SHA'], build_number=os.environ['BUILD_NUMBER'], marketing_version=version, bundle_id=os.environ['IOS_BUNDLE_ID'])
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'testflight-upload-receipt.json').write_text(json.dumps(receipt))
+          PY
+
+      - name: Upload TestFlight distribution receipt
+        if: ${{ github.event.inputs.dry_run != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: testflight-upload-receipt
+          path: ${{ runner.temp }}/testflight-upload-receipt.json
+          retention-days: 90
+          if-no-files-found: error
+
       - name: Prepare App Store version (set What's New, attach build; one-click submit)
         id: appstore
         if: ${{ github.event.inputs.dry_run != 'true' }}

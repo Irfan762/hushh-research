@@ -45,6 +45,11 @@ for `https://one.hushh.ai` and the production API:
   talks to. A person who used a UAT-backed App Store build and updates to a production-backed one
   signs in with the same Firebase identity, but reaches the production database. Treat the first
   production-backed release as a decision about those people's information, not only a build flag.
+- **TestFlight for the same binary:** every non-dry run also uploads a `testflight-upload-receipt`
+  artifact. `gh workflow run resume-ios-testflight.yml --ref main -f upload_run_id=<App Store run id>`
+  then distributes that exact build to the internal and external TestFlight groups.
+  `ship-ios-testflight.yml` still builds a UAT binary only; do not run it for a
+  production-backed release, or testers alternate between two databases.
 
 The build still archives with **production APNs** entitlements (correct for *any* App Store binary —
 push on a store build routes through Apple's PRODUCTION APNs). That means the **shared Firebase project
