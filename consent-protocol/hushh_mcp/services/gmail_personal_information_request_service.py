@@ -257,6 +257,51 @@ def _kyc_identity_fields() -> dict[str, dict[str, Any]]:
     return _KYC_IDENTITY_FIELDS
 
 
+@dataclass(frozen=True)
+class SensitiveRequestAssessment:
+    """One message's classification, in terms that are safe to show or speak.
+
+    Deliberately not ``_Classification``. That carries
+    ``requested_field_labels``, which the model authors as free text: the
+    validator dedupes them and caps them at 12 x 120 characters but binds them to
+    no vocabulary, unlike ``requested_domains``, which is enum-checked against
+    ``_DOMAIN_NAMES``. On the owner-only queue a model-authored string is a visual
+    risk; spoken aloud it is a channel from an untrusted sender into what One
+    says. ``requested_fields`` here is registry-authored instead.
+    """
+
+    is_information_request: bool
+    confidence: float
+    requested_domains: tuple[str, ...]
+    requested_fields: tuple[str, ...]
+
+
+def _registry_field_label(field_id: str) -> str:
+    """The KYC registry's own name for a field, in words a person would use."""
+    field = _kyc_identity_fields().get(field_id) or {}
+    leaf = (_text(field.get("path")) or field_id).rsplit(".", 1)[-1]
+    words = leaf.replace("_", " ").strip()
+    return words[:1].upper() + words[1:] if words else ""
+
+
+def safe_requested_fields(labels: Iterable[str]) -> tuple[str, ...]:
+    """Registry-authored names for what a sender asked the owner to provide.
+
+    Every model-authored label is resolved against the KYC identity registry and
+    replaced by the registry's own name for the field it matched. A label that
+    resolves to nothing is dropped rather than shown: the cost of dropping one is
+    a slightly thinner card, and the cost of keeping one is letting a sender
+    choose words One will read out.
+    """
+    resolved: list[str] = []
+    for label in labels:
+        for field_id in _canonical_kyc_field_ids(str(label)):
+            name = _registry_field_label(field_id)
+            if name and name not in resolved:
+                resolved.append(name)
+    return tuple(resolved[:12])
+
+
 def _canonical_kyc_field_ids(value: str) -> tuple[str, ...]:
     normalized = _normalized_kyc_label(value)
     if not normalized:
@@ -1887,6 +1932,39 @@ class PersonalGmailInformationRequestService:
             candidate_scope_count=len(candidates),
         )
         return str(row["workflow_id"]) if row else None
+
+    async def assess_without_recording(self, message: dict[str, Any]) -> SensitiveRequestAssessment:
+        """Classify one message and persist nothing at all.
+
+        The monitor's own path cannot be reused for an on-demand read, for two
+        reasons that are easy to miss and expensive to discover:
+
+        ``_classify_messages`` skips every message whose source fingerprint is
+        already recorded, so a question asked about mail the monitor has seen
+        would answer from an empty list rather than from a classification.
+
+        And it records that fingerprint. ``_purge_expired_metadata`` deliberately
+        retains scan state, so writing it from a read would mark those messages
+        permanently unchanged and the owner's monitored queue would never surface
+        them again. Nothing would report it: every count stays healthy.
+
+        So this calls the classifier and returns. It reads no preference, takes no
+        ``expected_generation``, acquires no pool and writes no row, which means
+        it also works with monitoring switched off -- an owner asking a question is
+        not an owner opting into monitoring. Callers must supply their own
+        concurrency bound: ``_CLASSIFIER_CONCURRENCY`` is applied in
+        ``_classify_messages``, not here.
+
+        Raises ``PersonalGmailInformationRequestError`` when the classifier is
+        unavailable. A failed classification is unknown, never "not sensitive".
+        """
+        classification = await self._classify(message)
+        return SensitiveRequestAssessment(
+            is_information_request=classification.is_information_request,
+            confidence=classification.confidence,
+            requested_domains=classification.requested_domains,
+            requested_fields=safe_requested_fields(classification.requested_field_labels),
+        )
 
     async def _classify(self, message: dict[str, Any]) -> _Classification:
         headers = _header_map(message)
