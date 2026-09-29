@@ -2,9 +2,11 @@ import { isCurrentPersonExport } from "@/lib/consent/person-export-binding";
 import { projectGrantPayload } from "@/lib/consent/project-grant-payload";
 import { OneKycClientZkService } from "@/lib/services/one-kyc-client-zk-service";
 import {
-  PersonProfileService,
-  type InformationRequestBundle,
-} from "@/lib/services/person-profile-service";
+  readInformationRequest,
+  readInformationRequestExports,
+  readSharedWithMe,
+} from "@/lib/consent/information-request-reads";
+import type { InformationRequestBundle } from "@/lib/services/person-profile-service";
 
 /**
  * Contract C7. `sensitive` values are opened and shown on this device only;
@@ -117,7 +119,9 @@ export async function openGrantedPersonInformation(input: {
   isCurrent?: () => boolean;
 }): Promise<{ values: OpenedPersonInformation[]; expiresAtMs: number; endedRequestIds: string[] } | null> {
   const current = input.isCurrent ?? (() => true);
-  const bundle = await PersonProfileService.getInformationRequest({
+  // Shares a read already on the wire (the doorbell's, the access watch's):
+  // the re-check after decrypting below is the one that must be fresh.
+  const bundle = await readInformationRequest({
     bundleId: input.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
   });
@@ -142,7 +146,7 @@ export async function openGrantedPersonInformation(input: {
   });
   if (!current()) return null;
   if (!connector) throw new Error("Connection unavailable");
-  const exports = await PersonProfileService.getInformationRequestExports({
+  const exports = await readInformationRequestExports({
     bundleId: bundle.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
   });
@@ -173,9 +177,10 @@ export async function openGrantedPersonInformation(input: {
     });
     expiresAtMs = Math.min(expiresAtMs, exact.encryptedExport.export_envelope.aad.expires_at_ms);
   }
-  const latest = await PersonProfileService.getInformationRequest({
+  const latest = await readInformationRequest({
     bundleId: bundle.bundleId,
     vaultOwnerToken: input.vaultOwnerToken,
+    fresh: true,
   });
   if (!current()) return null;
   if (
@@ -201,9 +206,13 @@ export type SharedItemRef = {
   domain?: string | null;
 };
 
+/**
+ * `bundleId` and `requestId` name what the item resolved to, so the card can
+ * watch that access for its end even when the item named no bundle itself.
+ */
 export type SharedItemOpenResult =
-  | { key: string; state: "open"; value: OpenedPersonInformation; expiresAtMs: number }
-  | { key: string; state: "ended" }
+  | { key: string; state: "open"; value: OpenedPersonInformation; expiresAtMs: number; bundleId: string; requestId: string }
+  | { key: string; state: "ended"; bundleId?: string; requestId?: string }
   | { key: string; state: "unavailable" };
 
 /**
@@ -229,7 +238,7 @@ export async function openSharedItems(input: {
     else unresolved.push(item);
   }
   if (unresolved.length) {
-    const shares = (await PersonProfileService.listSharedWithMe({ vaultOwnerToken: input.vaultOwnerToken }))
+    const shares = (await readSharedWithMe({ vaultOwnerToken: input.vaultOwnerToken }))
       .filter((share) => share.personRef === input.subjectRef);
     if (!current()) return null;
     for (const item of unresolved) {
@@ -263,9 +272,9 @@ export async function openSharedItems(input: {
         const requestId = requestIdFor(item);
         const value = opened.values.find((entry) => entry.requestId === requestId);
         results.set(item.key, value
-          ? { key: item.key, state: "open", value, expiresAtMs: opened.expiresAtMs }
+          ? { key: item.key, state: "open", value, expiresAtMs: opened.expiresAtMs, bundleId, requestId }
           : opened.endedRequestIds.includes(requestId)
-            ? { key: item.key, state: "ended" }
+            ? { key: item.key, state: "ended", bundleId, requestId }
             : { key: item.key, state: "unavailable" });
       }
     } catch {

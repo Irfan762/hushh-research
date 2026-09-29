@@ -46,6 +46,7 @@ import { parseScopeProposal } from "@/lib/agent/scope-proposal";
 import { parseAgentToolResultExperience } from "@/lib/agent/agui-structured-experiences";
 import { DecryptedRecordContent } from "@/components/connections/decrypted-grant-card";
 import { clearSentInformationRequests } from "@/lib/agent/consent-continuation";
+import { readInformationRequest } from "@/lib/consent/information-request-reads";
 import { AgentTurnStreamPanel } from "@/components/agent/agent-turn-stream-panel";
 import { AppStreamPanel } from "@/components/app-ui/stream-progress-panel";
 import { SelectionChip } from "@/components/agent/selection-chip";
@@ -384,6 +385,29 @@ describe("InformationRequestReviewView with and without progress", () => {
     expect(screen.getByText("Food preferences from Kushal Trivedi")).toBeInTheDocument();
     expect(screen.getByText("Access ends Oct 5")).toBeInTheDocument();
     expect(card.querySelector("[aria-current='step']")).toHaveAttribute("data-step", "reading");
+  });
+
+  // Run 4 (R1): the chat knew "Reading…" at 19.1s, but the card waited on its
+  // own read of a starved pool and still said "Seen" until 33.5s.
+  it("shows Reading… from the doorbell's reading at once, even while its own reads stall", async () => {
+    mocks.getInformationRequest.mockResolvedValueOnce(bundle("pending", true));
+    let phase: "reading" | null = null;
+    const card = () => (
+      <ConsentCardPhaseContext.Provider value={(id) => id === bundleId ? phase : null}>
+        <AgentStructuredExperienceView experience={restored} />
+      </ConsentCardPhaseContext.Provider>
+    );
+    const view = render(card());
+    expect(await screen.findByTestId("requester-progress")).toHaveAttribute("data-outcome", "pending");
+    // The doorbell reads the approval; every read after it stalls.
+    mocks.getInformationRequest.mockResolvedValueOnce(bundle("granted", true));
+    mocks.getInformationRequest.mockReturnValue(new Promise(() => undefined));
+    await act(async () => { await readInformationRequest({ bundleId, vaultOwnerToken: "test-owner-token" }); });
+    phase = "reading";
+    view.rerender(card());
+    const progress = screen.getByTestId("requester-progress");
+    expect(progress).toHaveAttribute("data-outcome", "granted");
+    expect(within(progress).getByRole("status")).toHaveTextContent("Reading what Kushal shared…");
   });
 
   it("drops revealed values and shows Access ended when the owner revokes", async () => {
