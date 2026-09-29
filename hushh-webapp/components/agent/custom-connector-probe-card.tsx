@@ -4,6 +4,7 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Rea
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
 import { Button } from "@/lib/morphy-ux/button";
+import { MaterialRipple } from "@/lib/morphy-ux/material-ripple";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ConnectedSystemsAgentIcon, EyeIcon, KeyIcon, PencilIcon } from "@/components/icons";
@@ -75,9 +76,11 @@ function ToolGroup({ label, icon, tools }: {
         ))}
       </ul>
       {tools.length > TOOLS_PREVIEW ? (
-        <button type="button" className="ml-11 flex h-11 items-center text-xs font-medium text-primary"
+        <button type="button" className="relative ml-11 flex h-11 items-center overflow-hidden text-xs font-medium text-primary"
           onClick={() => setExpanded(value => !value)}>
           {expanded ? "Show fewer" : `Show all ${tools.length}`}
+          {/* Flat Morphy ripple; no glass material (reverted 2026-09-20). */}
+          <MaterialRipple variant="none" effect="fill" />
         </button>
       ) : null}
     </div>
