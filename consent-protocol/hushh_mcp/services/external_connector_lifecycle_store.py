@@ -588,7 +588,13 @@ class ExternalConnectorLifecycleStore:
         )
 
     async def record_revocation(
-        self, *, user_id: str, connector_id: str, generation: int, outcome: str
+        self,
+        *,
+        user_id: str,
+        connector_id: str,
+        generation: int,
+        outcome: str,
+        release_fence: bool = False,
     ) -> bool:
         if outcome not in {"revoked", "failed", "unavailable"}:
             raise ValueError("invalid revocation outcome")
@@ -598,7 +604,7 @@ class ExternalConnectorLifecycleStore:
                     connection,
                     """
             UPDATE user_external_connector_connections SET revocation_outcome = :outcome,
-                revocation_pending_until = CASE WHEN :outcome = 'revoked' THEN NULL
+                revocation_pending_until = CASE WHEN :outcome = 'revoked' OR :release_fence THEN NULL
                   ELSE revocation_pending_until END
             WHERE user_id = :user_id AND connector_id = :connector_id
               AND connection_generation = :generation AND status = 'revoked'
@@ -609,6 +615,7 @@ class ExternalConnectorLifecycleStore:
                         connector_id=connector_id,
                         generation=generation,
                         outcome=outcome,
+                        release_fence=release_fence,
                     ),
                 )
                 is not None

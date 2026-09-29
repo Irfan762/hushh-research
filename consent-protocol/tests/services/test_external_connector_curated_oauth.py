@@ -692,7 +692,10 @@ async def test_current_credential_returns_cached_credential_when_far_from_expiry
 
 
 @pytest.mark.asyncio
-async def test_current_credential_refresh_in_progress_when_claim_fails(service, connector):
+async def test_current_credential_refresh_in_progress_when_claim_fails(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth.asyncio, "sleep", AsyncMock())
     hash_ = oauth.curated_policy_hash(connector)
     row = _row(
         verified_policy_hash=hash_,
@@ -924,7 +927,11 @@ async def test_disconnect_records_revocation_when_a_credential_existed(service):
         "revocationOutcome": "unavailable",
     }
     service.lifecycle.record_revocation.assert_awaited_once_with(
-        user_id="u1", connector_id="hubspot", generation=6, outcome="unavailable"
+        user_id="u1",
+        connector_id="hubspot",
+        generation=6,
+        outcome="unavailable",
+        release_fence=True,
     )
 
 
@@ -1047,3 +1054,158 @@ def test_committed_hubspot_descriptor_matches_its_runtime_pin():
         row.oauth_client_id_env,
         row.oauth_client_secret_env,
     ) == oauth._CURATED_OAUTH_RUNTIME_PINS["hubspot"]
+
+
+# --- refresh robustness (review findings) ------------------------------------
+
+
+def _near_expiry_setup(service, connector):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(
+        verified_policy_hash=hash_,
+        credential_expires_at=datetime.now(UTC) + timedelta(seconds=10),
+        user_id="u1",
+        connector_id="hubspot",
+    )
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service._configuration = AsyncMock(return_value=(connector, "client-1", "secret-1"))
+    service.credentials.open_credential = Mock(
+        return_value={"oauthClientId": "client-1", "accessToken": "old", "refreshToken": "old-r"}
+    )
+    service._post = AsyncMock(
+        return_value={
+            "access_token": "new",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+            "refresh_token": "rotated",
+        }
+    )
+    service.credentials.seal_credential = Mock(
+        return_value={
+            "ciphertext": "c",
+            "iv": "i",
+            "algorithm": "a",
+            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+        }
+    )
+    return row
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_loser_uses_the_winners_fresh_credential(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth.asyncio, "sleep", AsyncMock())
+    stale = _near_expiry_setup(service, connector)
+    fresh = {**stale, "credential_expires_at": datetime.now(UTC) + timedelta(hours=1)}
+    service.lifecycle.read = AsyncMock(side_effect=[stale, fresh])
+    service.lifecycle.claim_refresh = AsyncMock(return_value=None)
+    service.credentials.open_credential = Mock(
+        return_value={"oauthClientId": "client-1", "accessToken": "won", "refreshToken": "r"}
+    )
+
+    row, credential = await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    assert row is fresh and credential["accessToken"] == "won"
+    service._post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_loser_rejects_a_credential_for_another_client(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth.asyncio, "sleep", AsyncMock())
+    stale = _near_expiry_setup(service, connector)
+    fresh = {**stale, "credential_expires_at": datetime.now(UTC) + timedelta(hours=1)}
+    service.lifecycle.read = AsyncMock(side_effect=[stale, fresh, fresh, fresh])
+    service.lifecycle.claim_refresh = AsyncMock(return_value=None)
+    service.credentials.open_credential = Mock(
+        side_effect=[
+            {"oauthClientId": "client-1", "accessToken": "old", "refreshToken": "r"},
+            {"oauthClientId": "other-client", "accessToken": "x", "refreshToken": "r"},
+        ]
+    )
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="refresh_in_progress"):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+
+@pytest.mark.asyncio
+async def test_rotated_token_persist_is_retried_after_a_transient_storage_error(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth.asyncio, "sleep", AsyncMock())
+    stale = _near_expiry_setup(service, connector)
+    fresh = {**stale, "credential_expires_at": datetime.now(UTC) + timedelta(hours=1)}
+    service.lifecycle.read = AsyncMock(side_effect=[stale, fresh])
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(
+        side_effect=[oauth.ConnectorLifecycleError("connector_storage_unavailable"), True]
+    )
+
+    await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    assert service.lifecycle.settle_refresh.await_count == 2
+    for call in service.lifecycle.settle_refresh.await_args_list:
+        assert call.kwargs["envelope"] is service.credentials.seal_credential.return_value
+
+
+@pytest.mark.asyncio
+async def test_persist_failure_after_provider_rotation_releases_the_lease(
+    service, connector, monkeypatch
+):
+    monkeypatch.setattr(oauth.asyncio, "sleep", AsyncMock())
+    _near_expiry_setup(service, connector)
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    storage_down = oauth.ConnectorLifecycleError("connector_storage_unavailable")
+
+    async def settle(**kwargs):
+        if kwargs.get("envelope") is not None:
+            raise storage_down
+        return True
+
+    service.lifecycle.settle_refresh = AsyncMock(side_effect=settle)
+
+    with pytest.raises(oauth.ConnectorLifecycleError):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    persist_attempts = [
+        c for c in service.lifecycle.settle_refresh.await_args_list if c.kwargs.get("envelope")
+    ]
+    assert len(persist_attempts) == 3
+    release = service.lifecycle.settle_refresh.await_args_list[-1].kwargs
+    assert release.get("envelope") is None and release.get("rejected", False) is False
+
+
+@pytest.mark.asyncio
+async def test_cancelled_refresh_still_releases_the_lease(service, connector):
+    import asyncio
+
+    _near_expiry_setup(service, connector)
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+    service._post = AsyncMock(side_effect=asyncio.CancelledError())
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    service.lifecycle.settle_refresh.assert_awaited_once()
+    assert service.lifecycle.settle_refresh.await_args.kwargs.get("envelope") is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_uses_a_shorter_provider_timeout_than_the_turn_deadline(service, connector):
+    _near_expiry_setup(service, connector)
+    stale_then_fresh = [
+        service.lifecycle.read.return_value,
+        {
+            **service.lifecycle.read.return_value,
+            "credential_expires_at": datetime.now(UTC) + timedelta(hours=1),
+        },
+    ]
+    service.lifecycle.read = AsyncMock(side_effect=stale_then_fresh)
+    service.lifecycle.claim_refresh = AsyncMock(return_value=True)
+    service.lifecycle.settle_refresh = AsyncMock(return_value=True)
+
+    await service.current_credential(connector_id="hubspot", user_id="u1")
+
+    assert service._post.await_args.kwargs["timeout_seconds"] == oauth._REFRESH_POST_TIMEOUT < 20

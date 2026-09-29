@@ -48,7 +48,10 @@ from hushh_mcp.services.external_connector_credentials_service import (
 from hushh_mcp.services.external_connector_google_oauth import (
     registered_redirect_uris as _runtime_redirect_uris,
 )
-from hushh_mcp.services.external_connector_lifecycle_store import ExternalConnectorLifecycleStore
+from hushh_mcp.services.external_connector_lifecycle_store import (
+    ConnectorLifecycleError,
+    ExternalConnectorLifecycleStore,
+)
 from hushh_mcp.services.external_connector_registry_service import (
     ExternalConnectorRegistryService,
     ExternalMcpConnectorDefinition,
@@ -64,6 +67,9 @@ from hushh_mcp.services.mcp_public_http import (
 
 RESPONSE_LIMIT = 256 * 1024
 _REFRESH_MARGIN = timedelta(seconds=120)
+# Shorter than the 20s chat-turn deadline that wraps a refresh, so a slow provider
+# fails here (and releases the lease) instead of being cancelled mid-flight.
+_REFRESH_POST_TIMEOUT = 12.0
 _FEATURE = "curated_mcp_connectors"
 # The registry is operator-writable and intentionally contains no secrets.
 # It therefore cannot itself decide which process environment variable is
@@ -260,7 +266,9 @@ class ExternalConnectorCuratedOAuth:
             "expiresAt": attempt["expires_at"].isoformat(),
         }
 
-    async def _post(self, url: str, *, token_url: str, data: dict[str, str]) -> dict[str, Any]:
+    async def _post(
+        self, url: str, *, token_url: str, data: dict[str, str], timeout_seconds: float = 20
+    ) -> dict[str, Any]:
         # Fixed to the connector's own configured token endpoint, no
         # redirects, proxy inheritance, or response/request-body logging.
         if url != token_url:
@@ -273,7 +281,7 @@ class ExternalConnectorCuratedOAuth:
             ) from None
         try:
             async with (
-                asyncio.timeout(20),
+                asyncio.timeout(timeout_seconds),
                 create_public_mcp_http_client(
                     timeout=httpx.Timeout(15),
                     max_response_bytes=RESPONSE_LIMIT,
@@ -443,7 +451,14 @@ class ExternalConnectorCuratedOAuth:
         )
         lease_id = secrets.token_urlsafe(24)
         if not await self.lifecycle.claim_refresh(**common, lease_id=lease_id):
-            raise CuratedConnectorOAuthError("refresh_in_progress", status_code=409)
+            # Another caller holds the lease (parallel tool calls at the margin).
+            # Give it a moment to persist, then use its fresh credential.
+            return await self._await_concurrent_refresh(
+                user_id=user_id,
+                connector_id=connector_id,
+                generation=row["connection_generation"],
+                client_id=client_id,
+            )
         try:
             token = await self._post(
                 connector.oauth_token_url,
@@ -454,6 +469,7 @@ class ExternalConnectorCuratedOAuth:
                     client_id=client_id,
                     client_secret=client_secret,
                 ),
+                timeout_seconds=_REFRESH_POST_TIMEOUT,
             )
             refreshed = {**credential, **self._token_fields(token)}
             # RFC 6749 doesn't require a refresh grant to return a new
@@ -469,14 +485,16 @@ class ExternalConnectorCuratedOAuth:
                 secret=refreshed,
                 expires_at=datetime.fromisoformat(refreshed["expiresAt"]),
             )
-            if not await self.lifecycle.settle_refresh(
-                **common, lease_id=lease_id, envelope=encrypted
-            ):
-                raise CuratedConnectorOAuthError("connection_changed", status_code=409)
+            await self._persist_refresh(common, lease_id, encrypted)
         except CuratedConnectorOAuthError as error:
             await self.lifecycle.settle_refresh(
                 **common, lease_id=lease_id, rejected=str(error) == "grant_rejected"
             )
+            raise
+        except BaseException:
+            # Cancellation (the chat turn's deadline) or a storage failure: never
+            # leave the lease held. Shielded so a cancel cannot skip the release.
+            await asyncio.shield(self._release_lease(common, lease_id))
             raise
         updated = await self.lifecycle.read(user_id=user_id, connector_id=connector_id)
         if (
@@ -488,6 +506,49 @@ class ExternalConnectorCuratedOAuth:
         return updated, self.credentials.open_credential(
             user_id=user_id, connector_id=connector_id, row=updated
         )
+
+    async def _persist_refresh(self, common: dict[str, Any], lease_id: str, envelope: dict) -> None:
+        """Store the rotated credential. The provider has already spent the old
+        single-use refresh token, so a transient storage error is retried."""
+        for attempt in range(3):
+            try:
+                stored = await self.lifecycle.settle_refresh(
+                    **common, lease_id=lease_id, envelope=envelope
+                )
+            except ConnectorLifecycleError:
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.25 * (attempt + 1))
+                continue
+            if not stored:
+                raise CuratedConnectorOAuthError("connection_changed", status_code=409)
+            return
+
+    async def _release_lease(self, common: dict[str, Any], lease_id: str) -> None:
+        try:
+            await self.lifecycle.settle_refresh(**common, lease_id=lease_id)
+        except Exception:
+            logger.warning("curated_connector_oauth.lease_release_failed")
+
+    async def _await_concurrent_refresh(
+        self, *, user_id: str, connector_id: str, generation: int, client_id: str
+    ) -> tuple[dict, dict]:
+        for delay in (0.3, 0.5, 0.8):
+            await asyncio.sleep(delay)
+            fresh = await self.lifecycle.read(user_id=user_id, connector_id=connector_id)
+            if (
+                fresh
+                and fresh["connection_generation"] == generation
+                and fresh["status"] in {"connected", "verifying"}
+                and fresh["credential_expires_at"] > datetime.now(UTC) + _REFRESH_MARGIN
+            ):
+                credential = self.credentials.open_credential(
+                    user_id=user_id, connector_id=connector_id, row=fresh
+                )
+                if credential.get("oauthClientId") != client_id:
+                    break
+                return fresh, credential
+        raise CuratedConnectorOAuthError("refresh_in_progress", status_code=409)
 
     async def verify(self, *, connector_id: str, user_id: str) -> bool:
         """Prove the credential actually reaches the connector's MCP
@@ -517,5 +578,8 @@ class ExternalConnectorCuratedOAuth:
                 connector_id=connector_id,
                 generation=old["connection_generation"] + 1,
                 outcome=outcome,
+                # No provider revoke exists to wait on, so do not hold the
+                # reconnect fence that a real revocation attempt would clear.
+                release_fence=True,
             )
         return {"status": "revoked", "connectorId": connector_id, "revocationOutcome": outcome}
