@@ -1483,3 +1483,110 @@ async def test_confirmed_resume_still_consumes_its_receipt(boundary_toolset):
         h.audit.info.assert_not_called()
     finally:
         await h.toolset.close()
+
+
+# --- curated non-Google OAuth connector (HubSpot-shaped) ---------------------
+
+
+def _curated_definition(**overrides):
+    base = {
+        "owner_user_id": None,
+        "connector_id": "hubspot",
+        "is_active": True,
+        "transport_kind": "mcp",
+        "mcp_endpoint": "https://mcp.hubspot.com/",
+        "auth_style": "oauth",
+        "oauth_authorize_url": "https://mcp.hubspot.com/oauth/authorize/user",
+        "oauth_token_url": "https://mcp.hubspot.com/oauth/v3/token",
+        "oauth_scopes": (),
+        "oauth_client_id_env": "HUBSPOT_OAUTH_CLIENT_ID",
+        "oauth_client_secret_env": "HUBSPOT_OAUTH_CLIENT_SECRET",
+        "capability_policy": {"version": 1, "chat": "reviewed"},
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+@pytest.mark.parametrize(
+    "overrides,flag,expected",
+    [
+        ({}, True, True),
+        ({}, False, False),
+        ({"capability_policy": {}}, True, False),
+        ({"is_active": False}, True, False),
+        ({"auth_style": "api_key"}, True, False),
+        ({"transport_kind": "google_drive_rest"}, True, False),
+    ],
+)
+def test_curated_oauth_admission_matrix(monkeypatch, overrides, flag, expected):
+    from hushh_mcp.one_adk import governed_mcp_toolset as module
+
+    monkeypatch.setattr(module, "connector_feature_enabled", lambda *_: flag)
+    assert native_registration_admitted(_curated_definition(**overrides), "owner") is expected
+
+
+def _wire_curated(registry_harness, monkeypatch, *, row, credential):
+    from hushh_mcp.one_adk import governed_mcp_toolset as module
+    from hushh_mcp.services import external_connector_oauth_service as oauth_service
+    from hushh_mcp.services.external_connector_curated_oauth import curated_policy_hash
+
+    definition = _curated_definition()
+    registry_harness.registry.get_connector.return_value = definition
+    monkeypatch.setattr(module, "connector_feature_enabled", lambda *_: True)
+    adapter = SimpleNamespace(current_credential=AsyncMock(return_value=(row, credential)))
+    monkeypatch.setattr(
+        oauth_service,
+        "get_external_connector_oauth_service",
+        lambda: SimpleNamespace(curated=lambda: adapter),
+    )
+    return definition, adapter, curated_policy_hash(definition)
+
+
+async def test_curated_oauth_resolves_reviewed_bearer_binding(registry_harness, monkeypatch):
+    row = dict(
+        status="connected", connection_generation=5, credential_version=7, verified_policy_hash=None
+    )
+    definition, adapter, hash_ = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    row["verified_policy_hash"] = hash_
+    result = await resolve_registered_connection(registry_harness.context, "hubspot")
+    adapter.current_credential.assert_awaited_once_with(connector_id="hubspot", user_id="owner")
+    assert result.headers == {"Authorization": "Bearer synthetic-token"}
+    assert result.binding.generation == 5 and result.binding.credential_version == 7
+    assert result.review_policy == "always"
+    assert "synthetic-token" not in repr(result)
+
+
+@pytest.mark.parametrize("failure", ["unverified", "stale_hash", "verifying", "no_token"])
+async def test_curated_oauth_refuses_unverified_or_drifted_connection(
+    registry_harness, monkeypatch, failure
+):
+    row = dict(
+        status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
+    )
+    credential = {"accessToken": "synthetic-token"}
+    _, _, hash_ = _wire_curated(registry_harness, monkeypatch, row=row, credential=credential)
+    row["verified_policy_hash"] = None if failure == "unverified" else hash_
+    if failure == "stale_hash":
+        row["verified_policy_hash"] = "stale"
+    if failure == "verifying":
+        row["status"] = "verifying"
+    if failure == "no_token":
+        credential["accessToken"] = ""
+    with pytest.raises(ExternalMcpError):
+        await resolve_registered_connection(registry_harness.context, "hubspot")
+
+
+async def test_curated_oauth_maps_reconnect_required_to_credential_expired(
+    registry_harness, monkeypatch
+):
+    from hushh_mcp.services.external_connector_curated_oauth import CuratedConnectorOAuthError
+
+    _, adapter, _ = _wire_curated(registry_harness, monkeypatch, row={}, credential={})
+    adapter.current_credential.side_effect = CuratedConnectorOAuthError(
+        "reconnect_required", status_code=401
+    )
+    with pytest.raises(ExternalMcpError) as error:
+        await resolve_registered_connection(registry_harness.context, "hubspot")
+    assert error.value.code == "MCP_CREDENTIAL_EXPIRED"

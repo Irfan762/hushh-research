@@ -37,6 +37,10 @@ from hushh_mcp.services.external_connector_credentials_service import (
     ExternalConnectorCredentialError,
     get_external_connector_credentials_service,
 )
+from hushh_mcp.services.external_connector_curated_oauth import (
+    CuratedConnectorOAuthError,
+    is_curated_oauth_connector,
+)
 from hushh_mcp.services.external_connector_google_oauth import DriveOAuthError
 from hushh_mcp.services.external_connector_lifecycle_store import ConnectorLifecycleError
 from hushh_mcp.services.external_connector_oauth_service import (
@@ -779,6 +783,14 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
     # 243 or resurrect server-readable custom configuration to render Settings.
     connectors = await registry.list_active_connectors()
     statuses = {row["connectorId"]: row for row in await credentials.list_statuses(user_id=user_id)}
+    oauth_service = get_external_connector_oauth_service()
+    curated_available = {
+        item.connector_id: await oauth_service.curated().connection_available(
+            item.connector_id, user_id=user_id
+        )
+        for item in connectors
+        if is_curated_oauth_connector(item)
+    }
     drive_available = (
         await get_external_connector_oauth_service().drive().connection_available()
         if any(item.connector_id == "google_drive" for item in connectors)
@@ -804,7 +816,11 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
                     "revocationOutcome", "not_attempted"
                 ),
                 lastErrorCode=statuses.get(connector.connector_id, {}).get("lastErrorCode"),
-                available=drive_available if connector.connector_id == "google_drive" else True,
+                available=(
+                    drive_available
+                    if connector.connector_id == "google_drive"
+                    else curated_available.get(connector.connector_id, True)
+                ),
             )
             for connector in connectors
         ],
@@ -879,6 +895,7 @@ async def start_oauth_connect(
     except (
         ExternalConnectorOAuthError,
         DriveOAuthError,
+        CuratedConnectorOAuthError,
         ConnectorLifecycleError,
         ExternalConnectorCredentialError,
     ) as error:
@@ -904,6 +921,7 @@ async def complete_oauth_connect(
     except (
         ExternalConnectorOAuthError,
         DriveOAuthError,
+        CuratedConnectorOAuthError,
         ConnectorLifecycleError,
         ExternalConnectorCredentialError,
     ) as error:
@@ -1058,6 +1076,20 @@ async def disconnect_connector(
             ExternalConnectorCredentialError,
         ) as error:
             raise _oauth_error(error) from None
+    # An active operator-registered OAuth connector disconnects through its own
+    # lifecycle adapter (revocation fence + attempt invalidation). A row that was
+    # deactivated since still falls through so the owner can always scrub it.
+    connector = await get_external_connector_registry_service().get_connector(connector_id)
+    if is_curated_oauth_connector(connector):
+        try:
+            result = (
+                await get_external_connector_oauth_service()
+                .curated()
+                .disconnect(connector_id=connector_id, user_id=user_id)
+            )
+        except (CuratedConnectorOAuthError, ConnectorLifecycleError) as error:
+            raise _oauth_error(error) from None
+        return ConnectResultResponse(**result)
     credentials = get_external_connector_credentials_service()
     result = await credentials.disconnect(user_id=user_id, connector_id=connector_id)
     return ConnectResultResponse(status=result["status"], connectorId=connector_id)

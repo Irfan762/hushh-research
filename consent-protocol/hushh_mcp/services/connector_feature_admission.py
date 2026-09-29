@@ -18,6 +18,7 @@ FEATURES = {
     "drive_document_sharing": "DRIVE_DOCUMENT_SHARING",
     "gmail_chat_reads": "GMAIL_CHAT_READS",
     "google_drive_chat_reads": "GOOGLE_DRIVE_CHAT_READS",
+    "curated_mcp_connectors": "CURATED_MCP_CONNECTORS",
 }
 
 # These are ordinary owner-initiated capabilities, not UAT rollout effects.

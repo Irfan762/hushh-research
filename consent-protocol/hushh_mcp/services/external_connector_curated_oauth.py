@@ -45,6 +45,9 @@ from hushh_mcp.services.external_connector_credentials_service import (
     ExternalConnectorCredentialsService,
     get_external_connector_credentials_service,
 )
+from hushh_mcp.services.external_connector_google_oauth import (
+    registered_redirect_uris as _runtime_redirect_uris,
+)
 from hushh_mcp.services.external_connector_lifecycle_store import ExternalConnectorLifecycleStore
 from hushh_mcp.services.external_connector_registry_service import (
     ExternalConnectorRegistryService,
@@ -97,7 +100,9 @@ def curated_policy_hash(connector: ExternalMcpConnectorDefinition) -> str:
 
 
 def registered_redirect_uris(connector: ExternalMcpConnectorDefinition) -> tuple[str, ...]:
-    return tuple(connector.registered_redirect_uris or ())
+    # Same runtime rule as Drive: the shared registry row's URIs, plus the
+    # loopback web return only in a development runtime on a loopback origin.
+    return _runtime_redirect_uris(connector)
 
 
 def is_curated_oauth_connector(connector: ExternalMcpConnectorDefinition | None) -> bool:
@@ -106,13 +111,15 @@ def is_curated_oauth_connector(connector: ExternalMcpConnectorDefinition | None)
     OAuth, native MCP transport, and explicitly marked reviewed-chat-ready.
     Google connectors keep their own dedicated adapters and are excluded
     even though they otherwise match this shape."""
+    if connector is None:
+        return False
+    policy = getattr(connector, "capability_policy", None) or {}
     return bool(
-        connector is not None
-        and connector.owner_user_id is None
-        and connector.auth_style == "oauth"
-        and connector.transport_kind == "mcp"
-        and connector.capability_policy.get("chat") == "reviewed"
-        and not connector.connector_id.startswith("google_")
+        getattr(connector, "owner_user_id", "unset") is None
+        and getattr(connector, "auth_style", None) == "oauth"
+        and getattr(connector, "transport_kind", None) == "mcp"
+        and policy.get("chat") == "reviewed"
+        and not str(getattr(connector, "connector_id", "google_")).startswith("google_")
     )
 
 

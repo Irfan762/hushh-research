@@ -34,8 +34,15 @@ from hushh_mcp.consent.audit_logger import get_audit_logger
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret
 from hushh_mcp.runtime_settings import get_core_security_settings
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
+from hushh_mcp.services.connector_feature_admission import connector_feature_enabled
 from hushh_mcp.services.external_connector_credentials_service import (
+    ExternalConnectorCredentialError,
     get_external_connector_credentials_service,
+)
+from hushh_mcp.services.external_connector_curated_oauth import (
+    CuratedConnectorOAuthError,
+    curated_policy_hash,
+    is_curated_oauth_connector,
 )
 from hushh_mcp.services.external_connector_lifecycle_store import ExternalConnectorLifecycleStore
 from hushh_mcp.services.external_connector_registry_service import (
@@ -130,6 +137,7 @@ class ResolvedMcpConnection:
 # Workspace MCP developer preview. Curated Google connectors run over the GA
 # REST APIs in the Workspace adapter, so no curated row is dialed as hosted MCP.
 HOSTED_WORKSPACE_MCP_ENROLLED = False
+CURATED_FEATURE = "curated_mcp_connectors"
 
 
 def native_registration_admitted(connector: Any, owner: str) -> bool:
@@ -142,12 +150,62 @@ def native_registration_admitted(connector: Any, owner: str) -> bool:
         return False
     if connector.owner_user_id == owner:
         return bool(connector.transport_kind == "mcp")
+    # Operator-registered non-Google connector (HubSpot, ...): admitted only
+    # when its own registry policy marks it chat-ready and the rollout flag is on.
+    if (
+        is_curated_oauth_connector(connector)
+        and connector.is_active
+        and connector_feature_enabled(CURATED_FEATURE, owner)
+    ):
+        return True
     return bool(
         connector.owner_user_id is None
         and HOSTED_WORKSPACE_MCP_ENROLLED
         and connector.transport_kind == "mcp"
         and connector.connector_id in {"google_drive", "google_gmail", "google_calendar"}
     )
+
+
+async def _resolve_curated_connection(owner: str, connector: Any) -> ResolvedMcpConnection:
+    """Bind an operator-registered OAuth connector (refreshing if near expiry).
+
+    Requires a verified connection whose policy hash still matches the live
+    registry row; the default review_policy "always" applies.
+    """
+    from hushh_mcp.services.external_connector_oauth_service import (
+        get_external_connector_oauth_service,
+    )
+
+    adapter = get_external_connector_oauth_service().curated()
+    try:
+        row, secret = await adapter.current_credential(
+            connector_id=connector.connector_id, user_id=owner
+        )
+    except CuratedConnectorOAuthError as error:
+        code = "MCP_CREDENTIAL_EXPIRED" if error.status_code == 401 else "MCP_CONNECTION_CHANGED"
+        raise ExternalMcpError("Reconnect this service.", code=code) from None
+    except ExternalConnectorCredentialError:
+        raise ExternalMcpError("Reconnect this service.", code="MCP_CREDENTIAL_INVALID") from None
+    if row.get("status") != "connected" or row.get("verified_policy_hash") != curated_policy_hash(
+        connector
+    ):
+        raise ExternalMcpError("Reconnect this service.", code="MCP_CONNECTION_CHANGED")
+    token = secret.get("accessToken")
+    if (
+        not isinstance(token, str)
+        or not token.strip()
+        or any(ord(c) < 32 or ord(c) == 127 for c in token)
+    ):
+        raise ExternalMcpError("Reconnect this service.", code="MCP_CREDENTIAL_INVALID")
+    binding = McpConnectionBinding(
+        owner,
+        connector.connector_id,
+        int(row["connection_generation"]),
+        int(row["credential_version"]),
+        connector.mcp_endpoint,
+    )
+    validate_mcp_endpoint(binding.endpoint)
+    return ResolvedMcpConnection(binding, {"Authorization": f"Bearer {token}"})
 
 
 async def resolve_registered_connection(
@@ -193,6 +251,8 @@ async def resolve_registered_connection(
             resolved = await resolve_native_workspace_connection(context, "gmail")
         elif connector_id == "google_calendar":
             resolved = await resolve_native_workspace_connection(context, "calendar")
+        elif is_curated_oauth_connector(connector):
+            return await _resolve_curated_connection(owner, connector)
         else:
             raise ExternalMcpError("Connector unavailable.", code="MCP_CONNECTION_CHANGED")
         if connector.auth_style != "oauth" or connector.mcp_endpoint != resolved.binding.endpoint:
