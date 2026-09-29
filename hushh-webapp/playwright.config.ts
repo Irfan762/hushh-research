@@ -113,7 +113,12 @@ export default defineConfig({
       // read on an iPhone first: its Hide and Copy targets, and the ask rows'
       // keyboard and 44px targets, are measured in the engine the app ships in.
       // Its fixture builds its own document.
+      // `chat-onboarding.layout` is opted in because selecting text on the
+      // person's own accent bubble reads differently per engine, and the one
+      // that matters is the WKWebView the app ships in. Its fixture builds its
+      // own document.
       testMatch: [
+        /chat-onboarding\.layout\.spec\.ts/,
         /settings-row-surface\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,

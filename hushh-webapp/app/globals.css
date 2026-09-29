@@ -442,6 +442,14 @@ textarea {
   --app-accent-fg: #ffffff; /* text on solid accent */
   --app-accent-hover: #0070ea; /* pressed/hover partner of the solid fill */
   --app-accent-ring: rgba(0, 122, 255, 0.25);
+  /* Text selection ON a solid accent fill (the person's own chat bubble,
+     accent badges). The fill's own ink becomes the highlight and a deepened
+     accent the selected text: on system blue the text reads ~9:1 on the
+     highlight and the highlight ~3.5:1 against the bubble. The gold dark
+     block overrides both, because its -fg is dark. Consumed only by the
+     on-accent ::selection rule in @layer base. */
+  --app-accent-selection-bg: color-mix(in oklab, var(--app-accent-fg) 90%, transparent);
+  --app-accent-selection-fg: color-mix(in oklab, var(--app-accent-deep) 60%, black);
 
   /* Apple Summer 2026 semantic refinement tokens. These intentionally alias
      the existing Foundation system instead of creating a second design system. */
@@ -4409,6 +4417,29 @@ body:has([data-testid="one-location-onboarding"])
     color: inherit;
   }
 
+  /* Selection on a solid accent fill. The highlight above is the accent at 28%,
+     so on the person's own message bubble (an accent gradient) it painted
+     accent on accent and selected text vanished. Accent-filled surfaces invert
+     to the --app-accent-selection-* pair instead. Keyed to the exact fill
+     classes: `~=` matches a whole class, never a hover:/data-[] variant or a
+     /12 tint, and a bubble that `cn` repaints (an errored turn) drops out and
+     keeps the default highlight on its new surface. Buttons and links are
+     already user-select: none, so this reaches text people can select. */
+  :is(
+      [class~="bg-[linear-gradient(145deg,var(--app-accent),var(--app-accent-deep))]"],
+      [class~="bg-[color:var(--app-accent)]"],
+      [class~="bg-[var(--app-accent)]"]
+    )::selection,
+  :is(
+      [class~="bg-[linear-gradient(145deg,var(--app-accent),var(--app-accent-deep))]"],
+      [class~="bg-[color:var(--app-accent)]"],
+      [class~="bg-[var(--app-accent)]"]
+    )
+    ::selection {
+    background-color: var(--app-accent-selection-bg);
+    color: var(--app-accent-selection-fg);
+  }
+
   h1,
   h2,
   h3,
@@ -6139,6 +6170,11 @@ html[data-accent="gold"].dark {
   --app-accent-fg: #1d1d1f;
   --app-accent-hover: #e0b382;
   --app-accent-ring: rgba(212, 165, 116, 0.35);
+  /* Dark ink on gold: the highlight is that ink, so the text goes light.
+     Restated in full here (not inherited from :root) because this block also
+     matches a nested .dark, where :root's mix resolved against light values. */
+  --app-accent-selection-bg: color-mix(in oklab, var(--app-accent-fg) 90%, transparent);
+  --app-accent-selection-fg: var(--app-accent-bright);
   --app-accent-hero-from: #8a5a24;
   --app-accent-hero-mid: #d4a574;
   --app-accent-hero-to: #fff8ea;
