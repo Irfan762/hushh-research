@@ -10,7 +10,7 @@ import {
 } from "@/lib/agent/agent-pkm-memory";
 import type { PkmWriteAuthorization } from "@/lib/personal-knowledge-model/mutation-plan";
 import {
-  PKM_PROPOSAL_CHARS, planPkmSourceChunks, planPkmSourceSelection, sourceChunkRange, sourceChunkText,
+  PKM_PROPOSAL_CHARS, planPkmSourceChunks, planPkmSourceSections, planPkmSourceSelection, sourceChunkRange, sourceChunkText,
   splitPkmSourceChunk, type PkmSourceChunk, type PkmSourceSpan,
 } from "@/lib/pkm/pkm-source-chunks";
 
@@ -326,7 +326,7 @@ export async function prepareNaturalLanguagePkm(params: {
   // an export first loses cross-field context and reintroduces model fan-out.
   const sectionPlan = params.granularity === "section" && !params.sourceSelection &&
     params.memoryProfile !== "kyc_identity_v1"
-    ? planPkmSourceChunks(message, { maxBlocks: 1 })
+    ? planPkmSourceSections(message) ?? planPkmSourceChunks(message, { maxBlocks: 1 })
     : null;
   let queue: PkmSourceChunk[] = params.memoryProfile === "kyc_identity_v1"
     ? [{ blocks: [{ start: 0, end: message.length, protectedContext: true }] }]
