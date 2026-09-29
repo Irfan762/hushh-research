@@ -209,5 +209,16 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
   only resolves words that named nothing, then the question only if nothing matched.
 - Explainable: every pick carries a `why` shown on the ask card, and a no-match fallback
   is offered as a suggestion to change. The person's tap on Send is the decision.
+- Never picks storage shape: a record's schema field (`kind`, `status`, `summary`,
+  `observations` below `_entities` or `_items`) or app state (`parse_fallback`) is never
+  preselected (`is_proposable_entry`). The catalog a person reads drops those rows when a
+  branch row covers them and shows one row per human label (`presentable_scope_entries`);
+  request validation still uses the full catalog. Measured 2026-09-28: "What's Kushal's
+  favorite restaurant?" proposed "Kind".
+- The reason is the model's: One writes it from the question (`purpose`, for example
+  "To pick a restaurant for dinner"). Only an empty one is filled by host code, from the
+  person's own words and never from a catalog label, and the result records it as
+  `reasonSource: "fallback"` (`agent` otherwise) with the log line
+  `one.proposal_reason_fallback`.
 - Live eval before promotion: none yet. Deterministic ranking tests only
   (`consent-protocol/tests/test_scope_search_ranking.py`).

@@ -38,7 +38,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from google.adk.tools.tool_context import ToolContext
 
 from hushh_mcp.consent.pii_sanitizer import mask_email
-from hushh_mcp.consent.scope_matcher import fallback_scopes, match_scopes
+from hushh_mcp.consent.scope_matcher import (
+    fallback_scopes,
+    is_proposable_entry,
+    match_scopes,
+    tokens,
+)
 from hushh_mcp.consent.token import validate_token_with_db
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.one_adk import action_retrieval
@@ -2483,7 +2488,13 @@ def _propose_scopes(
        ("favorite restaurant" reaches Food preferences), best row each.
     3. Only if still nothing: the person's question, the same way.
     Returns (matched rows, words that still matched nothing, scopeRef -> why).
+
+    A record's schema field ("Kind", "Status") or app state
+    ("parse_fallback") is never preselected, whatever it scores: One picks
+    the category a person means ("Food preferences"). Measured 2026-09-28:
+    "What's Kushal's favorite restaurant?" proposed "Kind".
     """
+    requestable = [item for item in requestable if is_proposable_entry(item)]
     matched, unmatched = _match_requested_fields(requestable, fields)
     reasons = {str(item.get("scopeRef")): "Matches what you asked for" for item in matched}
 
@@ -2525,7 +2536,8 @@ def _proposal_alternatives(
     """The next-best rows, so Change can offer a near miss without a round trip."""
     chosen = {str(item.get("scopeRef")) for item in matched}
     alternatives: list[dict[str, str]] = []
-    for match in match_scopes(requestable, words, limit=None, ignore_words=ignore_words):
+    proposable = [item for item in requestable if is_proposable_entry(item)]
+    for match in match_scopes(proposable, words, limit=None, ignore_words=ignore_words):
         if str(match.entry.get("scopeRef")) in chosen:
             continue
         alternatives.append(_proposed_item(match.entry, match.why))
@@ -2541,17 +2553,33 @@ def _duration_default(hours: int) -> str:
     return f"{hours} {'hour' if hours == 1 else 'hours'}"
 
 
-def _reason_suggestion(matched: list[dict[str, Any]]) -> str:
-    """A plain reason the person can keep or edit: "I'd like to know your food preferences."."""
-    labels = []
-    for label in _pending_scope_labels(matched)[:3]:
-        first = label.split(" ", 1)[0]
-        keep_case = len(first) > 1 and first.isupper()
-        labels.append(label if keep_case else label[:1].lower() + label[1:])
-    if len(matched) > 3:
-        labels.append("a few related things")
-    joined = labels[0] if len(labels) == 1 else f"{', '.join(labels[:-1])} and {labels[-1]}"
-    return f"I'd like to know your {joined}."[:500]
+_REASON_FALLBACK = "To answer a question about you."
+_POSSESSIVE = re.compile(r"(?:'|\u2019)s$")
+
+
+def _reason_suggestion(fields: str, question: str, ignore_words: tuple[str, ...]) -> str:
+    """A reason built from the person's own words, used only when One gave none.
+
+    One authors the reason from the question and its intent
+    (``agent.yaml``: "To pick a restaurant for dinner"). This fallback runs only
+    when that came back empty, and it is built from what the person asked
+    about ("To know your favorite restaurant."), never from a catalog label:
+    the label-built "I'd like to know your kind." reached the owner on
+    2026-09-28. The caller records that it ran (``reasonSource``).
+    """
+    ignored = {word for raw in ignore_words for word in tokens(raw)}
+    for source in (fields, question):
+        kept = []
+        for raw in str(source or "").split():
+            word = _POSSESSIVE.sub("", raw.strip(' \t.,;:!?"()[]'))
+            content = tokens(word)
+            if not word or not content or any(token in ignored for token in content):
+                continue
+            kept.append(word.lower() if not word.isupper() else word)
+        phrase = " ".join(kept).strip()
+        if phrase:
+            return f"To know your {phrase}."[:500]
+    return _REASON_FALLBACK
 
 
 async def list_pending_information_requests(tool_context: ToolContext) -> dict[str, Any]:
@@ -2728,8 +2756,9 @@ async def propose_information_request(
     Call it directly when someone asks about another person's information
     ("What is Kushal's favorite restaurant?") or asks you to request it. Pass
     the person, the things in the person's own words as ``fields``, their
-    question as they said it as ``question``, and ``purpose`` only if they gave
-    a reason (otherwise send it empty and a reason is suggested). The server picks the
+    question as they said it as ``question``, and ``purpose``: their reason if
+    they gave one, otherwise a short reason you infer from the question ("To
+    pick a restaurant for dinner"); they can edit it on the card. The server picks the
     closest thing that person makes requestable, from labels only, and parks a
     proposal; the card shows it with Send and Change. Nothing is sent: the
     person's tap on that card is the authorization, so do not ask for a spoken
@@ -2795,7 +2824,9 @@ async def propose_information_request(
                 "proposed": [],
                 "alternatives": [
                     _proposed_item(match.entry, match.why)
-                    for match in fallback_scopes(requestable, limit=3)
+                    for match in fallback_scopes(
+                        [item for item in requestable if is_proposable_entry(item)], limit=3
+                    )
                 ],
                 "message": (
                     f"Nothing {display_name} makes available matches that. Name the "
@@ -2819,11 +2850,17 @@ async def propose_information_request(
                     "domain or name the exact fields you want. Nothing has been sent."
                 ),
             }
-        reason_suggestion = _reason_suggestion(matched)
-        # An empty purpose is the normal case now (Contract C4: One suggests the
-        # reason and the person confirms it on the card). A purpose the person
-        # did give is still theirs, so one that is too short is asked back.
-        cleaned_purpose = str(purpose or "").strip() or reason_suggestion
+        # Contract C4: One authors the reason from the question (or passes the
+        # person's own), and the person can edit it on the card before Send.
+        # Only an empty one is filled here, from the person's words, and the
+        # substitution is recorded rather than passed off as One's.
+        cleaned_purpose = str(purpose or "").strip()
+        reason_source = "agent"
+        if not cleaned_purpose:
+            cleaned_purpose = _reason_suggestion(fields, question, (display_name, person))
+            reason_source = "fallback"
+            logger.info("one.proposal_reason_fallback")
+        reason_suggestion = cleaned_purpose
         if not 8 <= len(cleaned_purpose) <= 500:
             return {
                 "status": "needs_clarification",
@@ -2864,30 +2901,12 @@ async def propose_information_request(
         for stale in list(proposals)[:-_INFORMATION_REQUEST_MAX_PROPOSALS]:
             proposals.pop(stale, None)
         tool_context.state[_STATE_INFORMATION_REQUEST_PROPOSALS] = proposals
-        proposal_directive: dict[str, Any] | None = None
-        if connector_ready:
-            # The proposal is the authority-bearing boundary for this flow.
-            # Park the same server-resolved directive that run_app_action would
-            # have produced, but do it here so a model that ends after the
-            # proposal still gives the browser one visible confirmation card.
-            # The full slots stay in the server-resolved directive contract;
-            # the browser consumes them only to execute after the visible tap.
-            action_id = "consent.request"
-            action_entry = get_action_gateway_action(action_id)
-            flags = _directive_flags(action_entry)
-            directive_payload = {
-                "actionId": action_id,
-                "slots": _resolved_directive_slots(
-                    action_id, {"proposal_id": proposal_id}, tool_context
-                ),
-                "needsConfirmation": flags["needsConfirmation"],
-                "trustedActivationRequired": flags["trustedActivationRequired"],
-            }
-            tool_context.state[f"{_STATE_PENDING_DIRECTIVE}:{action_id}"] = {
-                "kind": "action",
-                "payload": directive_payload,
-            }
-            proposal_directive = directive_payload
+        # No parked consent.request directive here. The ask card this result
+        # renders has its own Send, which is the single path to a request; a
+        # parked directive drew a second "Ask ... / Cancel" bar under it that
+        # stayed after Send and could send a second request (2026-09-28). A
+        # model that still calls run_app_action("consent.request") with this
+        # proposal id gets the confirmation from that tool, as before.
         result = {
             "status": "proposal_ready",
             "proposalId": proposal_id,
@@ -2910,6 +2929,7 @@ async def propose_information_request(
             ),
             "duration_default": _duration_default(hours),
             "reason_suggestion": reason_suggestion,
+            "reasonSource": reason_source,
             "connectorReady": connector_ready,
             "nextStep": (
                 f"Say one short line, for example \"I'll ask {display_name}. Here's what "
@@ -2924,12 +2944,6 @@ async def propose_information_request(
                 "again, and do not use the word connector: it means nothing to them."
             ),
         }
-        if proposal_directive is not None:
-            # AG-UI does not forward ADK state deltas emitted by function tools.
-            # Reuse the existing parked-directive result shape so the browser
-            # can stage the same one-tap confirmation without a second model
-            # tool call.
-            result["directive"] = proposal_directive
         return result
     except ConsentLifecycleError as exc:
         return _information_person_error(exc, tool_context, user_id)

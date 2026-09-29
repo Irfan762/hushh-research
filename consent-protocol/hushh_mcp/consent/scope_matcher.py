@@ -32,9 +32,45 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from hushh_mcp.consent.scope_labels import human_domain_label
+from hushh_mcp.consent.scope_labels import human_domain_label, is_record_field_path
 
 _WORD = re.compile(r"[a-z0-9]+")
+
+# Keys the app writes about its own processing, never about the person (the
+# Kai portfolio import stores ``parse_fallback`` beside the holdings; measured
+# 2026-09-28 as a requestable "Canonical V2 parse fallback"). The requester's
+# own export renderer already drops these keys from shared values
+# (``INTERNAL_APPROVED_VALUE_KEYS`` in the webapp's one-kyc-client-zk-service),
+# so offering them as a scope promised information that could never be shown.
+_MACHINE_SEGMENTS = frozenset(
+    {
+        "__export_metadata",
+        "analyze_eligible",
+        "analyze_eligible_reason",
+        "coverage_metrics",
+        "deterministic_projection_hash",
+        "diagnostics",
+        "enrichment_hash",
+        "holdings_dropped_reasons",
+        "latest_receipt_updated_at",
+        "metadata",
+        "optimize_eligible",
+        "parse_context",
+        "parse_diagnostics",
+        "parse_fallback",
+        "pending_delete",
+        "provenance",
+        "quality_gate",
+        "quality_report_v2",
+        "raw_extract_v2",
+        "receipt_count_used",
+        "source_metadata",
+        "thought_count",
+        "timings_ms",
+        "token_counts",
+    }
+)
+_MACHINE_SUFFIXES = ("_fallback", "_diagnostics", "_hash")
 
 # Words that carry no subject. Person names are removed by the caller.
 _STOPWORDS = frozenset(
@@ -114,6 +150,14 @@ _WEAK_WORDS = frozenset(
         "summary",
     }
 )
+
+# A weak query word also counts when the row says the same thing in its own
+# vocabulary: "favorite restaurant" is a food PREFERENCE, so the preferences
+# branch outranks a sibling ("Dietary constraints") that only shares the domain.
+_WEAK_EQUIVALENTS: dict[str, frozenset[str]] = {
+    "favorite": frozenset({"preference"}),
+    "favourite": frozenset({"preference"}),
+}
 
 _DIRECT_WEIGHT = 3
 _WEAK_DIRECT_WEIGHT = 1
@@ -302,9 +346,10 @@ def _score_entry(
     direct_terms: list[str] = []
     synonym_terms: list[str] = []
     for word in query_tokens:
-        if word in strong or word in weak:
+        said = {word, *_WEAK_EQUIVALENTS.get(word, ())}
+        if said & (strong | weak):
             weight = _WEAK_DIRECT_WEIGHT if word in _WEAK_WORDS else _DIRECT_WEIGHT
-            if word not in strong:
+            if not said & strong:
                 weight = max(1, weight - 1)
             score += weight
             direct_terms.append(word)
@@ -441,12 +486,118 @@ def search_scope_entries(
     ]
 
 
+def _entry_segments(entry: Mapping[str, Any]) -> list[str]:
+    """Path segments below the domain, from any catalog row shape (raw or projected)."""
+    segments = entry.get("pathSegments")
+    if isinstance(segments, Sequence) and not isinstance(segments, str):
+        raw = [str(part) for part in segments]
+    else:
+        path = str(entry.get("path") or "")
+        if not path:
+            scope = str(entry.get("scope") or "")
+            path = ".".join(scope.split(".")[2:]) if scope.startswith("attr.") else ""
+        raw = path.split(".")
+    return [part.strip() for part in raw if part.strip() and part.strip() != "*"]
+
+
+def is_record_field_entry(entry: Mapping[str, Any]) -> bool:
+    """A row that selects one schema field (kind, status...) of every record in a set."""
+    return is_record_field_path(".".join(_entry_segments(entry)))
+
+
+def is_machine_entry(entry: Mapping[str, Any]) -> bool:
+    """A row about the app's own processing (``parse_fallback``), never about the person."""
+    for segment in _entry_segments(entry):
+        key = segment.lower()
+        if key in _MACHINE_SEGMENTS or key.endswith(_MACHINE_SUFFIXES):
+            return True
+    return False
+
+
+def is_proposable_entry(entry: Mapping[str, Any]) -> bool:
+    """Whether One may preselect this row. Schema fields and app state never are."""
+    return not is_record_field_entry(entry) and not is_machine_entry(entry)
+
+
+def _branch_key(entry: Mapping[str, Any]) -> tuple[str, tuple[str, ...]]:
+    return (
+        str(entry.get("domain") or "").strip().lower(),
+        tuple(part.lower() for part in _entry_segments(entry)),
+    )
+
+
+def _is_covered(
+    entry: Mapping[str, Any], wildcard_branches: set[tuple[str, tuple[str, ...]]]
+) -> bool:
+    """A branch wildcard above ``entry`` (``food.preferences.*``) is offered."""
+    domain, segments = _branch_key(entry)
+    # Depth 1 and below only: a whole-domain row ("Food & dining information")
+    # is broader than the branch a person means, so it never hides one.
+    return any((domain, segments[:depth]) in wildcard_branches for depth in range(1, len(segments)))
+
+
+def _keep_rank(entry: Mapping[str, Any]) -> tuple[int, int, int, int, str]:
+    """Which of several rows with one human label stays: the category row.
+
+    Then a real attribute, then a record's summary (its readable content)
+    before its observations.
+    """
+    segments = [part.lower() for part in _entry_segments(entry)]
+    return (
+        0 if entry.get("wildcard") is True else 1,
+        1 if is_record_field_entry(entry) else 0,
+        0 if segments[-1:] == ["summary"] else 1,
+        len(segments),
+        str(entry.get("scope") or entry.get("scopeRef") or ""),
+    )
+
+
+def presentable_scope_entries(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The catalog a person reads: no app state, no covered schema fields, one row per label.
+
+    Presentation only. Request validation keeps the full requestable catalog
+    (``PersonProfileService.resolve_scope_refs``), so a row hidden here is never
+    made unrequestable, and nothing here grants or widens access.
+
+    * App-state rows (``parse_fallback``) are dropped.
+    * A record's schema field ("Food preferences kind", its status, its
+      observations) is dropped when the branch row above it
+      (``food.preferences.*``) is offered, which is how the manifest emits every
+      top-level branch. An uncovered one stays, so nothing becomes unreachable.
+      A whole-domain row never hides a branch: it is broader than asked.
+    * Rows that read the same ("Food preferences" twice) collapse to one per
+      domain, keeping the category row a person means by that name.
+    """
+    rows = [dict(entry) for entry in entries]
+    wildcard_branches = {_branch_key(row) for row in rows if row.get("wildcard") is True}
+    visible = [
+        row
+        for row in rows
+        if not is_machine_entry(row)
+        and not (is_record_field_entry(row) and _is_covered(row, wildcard_branches))
+    ]
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in visible:
+        key = (
+            str(row.get("domain") or "").strip().lower(),
+            " ".join(str(row.get("label") or "").lower().split()),
+        )
+        if key not in best or _keep_rank(row) < _keep_rank(best[key]):
+            best[key] = row
+    kept = {id(row) for row in best.values()}
+    return [row for row in visible if id(row) in kept]
+
+
 __all__ = [
     "SYNONYM_GROUPS",
     "ScopeMatch",
     "SynonymGroup",
     "fallback_scopes",
+    "is_machine_entry",
+    "is_proposable_entry",
+    "is_record_field_entry",
     "match_scopes",
+    "presentable_scope_entries",
     "search_scope_entries",
     "stem",
     "tokens",

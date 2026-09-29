@@ -198,6 +198,12 @@ def test_negative_control_without_synonyms_restaurant_finds_nothing():
         ("attr.ria.*", None, "RIA information"),
         # An authored label is a semantic judgement and is never rewritten.
         ("attr.food.weeknight", "Go-to weeknight spots", "Go-to weeknight spots"),
+        # A record's metadata field is domain-qualified, never a bare "Kind"
+        # (proposed as a scope on localhost, 2026-09-28); its content fields
+        # name the record set; a real attribute outside a collection is kept.
+        ("attr.food.preferences.entities._entities.kind", "Kind", "Food preferences kind"),
+        ("attr.food.preferences.observations._items", "Observations", "Food preferences"),
+        ("attr.professional.employment.status", None, "Employment status"),
     ],
 )
 def test_human_scope_labels(scope, stored, expected):

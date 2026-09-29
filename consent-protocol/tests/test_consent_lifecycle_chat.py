@@ -575,23 +575,18 @@ class TestPropose:
         assert result["durationHours"] == 48
         assert result["connectorReady"] is True
         assert result["person"]["profilePath"] == f"/people/{PERSON_REF}"
-        assert result["directive"]["actionId"] == "consent.request"
-        assert result["directive"]["needsConfirmation"] is True
-        assert result["directive"]["slots"]["personRef"] == PERSON_REF
-        assert result["directive"]["slots"]["scopeRefs"] == [
-            "psr_employment",
-            "psr_cuisine",
-        ]
+        # The person's reason is theirs, and it is what the card shows.
+        assert result["reason_suggestion"] == "Planning a dinner for the team"
+        assert result["reasonSource"] == "agent"
         parked = state[action_tools._STATE_INFORMATION_REQUEST_PROPOSALS][result["proposalId"]]
         assert parked["scopeRefs"] == ["psr_employment", "psr_cuisine"]
-        directive = state[f"{action_tools._STATE_PENDING_DIRECTIVE}:consent.request"]
-        assert directive["kind"] == "action"
-        assert directive["payload"]["actionId"] == "consent.request"
-        assert directive["payload"]["needsConfirmation"] is True
-        assert directive["payload"]["slots"]["scopeRefs"] == [
-            "psr_employment",
-            "psr_cuisine",
-        ]
+        # The ask card's Send is the single path to a request. A parked
+        # consent.request directive drew a second "Ask ... / Cancel" bar under
+        # the card that survived Send (localhost run, 2026-09-28); the code
+        # before this fix parked one here and returned it as ``directive``.
+        assert result["proposed"]
+        assert "directive" not in result
+        assert f"{action_tools._STATE_PENDING_DIRECTIVE}:consent.request" not in state
         assert "run_app_action" not in result["nextStep"]
 
     @pytest.mark.asyncio
@@ -692,12 +687,70 @@ class TestPropose:
             "personRef": PERSON_REF,
             "profilePath": f"/people/{PERSON_REF}",
         }
-        assert result["reason_suggestion"] == "I'd like to know your favorite cuisine."
+        # One gave no reason, so the fallback is built from what the person
+        # asked about, never from the catalog label ("favorite cuisine").
+        assert result["reason_suggestion"] == "To know your favorite restaurant."
+        assert result["reasonSource"] == "fallback"
         assert result["purpose"] == result["reason_suggestion"]
-        assert result["directive"]["slots"]["scopeRefs"] == ["psr_cuisine"]
+        assert "directive" not in result
         assert "I'll ask Sarah Chen" in result["nextStep"]
         catalog.assert_awaited_once()
         full_profile.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_favorite_restaurant_asks_for_food_preferences_never_a_record_field(self):
+        """Localhost run 2026-09-28: One proposed "Kind", reason "I'd like to know your kind."
+
+        The owner's food catalog holds the branch row and each record's schema
+        fields (``preferences.entities._entities.kind``). One must pick the
+        branch a person means, with a reason from the question, and never
+        offer a schema field or app state as an alternative.
+        """
+        from hushh_mcp.consent.scope_matcher import match_scopes
+
+        def row(ref, label, *path, wildcard=False):
+            return {
+                "scopeRef": ref,
+                "label": label,
+                "domain": "food" if ref != "psr_parse" else "financial",
+                "pathSegments": list(path),
+                "wildcard": wildcard,
+            }
+
+        catalog = [
+            row("psr_kind", "Kind", "preferences", "entities", "_entities", "kind"),
+            row("psr_status", "Food status", "preferences", "entities", "_entities", "status"),
+            row("psr_obs", "Observations", "preferences", "observations", "_items"),
+            row("psr_prefs", "Food preferences", "preferences", wildcard=True),
+            row("psr_diet", "Dietary constraints", "dietary_constraints", wildcard=True),
+            row("psr_food", "Food & dining information", wildcard=True),
+            row("psr_parse", "Canonical V2 parse fallback", "canonical_v2", "parse_fallback"),
+        ]
+        # Negative control: the ranker alone still puts the record field first
+        # (a tie broken by the shorter label). That is the path that shipped.
+        raw = match_scopes(catalog, "favorite restaurant", ignore_words=["Kushal"])
+        assert raw[0].entry["scopeRef"] == "psr_kind"
+
+        profile = {"personRef": PERSON_REF, "displayName": "Kushal", "requestableScopes": catalog}
+        with (
+            _auth(),
+            _connections({"displayName": "Kushal", "publicPersonRef": PERSON_REF}),
+            _profile(profile),
+            _connector(True),
+        ):
+            result = await propose_information_request(
+                "Kushal",
+                "favorite restaurant",
+                "",
+                _ctx(_state()),
+                question="What's Kushal's favorite restaurant?",
+            )
+        assert result["status"] == "proposal_ready"
+        assert [item["label"] for item in result["proposed"]] == ["Food preferences"]
+        assert result["reason_suggestion"] == "To know your favorite restaurant."
+        offered = {item["scope"] for item in result["proposed"] + result["alternatives"]}
+        assert offered.isdisjoint({"psr_kind", "psr_status", "psr_obs", "psr_parse"})
+        assert "kind" not in result["reason_suggestion"].lower()
 
     @pytest.mark.asyncio
     async def test_ambiguous_names_refuse_to_guess(self):

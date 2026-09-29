@@ -17,7 +17,9 @@ from typing import Any
 from uuid import UUID
 
 from db.db_client import get_db
+from hushh_mcp.consent.scope_generator import rank_scope_matches
 from hushh_mcp.consent.scope_labels import human_domain_label, human_scope_label
+from hushh_mcp.consent.scope_matcher import presentable_scope_entries, search_scope_entries
 from hushh_mcp.services.connections_service import ConnectionsService
 from hushh_mcp.services.consent_db import ConsentDBService
 
@@ -395,7 +397,7 @@ class PersonProfileService:
         )
         scopes = [
             projection
-            for item in scope_items
+            for item in presentable_scope_entries(scope_items)
             if (projection := self._scope_projection(public_person_ref, item)) is not None
         ]
         return {**self._public_projection(row), "requestableScopes": scopes}
@@ -416,8 +418,6 @@ class PersonProfileService:
         carry an opaque ``scopeRef`` only; the raw scope never leaves the
         server, and ``resolve_scope_refs`` re-checks every ref at request time.
         """
-        from hushh_mcp.consent.scope_matcher import search_scope_entries
-
         row = await asyncio.to_thread(self._profile_row, public_person_ref)
         subject_user_id = str(row.get("user_id") or "")
         if not subject_user_id or subject_user_id == viewer_user_id:
@@ -430,7 +430,9 @@ class PersonProfileService:
             page=page,
             limit=limit,
             catalog_revision=catalog_revision,
-            ranker=lambda entries: search_scope_entries(entries, query),
+            # Presentation filter inside the ranker: the revision still digests
+            # the full catalog, so paging stays consistent with validation.
+            ranker=lambda entries: search_scope_entries(presentable_scope_entries(entries), query),
         )
         items = []
         for item in page_result["items"]:
@@ -475,7 +477,6 @@ class PersonProfileService:
         scope_items = await asyncio.to_thread(
             self._requestable_scope_entries, viewer_user_id, subject_user_id
         )
-        scopes = []
         scope_by_name: dict[str, dict[str, Any]] = {}
         for item in scope_items:
             scope = str(item.get("scope") or "")
@@ -484,8 +485,14 @@ class PersonProfileService:
             projection = self._scope_projection(public_person_ref, item)
             if projection is None:
                 continue
-            scopes.append(projection)
             scope_by_name[scope] = projection
+        # The complete map above names grants; the listing a person reads is
+        # the presentable catalog (no app state, one row per label).
+        scopes = [
+            scope_by_name[str(item["scope"])]
+            for item in presentable_scope_entries(scope_items)
+            if str(item.get("scope") or "") in scope_by_name
+        ]
 
         catalog = None
         if catalog_page is not None:
@@ -495,8 +502,12 @@ class PersonProfileService:
                 scope_items,
                 page=catalog_page,
                 catalog_revision=catalog_revision,
-                query=catalog_query,
-                domain=catalog_domain,
+                ranker=lambda entries: rank_scope_matches(
+                    presentable_scope_entries(entries),
+                    query=catalog_query,
+                    domain=catalog_domain,
+                    limit=None,
+                ),
             )
             scopes = [scope_by_name[item["scope"]] for item in page["items"]]
             catalog = {key: value for key, value in page.items() if key != "items"}

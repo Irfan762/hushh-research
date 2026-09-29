@@ -46,6 +46,23 @@ _STRUCTURAL_SEGMENTS = frozenset(
         "values",
     }
 )
+# Segments that open a collection of records (``preferences.entities._entities``,
+# ``observations._items``).
+COLLECTION_SEGMENTS = frozenset({"entities", "_entities", "items", "_items"})
+# The fields every PKM record carries: the structure agent writes
+# ``{entity_id, kind, summary, observations, status}`` for each entity. Below a
+# collection they are the record's storage shape, never a subject, so the
+# record set names the scope. Measured 2026-09-28: "What's Kushal's favorite
+# restaurant?" proposed "Kind" (``food.preferences.entities._entities.kind``),
+# and the picker listed "Kind", "Food status" and "Observations" beside two
+# rows called "Food preferences".
+RECORD_FIELD_SEGMENTS = frozenset({"entity_id", "kind", "observations", "status", "summary"})
+# Of those, the two that ARE the record's content: a record's summary and its
+# observations are what "Food preferences" means, so they take its name. The
+# others (kind, status) are metadata about each record and keep a qualified,
+# honest name ("Food preferences kind"): calling them "Food preferences" would
+# promise more than a grant on them shares.
+_RECORD_CONTENT_SEGMENTS = frozenset({"observations", "summary"})
 # Words that say nothing on their own. "Preferences" needs its domain to mean
 # anything; "Fitness goals" does not.
 _GENERIC_WORDS = frozenset(
@@ -56,7 +73,10 @@ _GENERIC_WORDS = frozenset(
         "history",
         "info",
         "information",
+        "kind",
         "notes",
+        "observation",
+        "observations",
         "overview",
         "preference",
         "preferences",
@@ -100,8 +120,28 @@ def _domain_noun(domain: str) -> str:
     return human_domain_label(domain).split("&", 1)[0].strip() or "Information"
 
 
+def is_record_field_path(path: str) -> bool:
+    """True when a path selects one schema field of every record in a collection.
+
+    ``food.preferences.entities._entities.kind`` and
+    ``food.preferences.observations._items`` are; ``professional.employment.status``
+    (a real attribute, no collection) and ``food.preferences.*`` are not.
+    """
+    raw = [part.strip().lower() for part in str(path or "").split(".") if part.strip()]
+    raw = [part for part in raw if part != "*"]
+    if not any(part in COLLECTION_SEGMENTS for part in raw):
+        return False
+    tail = [part for part in raw if part not in COLLECTION_SEGMENTS]
+    return bool(tail) and tail[-1] in RECORD_FIELD_SEGMENTS
+
+
+def _in_collection(path: str) -> bool:
+    return any(part.strip().lower() in COLLECTION_SEGMENTS for part in str(path or "").split("."))
+
+
 def _meaningful_segments(path: str) -> list[str]:
     segments: list[str] = []
+    in_collection = _in_collection(path)
     for raw in str(path or "").split("."):
         segment = raw.strip()
         if not segment or segment == "*" or segment.lower() in _STRUCTURAL_SEGMENTS:
@@ -113,6 +153,9 @@ def _meaningful_segments(path: str) -> list[str]:
         segments.append(segment)
     # A trailing "summary" names the storage shape of its parent, not a thing.
     if len(segments) > 1 and segments[-1].lower() == "summary":
+        segments.pop()
+    # Inside a collection, a record's content fields name its record set.
+    while in_collection and len(segments) > 1 and segments[-1].lower() in _RECORD_CONTENT_SEGMENTS:
         segments.pop()
     return segments
 
@@ -154,6 +197,15 @@ def human_scope_label(scope: str | None, label: str | None = None) -> str:
         return stored
 
     segments = _meaningful_segments(path)
+    if _in_collection(path) and len(segments) > 1 and segments[-1].lower() in RECORD_FIELD_SEGMENTS:
+        # A record's metadata field, named after its record set so it is
+        # domain-qualified: "Food preferences kind", never a bare "Kind".
+        field = segments[-1]
+        return _sentence_case(f"{_segments_label(domain, segments[:-1])} {humanize_segment(field)}")
+    return _segments_label(domain, segments)
+
+
+def _segments_label(domain: str, segments: list[str]) -> str:
     if not segments:
         return f"{human_domain_label(domain)} information"
     leaf = segments[-1]
@@ -167,4 +219,10 @@ def human_scope_label(scope: str | None, label: str | None = None) -> str:
     return _sentence_case(humanize_segment(leaf))
 
 
-__all__ = ["human_domain_label", "human_scope_label"]
+__all__ = [
+    "COLLECTION_SEGMENTS",
+    "RECORD_FIELD_SEGMENTS",
+    "human_domain_label",
+    "human_scope_label",
+    "is_record_field_path",
+]

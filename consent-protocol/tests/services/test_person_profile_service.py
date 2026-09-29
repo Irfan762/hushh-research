@@ -466,3 +466,94 @@ async def test_scope_catalog_search_finds_food_for_restaurant_and_pages_the_rest
     # A person cannot open their own catalog as a viewer.
     with pytest.raises(PersonProfileNotFoundError):
         await service.search_scope_catalog(viewer_user_id="subject", public_person_ref=person_ref)
+
+
+@pytest.mark.asyncio
+async def test_the_catalog_a_person_reads_has_no_schema_fields_app_state_or_duplicates(
+    monkeypatch,
+):
+    """Localhost run 2026-09-28: "restaurant" listed Kind, Food status, Observations,
+    "Food preferences" twice, and elsewhere "Canonical V2 parse fallback".
+
+    Presentation only: every hidden row stays requestable by reference, so an
+    earlier request naming one still validates.
+    """
+    from hushh_mcp.consent.scope_labels import human_scope_label
+    from hushh_mcp.services.person_profile_service import _scope_ref
+
+    person_ref = "11111111-1111-4111-8111-111111111111"
+    stored = "Preferences Entities Entities {}"
+    entries = [
+        {"scope": "attr.food.*", "domain": "food", "label": "Food Domain", "wildcard": True},
+        {
+            "scope": "attr.food.preferences.*",
+            "domain": "food",
+            "label": "Preferences",
+            "wildcard": True,
+        },
+        *(
+            {
+                "scope": f"attr.food.preferences.entities._entities.{field}",
+                "domain": "food",
+                "label": stored.format(field.title()),
+            }
+            for field in ("kind", "status", "summary")
+        ),
+        {
+            "scope": "attr.food.preferences.observations._items",
+            "domain": "food",
+            "label": "Observations",
+        },
+        {
+            "scope": "attr.food.dietary_constraints.*",
+            "domain": "food",
+            "label": "Dietary Constraints",
+            "wildcard": True,
+        },
+        {
+            "scope": "attr.financial.canonical_v2.parse_fallback",
+            "domain": "financial",
+            "label": "Canonical V2 Parse Fallback",
+        },
+    ]
+    # Negative control: the stored catalog alone repeats a label.
+    raw_labels = [
+        human_scope_label(entry["scope"], entry["label"])
+        for entry in entries
+        if entry["domain"] == "food"
+    ]
+    assert raw_labels.count("Food preferences") == 3
+
+    service = PersonProfileService(
+        connections=SimpleNamespace(get_exact_requestable_scope_entries=lambda *_args: entries),
+        consent_db=_Consent(),
+    )
+    monkeypatch.setattr(
+        service,
+        "_profile_row",
+        lambda _ref: {"user_id": "subject", "public_person_ref": person_ref, "display_name": "K"},
+    )
+    catalog = await service.get_requestable_catalog(
+        viewer_user_id="viewer", public_person_ref=person_ref
+    )
+    found = await service.search_scope_catalog(
+        viewer_user_id="viewer", public_person_ref=person_ref, query="favorite restaurant"
+    )
+    for labels in (
+        [item["label"] for item in catalog["requestableScopes"]],
+        [item["label"] for item in found["items"]],
+    ):
+        assert len(labels) == len(set(labels))
+        assert not any(
+            word in label.lower()
+            for label in labels
+            for word in ("kind", "status", "observations", "fallback")
+        )
+    assert found["items"][0]["label"] == "Food preferences"
+    assert found["items"][0]["scopeRef"] == _scope_ref(person_ref, "attr.food.preferences.*")
+
+    hidden = _scope_ref(person_ref, "attr.food.preferences.entities._entities.kind")
+    _row, resolved = service.resolve_scope_refs(
+        viewer_user_id="viewer", public_person_ref=person_ref, scope_refs=[hidden]
+    )
+    assert resolved[0]["scope"] == "attr.food.preferences.entities._entities.kind"
