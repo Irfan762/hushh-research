@@ -164,7 +164,22 @@ export type SessionReadyFrame = {
   setup_progress: Record<string, unknown> | null;
   output_mime_type: typeof OUTPUT_MIME;
 };
-export type AudioOutFrame = { type: "audio"; data: string; mime_type: string; turn_id: string };
+export type AudioOutFrame = {
+  type: "audio";
+  data: string;
+  mime_type: string;
+  turn_id: string;
+  /**
+   * Audio this server synthesized, not audio the Live model produced.
+   *
+   * While it plays the microphone is closed on every device: the speaker is
+   * carrying mail-derived text, and the Live session transcribes what the
+   * microphone hears straight into the context that text must stay out of.
+   * Ordinary model speech needs no such gate -- it is already in that context --
+   * and closing the mic for it would cost barge-in.
+   */
+  narration?: boolean;
+};
 export type TranscriptFrame = {
   type: "transcript.input" | "transcript.output";
   text: string;
@@ -344,6 +359,9 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   // The scope-review screen is open; nothing has been accepted yet.
   "scope_review_required",
   "navigation_dispatched",
+  // A dispatch asks the surface to do something; it reports no outcome, so it
+  // must never render as a success even if it reaches a card.
+  "mail_open_dispatched",
   "grant_created",
   "check_in_created",
   "sos_grants_created",

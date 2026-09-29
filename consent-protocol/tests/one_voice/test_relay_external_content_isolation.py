@@ -328,3 +328,91 @@ async def test_the_offer_survives_a_reconnect_and_carries_no_mail_text(monkeypat
 
     assert len(second) == 1, "the stored offer must resolve without a fresh search"
     assert second[0]["message_ids"] == ("id-second",)
+
+
+# -- narration ---------------------------------------------------------------
+#
+# One may now speak a mail digest. It is rendered by a separate provider context
+# and reaches the client as ordinary audio frames, so the operational model still
+# never holds it. These pin that: the digest must appear in the audio and in
+# nothing the model can read.
+
+
+class _FakeNarration:
+    def __init__(self, audio: bytes):
+        self.audio = audio
+        self.mime_type = "audio/L16;codec=pcm;rate=24000"
+        self.sample_rate = 24000
+        self.characters = 0
+
+
+def _fake_narrator(monkeypatch, *, chunks: int = 3, fail: bool = False):
+    """Stand in for the narration provider, recording what it was asked to say."""
+    from hushh_mcp.services import voice_narration
+
+    said: list[str] = []
+
+    async def _stream(text, *, voice_name, **_kwargs):
+        said.append(text)
+        if fail:
+            raise voice_narration.NarrationUnavailable("provider_unavailable")
+        for index in range(chunks):
+            yield _FakeNarration(bytes([index + 1]) * 64)
+
+    monkeypatch.setattr(voice_narration, "narrate_digest_stream", _stream)
+    return said
+
+
+async def test_the_digest_is_spoken_as_audio_and_never_as_model_context(monkeypatch):
+    """The whole point of the second model: the person hears the mail, the
+    operational model still gets counts."""
+    monkeypatch.setenv("ONE_VOICE_MAIL_NARRATION_ENABLED", "true")
+    said = _fake_narrator(monkeypatch)
+    calls: list[dict] = []
+    transport, fake = await _run_real_mail(monkeypatch, calls, second_turn=False)
+
+    # It was asked to say the interpreted answer, not a count.
+    assert said and HOSTILE_BODY in said[0]
+
+    # Marked narration, so the client closes the microphone while it plays.
+    audio = transport.frames("audio")
+    assert len(audio) == 3
+    assert all(frame.get("narration") is True for frame in audio)
+    # Its own turn id: the player schedules per turn and this is not the model's.
+    assert len({frame["turn_id"] for frame in audio}) == 1
+
+    # Nothing the model can read carries it, through any channel.
+    sent = fake.tool_responses[0]["response"]
+    for blob in (repr(sent), repr(fake.texts), repr(fake.events_sent)):
+        assert HOSTILE_BODY not in blob, blob[:200]
+        assert SUBJECT not in blob, blob[:200]
+
+    # And the model is given nothing to say, so the turn is not announced twice.
+    assert sent["spoken_facts"] == []
+
+
+async def test_without_narration_the_model_keeps_its_count_sentence(monkeypatch):
+    monkeypatch.delenv("ONE_VOICE_MAIL_NARRATION_ENABLED", raising=False)
+    said = _fake_narrator(monkeypatch)
+    calls: list[dict] = []
+    transport, fake = await _run_real_mail(monkeypatch, calls, second_turn=False)
+
+    assert said == [], "narration is off until it is turned on"
+    assert transport.frames("audio") == []
+    # The count-only sentence is still the model's to say.
+    assert "2 messages" in " ".join(fake.tool_responses[0]["response"]["spoken_facts"])
+
+
+async def test_a_failed_narration_leaves_the_visible_result_and_the_count(monkeypatch):
+    """The screen and the speaker are separate outcomes. A narration that did not
+    happen must not cost the person the answer they can see, or leave One mute."""
+    monkeypatch.setenv("ONE_VOICE_MAIL_NARRATION_ENABLED", "true")
+    _fake_narrator(monkeypatch, fail=True)
+    calls: list[dict] = []
+    transport, fake = await _run_real_mail(monkeypatch, calls, second_turn=False)
+
+    assert transport.frames("audio") == []
+    shown = transport.frames("tool.result")[0]["result_public"]
+    assert HOSTILE_BODY in shown["answer"], "the read still succeeded"
+    # Nothing was spoken, so the model keeps its sentence rather than going quiet.
+    assert fake.tool_responses[0]["response"]["spoken_facts"] != []

@@ -109,6 +109,20 @@ class ToolResult(BaseModel):
     def public(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
 
+    def narratable_digest(self) -> str:
+        """The short text this result may have spoken aloud, if any.
+
+        A seam rather than a field the relay reads by name. ``session.py`` must not
+        reach into a result for ``answer``: that would make the relay decide what
+        is speakable, and every new result type would inherit the decision
+        silently. A tool that has something safe to say declares it here, and
+        everything else says nothing.
+
+        Whatever a tool returns here is spoken by a separate narration context and
+        must never be handed to the operational model -- see :meth:`model_public`.
+        """
+        return ""
+
     def model_public(self) -> dict[str, Any]:
         """What the Live model may see, which is not always what the screen sees.
 

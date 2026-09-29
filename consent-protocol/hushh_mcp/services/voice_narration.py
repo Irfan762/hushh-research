@@ -57,6 +57,12 @@ MAX_AUDIO_BYTES = 1_500_000
 NARRATION_TIMEOUT_SECONDS = 30.0
 
 _OUTPUT_MIME_PREFIX = "audio/l16"
+# The only rate the player can schedule. `protocol.audio_out` hardcodes
+# `rate=24000` and the client never reads the mime type at all -- it builds the
+# buffer at its own `OUTPUT_SAMPLE_RATE` constant. So a narration at any other
+# rate does not fail, it plays too fast or too slow, which is a defect nobody
+# would report as an audio bug. Refused here, at the only place that knows.
+PLAYER_SAMPLE_RATE = 24000
 # Control characters, and the bracketed markup a text-to-speech model may read as
 # a directive rather than as words. The digest is prose the person will hear.
 _UNSPEAKABLE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f<>]")
@@ -193,6 +199,9 @@ async def narrate_digest_stream(
                     continue
                 if not mime.lower().startswith(_OUTPUT_MIME_PREFIX):
                     raise NarrationUnavailable("unsupported_format")
+                if _rate_of(mime) != PLAYER_SAMPLE_RATE:
+                    # Heard as a refusal rather than as chipmunk audio.
+                    raise NarrationUnavailable("unsupported_sample_rate")
                 emitted += len(audio)
                 if emitted > MAX_AUDIO_BYTES:
                     # A narration this long is a readout, which is a different

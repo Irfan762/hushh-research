@@ -164,6 +164,14 @@ class MailReadResult(ToolResult):
     truncated: bool = False
     metadata_only: bool = True
 
+    def narratable_digest(self) -> str:
+        """The interpreted answer, which is the useful sentence to hear.
+
+        It is mail-derived, so it goes to the narration context and never to the
+        operational model -- ``model_public`` below keeps it out of that one.
+        """
+        return self.answer
+
     def model_public(self) -> dict[str, Any]:
         """A receipt. No sender, subject, snippet, body or derived summary.
 
@@ -409,6 +417,11 @@ async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
     if not admission.mail_reads_enabled():
         return _unavailable("voice_mail_reads_disabled")
+    # The same gate the read and the resolver route check. Without it One says
+    # "Opening it." and the surface then gets a 403, which is a promise followed
+    # by a refusal rather than a refusal.
+    if not connector_feature_enabled("gmail_chat_reads", ctx.user_id):
+        return _unavailable("mail_reads_unavailable")
 
     offer = ctx.entities.offered_mail
     if offer is None or not ctx.entities.offered_mail_is_fresh():

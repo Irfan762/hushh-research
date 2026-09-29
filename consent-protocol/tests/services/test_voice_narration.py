@@ -178,12 +178,26 @@ async def test_the_narrator_is_given_no_tools_and_no_history():
     assert isinstance(provider.calls[0]["contents"], str)
 
 
-async def test_the_sample_rate_comes_from_the_response_not_a_constant():
-    """The player schedules on this. Taking it from a constant would turn a
-    provider format change into chipmunk audio instead of a refusal."""
+async def test_a_rate_the_player_cannot_schedule_is_refused_not_played():
+    """The client never reads the mime type.
+
+    `protocol.audio_out` hardcodes rate=24000 and the player builds its buffer at
+    its own constant, so audio at another rate does not fail -- it plays too fast
+    or too slow, which nobody reports as an audio bug. The rate is read off the
+    response so the mismatch is caught here, where it can still be a refusal.
+    """
     provider = _FakeProvider(mime="audio/L16;codec=pcm;rate=16000")
+    with pytest.raises(NarrationUnavailable) as caught:
+        await _narrate("A short digest.", provider)
+    assert caught.value.reason == "unsupported_sample_rate"
+
+
+async def test_the_rate_is_read_from_the_response_and_matches_the_player():
+    from hushh_mcp.services.voice_narration import PLAYER_SAMPLE_RATE
+
+    provider = _FakeProvider()
     result = await _narrate("A short digest.", provider)
-    assert result.sample_rate == 16000
+    assert result.sample_rate == PLAYER_SAMPLE_RATE == 24000
 
 
 # -- refusals ----------------------------------------------------------------

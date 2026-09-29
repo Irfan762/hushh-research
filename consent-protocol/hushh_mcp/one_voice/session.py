@@ -32,12 +32,12 @@ from hushh_mcp.one_voice.pending_actions import (
     PendingActionStore,
 )
 from hushh_mcp.one_voice.tickets import TicketClaims
-from hushh_mcp.one_voice.tools import mail as mail_tools
 from hushh_mcp.one_voice.tools import registry
 from hushh_mcp.one_voice.tools.base import (
     EntityContext,
     ScreenContext,
     ToolContext,
+    ToolResult,
     ToolSpec,
     restore_context,
 )
@@ -1012,9 +1012,73 @@ class VoiceSession:
         # The client frame above carries the full result. The model gets its own
         # projection, which for an external-content read is a receipt rather
         # than the mail itself.
-        await self.live.send_tool_response(
-            call_id=call_id, name=name, response=outcome.result.model_public()
+        # Spoken before the model is told anything, so the model cannot start
+        # talking over it. A narration IS the answer, so its cost is the model's
+        # acknowledgement arriving a few seconds later -- and that acknowledgement
+        # is counts-only, so there is little to delay.
+        narrated = await self._narrate(outcome.result)
+        response = outcome.result.model_public()
+        if narrated:
+            # The digest has been said. Leaving the count sentence in would have
+            # One announce the same turn twice, in two different voices of its own.
+            response = {**response, "spoken_facts": []}
+        await self.live.send_tool_response(call_id=call_id, name=name, response=response)
+
+    async def _narrate(self, result: ToolResult) -> bool:
+        """Speak a result's own short digest, if it has one and narration is on.
+
+        The digest never reaches the operational model: it is rendered by a
+        separate provider context with no tools and no history, and arrives at the
+        client as ordinary audio frames marked `narration`, which close the
+        microphone while they play. See ``services.voice_narration``.
+
+        Returns whether anything was spoken. A failure is silent by design -- the
+        visible result is already on screen, and the screen and the speaker are
+        separate outcomes.
+        """
+        from hushh_mcp.one_voice.config import voice_mail_narration_enabled
+
+        if not voice_mail_narration_enabled():
+            return False
+        digest = ""
+        try:
+            digest = result.narratable_digest()
+        except Exception:  # noqa: BLE001 - a tool that cannot say it says nothing
+            return False
+        if not digest.strip():
+            return False
+        if self.turn.audio_chunks:
+            # The model is already speaking this turn. A narration would be a
+            # second voice over the first, and its unseen turn id would outrank
+            # the model's in the player's fence.
+            return False
+
+        from hushh_mcp.one_voice.instruction import voice_name
+        from hushh_mcp.services.voice_narration import (
+            NarrationUnavailable,
+            narrate_digest_stream,
         )
+
+        # Its own turn id: the player schedules per turn, and a narration is not
+        # part of the model's turn.
+        turn_id = uuid.uuid4().hex[:12]
+        spoken = False
+        try:
+            async for chunk in narrate_digest_stream(digest, voice_name=voice_name()):
+                await self._send(
+                    protocol.audio_out(
+                        base64.b64encode(chunk.audio).decode("ascii"),
+                        turn_id=turn_id,
+                        narration=True,
+                    )
+                )
+                spoken = True
+                self._touch()
+        except NarrationUnavailable as exc:
+            # Named, not detailed: a provider message can echo the digest.
+            logger.info("Narration unavailable: %s", exc.reason)
+            return spoken
+        return spoken
 
     async def _emit_side_effects(
         self, outcome: ToolCallOutcome, *, call_id: str | None = None
@@ -1034,7 +1098,7 @@ class VoiceSession:
                     },
                 )
             )
-        if public.get("status") == mail_tools.MAIL_OPEN_DISPATCHED:
+        if public.get("status") == protocol.MAIL_OPEN_DISPATCHED:
             # The surface opens the row through its own authenticated resolver.
             # Nothing about the message passes through the relay or the model; this
             # carries only which row, from which offer, in which conversation.
