@@ -66,6 +66,9 @@ _FINANCIAL_WORDS = frozenset(
         "bank",
         "banking",
         "brokerage",
+        # Pay stated in a pasted context document lands under career or
+        # employment branches named "compensation", never "salary" (2026-09-29).
+        "compensation",
         "credit",
         "cvv",
         "debit",
@@ -92,9 +95,11 @@ _IDENTITY_WORDS = frozenset(
     {
         "aadhaar",
         "birthdate",
+        "citizenship",
         "dob",
         "ein",
         "identity",
+        "immigration",
         "itin",
         "passport",
         "ssn",
@@ -133,6 +138,7 @@ SENSITIVE_PHRASES: frozenset[tuple[str, str]] = frozenset(
         ("driver", "license"),
         ("drivers", "license"),
         ("government", "id"),
+        ("green", "card"),
         ("gov", "id"),
         ("insurance", "policy"),
         ("lab", "result"),
@@ -144,6 +150,7 @@ SENSITIVE_PHRASES: frozenset[tuple[str, str]] = frozenset(
         ("tax", "id"),
         ("w", "2"),
         ("w", "9"),
+        ("work", "permit"),
     }
 )
 # PKM sensitivity tags that mean "sensitive". ``sensitivity_label`` on manifest
