@@ -165,6 +165,10 @@ _BACKEND_RUNTIME_ENV_MAP: dict[str, str] = {
     # first-connect card, in production, with no value able to reopen them.
     # Absent leaves the code default (on), so it is a switch, not a rollout gate.
     "one_voice_mail_reads_enabled": "ONE_VOICE_MAIL_READS_ENABLED",
+    # Speaking a mail digest aloud. Its own key and OFF by default: it is the
+    # one path here that sends mail-derived text to a second model, so it is
+    # enabled deliberately rather than inherited from the read switch.
+    "one_voice_mail_narration_enabled": "ONE_VOICE_MAIL_NARRATION_ENABLED",
 }
 
 

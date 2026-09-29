@@ -1040,3 +1040,21 @@ def test_resolving_a_person_in_between_does_not_invalidate_the_mail_offer(open_a
 
     assert response.status_code == 200, response.text
     assert _FakeReader.calls[-1]["operation"][1]["message_ids"] == ["id-first"]
+
+
+async def test_the_rows_carry_the_conversation_they_were_offered_under(monkeypatch):
+    """A reconnect can move the client's live conversation id while the offer
+    stays where it was written. Resolving a tap against ambient state would open
+    another conversation's position two, succeed, and report nothing."""
+    result = await _call(
+        monkeypatch,
+        _delegated(
+            "ok",
+            [{"source_ref": "mail:1"}],
+            offer={"message_ids": ["id-a"], "account": ACCOUNT, "mailbox": "inbox"},
+        ),
+    )
+
+    shown = result.public()
+    assert shown["conversation_id"] == "conv-1"
+    assert "conversation_id" not in result.model_public()

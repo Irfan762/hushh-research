@@ -21,6 +21,7 @@ ONE_VOICE_SESSION_MAX_MINUTES_ENV = "ONE_VOICE_SESSION_MAX_MINUTES"
 ONE_VOICE_IDLE_CLOSE_SECONDS_ENV = "ONE_VOICE_IDLE_CLOSE_SECONDS"
 ONE_VOICE_DAILY_MINUTES_PER_USER_ENV = "ONE_VOICE_DAILY_MINUTES_PER_USER"
 ONE_VOICE_MAIL_READS_ENABLED_ENV = "ONE_VOICE_MAIL_READS_ENABLED"
+ONE_VOICE_MAIL_NARRATION_ENABLED_ENV = "ONE_VOICE_MAIL_NARRATION_ENABLED"
 
 PROTOCOL_VERSION: Final = "one-voice-v1"
 
@@ -134,13 +135,32 @@ def voice_mail_reads_enabled() -> bool:
     return raw in _TRUE_VALUES if raw else True
 
 
-class OneVoiceMailAdmission:
-    """Injectable facade over the predicate, so tests can hand a tool a double.
+def voice_mail_narration_enabled() -> bool:
+    """Whether One may speak a mail digest aloud.
 
-    The predicate itself reads the environment at call time, which is what makes
-    it a kill switch: a hosted config change takes effect on restart without a
-    code change, and every re-check during a read sees the current value.
+    Unset means OFF, unlike ``voice_mail_reads_enabled``. The difference is not
+    stylistic: reading was already gated behind ``ONE_VOICE_LIVE_ENABLED`` when
+    its switch was added, so that switch only ever had to withdraw something
+    already decided. Narration is new capability, it sends the owner's mail digest
+    to a second model, and it is the one path on this surface that puts
+    mail-derived text through a provider call the Live session does not make. A
+    new capability that defaults on is a capability nobody decided to ship.
+
+    Set ``ONE_VOICE_MAIL_NARRATION_ENABLED=true`` to enable it.
+    """
+    return _clean(ONE_VOICE_MAIL_NARRATION_ENABLED_ENV).lower() in _TRUE_VALUES
+
+
+class OneVoiceMailAdmission:
+    """Injectable facade over the predicates, so tests can hand a tool a double.
+
+    The predicates read the environment at call time, which is what makes them
+    kill switches: a hosted config change takes effect on restart without a code
+    change, and every re-check during a read sees the current value.
     """
 
     def mail_reads_enabled(self) -> bool:
         return voice_mail_reads_enabled()
+
+    def mail_narration_enabled(self) -> bool:
+        return voice_mail_narration_enabled()

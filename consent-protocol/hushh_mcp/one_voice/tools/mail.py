@@ -142,11 +142,20 @@ class MailReadResult(ToolResult):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     items: list[dict[str, Any]] = Field(default_factory=list)
     coverage: dict[str, Any] = Field(default_factory=dict)
-    # Which offer these rows belong to. The client sends it back when it opens a
-    # row, so a row still on screen from a list that has since been replaced is
-    # refused rather than resolved against the newer list. Never shown to the
-    # model: it is a binding between this server and this screen.
+    # Which offer these rows belong to, and which conversation it was made under.
+    # The client sends both back when it opens a row.
+    #
+    # The revision refuses a row from a list that has since been replaced. The
+    # conversation id matters for a subtler reason: the client's live
+    # conversation id comes from server frames and can move on a reconnect while
+    # the offer stays where it was written. Reading it from ambient state at tap
+    # time would resolve the ordinal against a different conversation's offer and
+    # open a confidently wrong message, so the id travels with the rows instead.
+    #
+    # Neither is shown to the model. Both are bindings between this server and
+    # this screen, and the model cannot open anything with them.
     offer_revision: int | None = None
+    conversation_id: str = ""
     truncated: bool = False
     metadata_only: bool = True
 
@@ -345,6 +354,7 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
         truncated=bool(structured.get("truncated")),
         metadata_only=bool(structured.get("metadata_only", True)),
         offer_revision=offer_revision,
+        conversation_id=ctx.conversation_id,
         spoken_facts=_spoken(coverage),
         ui_refresh=["mail"],
     )
