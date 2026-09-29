@@ -7,7 +7,9 @@ import {
 } from "@/lib/feed/feed-events";
 import {
   FEED_LIVE_POLL_INTERVAL_MS,
+  FEED_PENDING_CONSENT_POLL_INTERVAL_MS,
   useFeedLiveRefresh,
+  useFeedPendingConsentRefresh,
 } from "@/lib/feed/use-feed-live-refresh";
 import { resetIdleSchedulerForTests } from "@/lib/perf/idle-scheduler";
 import { dispatchConsentStateChanged } from "@/lib/consent/consent-events";
@@ -214,5 +216,80 @@ describe("useFeedLiveRefresh", () => {
 
     expect(first).toHaveBeenCalledTimes(1);
     expect(second).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Localhost run 2026-09-28: with no push on the web and the Feed on its 45s
+ * cadence, a new request took 90.8s to appear under "Needs you". Pending
+ * requests alone are now re-read every 10s while the Feed is visible.
+ */
+describe("useFeedPendingConsentRefresh", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(1789930800000));
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      setTimeout(() => cb(0), 0);
+      return 1;
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible" as DocumentVisibilityState,
+    });
+  });
+
+  afterEach(() => {
+    resetIdleSchedulerForTests();
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  it("re-reads pending requests every 10s while visible, so a new one shows within about 10s", async () => {
+    const refresh = vi.fn(async () => undefined);
+    renderHook(() => useFeedPendingConsentRefresh(refresh));
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS + 10);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS * 5);
+    expect(refresh).toHaveBeenCalledTimes(6);
+    expect(FEED_PENDING_CONSENT_POLL_INTERVAL_MS).toBeLessThanOrEqual(10_000);
+  });
+
+  it("negative control: the 45s Feed cadence alone misses the 10s bound", async () => {
+    const refresh = vi.fn();
+    renderHook(() => useFeedLiveRefresh(refresh));
+    refresh.mockClear();
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS * 3 + 10);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("pauses while hidden, never overlaps a slow read, and stops when disabled", async () => {
+    let finish: () => void = () => undefined;
+    const refresh = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const { rerender } = renderHook(
+      ({ on }: { on: boolean }) => useFeedPendingConsentRefresh(refresh, on),
+      { initialProps: { on: true } },
+    );
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS + 10);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The first read is still out (localhost measured 17s): no second one.
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS * 2);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    finish();
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    finish();
+
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS * 6);
+    expect(refresh).toHaveBeenCalledTimes(2);
+
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(50);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    finish();
+
+    rerender({ on: false });
+    await vi.advanceTimersByTimeAsync(FEED_PENDING_CONSENT_POLL_INTERVAL_MS * 6);
+    expect(refresh).toHaveBeenCalledTimes(3);
   });
 });

@@ -142,3 +142,39 @@ export function useFeedLiveRefresh(
     };
   }, [enabled, taskId]);
 }
+
+/**
+ * How often the Feed re-checks requests waiting on this person while the Feed
+ * is on screen. There is no push on the web, and at the 45s Feed cadence a new
+ * request took 90s to appear under "Needs you" (measured 2026-09-28). Only the
+ * pending requests are re-read this often; the rest of the Feed keeps 45s.
+ */
+export const FEED_PENDING_CONSENT_POLL_INTERVAL_MS = 10_000;
+
+/**
+ * Runs `refresh` every 10s on the shared idle clock while the page is visible:
+ * paused while hidden, resumed at once on return, never overlapping itself
+ * (`refresh` returns its promise). Mount, focus and consent events are already
+ * covered by `useFeedLiveRefresh`; this adds only the faster cadence.
+ */
+export function useFeedPendingConsentRefresh(
+  refresh: () => Promise<unknown>,
+  enabled: boolean = true,
+): void {
+  const refreshRef = useRef(refresh);
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+  const taskId = `feed-pending-consent:${useId()}`;
+
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined") return;
+    return registerPeriodicTask({
+      id: taskId,
+      intervalMs: FEED_PENDING_CONSENT_POLL_INTERVAL_MS,
+      run: async () => {
+        await refreshRef.current();
+      },
+    });
+  }, [enabled, taskId]);
+}

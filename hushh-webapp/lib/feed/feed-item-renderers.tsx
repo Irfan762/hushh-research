@@ -223,12 +223,19 @@ function metadataStringList(
  * The name on a consent row, or "" when the row carries none. Never the
  * technical requester id: an unnamed row says "Someone asked" instead.
  */
-function consentRequesterName(metadata: Record<string, unknown>): string {
+/**
+ * The requester's name, from the metadata when it has one, else the row's own
+ * `actor_label`: the per-request consent row (migration 260) writes the name
+ * there too. "Someone" is only for a row that truly carries no name.
+ */
+function consentRequesterName(item: Pick<FeedItem, "metadata" | "actor_label">): string {
+  const metadata = item.metadata;
   return (
     metadataString(metadata, "requester_label") ||
     metadataString(metadata, "requester_display_name") ||
     metadataString(metadata, "counterpart_label") ||
     metadataString(metadata, "display_name") ||
+    (typeof item.actor_label === "string" ? item.actor_label.trim() : "") ||
     ""
   );
 }
@@ -292,7 +299,7 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
     case "consent_requested":
     case "consent_granted":
     case "consent_revoked": {
-      const requester = consentRequesterName(item.metadata);
+      const requester = consentRequesterName(item);
       const what = joinInformationLabels(consentRowLabels(item.metadata), 2);
       const reason = reasonMidSentence(metadataString(item.metadata, "reason"));
       const person = requester

@@ -17,7 +17,7 @@ import {
 import { useAuth } from "@/hooks/use-auth";
 import { useVault } from "@/lib/vault/vault-context";
 import { useStaleResource } from "@/lib/cache/use-stale-resource";
-import { useFeedLiveRefresh } from "@/lib/feed/use-feed-live-refresh";
+import { useFeedLiveRefresh, useFeedPendingConsentRefresh } from "@/lib/feed/use-feed-live-refresh";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import {
   CACHE_KEYS,
@@ -465,6 +465,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
   const pendingConsentCount =
     consentSummaryResource.data?.counts.pending ?? null;
 
+  const listedPendingCountRef = useRef<number | null>(null);
   const consentListResource = useStaleResource({
     cacheKey: userId
       ? CACHE_KEYS.CONSENT_CENTER_LIST(
@@ -481,6 +482,10 @@ export function useFeedActionables(): UseFeedActionablesResult {
     load: async (options) => {
       const idToken = await user?.getIdToken();
       if (!user?.uid || !idToken) throw new Error("Sign in to review consents");
+      // A new pending count means a request arrived or left: the service's own
+      // cached page predates it, so read past it.
+      const countChanged = listedPendingCountRef.current !== pendingConsentCount;
+      listedPendingCountRef.current = pendingConsentCount;
       return ConsentCenterService.listEntries({
         idToken,
         userId: user.uid,
@@ -488,7 +493,7 @@ export function useFeedActionables(): UseFeedActionablesResult {
         surface: "pending",
         page: 1,
         limit: CONSENT_CENTER_PAGE_SIZE,
-        force: consentTick > 0 || Boolean(options?.force),
+        force: consentTick > 0 || Boolean(options?.force) || countChanged,
       });
     },
   });
@@ -610,6 +615,20 @@ export function useFeedActionables(): UseFeedActionablesResult {
     useCallback(() => {
       void refreshActionables();
     }, [refreshActionables]),
+    Boolean(userId),
+  );
+
+  // Requests waiting on this person reach "Needs you" within about 10s while
+  // the Feed is on screen, through the same cached resources as above. The
+  // list only loads while the summary counts something pending.
+  useFeedPendingConsentRefresh(
+    useCallback(
+      () => Promise.all([
+        consentSummaryRefresh({ force: true }),
+        consentListRefresh({ force: true }),
+      ]),
+      [consentListRefresh, consentSummaryRefresh],
+    ),
     Boolean(userId),
   );
 

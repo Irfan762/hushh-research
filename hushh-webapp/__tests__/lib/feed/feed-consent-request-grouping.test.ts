@@ -214,6 +214,22 @@ describe("consent history rows", () => {
     );
   });
 
+  // Localhost run 2026-09-28 (screenshot 25): "Someone asked for your Food
+  // preferences" although the row carried the requester as its actor.
+  it("names the requester from the row's actor when the metadata has no name", () => {
+    const named = presentFeedItem({ ...historyRow("41", "attr.food.preferences.*"),
+      actor_label: "Kushal Trivedi", metadata: { scope: "attr.food.preferences.*" } });
+    expect(named.label).toBe("Kushal Trivedi");
+    expect(named.description).toBe("Asked for your Food preferences");
+  });
+
+  it("negative control: says Someone only when the row carries no name at all", () => {
+    const anonymous = presentFeedItem({ ...historyRow("42", "attr.food.preferences.*"),
+      actor_label: null, metadata: { scope: "attr.food.preferences.*" } });
+    expect(anonymous.label).toBe("Information request");
+    expect(anonymous.description).toBe("Someone asked for your Food preferences");
+  });
+
   it("leaves a row that stands alone untouched, so the memoised row keeps its identity", () => {
     const alone = historyRow("40", "attr.food.preferences.*");
     const [row] = collapseConsentBundleRows([alone]);
