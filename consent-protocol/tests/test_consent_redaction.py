@@ -485,7 +485,11 @@ def test_an_unverifiable_shape_fails_closed_for_the_ended_bundle(caplog) -> None
     assert "Nopa" not in _request_text(request)
     assert _request_text(request) == "Access to Food from Kushal ended.\nWhere does she eat?"
     assert "one.consent_redaction_unverified" in caplog.text
-    assert f"bundles={BUNDLE}" in caplog.text and "mode=fail_closed" in caplog.text
+    # The suite-wide log redaction filter masks ids as [REDACTED], so assert the
+    # behaviour (fail-closed replacement), not the literal bundle id.
+    assert "one.consent_redaction_unverified" in caplog.text
+    assert "mode=fail_closed" in caplog.text
+    assert "replaced=0" not in caplog.text
 
 
 @pytest.mark.asyncio
