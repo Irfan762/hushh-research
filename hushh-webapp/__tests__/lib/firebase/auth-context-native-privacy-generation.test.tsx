@@ -261,6 +261,24 @@ describe("AuthProvider native privacy generations", () => {
     expect(mocks.routerReplace).not.toHaveBeenCalled();
   });
 
+  it("catches up after a foreground transition whose native privacy event was missed", async () => {
+    mocks.restoreNativeSession.mockResolvedValue(null);
+    render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await screen.findByText("Signed out");
+
+    mocks.getPrivacyState.mockClear();
+    mocks.completePrivacyValidation.mockClear();
+    mocks.privacyState = {
+      shielded: true, generation: 7, cause: "background", appIsActive: true,
+    };
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    await waitFor(() => expect(mocks.completePrivacyValidation).toHaveBeenCalledWith(7));
+    expect(mocks.getPrivacyState).toHaveBeenCalled();
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Signed out")).toBeInTheDocument();
+  });
+
   it("releases successive native privacy generations without account checks", async () => {
     mocks.restoreNativeSession.mockResolvedValue(makeUser());
     mocks.apiGetAccountSessionStatus.mockResolvedValue(activeSessionResponse());

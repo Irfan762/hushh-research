@@ -1408,6 +1408,19 @@ export function AuthProvider({ children }: AuthProviderProps) {
     };
     connectNativePrivacyListener();
 
+    // WebKit can drop a native listener delivery across suspension. A foreground
+    // signal only re-reads native state; the exact-generation native ack still
+    // owns uncovering, and initial identity restoration stays single-owner.
+    const catchUpNativePrivacyAfterForeground = () => {
+      if (!IS_NATIVE || document.visibilityState !== "visible" ||
+          !nativeRestoreSettledRef.current) return;
+      void settleNativePrivacyProtectedSession();
+    };
+    if (IS_NATIVE) {
+      document.addEventListener("visibilitychange", catchUpNativePrivacyAfterForeground);
+      window.addEventListener("focus", catchUpNativePrivacyAfterForeground);
+    }
+
     if (!IS_NATIVE) {
       initialWebAuthWatchdog = globalThis.setTimeout(() => {
         initialWebAuthWatchdog = null;
@@ -1506,6 +1519,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     return () => {
       mounted = false;
+      if (IS_NATIVE) {
+        document.removeEventListener("visibilitychange", catchUpNativePrivacyAfterForeground);
+        window.removeEventListener("focus", catchUpNativePrivacyAfterForeground);
+      }
       nativePrivacyReconcileRef.current = () => undefined;
       if (privacyRetryTimer !== null) clearTimeout(privacyRetryTimer);
       void removePrivacyListener?.();
