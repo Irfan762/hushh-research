@@ -844,6 +844,26 @@ describe("a roster row on Connect behaves like a directory row", () => {
 });
 
 describe("somebody else acting on your Circle", () => {
+  it("repairs a missed push while the Circle tab stays visible", async () => {
+    const intervalSpy = vi.spyOn(window, "setInterval");
+    mocks.listCircles
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([circle("remote-circle", "Friends", 2)]);
+
+    render(<ConnectCirclesTab currentUserId="owner-user" isActive />);
+    await waitFor(() => expect(mocks.listCircles).toHaveBeenCalledTimes(1));
+
+    const tick = intervalSpy.mock.calls.find(([, delay]) => delay === 30_000)?.[0];
+    intervalSpy.mockRestore();
+    expect(tick).toBeDefined();
+    act(() => {
+      (tick as () => void)();
+    });
+
+    await waitFor(() => expect(mocks.listCircles).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("Friends")).toBeInTheDocument();
+  });
+
   it("re-reads when the shared Circle channel announces a change", async () => {
     // A person joining with a code, accepting an invitation, or being added by
     // another owner changes this list without the viewer touching anything.

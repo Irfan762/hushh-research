@@ -314,6 +314,7 @@ export function orderCircles(circles: readonly OneLocationCircleSummary[]): {
 export function ConnectCirclesTab({
   onStateChange,
   currentUserId = null,
+  isActive = true,
   onRequestConnection,
   onCancelConnectionRequest,
   refreshToken = 0,
@@ -322,6 +323,8 @@ export function ConnectCirclesTab({
    *  hoisting circle state into a 2,400-line component. */
   onStateChange?: (state: ConnectCirclesSnapshot) => void;
   currentUserId?: string | null;
+  /** The swipe pane stays mounted when Connections is selected. */
+  isActive?: boolean;
   /**
    * Opens the SAME capability review the Connect directory opens.
    *
@@ -575,6 +578,18 @@ export function ConnectCirclesTab({
       setReloadToken((token) => token + 1);
     });
   }, [circleIdParam, currentUserId, go]);
+
+  useEffect(() => {
+    if (!currentUserId || !vaultOwnerToken || !isActive) return;
+    // Push/SSE is the fast path. A visible-only read repairs a dropped push
+    // without requiring a user to blur the app or manually refresh the tab.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return;
+      setReloadToken((token) => token + 1);
+      if (circleIdParam) setDetailReloadToken((token) => token + 1);
+    }, 30_000);
+    return () => window.clearInterval(timer);
+  }, [circleIdParam, currentUserId, isActive, vaultOwnerToken]);
 
   const closeFlow = useCallback((refreshList = true) => {
     // `replace`, not push. This runs after leaving and after deleting, so the
