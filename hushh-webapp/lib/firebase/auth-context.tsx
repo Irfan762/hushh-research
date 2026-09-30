@@ -1327,6 +1327,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     let privacySequence = 0;
     let privacyReadFailures = 0;
     let privacyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let foregroundRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let foregroundRetriesLeft = 0;
     let removePrivacyListener: (() => Promise<void>) | null = null;
     let privacyListenerConnecting = false;
 
@@ -1337,6 +1339,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
         connectNativePrivacyListener();
         void settleNativePrivacyProtectedSession();
       }, 500);
+    };
+
+    const scheduleForegroundRead = () => {
+      if (!mounted || foregroundRetryTimer !== null || foregroundRetriesLeft <= 0 ||
+          document.visibilityState !== "visible") return;
+      foregroundRetriesLeft -= 1;
+      foregroundRetryTimer = setTimeout(() => {
+        foregroundRetryTimer = null;
+        if (!mounted || document.visibilityState !== "visible") return;
+        if (!nativeRestoreSettledRef.current) {
+          scheduleForegroundRead();
+          return;
+        }
+        void settleNativePrivacyProtectedSession();
+      }, 250);
     };
 
     const settleNativePrivacyProtectedSession = async (
@@ -1367,14 +1384,27 @@ export function AuthProvider({ children }: AuthProviderProps) {
       nativePrivacyLatestRef.current = privacyState;
       if (!privacyState.appIsActive) {
         setNativePrivacyReady(null);
+        if (foregroundRetriesLeft > 0) scheduleForegroundRead();
         return;
       }
-
       // Cold native restoration still owns the initial auth decision. Once the
       // identity is published, resuming the app only acknowledges the native
       // privacy cover; it does not perform another account/session request or
       // toggle the React auth gate.
-      if (!nativeRestoreSettledRef.current) await checkAuth();
+      const readBeforeRestore = !nativeRestoreSettledRef.current;
+      if (readBeforeRestore) await checkAuth();
+      if (!mounted || sequence !== privacySequence) return;
+      // A foreground transition during restoration can supersede the state
+      // read before restoration. Let its pending catch-up read the fresh state.
+      if (readBeforeRestore && foregroundRetriesLeft > 0) {
+        scheduleForegroundRead();
+        return;
+      }
+      foregroundRetriesLeft = 0;
+      if (foregroundRetryTimer !== null) {
+        clearTimeout(foregroundRetryTimer);
+        foregroundRetryTimer = null;
+      }
       if (mounted && nativePrivacyLatestRef.current?.generation === privacyState.generation &&
           nativePrivacyLatestRef.current.appIsActive && privacyState.shielded &&
           !terminalInvalidationLatchRef.current && !signOutPromiseRef.current) {
@@ -1412,8 +1442,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     // signal only re-reads native state; the exact-generation native ack still
     // owns uncovering, and initial identity restoration stays single-owner.
     const catchUpNativePrivacyAfterForeground = () => {
-      if (!IS_NATIVE || document.visibilityState !== "visible" ||
-          !nativeRestoreSettledRef.current) return;
+      if (!IS_NATIVE || document.visibilityState !== "visible") return;
+      foregroundRetriesLeft = 20;
+      if (!nativeRestoreSettledRef.current) {
+        scheduleForegroundRead();
+        return;
+      }
       void settleNativePrivacyProtectedSession();
     };
     if (IS_NATIVE) {
@@ -1525,6 +1559,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       }
       nativePrivacyReconcileRef.current = () => undefined;
       if (privacyRetryTimer !== null) clearTimeout(privacyRetryTimer);
+      if (foregroundRetryTimer !== null) clearTimeout(foregroundRetryTimer);
       void removePrivacyListener?.();
       webAuthRevision += 1;
       webAuthObserverPendingRef.current = false;
