@@ -163,6 +163,7 @@ import {
 } from "@/components/agent/specialist-directive-card";
 import { copyTextToClipboard } from "@/components/agent/chat-markdown-link";
 import { AgentMarkdown } from "@/components/agent/agent-markdown";
+import { ConnectorBrandMark, type ConnectorBrand } from "@/components/agent/connector-brand-mark";
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import {
@@ -2322,7 +2323,7 @@ export function storedMessagesToAgentMessages(messages: StoredAgentChatMessage[]
     .filter((message): message is AgentMessage => Boolean(message)));
 }
 
-function ChatAgentSubtitle({ text, working }: { text: string; working: boolean }) {
+function ChatAgentSubtitle({ text, working, brand }: { text: string; working: boolean; brand?: ConnectorBrand | null }) {
   const [display, setDisplay] = useState(text);
   const [visible, setVisible] = useState(true);
   useEffect(() => {
@@ -2332,12 +2333,12 @@ function ChatAgentSubtitle({ text, working }: { text: string; working: boolean }
     return () => window.clearTimeout(timer);
   }, [display, text]);
   return <p aria-live="polite" className="flex max-w-48 items-center gap-1.5 truncate text-xs text-muted-foreground sm:max-w-64">
-    {working ? <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin motion-reduce:animate-none" /> : null}
+    {brand ? <ConnectorBrandMark brand={brand} size="sm" /> : working ? <Loader2 aria-hidden="true" className="size-3 shrink-0 animate-spin motion-reduce:animate-none" /> : null}
     <span className={`block truncate transition-opacity duration-100 motion-reduce:transition-none ${visible ? "opacity-100" : "opacity-0"}`}>{display}</span>
   </p>;
 }
 
-export type ActiveToolCall = { id: string; label: string; activity?: string };
+export type ActiveToolCall = { id: string; label: string; activity?: string; brand?: ConnectorBrand | null };
 
 export const IDLE_AGENT_SUBTITLE = "Your private agent";
 
@@ -6095,7 +6096,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onToolStart: (toolEvent) => {
             if (streamAbortController.signal.aborted) return;
             setActiveToolCalls(current => [...current.filter(item => item.id !== toolEvent.callId),
-              { id: toolEvent.callId, label: toolEvent.label, activity: toolEvent.activity }]);
+              { id: toolEvent.callId, label: toolEvent.label, activity: toolEvent.activity,
+                brand: connectorBrandForTool(toolEvent.raw?.toolName, toolEvent.raw?.provider ?? toolEvent.slots?.provider) }]);
             appendDebugEvent(debugTurnId, "tool_start", toolEvent);
             upsertTurnStreamEvent(
               agentToolEventToVisibleStreamEvent("start", toolEvent),
@@ -6109,7 +6111,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               // The call's arguments are complete now, so a connector call can
               // name its product ("Checking Google Drive access…").
               setActiveToolCalls(current => current.map(item => item.id === toolEvent.callId
-                ? { ...item, label: toolEvent.label, activity: toolEvent.activity } : item));
+                ? { ...item, label: toolEvent.label, activity: toolEvent.activity,
+                    brand: connectorBrandForTool(toolEvent.raw?.toolName, toolEvent.raw?.provider ?? toolEvent.slots?.provider) } : item));
             }
             appendDebugEvent(debugTurnId, "tool_waiting", toolEvent);
             const visibleEvent = agentToolEventToVisibleStreamEvent(
@@ -8451,7 +8454,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   isPuppySurface,
                   activeToolCalls,
                   statusText,
-                })} working={activeToolCalls.length > 0 || isVisiblePkmMemoryWorking} />
+                })} working={activeToolCalls.length > 0 || isVisiblePkmMemoryWorking} brand={activeToolCalls.at(-1)?.brand} />
               </div>
             </div>
 
