@@ -133,6 +133,10 @@ export default defineConfig({
         // safe area and clear of the composer, read on an iPhone; own document.
         /agent-chat-slow-notice\.layout\.spec\.ts/,
         /settings-row-surface\.layout\.spec\.ts/,
+        // wallet-workspace: the card stack's ISO geometry, its no-overshoot
+        // travel and the zero-shift open are felt on an iPhone first; the
+        // fixture builds its own document.
+        /wallet-workspace\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,
         // memory-save-card: the explicit-save receipt's pixel-grid contract
