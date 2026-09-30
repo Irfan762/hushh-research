@@ -444,7 +444,25 @@ function OwnerConnectorsPanel({
   const panelRootRef = useRef<HTMLDivElement>(null);
   const controller = useRef<AbortController | null>(null);
   const currentToken = useRef(vaultOwnerToken);
+  const curatedRequest = useRef(0);
+  const curatedDisconnectId = useRef<string | null>(null);
   useLayoutEffect(() => {
+    if (currentToken.current !== vaultOwnerToken) {
+      // A renewed owner token retires the old async request. The catalog is
+      // re-read below with the new token; do not leave an old row spinning.
+      curatedRequest.current++;
+      const id = curatedDisconnectId.current;
+      if (id) {
+        changesInFlight.current.delete(`curated:${id}`);
+        setDisconnecting((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+        curatedDisconnectId.current = null;
+      }
+      setCuratedBusy(false);
+    }
     currentToken.current = vaultOwnerToken;
   }, [vaultOwnerToken]);
   const driveLock = useRef(false);
@@ -1529,6 +1547,7 @@ function OwnerConnectorsPanel({
     const ownerId = user.uid;
     const token = vaultOwnerToken;
     const signal = controller.current?.signal;
+    const request = ++curatedRequest.current;
     setCuratedBusy(true);
     setCuratedMessage("");
     void ExternalConnectorService.startOAuthConnect({
@@ -1538,7 +1557,7 @@ function OwnerConnectorsPanel({
       flow: "web",
     })
       .then((start) => {
-        if (signal?.aborted || currentToken.current !== token) return;
+        if (signal?.aborted || currentToken.current !== token || curatedRequest.current !== request) return;
         const authorizeUrl = new URL(start.authorizeUrl);
         if (
           authorizeUrl.protocol !== "https:" ||
@@ -1553,7 +1572,7 @@ function OwnerConnectorsPanel({
         window.location.assign(authorizeUrl.href);
       })
       .catch(() => {
-        if (signal?.aborted) return;
+        if (signal?.aborted || curatedRequest.current !== request) return;
         setCuratedMessage(`Could not start ${name}. Try again.`);
         setCuratedBusy(false);
       });
@@ -1574,23 +1593,28 @@ function OwnerConnectorsPanel({
         !token || !signal || signal.aborted || curatedBusy
       ) return;
       changesInFlight.current.add(target);
+      const request = ++curatedRequest.current;
+      curatedDisconnectId.current = connectorId;
       beginDisconnect(connectorId);
       setCuratedBusy(true);
       void ExternalConnectorService.disconnect({ vaultOwnerToken: token, connectorId })
         .then(async () => {
-          if (signal.aborted || currentToken.current !== token) return;
+          if (signal.aborted || currentToken.current !== token || curatedRequest.current !== request) return;
           setCuratedMessage("Disconnected.");
           await refresh(signal);
+          if (signal.aborted || curatedRequest.current !== request) return;
           endDisconnect(connectorId);
         })
         .catch(() => {
-          if (!signal.aborted && currentToken.current === token) {
+          if (!signal.aborted && currentToken.current === token && curatedRequest.current === request) {
             setCuratedMessage("Could not disconnect. Try again.");
             endDisconnect(connectorId, DISCONNECT_FAILED);
           }
         })
         .finally(() => {
+          if (curatedRequest.current !== request) return;
           changesInFlight.current.delete(target);
+          curatedDisconnectId.current = null;
           if (!signal.aborted) setCuratedBusy(false);
         });
       return;
