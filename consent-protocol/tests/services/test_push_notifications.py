@@ -344,11 +344,15 @@ def test_request_then_cancellation_has_distinct_sse_transition_ids(monkeypatch):
     )
 
     send_connection_request_push(
-        "addressee-1", "requester-1", requester_display_name="Ankit",
+        "addressee-1",
+        "requester-1",
+        requester_display_name="Ankit",
         connection_request_id="req-42",
     )
     send_connection_request_cancelled_push(
-        "addressee-1", "requester-1", requester_display_name="Ankit",
+        "addressee-1",
+        "requester-1",
+        requester_display_name="Ankit",
         connection_request_id="req-42",
     )
 

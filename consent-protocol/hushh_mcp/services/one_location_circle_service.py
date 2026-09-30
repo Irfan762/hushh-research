@@ -2264,18 +2264,23 @@ class OneLocationCircleService:
 
         recipients = {user_id for user_id in extra_user_ids if user_id}
         try:
-            rows = self._db.execute_raw(
-                """
+            rows = (
+                self._db.execute_raw(
+                    """
                 SELECT user_id
                 FROM one_location_circle_memberships
                 WHERE circle_id = CAST(:circle_id AS UUID)
                   AND status = 'active'
                 """,
-                {"circle_id": circle_id},
-            ).data or []
+                    {"circle_id": circle_id},
+                ).data
+                or []
+            )
             recipients.update(str(row.get("user_id") or "").strip() for row in rows)
         except Exception:  # noqa: BLE001 - notifications cannot undo a committed mutation
-            logger.warning("circle.roster_sync_audience_failed circle_id=%s", circle_id, exc_info=True)
+            logger.warning(
+                "circle.roster_sync_audience_failed circle_id=%s", circle_id, exc_info=True
+            )
 
         recipients.difference_update(skip_user_ids)
         recipients.discard("")
