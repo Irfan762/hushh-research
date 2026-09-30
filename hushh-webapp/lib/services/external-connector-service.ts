@@ -9,6 +9,7 @@ import {
   type McpCallApproval, type McpCallPreview, type McpCallReviewReference,
 } from "@/lib/agent/mcp-call-review";
 import { ONE_CHAT_KEY_HEADER } from "@/lib/vault/one-chat-key";
+import { observeServerDate, serverNow } from "@/lib/agent/server-clock";
 
 export type ExternalConnectorAuthStyle = "api_key" | "oauth";
 
@@ -299,7 +300,7 @@ export class ExternalConnectorService {
     isEffectCurrent: ConnectorEffectGuard;
   }, operation: "review" | "confirm", args: Record<string, unknown>): Promise<unknown> {
     const current = () => !input.signal.aborted && input.isEffectCurrent() &&
-      Date.parse(input.reference.expiresAt) > Date.now();
+      Date.parse(input.reference.expiresAt) > serverNow();
     if (!current()) throw new Error("This review expired or your vault session changed.");
     const configuration = input.configuration === undefined ? undefined :
       projectCustomConnectorTurnConfigurations([input.configuration])[0];
@@ -326,6 +327,8 @@ export class ExternalConnectorService {
         }),
       },
     );
+    // Learn the server's clock so the time left is the server's, not this device's.
+    observeServerDate(response.headers.get("date"));
     // Never echo response bodies: they may contain private arguments or provider text.
     if (!response.ok) throw new Error("Connector review is unavailable. No automatic retry was made.");
     const payload: unknown = await response.json().catch(() => null);
