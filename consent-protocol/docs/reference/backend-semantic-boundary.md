@@ -222,3 +222,34 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
   `one.proposal_reason_fallback`.
 - Live eval before promotion: none yet. Deterministic ranking tests only
   (`consent-protocol/tests/test_scope_search_ranking.py`).
+
+### Declared: One Voice Mail analysis
+
+- Owning agent: the Email specialist under One Voice. One selects the existing
+  `read_mail` tool; `agent_email_read_planner` selects `analyze_mail` and the
+  requested categories from the owner's current question. The existing
+  `agent_email_request_classifier` judges personal-information requests;
+  `agent_email_read_analyzer` extracts action items and mail-derived meetings.
+- Manifest path: `consent-protocol/hushh_mcp/agents/email/agent.yaml`.
+- Structured output: `MailReadPlan` (`operation`, bounded Gmail query and limit,
+  `categories`) and `MailAnalysisAnswer` (`findings` with category, source ref,
+  update refs, detail, state, and zoned due/event time) in
+  `consent-protocol/hushh_mcp/services/email_delegated_read.py`. The personal
+  classifier retains `EMAIL_REQUEST_CLASSIFIER_SCHEMA` in
+  `consent-protocol/hushh_mcp/agents/email/runtime.py`; its nonpersisting service
+  assessment returns a boolean and registry-authored field names.
+- Validator: the reader caps analysis at 12 message bodies, keeps provider IDs
+  server-side, and reports partial coverage. The service accepts only requested
+  categories and refs from that read, requires each update ref to come from the
+  same retrieved thread, and rejects naive or malformed event/due times. A
+  failed category remains unavailable, never zero findings. The Live model sees
+  only code-counted coverage; Mail text and findings are screen-only. No phrase
+  table selects an operation, and analysis neither mutates Mail nor checks the
+  owner's Calendar.
+- Live eval before production promotion: run a consented UAT session on an owner
+  mailbox with positive and negative personal-information requests, an action
+  item with a later completion, and an invitation with a later cancellation or
+  reschedule. Verify the bounded search scope, source and Open bindings, correct
+  timezone, partial-category failure, and the continuous One Voice conversation
+  across in-app navigation. Synthetic contract tests prove the safety boundary;
+  they do not establish classification accuracy on a live mailbox.
