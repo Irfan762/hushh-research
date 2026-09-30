@@ -223,6 +223,28 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
 - Live eval before promotion: none yet. Deterministic ranking tests only
   (`consent-protocol/tests/test_scope_search_ranking.py`).
 
+### Declared: conversation history titles
+
+- Owning agent: `agent_one`, tool-free gene `one_conversation_title` in
+  `consent-protocol/hushh_mcp/agents/one/agent.yaml`.
+- Output: `ConversationTitles` in `hushh_mcp/one_adk/conversation_titles.py`;
+  one unique supplied reference and complete title per untitled conversation,
+  at most 32 characters and six words. Validators reject invalid labels rather
+  than truncating or substituting semantic text.
+- The owner-authenticated history listing supplies only opening user text under
+  the live chat key. Thoughts, assistant answers, shared information, and tool
+  results are excluded. One bounded model call repairs at most 20 visible chats.
+  Titles remain encrypted in `hussh:thread_summary_title`; manual
+  `hussh:thread_title` takes precedence. Revision checks protect concurrent
+  renames/messages; automatic titles preserve conversation recency.
+- Failure: content-free outcome logs, opening-text fallback, and a bounded
+  process-local 60-second retry cooldown. Empty conversations use `New chat`. Disable with `ONE_CHAT_TITLE_SUMMARIES_ENABLED=false`.
+- Surfaces: existing web/iOS/Android chat history response; no voice, A2A, MCP,
+  external tool authority, or PKM mutation is added.
+- Evaluation: mocked contract tests cover privacy, bounded output, persistence,
+  races, and failure. A live synthetic check produced “Tech and biology
+  background” and “Writing my bio”; real-owner content must not enter evaluation logs.
+
 ### Declared: One Voice Mail analysis
 
 - Owning agent: the Email specialist under One Voice. One selects the existing

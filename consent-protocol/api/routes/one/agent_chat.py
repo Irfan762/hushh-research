@@ -56,6 +56,7 @@ from hushh_mcp.one_adk.consent_redaction import (
     redaction_for_history,
     shared_record_for_history,
 )
+from hushh_mcp.one_adk.conversation_titles import ensure_conversation_titles, opening_prompt
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
@@ -1574,12 +1575,8 @@ def _session_title(session: Any) -> str:
     authored = str((session.state or {}).get("hussh:thread_title") or "").strip()
     if authored:
         return authored
-    for event in session.events:
-        if event.author == "user":
-            text = _event_text(event)
-            if text:
-                return text[:80]
-    return "New conversation"
+    generated = str((session.state or {}).get("hussh:thread_summary_title") or "").strip()
+    return generated or opening_prompt(session)[:80] or "New chat"
 
 
 class RenameConversation(BaseModel):
@@ -1730,6 +1727,12 @@ async def list_conversations(
     sessions = sorted(response.sessions, key=lambda item: item.last_update_time, reverse=True)[
         :limit
     ]
+    await ensure_conversation_titles(
+        sessions=sessions,
+        service=_session_service,
+        owner=user_id,
+        token=str(token.get("token") or ""),
+    )
     return {
         "user_id": user_id,
         "conversations": [
