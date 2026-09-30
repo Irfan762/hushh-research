@@ -1576,7 +1576,7 @@ def _session_title(session: Any) -> str:
     if authored:
         return authored
     generated = str((session.state or {}).get("hussh:thread_summary_title") or "").strip()
-    return generated or opening_prompt(session) or "New chat"
+    return generated or opening_prompt(session)[:80] or "New chat"
 
 
 class RenameConversation(BaseModel):
