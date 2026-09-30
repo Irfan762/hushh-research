@@ -2823,9 +2823,12 @@ async def _list_outgoing_information_requests_only(
         if handle in handles:
             continue
         handles[handle] = record
-        person = str(record.get("displayName") or "").strip()
-        if person.casefold() == "that person" or looks_technical_label(person):
-            person = None
+        raw_person = str(record.get("displayName") or "").strip()
+        person: str | None = (
+            None
+            if raw_person.casefold() == "that person" or looks_technical_label(raw_person)
+            else raw_person
+        )
         spoken.append(
             {
                 "requestId": handle,
