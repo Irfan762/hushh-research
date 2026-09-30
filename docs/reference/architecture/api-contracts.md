@@ -1593,7 +1593,7 @@ routes remain default-off and do **not** enable chat reads or indexing.
 | --- | --- | --- |
 | `GET /api/connectors` | Vault Owner | Existing catalog/status plus redacted validation/revocation state, `available`, and computed rollout flags; deactivated Drive and a curated OAuth connector with an existing owner grant keep a recovery row with `available=false`. No endpoints, scopes, raw policy, provider subject or credentials. |
 | `POST /api/connectors/google_drive/connect/oauth/start` | Vault Owner + UAT admission/connection flag | Registered `redirectUri`, optional `flow=web\|native`; returns authorization URL, opaque `attemptId`, connector and ten-minute expiry. |
-| `POST /api/connectors/{connector_id}/connect/oauth/start` | Vault Owner + curated UAT cohort + active operator registry row | For a reviewed curated OAuth MCP connector, requires its exact registered web return URI and returns only a provider authorization URL, opaque attempt ID, connector ID and expiry. |
+| `POST /api/connectors/{connector_id}/connect/oauth/start` | Vault Owner + active operator registry row + provider OAuth secrets present | For a reviewed curated OAuth MCP connector, requires its exact registered web return URI and returns only a provider authorization URL, opaque attempt ID, connector ID and expiry. |
 | `POST /api/connectors/oauth/complete` | Vault Owner | Dispatches the signed, atomically claimed owner attempt to its adapter. Drive uses verified Google identity/scopes; curated OAuth seals the owner-bound grant then verifies its MCP endpoint before reporting `connected`. |
 | `POST /api/connectors/oauth/complete/web` | Verified Firebase identity matching an existing unexpired Vault-authorized Drive attempt | Requires `code`, signed `state` and matching opaque `attemptId` before exchange. Popup-only completion exception; no opener Vault Owner token transfer. |
 | `GET /api/connectors/oauth/native/callback` | Signed state + atomic native attempt claim | Backend code exchange; encrypted pending credentials only. Fixed `hushh://connectors/return` handoff contains only opaque attempt/outcome. Invalid state has no redirect. |
@@ -1641,14 +1641,16 @@ selected sources and sessions. This checkpoint stores no raw content, chunks or 
 HubSpot is the first curated OAuth MCP connector. Its initial contract is
 **web onboarding and mobile use after a web connection**: native does not yet
 own a curated OAuth callback. A non-terminal stored grant remains visible for
-Disconnect if its cohort flag turns off or an operator deactivates the
+Disconnect if an operator deactivates the
 registry row; it does not become connectable or executable again.
 
 The checked-in UAT descriptor is not activation. An authorized operator must
 run the descriptor's validation/probe/apply workflow against the intended UAT
 registry, with the matching OAuth app callback and UAT-only secrets already
 provisioned. Deployment does not apply that row implicitly. Source wiring for
-the UAT flag and secrets is therefore not proof that the registry row is live.
+the provider secrets is therefore not proof that the registry row is live.
+Curated connectors are owner-initiated and available to every Vault Owner; an
+environment without the provider's secrets or an active row never offers one.
 
 Descriptor validation and runtime configuration admit only public HTTPS MCP,
 authorization, and token endpoints: no credentials/userinfo, query/fragment,

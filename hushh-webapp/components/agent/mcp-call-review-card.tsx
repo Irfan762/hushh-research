@@ -9,6 +9,7 @@ import { ExternalConnectorService } from "@/lib/services/external-connector-serv
 import type { AgentChatStreamHandlers } from "@/lib/services/agent-chat-client";
 import type { McpCallPreview } from "@/lib/agent/mcp-call-review";
 import { serverNow } from "@/lib/agent/server-clock";
+import { ReviewArguments } from "@/components/agent/mcp-call-review-values";
 
 export type McpChatReview = Parameters<NonNullable<AgentChatStreamHandlers["onMcpReview"]>>[0];
 type Phase = "loading" | "ready" | "busy" | "unavailable" | "unknown";
@@ -153,14 +154,7 @@ export function McpCallReviewCard({ review, vaultOwnerToken, onDismiss }: {
         ) : null}
         {visible ? <>
           <p className="break-words text-sm font-medium">{visible.connectorLabel} · {visible.toolLabel.replaceAll("_", " ")}</p>
-          <dl aria-label="Call details" className="max-h-[40vh] overflow-y-auto overscroll-contain divide-y">
-            {Object.entries(visible.arguments).map(([key, value]) => (
-              <div key={key} className="grid gap-1 py-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] sm:gap-3">
-                <dt className="break-words text-sm text-muted-foreground">{key.replaceAll("_", " ")}</dt>
-                <dd className="whitespace-pre-wrap break-words text-sm">{typeof value === "string" ? value : JSON.stringify(value, null, 2)}</dd>
-              </div>
-            ))}
-          </dl>
+          <ReviewArguments args={visible.arguments} />
           {Object.keys(visible.arguments).length === 0 ? <p className="text-sm">No additional inputs.</p> : null}
         </> : null}
         {phase === "unavailable" || phase === "unknown" ? (
