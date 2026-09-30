@@ -159,7 +159,7 @@ describe("current-authority inline Chat catalog", () => {
     fireEvent.change(screen.getByTestId("chat-request-purpose"), { target: { value: purpose } });
     fireEvent.click(screen.getByRole("button", { name: "Send request" }));
     expect(await screen.findByText("Request sent to Synthetic Recipient")).toBeInTheDocument();
-    expect(await screen.findByText("Waiting for Synthetic Recipient's approval")).toBeInTheDocument();
+    expect(screen.queryByTestId("shared-with-you-values")).toBeNull();
     expect(onInformationRequestSubmitted).toHaveBeenCalledWith({
       bundleId, subjectRef: person, idempotencyKey: expect.any(String),
       // The sent card itself, labels only, so the chat shows "Request sent"
