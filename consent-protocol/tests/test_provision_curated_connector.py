@@ -4,32 +4,25 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from hushh_mcp.services.curated_connector_manifest import get_manifest
+from hushh_mcp.services.curated_connector_manifest import (
+    REGISTRATION_SPEC_DIR,
+    get_manifest,
+    get_registration_spec,
+)
 from scripts.ops import configure_external_mcp_connector as cli
 from scripts.ops import provision_curated_connector as prov
 
 NOTION = get_manifest("notion")
 HUBSPOT = get_manifest("hubspot")
-# This is deliberately a test-only provider contract. The real Attio manifest
-# is not activated until an operator has captured its authenticated tools/list
-# result, so no tool name is guessed into the runtime allowlist.
-ATTIO = replace(
-    NOTION,
-    connector_id="attio",
-    mcp_endpoint="https://mcp.attio.com/mcp",
-    authorize_url="https://app.attio.com/oidc/authorize",
-    token_url="https://app.attio.com/oidc/token",  # noqa: S106 - public provider URL
-    registration_url="https://app.attio.com/oauth/register",
-    scopes=("mcp", "offline_access", "openid"),
-    client_id_env="ATTIO_OAUTH_CLIENT_ID",
-)
+# Attio has a real checked-in registration-only spec. It deliberately remains
+# absent from the runtime manifests until authenticated tools/list discovery.
+ATTIO = get_registration_spec("attio")
 GOOD_METADATA = {
     "issuer": "https://mcp.notion.com",
     "authorization_endpoint": "https://mcp.notion.com/authorize",
@@ -80,7 +73,8 @@ def test_attio_public_client_contract_uses_only_its_client_id_and_metadata_scope
     request = prov.build_registration_request(ATTIO, "uat", [])
     assert ATTIO.is_public_client is True
     assert ATTIO.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
-    assert ATTIO.client_secret_env is None
+    assert ATTIO.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
+    assert get_manifest("attio") is None
     assert request["token_endpoint_auth_method"] == "none"
     assert request["scope"] == "mcp offline_access openid"
 
@@ -129,6 +123,32 @@ def test_extra_redirect_cannot_supply_an_unsupported_environment():
 def test_an_unknown_provider_has_no_manifest():
     with pytest.raises(prov.ProvisionError, match="No valid manifest"):
         prov.require_manifest("no_such_provider")
+
+
+@pytest.mark.asyncio
+async def test_attio_registration_only_spec_can_dry_run_but_never_posts_or_stores(monkeypatch):
+    async def fake_discover(contract):
+        assert contract == ATTIO
+        return ATTIO.registration_url
+
+    monkeypatch.setattr(prov, "discover_registration_endpoint", fake_discover)
+    monkeypatch.setattr(prov, "secret_exists", lambda *_: False)
+    monkeypatch.setattr(prov, "register_client", pytest.fail)
+    monkeypatch.setattr(prov, "store_secret", pytest.fail)
+
+    result = await prov.cmd_register(_args(connector_id="attio", dry_run=True, store=True))
+
+    assert result["dryRun"] is True
+    assert result["clientIdVariable"] == "ATTIO_OAUTH_CLIENT_ID"
+    assert result["registrationEndpoint"] == "https://app.attio.com/oauth/register"
+    assert result["request"] == {
+        "client_name": prov.CLIENT_NAME,
+        "redirect_uris": ["https://uat.one.hushh.ai/one/profile/connectors/oauth/return"],
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": "none",
+        "scope": "mcp offline_access openid",
+    }
 
 
 # --- metadata must still agree with the reviewed manifest ------------------------
@@ -383,6 +403,7 @@ def test_status_reports_which_secrets_exist(monkeypatch):
     report = prov.cmd_status(_args())
     assert report["publicClient"] is True
     assert report["secrets"] == {"NOTION_OAUTH_CLIENT_ID": "ready"}
+    assert report["registrationReady"] is True
     assert report["ready"] is True
     monkeypatch.setattr(prov, "secret_state", lambda *_a: "disabled")
     assert prov.cmd_status(_args())["ready"] is False
@@ -396,6 +417,19 @@ def test_status_for_a_confidential_provider_needs_both_secrets(monkeypatch):
     assert set(report["secrets"]) == {"HUBSPOT_OAUTH_CLIENT_ID", "HUBSPOT_OAUTH_CLIENT_SECRET"}
     assert report["secrets"]["HUBSPOT_OAUTH_CLIENT_SECRET"] == "missing"
     assert report["ready"] is False
+
+
+def test_registration_only_status_can_be_registration_ready_but_never_runtime_ready(monkeypatch):
+    monkeypatch.setattr(prov, "secret_state", lambda *_: "ready")
+
+    report = prov.cmd_status(_args(connector_id="attio"))
+
+    assert report["registrationOnly"] is True
+    assert report["runtimeManifest"] is False
+    assert report["toolsPendingDiscovery"] is True
+    assert report["registrationReady"] is True
+    assert report["ready"] is False
+    assert report["secrets"] == {"ATTIO_OAUTH_CLIENT_ID": "ready"}
 
 
 def test_apply_goes_through_the_manifest_path_and_the_guarded_cli(monkeypatch):
@@ -415,6 +449,19 @@ def test_apply_goes_through_the_manifest_path_and_the_guarded_cli(monkeypatch):
     assert descriptor.raw["tokenEndpointAuth"] == "none"
     assert "oauthClientSecretEnv" not in descriptor.raw
     assert descriptor.raw["toolAllowlist"] == list(NOTION.tool_allowlist)
+
+
+def test_apply_refuses_a_registration_only_spec_before_descriptor_or_registry_work(monkeypatch):
+    monkeypatch.setattr(cli, "load_descriptor", pytest.fail)
+    monkeypatch.setattr(cli, "_apply", pytest.fail)
+
+    with pytest.raises(prov.ProvisionError, match="registration-only spec"):
+        prov.cmd_apply(SimpleNamespace(connector_id="attio", env="uat", operator="op@hushh.ai"))
+
+
+def test_the_descriptor_cli_refuses_a_registration_only_spec():
+    with pytest.raises(cli.ExternalMcpConnectorDescriptorError, match="version"):
+        cli.load_descriptor(str(REGISTRATION_SPEC_DIR / "attio.json"), environment="uat")
 
 
 def test_the_cli_applies_a_manifest_with_env_and_a_legacy_descriptor_unchanged(tmp_path):

@@ -37,6 +37,14 @@ from hushh_mcp.services.mcp_public_http import UnsafeMcpEndpoint, validate_mcp_e
 
 MANIFEST_VERSION = "curated-connector.v1"
 MANIFEST_DIR = Path(__file__).resolve().parents[2] / "config" / "curated_connectors"
+# A registration-only spec exists only to let an operator obtain an authenticated
+# tools/list result for a public provider before a runtime manifest can safely
+# name its tools. It is deliberately outside MANIFEST_DIR: it is not a catalog,
+# registry, deploy, or runtime input.
+REGISTRATION_SPEC_VERSION = "curated-connector-registration.v1"
+REGISTRATION_SPEC_DIR = (
+    Path(__file__).resolve().parents[2] / "config" / "curated_connector_registrations"
+)
 
 _CONNECTOR_ID = re.compile(r"^[a-z][a-z0-9_]{1,63}$")
 _RESERVED_PREFIXES = ("custom_", "google_")
@@ -54,6 +62,15 @@ _TOP_LEVEL_KEYS = frozenset(
         "mcpEndpoint",
         "oauth",
         "tools",
+        "environments",
+    }
+)
+_REGISTRATION_SPEC_TOP_LEVEL_KEYS = frozenset(
+    {
+        "version",
+        "connectorId",
+        "mcpEndpoint",
+        "oauth",
         "environments",
     }
 )
@@ -137,6 +154,35 @@ class CuratedConnectorManifest:
         if self.client_secret_env:
             descriptor["oauthClientSecretEnv"] = self.client_secret_env
         return descriptor
+
+
+@dataclass(frozen=True)
+class CuratedConnectorRegistrationSpec:
+    """A reviewed public-client registration contract, never a runtime manifest.
+
+    This has only the OAuth and redirect pins needed to register a client and
+    discover its authenticated MCP tools. It intentionally has no descriptor,
+    tool policy, display metadata, or deploy-secret surface.
+    """
+
+    connector_id: str
+    mcp_endpoint: str
+    authorize_url: str
+    token_url: str
+    registration_url: str
+    scopes: tuple[str, ...]
+    token_endpoint_auth: str
+    client_id_env: str
+    redirect_uris: dict[str, tuple[str, ...]]
+
+    @property
+    def is_public_client(self) -> bool:
+        return self.token_endpoint_auth == "none"  # noqa: S105 - auth method name
+
+    @property
+    def secret_env_names(self) -> tuple[str, ...]:
+        """The sole public identifier an operator may store during bootstrap."""
+        return (self.client_id_env,)
 
 
 def _text(value: Any) -> str:
@@ -278,6 +324,60 @@ def parse_manifest(raw: Any) -> CuratedConnectorManifest:
     )
 
 
+def parse_registration_spec(raw: Any) -> CuratedConnectorRegistrationSpec:
+    """Validate a public-client registration-only contract.
+
+    Registration happens before an authenticated `tools/list` can establish a
+    safe runtime allowlist. Reuse the runtime parser for all OAuth endpoint,
+    redirect and env-name validation, but synthesize a private sentinel tool
+    list so this spec can never become a usable runtime manifest by accident.
+    """
+    if not isinstance(raw, dict) or raw.get("version") != REGISTRATION_SPEC_VERSION:
+        raise CuratedConnectorManifestError(
+            f"Registration spec version must be {REGISTRATION_SPEC_VERSION}."
+        )
+    _exact_keys(raw, _REGISTRATION_SPEC_TOP_LEVEL_KEYS, "Registration spec")
+    oauth = raw.get("oauth")
+    if not isinstance(oauth, dict):
+        raise CuratedConnectorManifestError("Registration spec oauth block is required.")
+    # A registration-only contract is intentionally public PKCE only. A
+    # confidential connector must use the normal reviewed runtime manifest and
+    # provider-dashboard registration path instead.
+    if _text(oauth.get("tokenEndpointAuth")) != "none":
+        raise CuratedConnectorManifestError(
+            "A registration-only spec must use public tokenEndpointAuth none."
+        )
+    runtime_shape = {
+        "version": MANIFEST_VERSION,
+        "connectorId": raw.get("connectorId"),
+        "displayName": "Registration-only connector",
+        "description": "",
+        "mcpEndpoint": raw.get("mcpEndpoint"),
+        "oauth": oauth,
+        # The runtime parser requires a nonempty tool list. This private
+        # sentinel is never returned or loaded by all_manifests(), and is only
+        # used to share strict endpoint/redirect validation.
+        "tools": {"allowlist": ["registration_only"], "freeRead": []},
+        "environments": raw.get("environments"),
+    }
+    contract = parse_manifest(runtime_shape)
+    if not contract.is_public_client or contract.registration_url is None:
+        raise CuratedConnectorManifestError(
+            "A registration-only spec must pin a public client registration URL."
+        )
+    return CuratedConnectorRegistrationSpec(
+        connector_id=contract.connector_id,
+        mcp_endpoint=contract.mcp_endpoint,
+        authorize_url=contract.authorize_url,
+        token_url=contract.token_url,
+        registration_url=contract.registration_url,
+        scopes=contract.scopes,
+        token_endpoint_auth=contract.token_endpoint_auth,
+        client_id_env=contract.client_id_env,
+        redirect_uris=contract.redirect_uris,
+    )
+
+
 def load_manifest_file(path: str | Path) -> CuratedConnectorManifest:
     manifest_path = Path(path)
     try:
@@ -292,6 +392,22 @@ def load_manifest_file(path: str | Path) -> CuratedConnectorManifest:
             f"{manifest_path.name} must be named {manifest.connector_id}.json."
         )
     return manifest
+
+
+def load_registration_spec_file(path: str | Path) -> CuratedConnectorRegistrationSpec:
+    spec_path = Path(path)
+    try:
+        raw = json.loads(spec_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CuratedConnectorManifestError(
+            f"{spec_path.name} must be a readable registration spec JSON object."
+        ) from error
+    spec = parse_registration_spec(raw)
+    if spec_path.stem != spec.connector_id:
+        raise CuratedConnectorManifestError(
+            f"{spec_path.name} must be named {spec.connector_id}.json."
+        )
+    return spec
 
 
 @lru_cache(maxsize=1)
@@ -331,5 +447,55 @@ def get_manifest(connector_id: str) -> CuratedConnectorManifest | None:
     return _load_all()[0].get(connector_id)
 
 
+@lru_cache(maxsize=1)
+def _load_registration_specs() -> tuple[
+    dict[str, CuratedConnectorRegistrationSpec], dict[str, str]
+]:
+    """Load bootstrap contracts independently of runtime manifests.
+
+    A provider cannot retain both forms: the registration spec must be removed
+    when its authenticated tools have produced a real runtime manifest.
+    """
+    specs: dict[str, CuratedConnectorRegistrationSpec] = {}
+    errors: dict[str, str] = {}
+    if not REGISTRATION_SPEC_DIR.is_dir():
+        return specs, errors
+    for path in sorted(REGISTRATION_SPEC_DIR.glob("*.json")):
+        try:
+            spec = load_registration_spec_file(path)
+        except CuratedConnectorManifestError as error:
+            errors[path.name] = str(error)
+            continue
+        if (MANIFEST_DIR / f"{spec.connector_id}.json").exists():
+            errors[path.name] = (
+                f"{spec.connector_id} has a runtime manifest; remove its registration-only spec."
+            )
+            continue
+        if spec.connector_id in specs:
+            errors[path.name] = f"duplicate connectorId {spec.connector_id}."
+            continue
+        specs[spec.connector_id] = spec
+    return specs, errors
+
+
+def registration_spec_errors() -> dict[str, str]:
+    """Invalid registration-only contracts, by file name."""
+    return dict(_load_registration_specs()[1])
+
+
+def all_registration_specs() -> dict[str, CuratedConnectorRegistrationSpec]:
+    """Every valid registration-only contract; never a runtime provider list."""
+    return dict(_load_registration_specs()[0])
+
+
+def get_registration_spec(connector_id: str) -> CuratedConnectorRegistrationSpec | None:
+    """The public bootstrap contract for a provider awaiting tool discovery."""
+    return _load_registration_specs()[0].get(connector_id)
+
+
 def clear_manifest_cache() -> None:
     _load_all.cache_clear()
+
+
+def clear_registration_spec_cache() -> None:
+    _load_registration_specs.cache_clear()

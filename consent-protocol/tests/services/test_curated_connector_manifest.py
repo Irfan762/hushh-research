@@ -21,18 +21,26 @@ from hushh_mcp.services import external_connector_curated_oauth as oauth
 from hushh_mcp.services import external_connector_google_oauth as google_oauth
 from hushh_mcp.services.curated_connector_manifest import (
     MANIFEST_DIR,
+    REGISTRATION_SPEC_DIR,
     CuratedConnectorManifestError,
     all_manifests,
+    all_registration_specs,
     clear_manifest_cache,
+    clear_registration_spec_cache,
     get_manifest,
+    get_registration_spec,
     load_manifest_file,
+    load_registration_spec_file,
     manifest_errors,
     parse_manifest,
+    parse_registration_spec,
+    registration_spec_errors,
 )
 from hushh_mcp.services.external_connector_registry_service import ExternalMcpConnectorDefinition
 from hushh_mcp.services.external_mcp_connector_descriptor import validate_descriptor
 
 MANIFESTS = all_manifests()
+REGISTRATION_SPECS = all_registration_specs()
 # A name that changes data must never be listed as a free read. This is a
 # tripwire on top of the exact-name list and the server's own read-only
 # annotation, not a substitute for reading the tool list.
@@ -46,6 +54,23 @@ WRITE_LIKE = re.compile(
 def test_there_is_at_least_one_manifest_and_none_failed_to_load():
     assert MANIFESTS, "no curated connector manifests found"
     assert manifest_errors() == {}
+
+
+def test_attio_registration_spec_is_valid_but_never_becomes_a_runtime_manifest():
+    assert registration_spec_errors() == {}
+    assert set(REGISTRATION_SPECS) == {"attio"}
+    assert get_manifest("attio") is None
+    assert get_registration_spec("attio") == REGISTRATION_SPECS["attio"]
+    assert not (MANIFEST_DIR / "attio.json").exists()
+
+    spec = REGISTRATION_SPECS["attio"]
+    assert spec.is_public_client is True
+    assert spec.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
+    assert spec.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
+    assert spec.registration_url == "https://app.attio.com/oauth/register"
+    assert spec.redirect_uris["uat"] == (
+        "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
+    )
 
 
 @pytest.fixture
@@ -146,6 +171,12 @@ def test_the_committed_manifests_round_trip_through_the_file_loader():
         assert load_manifest_file(MANIFEST_DIR / f"{connector_id}.json") == MANIFESTS[connector_id]
 
 
+def test_the_committed_registration_specs_round_trip_without_a_runtime_descriptor():
+    for connector_id, spec in REGISTRATION_SPECS.items():
+        assert load_registration_spec_file(REGISTRATION_SPEC_DIR / f"{connector_id}.json") == spec
+        assert not hasattr(spec, "to_descriptor")
+
+
 @pytest.mark.parametrize(
     "mutate,message",
     [
@@ -217,6 +248,32 @@ def test_a_public_client_must_pin_a_public_registration_endpoint():
         parse_manifest(notion)
 
 
+@pytest.mark.parametrize(
+    "mutate,message",
+    [
+        (lambda spec: spec.update(tools={"allowlist": ["guessed"]}), "unknown keys"),
+        (
+            lambda spec: spec["oauth"].update(tokenEndpointAuth="client_secret_post"),
+            "registration-only spec",
+        ),
+        (
+            lambda spec: spec["oauth"].update(clientSecretEnv="ATTIO_OAUTH_CLIENT_SECRET"),
+            "public client",
+        ),
+        (lambda spec: spec["oauth"].pop("registrationUrl"), "registrationUrl"),
+        (
+            lambda spec: spec["oauth"].update(registrationUrl="http://app.attio.com/register"),
+            "registrationUrl",
+        ),
+    ],
+)
+def test_registration_spec_rejects_runtime_tools_and_unsafe_client_shapes(mutate, message):
+    raw = json.loads((REGISTRATION_SPEC_DIR / "attio.json").read_text(encoding="utf-8"))
+    mutate(raw)
+    with pytest.raises(CuratedConnectorManifestError, match=message):
+        parse_registration_spec(raw)
+
+
 def test_an_empty_scope_list_is_valid(raw):
     raw["oauth"]["scopes"] = []
     assert parse_manifest(raw).scopes == ()
@@ -247,6 +304,37 @@ def test_one_bad_manifest_does_not_take_the_others_down(tmp_path, monkeypatch):
     finally:
         monkeypatch.undo()
         clear_manifest_cache()
+
+
+def test_a_registration_only_spec_fails_closed_if_a_runtime_manifest_is_added(
+    tmp_path, monkeypatch
+):
+    from hushh_mcp.services import curated_connector_manifest as module
+
+    runtime_dir = tmp_path / "runtime"
+    registration_dir = tmp_path / "registration"
+    runtime_dir.mkdir()
+    registration_dir.mkdir()
+    runtime = json.loads((MANIFEST_DIR / "notion.json").read_text(encoding="utf-8"))
+    runtime["connectorId"] = "attio"
+    runtime["oauth"]["clientIdEnv"] = "ATTIO_OAUTH_CLIENT_ID"
+    (runtime_dir / "attio.json").write_text(json.dumps(runtime), encoding="utf-8")
+    (registration_dir / "attio.json").write_text(
+        (REGISTRATION_SPEC_DIR / "attio.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(module, "MANIFEST_DIR", runtime_dir)
+    monkeypatch.setattr(module, "REGISTRATION_SPEC_DIR", registration_dir)
+    clear_manifest_cache()
+    clear_registration_spec_cache()
+    try:
+        assert module.get_manifest("attio") is not None
+        assert module.get_registration_spec("attio") is None
+        assert set(module.registration_spec_errors()) == {"attio.json"}
+    finally:
+        monkeypatch.undo()
+        clear_manifest_cache()
+        clear_registration_spec_cache()
 
 
 # --- public client (PKCE, no secret) ------------------------------------------

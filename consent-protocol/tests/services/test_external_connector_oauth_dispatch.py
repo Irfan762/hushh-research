@@ -89,10 +89,13 @@ async def test_operator_owned_row_never_falls_back_to_legacy_oauth_start(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_operator_owned_row_without_a_manifest_never_reopens_legacy_oauth(monkeypatch):
+@pytest.mark.parametrize("connector_id", ["unreviewed_crm", "attio"])
+async def test_operator_owned_row_without_a_runtime_manifest_never_reopens_legacy_oauth(
+    monkeypatch, connector_id
+):
     source = _notion_row({"chat": "reviewed"})
     row = ExternalMcpConnectorDefinition(
-        connector_id="unreviewed_crm",
+        connector_id=connector_id,
         display_name=source.display_name,
         description=source.description,
         mcp_endpoint=source.mcp_endpoint,

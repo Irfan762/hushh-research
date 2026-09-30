@@ -935,6 +935,9 @@ def test_curated_catalog_availability_comes_from_the_curated_adapter(
     [
         (_hubspot_definition(), True),
         (_hubspot_definition(connector_id="notion", display_name="Notion"), True),
+        # A registration-only Attio contract is never enough to surface a
+        # provider: it has no authenticated tool policy or runtime manifest.
+        (_hubspot_definition(connector_id="attio", display_name="Attio"), False),
         # A reviewed-looking row with no manifest never reads as a curated provider,
         # so the frontend would not offer a Connect button that could only fail.
         (_hubspot_definition(connector_id="no_manifest_crm"), False),

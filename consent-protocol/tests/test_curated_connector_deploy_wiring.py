@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from hushh_mcp.services.curated_connector_manifest import all_manifests
+from hushh_mcp.services.curated_connector_manifest import (
+    all_manifests,
+    get_manifest,
+    get_registration_spec,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CLOUDBUILD = (REPO_ROOT / "deploy" / "backend.cloudbuild.yaml").read_text(encoding="utf-8")
@@ -42,6 +46,12 @@ def test_a_public_client_contributes_only_its_client_id():
     assert "NOTION_OAUTH_CLIENT_ID" in names
     assert "NOTION_OAUTH_CLIENT_SECRET" not in names
     assert {"HUBSPOT_OAUTH_CLIENT_ID", "HUBSPOT_OAUTH_CLIENT_SECRET"} <= set(names)
+
+
+def test_a_registration_only_client_id_is_never_mounted_by_deploy():
+    assert get_registration_spec("attio") is not None
+    assert get_manifest("attio") is None
+    assert "ATTIO_OAUTH_CLIENT_ID" not in secrets_script.secret_names()
 
 
 def test_the_reader_rejects_an_unreadable_manifest(tmp_path):

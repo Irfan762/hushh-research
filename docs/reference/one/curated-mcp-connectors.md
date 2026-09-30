@@ -4,7 +4,7 @@ A curated connector is an operator-registered OAuth MCP provider (HubSpot and
 Notion today) that an owner connects from Connectors and then uses in One chat.
 Everything the application must not take from the operator-writable registry is
 kept in one reviewed, checked-in file per provider. Attio's cross-origin public
-client shape is supported by the provisioning contract, but it intentionally
+client shape is supported by a registration-only contract, but it intentionally
 does not have an active manifest until its authenticated tool list is captured.
 
 ## Visual Map
@@ -95,6 +95,33 @@ that has a valid manifest.
   dynamic-registration endpoint; a manifest or registry row that names a
   secret variable for a public client is rejected.
 
+## Registration-only bootstrap
+
+Some public providers require OAuth sign-in before their authenticated
+`tools/list` response can establish a safe runtime allowlist. Their reviewed
+`config/curated_connector_registrations/<id>.json` contract may pin only the
+MCP/OAuth endpoints, scopes, public client-id variable and UAT callback. It is
+valid for `register` and `status` only:
+
+- it is not read by the runtime catalog, registry apply path or deployment
+  secret derivation;
+- `status` can say `registrationReady`, but never reports runtime `ready`;
+- it cannot be passed to the descriptor CLI or applied as a registry row.
+
+For Attio, the operator first reviews this exact dynamic-registration request:
+
+```sh
+python3 scripts/ops/provision_curated_connector.py register attio --env uat --store --dry-run
+```
+
+After explicit authorization, run the command once without `--dry-run`. The
+request registers `https://uat.one.hushh.ai/one/profile/connectors/oauth/return`
+with Attio; do not create a dashboard OAuth app, API key or client secret, and
+do not add a callback manually. A separately authorized controlled MCP client
+then signs in with the resulting public client, selects the intended workspace,
+and captures authenticated `tools/list` plus read-only annotations. Registration
+alone does not make Attio appear in One or give it runtime access.
+
 ## Attio readiness
 
 Attio is a separate per-owner connector, not a Notion synchronization. Its
@@ -115,13 +142,15 @@ selects the intended workspace during sign-in:
 }
 ```
 
-There is deliberately no `clientSecretEnv`. Do not add `attio.json` from this
-metadata alone: an active manifest requires a nonempty authenticated tool
-allowlist, and its `freeRead` names require the live read-only annotations.
-After merge and explicit operator authorization, dry-run and register the
-public client, sign in to the intended Attio workspace, capture `tools/list`,
-then add the small reviewed Attio manifest change. No Attio account, client,
-registry row, or deployment is created by the code PR.
+There is deliberately no `clientSecretEnv`. The checked-in
+`config/curated_connector_registrations/attio.json` is registration-only; do
+not add runtime `config/curated_connectors/attio.json` from metadata alone. An
+active manifest requires a nonempty authenticated tool allowlist, and its
+`freeRead` names require live read-only annotations. After explicit operator
+authorization, register the public client, sign in to the intended Attio
+workspace through the controlled discovery client, capture `tools/list`, then
+add the small reviewed runtime Attio manifest change. No registry row or
+deployment is created by the bootstrap registration.
 
 ## Limits
 

@@ -17,6 +17,13 @@ Adding a provider then looks like:
     3. python3 scripts/ops/provision_curated_connector.py apply <id> --env uat --operator you@hushh.ai
     4. merge; the next deploy mounts the secrets derived from the manifests
 
+For a public provider whose authenticated tool list is not known yet, write a
+registration-only spec in config/curated_connector_registrations/<id>.json.
+`register` and `status` may use that spec, but it is deliberately excluded from
+the runtime catalog, registry apply, and deploy-secret list. Use a separately
+authorized MCP client to sign in and capture tools/list, then replace the spec
+with the reviewed runtime manifest before applying or deploying the provider.
+
 Confidential providers (`client_secret_post`, for example HubSpot) need their app
 created by hand in the provider's dashboard; store the two values with
 `gcloud secrets create` using the names in the manifest, then run `apply`.
@@ -50,8 +57,11 @@ import httpx  # noqa: E402
 from hushh_mcp.services.curated_connector_manifest import (  # noqa: E402
     CuratedConnectorManifest,
     CuratedConnectorManifestError,
+    CuratedConnectorRegistrationSpec,
     get_manifest,
+    get_registration_spec,
     manifest_errors,
+    registration_spec_errors,
 )
 from hushh_mcp.services.mcp_public_http import (  # noqa: E402
     McpResponseLimitError,
@@ -74,6 +84,9 @@ class ProvisionError(RuntimeError):
     pass
 
 
+RegistrationContract = CuratedConnectorManifest | CuratedConnectorRegistrationSpec
+
+
 def _origin(url: str) -> str:
     parts = urlsplit(url)
     return f"{parts.scheme}://{parts.netloc}"
@@ -89,12 +102,43 @@ def _metadata_tokens(value: Any) -> frozenset[str]:
 def require_manifest(connector_id: str) -> CuratedConnectorManifest:
     manifest = get_manifest(connector_id)
     if manifest is None:
+        if get_registration_spec(connector_id) is not None:
+            raise ProvisionError(
+                f"{connector_id!r} has a registration-only spec and cannot be applied. "
+                "Capture authenticated tools/list and add its runtime manifest first."
+            )
         detail = manifest_errors()
         raise ProvisionError(
             f"No valid manifest for {connector_id!r} in config/curated_connectors/."
             + (f" Errors: {detail}" if detail else "")
         )
     return manifest
+
+
+def require_registration_contract(connector_id: str) -> RegistrationContract:
+    """Return a runtime manifest or a registration-only public PKCE contract.
+
+    The latter is intentionally valid only for `register` and `status`: it
+    cannot be applied to the registry or loaded by the runtime before an
+    authenticated tools/list establishes a reviewed tool policy.
+    """
+    manifest = get_manifest(connector_id)
+    if manifest is not None:
+        return manifest
+    runtime_errors = manifest_errors()
+    if f"{connector_id}.json" in runtime_errors:
+        raise ProvisionError(
+            f"The runtime manifest for {connector_id!r} is invalid: "
+            f"{runtime_errors[f'{connector_id}.json']}"
+        )
+    spec = get_registration_spec(connector_id)
+    if spec is not None:
+        return spec
+    details = registration_spec_errors()
+    raise ProvisionError(
+        f"No valid runtime manifest or registration-only spec for {connector_id!r}."
+        + (f" Registration-spec errors: {details}" if details else "")
+    )
 
 
 async def _get_json(url: str) -> dict[str, Any]:
@@ -120,7 +164,7 @@ async def _get_json(url: str) -> dict[str, Any]:
     return parsed
 
 
-async def discover_registration_endpoint(manifest: CuratedConnectorManifest) -> str:
+async def discover_registration_endpoint(manifest: RegistrationContract) -> str:
     """Read the provider's authorization-server metadata and check it still agrees
     with the reviewed manifest before anything is sent to it."""
     origin = _origin(manifest.mcp_endpoint)
@@ -191,7 +235,7 @@ def _local_development_redirect(value: Any) -> str:
 
 
 def build_registration_request(
-    manifest: CuratedConnectorManifest, environment: str, extra_redirects: list[str]
+    manifest: RegistrationContract, environment: str, extra_redirects: list[str]
 ) -> dict[str, Any]:
     if not manifest.is_public_client:
         raise ProvisionError(
@@ -353,7 +397,7 @@ def env_file_has(path: Path, name: str) -> bool:
 
 
 async def cmd_register(args: argparse.Namespace) -> dict[str, Any]:
-    manifest = require_manifest(args.connector_id)
+    manifest = require_registration_contract(args.connector_id)
     project = args.project or DEFAULT_PROJECT.get(args.env)
     request = build_registration_request(manifest, args.env, args.extra_redirect or [])
     endpoint = await discover_registration_endpoint(manifest)
@@ -401,23 +445,32 @@ async def cmd_register(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def cmd_status(args: argparse.Namespace) -> dict[str, Any]:
-    manifest = require_manifest(args.connector_id)
+    manifest = require_registration_contract(args.connector_id)
     project = args.project or DEFAULT_PROJECT.get(args.env)
     report: dict[str, Any] = {
         "connectorId": manifest.connector_id,
-        "manifestValid": True,
+        "runtimeManifest": isinstance(manifest, CuratedConnectorManifest),
+        "registrationOnly": isinstance(manifest, CuratedConnectorRegistrationSpec),
         "publicClient": manifest.is_public_client,
-        "tools": {
-            "allowlist": len(manifest.tool_allowlist),
-            "freeRead": len(manifest.free_read_tools),
-        },
         "environments": sorted(manifest.redirect_uris),
     }
+    if isinstance(manifest, CuratedConnectorManifest):
+        report["tools"] = {
+            "allowlist": len(manifest.tool_allowlist),
+            "freeRead": len(manifest.free_read_tools),
+        }
+    else:
+        report["toolsPendingDiscovery"] = True
     if project:
         report["project"] = project
         states = {name: secret_state(name, project) for name in manifest.secret_env_names}
         report["secrets"] = states
-        report["ready"] = all(state == "ready" for state in states.values())
+        registration_ready = all(state == "ready" for state in states.values())
+        report["registrationReady"] = registration_ready
+        # A stored public client id is sufficient to perform the controlled
+        # discovery sign-in, not to mount a runtime credential or serve MCP.
+        # Never make bootstrap state look deploy/runtime-ready.
+        report["ready"] = registration_ready and isinstance(manifest, CuratedConnectorManifest)
     return report
 
 
