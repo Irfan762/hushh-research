@@ -1,7 +1,14 @@
 "use client";
 
 import { Check, FileText, Loader2, Mail, PenLine, Star, Undo2 } from "@/components/icons";
-import { Button } from "@/lib/morphy-ux/button";
+import { useRef } from "react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { AskOneButton } from "@/components/agent/ask-one-button";
 import { SettingsRow } from "@/components/app-ui/settings-ui";
 
@@ -15,7 +22,16 @@ function MailOverviewIcon() {
   );
 }
 
-export function MailConnectedAccount({ managing, onManage }: { managing: boolean; onManage: () => void }) {
+export function MailConnectedAccount({
+  busy = false,
+  onReconnect,
+  onDisconnect,
+}: {
+  busy?: boolean;
+  onReconnect: () => void;
+  onDisconnect: () => void;
+}) {
+  const openingConfirmation = useRef(false);
   return (
     <div className="flex items-center justify-between gap-3 rounded-[22px] border border-border/60 bg-card p-4 shadow-sm">
       <div className="flex min-w-0 items-center gap-3.5">
@@ -28,9 +44,45 @@ export function MailConnectedAccount({ managing, onManage }: { managing: boolean
           </p>
         </div>
       </div>
-      <Button type="button" variant="none" effect="fade" aria-expanded={managing} aria-controls="mail-management-panel" onClick={onManage} className="min-h-11 shrink-0 rounded-full bg-[color:var(--app-accent-surface)] px-5 text-sm font-medium !text-[color:var(--app-accent)]">
-        {managing ? "Done" : "Manage"}
-      </Button>
+      <DropdownMenu onOpenChange={(open) => {
+        if (open) openingConfirmation.current = false;
+      }}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            disabled={busy}
+            className="min-h-11 shrink-0 bg-transparent px-2 text-sm font-medium text-[color:var(--app-accent)] outline-none focus-visible:rounded-md focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] disabled:opacity-50"
+          >
+            Manage
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          align="end"
+          sideOffset={8}
+          collisionPadding={16}
+          className="w-48"
+          onCloseAutoFocus={(event) => {
+            // Let the confirmation dialog own focus after Disconnect.
+            if (openingConfirmation.current) event.preventDefault();
+          }}
+        >
+          <DropdownMenuItem className="min-h-11 px-3" disabled={busy} onSelect={onReconnect}>
+            Reconnect
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            className="min-h-11 px-3"
+            variant="destructive"
+            disabled={busy}
+            onSelect={() => {
+              openingConfirmation.current = true;
+              onDisconnect();
+            }}
+          >
+            Disconnect
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   );
 }

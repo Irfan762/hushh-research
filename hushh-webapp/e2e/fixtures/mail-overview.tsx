@@ -4,10 +4,10 @@ import { MailConnectedAccount, MailOverview } from "../../components/gmail/mail-
 
 function Fixture() {
   const [fetching, setFetching] = useState(true);
-  const [managing, setManaging] = useState(false);
+  const [action, setAction] = useState("");
   return <main className="app-page-shell mx-auto w-full max-w-[680px] bg-background px-6 py-8 text-foreground">
-    <MailConnectedAccount managing={managing} onManage={() => setManaging(!managing)} />
-    <div id="mail-management-panel" hidden={!managing}>Mail management</div>
+    <MailConnectedAccount onReconnect={() => setAction("reconnect")} onDisconnect={() => setAction("disconnect")} />
+    <output data-testid="mail-action" className="sr-only">{action}</output>
     <MailOverview fetching={fetching} receiptDetail={fetching ? "Fetching your latest purchases…" : "Your latest receipts are ready."} receiptUpdated="Last updated just now." onOpenChat={() => {}} />
     <button onClick={() => setFetching(false)}>Finish sync</button>
   </main>;

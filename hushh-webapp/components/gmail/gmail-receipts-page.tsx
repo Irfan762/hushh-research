@@ -434,7 +434,6 @@ export default function GmailReceiptsPage({
   const [gmailPopupAttempt, setGmailPopupAttempt] =
     useState<GmailOAuthPopupAttempt | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const [showMailManagement, setShowMailManagement] = useState(false);
   const receiptsRef = useRef<ReceiptListItem[]>([]);
   const pageRef = useRef(1);
   const pendingSyncFeedbackRef = useRef(false);
@@ -1952,16 +1951,16 @@ export default function GmailReceiptsPage({
 
           {journeyVariant === "workspace" && isConnected && workspace === "overview" ? (
             <MailConnectedAccount
-              managing={showMailManagement}
-              onManage={() => setShowMailManagement((open) => !open)}
+              busy={gmailActionBusy !== null || loadingStatus}
+              onReconnect={() => void handleConnectGmail()}
+              onDisconnect={() => setShowDisconnectConfirm(true)}
             />
           ) : null}
 
-          <div id="mail-management-panel" className="contents">
           {journeyVariant === "onboarding" ||
           !isConnected ||
           (workspace === "overview" &&
-            (showMailManagement || loadingStatus || statusSummary.tone === "error")) ? (
+            (loadingStatus || statusSummary.tone === "error")) ? (
             <SurfaceInset
               className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
             >
@@ -2086,37 +2085,8 @@ export default function GmailReceiptsPage({
                   ) : null}
                 </div>
               ) : null}
-              {isConnected &&
-              journeyVariant === "workspace" &&
-              workspace === "overview" &&
-              showMailManagement &&
-              !loadingStatus ? (
-                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-col">
-                  <Button
-                    type="button"
-                    size="prominent"
-                    onClick={() => void handleConnectGmail()}
-                    disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full max-w-[244px] justify-center px-2 text-center sm:px-4"
-                  >
-                    <span className="truncate">Reconnect Mail</span>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    effect="fade"
-                    onClick={() => setShowDisconnectConfirm(true)}
-                    disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full max-w-[244px] justify-center px-2 text-center sm:px-4"
-                  >
-                    <span className="truncate">Disconnect Mail</span>
-                  </Button>
-                </div>
-              ) : null}
             </SurfaceInset>
           ) : null}
-
-          </div>
 
           {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
             <SetupCompletionFooter
