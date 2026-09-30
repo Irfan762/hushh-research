@@ -2783,6 +2783,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const historyDrawerFallbackRef = useRef<HTMLButtonElement | null>(null);
   const desktopHistoryLayout = useDesktopHistoryLayout();
   const [desktopHistoryCollapsed, setDesktopHistoryCollapsed] = useState(true);
+  useLayoutEffect(() => {
+    // Next.js can hide and preserve this route instead of unmounting it.
+    // History is transient: returning to Chat must require a fresh open action.
+    return () => {
+      setDesktopHistoryCollapsed(true);
+      setIsHistoryDrawerOpen(false);
+      setDrawerMode("chats");
+      setConnectorPanelInitialConnector(null);
+    };
+  }, [pathname]);
   const desktopHistoryVisible = desktopHistoryLayout && !desktopHistoryCollapsed;
   const [driveReviewSignal, setDriveReviewSignal] = useState<{ ownerId: string | null; epoch: number; count: number }>(
     { ownerId: null, epoch: vaultSessionEpoch, count: 0 },
