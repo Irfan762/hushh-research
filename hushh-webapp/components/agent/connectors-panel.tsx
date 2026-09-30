@@ -2168,7 +2168,7 @@ function OwnerConnectorsPanel({
               {overview?.features.google_drive_live === true &&
                 (drive?.status !== "connected" || drive?.profile !== "live") && (
                 <p className="text-sm text-muted-foreground">
-                  Full Drive access turns background Drive access on by default unless you previously turned it off. While on, One may search relevant files and send excerpts to Gemini while you’re away. A member with an accepted connection in your Trusted Circle can request documents; One may find and share matching originals for each request without asking you again. The requester can open a file only after Google Drive confirms access. Switch background access off anytime in Connections; your off choice is saved.
+                  Full Drive access turns on background reads by default unless you turned them off. While you’re away, One may search Drive, send excerpts to Gemini, and share matching originals for document requests from accepted Trusted Circle members without asking again. The requester can open a file only after Google confirms access. Turn background access off anytime; your choice is saved.
                 </p>
               )}
               <div className="flex flex-wrap gap-2">
@@ -2231,7 +2231,7 @@ function OwnerConnectorsPanel({
                   <label htmlFor={driveBackgroundId} className={`flex min-h-11 items-center justify-between gap-4${liveBackground === null ? "" : " cursor-pointer"}`}>
                     <span className="min-w-0">
                       <span className="block text-sm font-medium">Background Drive access</span>
-                      <span className="block text-xs text-muted-foreground">On by default. One may search Drive while you’re away and share matching files for Trusted Circle requests. Switch off anytime; your choice is saved.</span>
+                      <span className="block text-xs text-muted-foreground">On by default. One may read Drive files, send excerpts to Gemini, and share matching originals for requests from accepted Trusted Circle members while you’re away. Turn off anytime.</span>
                     </span>
                     {liveBackground !== null ? <Switch id={driveBackgroundId} size="ios" aria-label="Background Drive access" checked={liveBackground}
                       disabled={driveBusy}

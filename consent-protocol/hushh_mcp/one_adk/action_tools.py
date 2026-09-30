@@ -2801,7 +2801,8 @@ async def _list_outgoing_information_requests_only(
 ) -> dict[str, Any]:
     """Keep cancellable information bundles separate from Drive requests."""
     try:
-        sent = await InformationRequestService().list_outgoing(requester_user_id=user_id)
+        # One extra row distinguishes a complete list from the newest page.
+        sent = await InformationRequestService().list_outgoing(requester_user_id=user_id, limit=11)
     except Exception:  # noqa: BLE001 - consumer-safe boundary
         logger.exception("list_my_outgoing_information_requests failed")
         return {
@@ -2811,7 +2812,7 @@ async def _list_outgoing_information_requests_only(
 
     handles: dict[str, dict[str, Any]] = {}
     spoken: list[dict[str, Any]] = []
-    for record in sent:
+    for record in sent[:10]:
         bundle_id = str(record.get("bundleId") or "").strip()
         if not bundle_id:
             # cancel_request requires the bundle identity; an unbound row is
@@ -2836,11 +2837,12 @@ async def _list_outgoing_information_requests_only(
         "status": "ok",
         "requests": spoken,
         "count": len(spoken),
+        "hasMore": len(sent) > 10,
     }
 
 
 async def list_my_outgoing_information_requests(tool_context: ToolContext) -> dict[str, Any]:
-    """List sent information bundles and recent Drive document requests.
+    """List sent information bundles, Drive file requests and Drive questions.
 
     Only the information-bundle ``requests`` have opaque cancel handles. Drive
     rows are read from their own requester-scoped projection and remain status
@@ -2865,37 +2867,53 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
         return {
             "status": "partial",
             "requests": information["requests"],
+            "informationRequestsHasMore": information["hasMore"],
             "documentRequests": [],
             "documentRequestsHasMore": False,
+            "documentRequestsHaveUnknownPeople": False,
             "message": "Information requests were checked, but Drive document request status is temporarily unavailable.",
-            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. Do not claim there are no Drive requests.",
+            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. If informationRequestsHasMore is true, these are only the newest information requests. Do not claim a named person has no request from a partial list.",
         }
 
     document_requests = drive["items"]
+    document_requests_has_more = bool(drive["hasMore"])
+    unnamed_document_requests = any(not row.get("person") for row in document_requests)
     if information["status"] != "ok":
         return {
             "status": "partial",
             "requests": [],
+            "informationRequestsHasMore": None,
             "documentRequests": document_requests,
-            "documentRequestsHasMore": drive["hasMore"],
+            "documentRequestsHasMore": document_requests_has_more,
+            "documentRequestsHaveUnknownPeople": unnamed_document_requests,
             "message": "Drive document requests were checked, but information request status is temporarily unavailable.",
-            "nextStep": "Report the Drive document request statuses shown. Do not claim there are no information requests.",
+            "nextStep": "Report the Drive request statuses shown. Do not claim there are no information requests. A named person's Drive status is not ruled out if more rows exist or a row has no person label.",
         }
 
     requests = information["requests"]
+    information_requests_has_more = bool(information["hasMore"])
     return {
         "status": "ok",
         "requests": requests,
+        "informationRequestsHasMore": information_requests_has_more,
         "documentRequests": document_requests,
-        "documentRequestsHasMore": drive["hasMore"],
-        "count": len(requests) + len(document_requests),
+        "documentRequestsHasMore": document_requests_has_more,
+        "documentRequestsHaveUnknownPeople": unnamed_document_requests,
+        **(
+            {"count": len(requests) + len(document_requests)}
+            if not (information_requests_has_more or document_requests_has_more)
+            else {}
+        ),
         "nextStep": (
-            "Report the information requests and Drive document requests separately. "
-            "A Drive request may still be pending before any files are available. "
+            "Report information requests, Drive file requests and Drive questions separately. "
+            "A pending file request was sent; this list does not verify which files are available. "
             "Only information requests have consent.cancel_request handles. "
-            "If documentRequestsHasMore is true, these are only the latest Drive requests."
+            "If informationRequestsHasMore or documentRequestsHasMore is true, only the newest requests are shown. "
+            "For a named person missing from this list, do not claim there are no requests "
+            "if informationRequestsHasMore, documentRequestsHasMore, or "
+            "documentRequestsHaveUnknownPeople is true."
             if requests or document_requests
-            else "No sent information or Drive document requests were found."
+            else "No sent information requests, Drive file requests or Drive questions were found."
         ),
     }
 
