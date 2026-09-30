@@ -145,6 +145,17 @@ describe("DataTable", () => {
     ).toHaveClass("hidden", "md:block");
   });
 
+  it("keeps one bounded horizontal scroller from triggering route swipes", () => {
+    render(<DataTable columns={columns} data={makeRows(2)} enableSearch={false} />);
+
+    const shell = document.querySelector('[data-slot="surface-data-table-shell"]');
+    const scroller = shell?.querySelector('[data-slot="table-container"]');
+    expect(shell).toHaveClass("overflow-hidden");
+    expect(scroller).toHaveAttribute("data-no-route-swipe");
+    expect(scroller).toHaveAttribute("data-swipe-views-horizontal-scroll");
+    expect(scroller).toHaveClass("overflow-x-auto", "max-w-full");
+  });
+
   it("renders compact mobile pagination for card tables", () => {
     render(
       <DataTable
