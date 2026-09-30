@@ -277,7 +277,7 @@ describe("supported connector catalog", () => {
     expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
   });
 
-  it("omits unsupported catalog placeholders even when the registry returns them", async () => {
+  it("offers no connect path for a registry row the server does not mark as a curated provider", async () => {
     state.overview.mockResolvedValue(overview([
       { ...catalogItem, connectorId: "notion", displayName: "Notion" },
       { ...catalogItem, connectorId: "hubspot", displayName: "HubSpot" },
@@ -285,8 +285,9 @@ describe("supported connector catalog", () => {
     ]));
     const { container } = render(panel());
     expect(await screen.findByText("Example Docs")).toBeInTheDocument();
-    expect(screen.queryByText("Notion")).not.toBeInTheDocument();
-    expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
+    // No curatedOAuth flag from the server means no Connect or Disconnect action.
+    expect(screen.queryByRole("button", { name: /Connect (Notion|HubSpot)/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Disconnect (Notion|HubSpot)/ })).not.toBeInTheDocument();
     for (const provider of ["gmail", "drive", "calendar", "plaid"]) {
       expect(container.querySelector(`img[src="/icons/connectors/${provider}.svg"]`)).not.toBeNull();
     }
@@ -298,7 +299,8 @@ describe("supported connector catalog", () => {
       connectorId: "hubspot",
       displayName: "HubSpot",
       available: true,
-    } as typeof catalogItem & { available: boolean };
+      curatedOAuth: true,
+    } as typeof catalogItem & { available: boolean; curatedOAuth: boolean };
     const withFlag = (connectors: object[], enabled = true) => ({
       connectors,
       features: { connections_panel_v2: true, curated_mcp_connectors: enabled },
@@ -387,6 +389,28 @@ describe("supported connector catalog", () => {
         curatedConnector: { connectorId: "hubspot" },
         returnTo: "connector_settings",
       });
+    });
+
+    it("offers a second curated provider with no provider-specific frontend code", async () => {
+      const notion = { ...hubspot, connectorId: "notion", displayName: "Notion" };
+      state.overview.mockResolvedValue(withFlag([hubspot, notion]));
+      state.startOAuthConnect.mockReset().mockResolvedValue({
+        authorizeUrl: "https://mcp.notion.com/authorize?state=signed",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
+        connectorId: "notion",
+      });
+      render(panel());
+      expect(await screen.findByRole("button", { name: "Connect HubSpot" })).toBeInTheDocument();
+      fireEvent.click(await screen.findByRole("button", { name: "Connect Notion" }));
+      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
+      expect(state.startOAuthConnect).toHaveBeenCalledWith(
+        expect.objectContaining({ connectorId: "notion", flow: "web" }),
+      );
+      expect(assign).toHaveBeenCalledWith("https://mcp.notion.com/authorize?state=signed");
+      // eslint-disable-next-line no-restricted-globals -- Read the redacted correlation marker.
+      const marker = JSON.parse(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1") ?? "null");
+      expect(marker).toMatchObject({ curatedConnector: { connectorId: "notion" } });
     });
 
     it("re-enables Connect when the page is restored from the back/forward cache", async () => {

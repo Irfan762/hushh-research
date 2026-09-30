@@ -31,6 +31,7 @@ from hushh_mcp.runtime_settings import get_app_runtime_settings
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
 from hushh_mcp.services.chat_key import CHAT_KEY_ERRORS
 from hushh_mcp.services.connector_feature_admission import connector_features
+from hushh_mcp.services.curated_connector_manifest import get_manifest
 from hushh_mcp.services.drive_native_picker_service import DriveNativePickerService
 from hushh_mcp.services.drive_selection_service import DriveSelectionService
 from hushh_mcp.services.external_connector_credentials_service import (
@@ -141,6 +142,10 @@ class ConnectorSummary(BaseModel):
     lastErrorCode: Optional[str] = None
     available: bool = True
     registrationKind: Literal["curated", "private"] = "curated"
+    # Server-derived, presentation only: true for an operator-registered OAuth
+    # provider that has a reviewed manifest. Start and complete re-validate the
+    # manifest pins themselves; nothing here is trusted from the client.
+    curatedOAuth: bool = False
 
 
 class ConnectorsResponse(BaseModel):
@@ -772,6 +777,12 @@ def _oauth_error(error: Exception) -> HTTPException:
     return HTTPException(status_code=getattr(error, "status_code", 503), detail=str(error))
 
 
+def _curated_oauth_flag(connector: Any) -> bool:
+    return (
+        is_curated_oauth_connector(connector) and get_manifest(connector.connector_id) is not None
+    )
+
+
 @router.get("", response_model=ConnectorsResponse)
 async def list_connectors(token_data: dict = Depends(require_vault_owner_token)):
     user_id = _user_id(token_data)
@@ -811,6 +822,7 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
                 description=connector.description,
                 authStyle=connector.auth_style,
                 registrationKind="private" if connector.owner_user_id else "curated",
+                curatedOAuth=_curated_oauth_flag(connector),
                 status=statuses.get(connector.connector_id, {}).get("status", "not_connected"),
                 accountLabel=statuses.get(connector.connector_id, {}).get("accountLabel"),
                 connectedAt=statuses.get(connector.connector_id, {}).get("connectedAt"),
@@ -869,6 +881,7 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
                 description=connector.description,
                 authStyle=connector.auth_style,
                 registrationKind="curated",
+                curatedOAuth=_curated_oauth_flag(connector),
                 status=status["status"],
                 accountLabel=status.get("accountLabel"),
                 connectedAt=status.get("connectedAt"),

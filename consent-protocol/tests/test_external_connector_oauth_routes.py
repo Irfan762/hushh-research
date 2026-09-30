@@ -930,6 +930,41 @@ def test_curated_catalog_availability_comes_from_the_curated_adapter(
     curated.connection_available.assert_awaited_once_with("hubspot", user_id="verified-owner")
 
 
+@pytest.mark.parametrize(
+    "definition,expected",
+    [
+        (_hubspot_definition(), True),
+        (_hubspot_definition(connector_id="notion", display_name="Notion"), True),
+        # A reviewed-looking row with no manifest never reads as a curated provider,
+        # so the frontend would not offer a Connect button that could only fail.
+        (_hubspot_definition(connector_id="no_manifest_crm"), False),
+        (_hubspot_definition(owner_user_id="someone"), False),
+        (_hubspot_definition(capability_policy={"chat": "unreviewed"}), False),
+        (_hubspot_definition(auth_style="api_key"), False),
+    ],
+)
+def test_the_catalog_marks_manifest_backed_oauth_providers_for_the_frontend(
+    route_client, monkeypatch, definition, expected
+):
+    client, app, _ = route_client
+    app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
+    _wire_curated_service(
+        monkeypatch, SimpleNamespace(connection_available=AsyncMock(return_value=True))
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_external_connector_registry_service",
+        lambda: SimpleNamespace(list_active_connectors=AsyncMock(return_value=[definition])),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_external_connector_credentials_service",
+        lambda: SimpleNamespace(list_statuses=AsyncMock(return_value=[])),
+    )
+    body = client.get("/api/connectors").json()
+    assert body["connectors"][0]["curatedOAuth"] is expected
+
+
 def test_inactive_curated_connector_is_reprojected_for_owner_recovery(route_client, monkeypatch):
     client, app, _ = route_client
     app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
@@ -972,6 +1007,7 @@ def test_inactive_curated_connector_is_reprojected_for_owner_recovery(route_clie
             "revocationOutcome": "not_attempted",
             "lastErrorCode": None,
             "available": False,
+            "curatedOAuth": True,
         }
     ]
     registry.list_curated_connectors.assert_awaited_once_with(include_inactive=True)

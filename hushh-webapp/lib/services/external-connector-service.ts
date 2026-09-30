@@ -34,6 +34,8 @@ export type ExternalConnectorSummary = {
   revocationOutcome?: string;
   lastErrorCode?: string | null;
   available?: boolean;
+  /** Server-derived: an operator-registered OAuth provider with a reviewed manifest. */
+  curatedOAuth?: boolean;
 };
 
 export type ConnectorFeatures = Partial<

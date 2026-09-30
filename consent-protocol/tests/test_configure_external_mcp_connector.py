@@ -24,7 +24,7 @@ def _write(tmp_path: Path, payload: dict) -> Path:
 def _hubspot_descriptor(**overrides: object) -> dict:
     payload = {
         "version": "external-mcp-connector.v1",
-        "connectorId": "hubspot",
+        "connectorId": "acme_crm",
         "displayName": "HubSpot",
         "description": "Connect HubSpot so Kai can read and act on your CRM.",
         "mcpEndpoint": "https://mcp.hubspot.com/",
@@ -65,12 +65,12 @@ def test_apply_writes_transport_kind_capability_policy_and_redirect_uris(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     descriptor = load_and_validate_descriptor(_write(tmp_path, _hubspot_descriptor()))
-    fake_db = _FakeDb([_QueryResult(data=[{"connector_id": "hubspot"}])])
+    fake_db = _FakeDb([_QueryResult(data=[{"connector_id": "acme_crm"}])])
     monkeypatch.setattr(cli, "get_db", lambda: fake_db)
 
     result = cli._apply(descriptor, operator="operator@hushh.ai")
 
-    assert result == {"connectorId": "hubspot", "status": "active"}
+    assert result == {"connectorId": "acme_crm", "status": "active"}
     assert len(fake_db.calls) == 1
     sql, params = fake_db.calls[0]
     assert "transport_kind" in sql
@@ -90,7 +90,7 @@ def test_apply_omits_tools_key_when_no_allowlist_given(
     payload = _hubspot_descriptor()
     del payload["toolAllowlist"]
     descriptor = load_and_validate_descriptor(_write(tmp_path, payload))
-    fake_db = _FakeDb([_QueryResult(data=[{"connector_id": "hubspot"}])])
+    fake_db = _FakeDb([_QueryResult(data=[{"connector_id": "acme_crm"}])])
     monkeypatch.setattr(cli, "get_db", lambda: fake_db)
 
     cli._apply(descriptor, operator="operator@hushh.ai")

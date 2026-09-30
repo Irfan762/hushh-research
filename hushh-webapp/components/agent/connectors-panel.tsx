@@ -103,8 +103,6 @@ type Props = {
   onClearRecovery?: () => Promise<void>;
 };
 const touch = "min-h-11 min-w-11 whitespace-normal";
-// Operator-registered OAuth connectors that sign in through the generic flow.
-const CURATED_OAUTH_CONNECTORS: ReadonlySet<string> = new Set(["hubspot"]);
 const labels: Record<string, string> = {
   not_connected: "Not connected",
   revoked: "Not connected",
@@ -1544,7 +1542,7 @@ function OwnerConnectorsPanel({
     const connector = overview?.connectors.find((item) => item.connectorId === connectorId);
     if (
       !connector ||
-      !CURATED_OAUTH_CONNECTORS.has(connectorId) ||
+      connector.curatedOAuth !== true ||
       !curatedRolloutEnabled ||
       connector.available === false
     ) {
@@ -1872,11 +1870,11 @@ function OwnerConnectorsPanel({
     },
     ...(overview?.connectors ?? [])
       .filter((item, index, items) => {
-        if (["notion", "google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
+        if (["google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
         if (items.findIndex((candidate) => candidate.connectorId === item.connectorId) !== index) return false;
         // A curated connector shows when it can accept a new grant, or while
         // an existing owner grant still needs a Disconnect/recovery path.
-        if (CURATED_OAUTH_CONNECTORS.has(item.connectorId)) {
+        if (item.curatedOAuth === true) {
           const hasExistingGrant = !["not_connected", "revoked"].includes(item.status);
           return (curatedRolloutEnabled && item.available !== false) || hasExistingGrant;
         }
@@ -1884,7 +1882,7 @@ function OwnerConnectorsPanel({
       })
       .map((item): ConnectorListEntry => {
         const storedGrant = !["not_connected", "revoked"].includes(item.status);
-        const curated = CURATED_OAUTH_CONNECTORS.has(item.connectorId);
+        const curated = item.curatedOAuth === true;
         const canStartCurated =
           curated && curatedRolloutEnabled && item.available !== false;
         // A curated connection stuck before verification cannot be used by Kai,
@@ -1941,7 +1939,7 @@ function OwnerConnectorsPanel({
   );
   const canStartSelectedCurated = Boolean(
     selectedCatalog &&
-      CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+      selectedCatalog.curatedOAuth === true &&
       curatedRolloutEnabled &&
       selectedCatalog.available !== false,
   );
@@ -2524,16 +2522,16 @@ function OwnerConnectorsPanel({
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
                 <p role="status" className="text-sm">
-                  {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                  {selectedCatalog.curatedOAuth === true &&
                   !canStartSelectedCurated &&
                   !["not_connected", "revoked"].includes(selectedCatalog.status)
                     ? "Unavailable"
-                    : CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                    : selectedCatalog.curatedOAuth === true &&
                         selectedCatalog.status === "verifying"
                       ? "Sign-in needed"
                     : (labels[selectedCatalog.status] ?? "Status unavailable")}
                 </p>
-                {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) ? (
+                {selectedCatalog.curatedOAuth === true ? (
                   <>
                     <div className="flex flex-wrap gap-2">
                       {canStartSelectedCurated &&
