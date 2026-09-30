@@ -129,6 +129,9 @@ export default defineConfig({
         // agent-queued-stack: the queue above the composer is used while One
         // replies on an iPhone, so its grid is measured in WebKit; own document.
         /agent-queued-stack\.layout\.spec\.ts/,
+        // agent-chat-slow-notice: the slow-reply notice under the status bar's
+        // safe area and clear of the composer, read on an iPhone; own document.
+        /agent-chat-slow-notice\.layout\.spec\.ts/,
         /settings-row-surface\.layout\.spec\.ts/,
         /consent-center-row\.layout\.spec\.ts/,
         /shared-with-you-card\.layout\.spec\.ts/,

@@ -379,6 +379,7 @@ import {
 } from "@/lib/agent/agent-chat-prompt-queue";
 import { LiveTurnQueue } from "@/lib/agent/agent-chat-live-turn-queue";
 import { AgentQueuedStack, QueuedJoinedCaption } from "@/components/agent/agent-queued-stack";
+import { useAgentChatSlowNotice } from "@/components/agent/agent-chat-slow-notice";
 import {
   combineAttachmentAndComposerText,
   composeTurnSourceText,
@@ -2832,6 +2833,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   // order (one chain), settled from the server's record before the next turn.
   const vaultOwnerTokenGetterRef = useRef(getVaultOwnerToken);
   vaultOwnerTokenGetterRef.current = getVaultOwnerToken;
+  // One calm notice when a reply is slow or the server is strained.
+  const slowNotice = useAgentChatSlowNotice();
   const liveTurnQueueRef = useRef<LiveTurnQueue | null>(null);
   if (liveTurnQueueRef.current === null) {
     liveTurnQueueRef.current = new LiveTurnQueue(
@@ -5994,6 +5997,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const stopThisTurn = async () => {
         if (turnStopped || streamAbortController.signal.aborted) return;
         turnStopped = true;
+        slowNotice.finish("stopped");
         flushAssistantDelta();
         updateMessage(assistantMessageId, (message) => ({
           ...message,
@@ -6011,6 +6015,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       };
 
       performance.mark("hushh:agent-chat:dispatch-start");
+      slowNotice.begin();
       const streamResult = await streamAgentChat({
         userId,
         message: text,
@@ -6050,6 +6055,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         handlers: {
           // No onThinkingSummary: the model's reasoning is never shown in
           // chat, live or restored. Only the answer and Activity render.
+          onStreamHealth: (signal) => {
+            if (streamAbortController.signal.aborted || turnStopped) return;
+            slowNotice.signal(signal);
+          },
           onMcpReview: (review) => {
             if (streamAbortController.signal.aborted || !review.isCurrent()) return;
             // Ephemeral only: never copy pending references or private previews
@@ -6207,6 +6216,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             // AG-UI interrupts are the normal boundary for a visible action
             // card. The card remains actionable, but the assistant turn has
             // finished thinking until the owner confirms or cancels it.
+            slowNotice.finish("answered");
             flushAssistantDelta();
             if (nextConversationId) {
               updateConversationId(nextConversationId);
@@ -6230,6 +6240,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
           onComplete: ({ conversationId: nextConversationId }) => {
             if (streamAbortController.signal.aborted) return;
+            slowNotice.finish("answered");
             flushAssistantDelta();
             if (nextConversationId) {
               updateConversationId(nextConversationId);
@@ -6247,6 +6258,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
+            // The error in the transcript owns this turn; only server strain
+            // keeps the notice up, as the heavy-usage explanation.
+            slowNotice.finish("failed");
             flushAssistantDelta();
             updateMessage(assistantMessageId, (current) =>
               settleAssistantMessageError(current, message),
@@ -6308,6 +6322,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         finishCanceledTurn();
         return;
       }
+      slowNotice.finish("failed");
       flushAssistantDelta();
       const message =
         error instanceof Error && error.message
@@ -6336,6 +6351,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       setIsChatLoading(false);
       setIsStreaming(false);
     } finally {
+      // Detached, cancelled or settled above: never leave this turn timing.
+      slowNotice.finish("stopped");
       cancelAssistantFlush();
       if (streamAbortControllerRef.current === streamAbortController) {
         streamAbortControllerRef.current = null;
@@ -6476,6 +6493,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     streamAbortControllerRef.current = streamAbortController;
 
     try {
+      slowNotice.begin();
       const streamResult = await streamAgentChat({
         userId,
         message,
@@ -6502,6 +6520,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         // onPkmResults are intentionally omitted; only the events a delegated
         // confirmation turn can actually emit are wired here.
         handlers: {
+          onStreamHealth: (signal) => {
+            if (streamAbortController.signal.aborted) return;
+            slowNotice.signal(signal);
+          },
           onStart: ({ conversationId: nextConversationId }) => {
             if (streamAbortController.signal.aborted) return;
             if (nextConversationId) updateConversationId(nextConversationId);
@@ -6525,6 +6547,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
           onComplete: ({ conversationId: nextConversationId }) => {
             if (streamAbortController.signal.aborted) return;
+            slowNotice.finish("answered");
             flushAssistantDelta();
             if (nextConversationId) updateConversationId(nextConversationId);
             updateMessage(assistantMessageId, (message) => ({
@@ -6536,6 +6559,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           },
           onError: (message) => {
             if (streamAbortController.signal.aborted) return;
+            slowNotice.finish("failed");
             flushAssistantDelta();
             if (consentBundleId) {
               consentFailure ??= { reason: message };
@@ -6583,6 +6607,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       setIsStreaming(false);
       return "answered";
     } catch (error) {
+      slowNotice.finish(streamAbortController.signal.aborted ? "stopped" : "failed");
       flushAssistantDelta();
       let result: FollowUpTurnResult = "failed";
       if (streamAbortController.signal.aborted) {
@@ -6610,6 +6635,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       setIsStreaming(false);
       return result;
     } finally {
+      slowNotice.finish("stopped");
       cancelAssistantFlush();
       if (streamAbortControllerRef.current === streamAbortController) {
         streamAbortControllerRef.current = null;

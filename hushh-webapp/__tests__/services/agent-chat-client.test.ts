@@ -1112,6 +1112,20 @@ describe("AG-UI Agent One client", () => {
     expect(visible).not.toContain("429");
   });
 
+  // The server authors these (hushh_mcp/one_adk/run_errors.py) for the person;
+  // they used to fall through to the generic line because only text was read.
+  it("shows the server's authored retryable errors by code, never by message text", () => {
+    expect(formatAgentChatErrorMessage("One is temporarily at capacity. Please try again in a moment.", "RESOURCE_EXHAUSTED"))
+      .toBe("One is temporarily at capacity. Please try again in a moment.");
+    expect(formatAgentChatErrorMessage("anything", "MODEL_UNAVAILABLE"))
+      .toBe("One's model service was briefly unavailable. Please try again.");
+    expect(formatAgentChatErrorMessage("anything", "SERVER_RESTARTING"))
+      .toBe("One was interrupted because the service restarted. Please send that again.");
+    // Negative control: the same text under another code is not trusted.
+    expect(formatAgentChatErrorMessage("One's model service was briefly unavailable. Please try again.", "MODEL_ERROR"))
+      .toBe("One couldn't complete that response. Please try again.");
+  });
+
   it("settles an interrupted HITL turn while preserving its resumable boundary", async () => {
     mockTransport.outcome = "interrupt";
     const controller = new AbortController();
@@ -1599,5 +1613,89 @@ describe("a chat turn never waits forever", () => {
     await expect(turn).rejects.toThrow(AGENT_CHAT_STREAM_LOST_ERROR);
     expect(onError).toHaveBeenCalledTimes(1); // the abort that follows is not a second error
     expect(mockTransport.aborted).toBe(true);
+  });
+});
+
+// The slow-reply notice is fed only by the transport: bytes, the first visible
+// work, and typed server strain. Bookkeeping events are not work, and message
+// text never classifies anything.
+describe("stream health for the slow-reply notice", () => {
+  beforeEach(() => {
+    publishValidatedAuthSessionOwner("user-1");
+    noteChatKeyAccepted();
+    mockTransport.aborted = false;
+    mockTransport.outcome = "success";
+    mockTransport.emitEvents = null;
+    mockTransport.failWith = null;
+  });
+
+  afterEach(() => {
+    mockTransport.emitEvents = null;
+    mockTransport.failWith = null;
+    mockTransport.readBody = false;
+    mockTransport.aborted = false;
+  });
+
+  const run = (onStreamHealth: NonNullable<AgentChatStreamHandlers["onStreamHealth"]>) =>
+    streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Plan my week",
+      conversationId: "thread-health", vaultOwnerToken: "owner-token", handlers: { onStreamHealth } });
+
+  it("counts a tool step as activity and run bookkeeping as nothing", async () => {
+    const signals: string[] = [];
+    mockTransport.emitEvents = (subscriber) => {
+      for (const type of ["RUN_STARTED", "STATE_SNAPSHOT", "MESSAGES_SNAPSHOT", "STATE_DELTA"]) {
+        subscriber.onEvent({ event: { type } });
+      }
+      expect(signals).toEqual([]); // negative control: bookkeeping is not work
+      subscriber.onEvent({ event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "google_search" } });
+    };
+    await run((signal) => signals.push(signal.kind));
+    expect(signals).toEqual(["activity"]);
+  });
+
+  it("reports capacity from a typed RUN_ERROR and shows the authored line", async () => {
+    const signals: unknown[] = [];
+    const shown: string[] = [];
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onRunErrorEvent({ event: { type: "RUN_ERROR", code: "RESOURCE_EXHAUSTED",
+        message: "One is temporarily at capacity. Please try again in a moment." } });
+      mockTransport.aborted = true; // the server ended the run
+    };
+    const error = await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Plan my week",
+      conversationId: "thread-capacity", vaultOwnerToken: "owner-token",
+      handlers: { onStreamHealth: (signal) => signals.push(signal), onError: (message) => shown.push(message) },
+    }).catch((caught) => caught);
+    expect(signals).toEqual([{ kind: "backend_strain", strain: "busy" }]);
+    expect(shown).toEqual(["One is temporarily at capacity. Please try again in a moment."]);
+    expect(error.message).toBe(shown[0]);
+  });
+
+  it("reports a refused 503 as unavailable, and a 500 as nothing", async () => {
+    const refused = (status: number) => Object.assign(new Error(`HTTP ${status}: {"detail":"x"}`), { status, payload: { detail: "x" } });
+    const signals: unknown[] = [];
+    mockTransport.failWith = refused(503);
+    await run((signal) => signals.push(signal)).catch(() => undefined);
+    expect(signals).toEqual([{ kind: "backend_strain", strain: "unavailable" }]);
+
+    signals.length = 0;
+    mockTransport.failWith = refused(500);
+    await run((signal) => signals.push(signal)).catch(() => undefined);
+    expect(signals).toEqual([]);
+  });
+
+  it("reports body bytes, keep-alive pings included", async () => {
+    const encoder = new TextEncoder();
+    vi.mocked(ApiService.apiFetchStream).mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(": ping\n\n"));
+        controller.enqueue(encoder.encode(": ping\n\n"));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    mockTransport.readBody = true;
+    const signals: string[] = [];
+    await run((signal) => signals.push(signal.kind));
+    // Headers, then each chunk.
+    expect(signals.filter((kind) => kind === "bytes")).toHaveLength(3);
   });
 });

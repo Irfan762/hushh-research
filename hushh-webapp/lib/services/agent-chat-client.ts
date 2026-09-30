@@ -41,6 +41,10 @@ import {
   type AgentTextAttachment,
 } from "@/lib/agent/large-text-attachment";
 import {
+  classifyBackendStrain,
+  type AgentStreamHealthSignal,
+} from "@/lib/agent/agent-chat-slow-notice";
+import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
   type AgentStructuredExperience,
@@ -245,6 +249,11 @@ export type AgentChatStreamHandlers = {
   onServerMessageId?: (serverMessageId: string) => void;
   /** Where messages queued during this turn landed, by client id only. */
   onQueuedInput?: (notice: QueuedInputNotice) => void;
+  /**
+   * Transport health for the slow-reply notice: bytes, the first visible work,
+   * or server strain from a typed code or status. Never content.
+   */
+  onStreamHealth?: (signal: AgentStreamHealthSignal) => void;
 };
 
 /** The last assistant message with content in a messages snapshot: this turn's answer. */
@@ -335,6 +344,17 @@ function readString(record: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Server events that show One is working on the turn: answer text, a tool or
+ * agent step, activity, a custom notice, a thought. Run bookkeeping (started,
+ * state and message snapshots) is not work the person is waiting on.
+ */
+const VISIBLE_WORK_EVENT_PREFIXES = ["TEXT_MESSAGE_", "TOOL_CALL_", "ACTIVITY_", "REASONING_", "THINKING_"] as const;
+
+function isVisibleWorkEvent(type: string): boolean {
+  return type === "CUSTOM" || VISIBLE_WORK_EVENT_PREFIXES.some((prefix) => type.startsWith(prefix));
+}
+
 const GENERIC_AGENT_CHAT_ERROR =
   "One couldn't complete that response. Please try again.";
 
@@ -375,7 +395,7 @@ const AGENT_CHAT_STREAM_WATCHDOG_TICK_MS = 5_000;
  * completes such a run quietly. `fetch` is the HttpAgent transport with every
  * body chunk noted; `start` arms the silence watchdog for one run.
  */
-function createAgentStreamLiveness(onSilent: () => void) {
+function createAgentStreamLiveness(onSilent: () => void, onBytes: () => void = () => undefined) {
   let lastBytesAtMs = Date.now();
   let timer: ReturnType<typeof setInterval> | null = null;
   const touch = () => {
@@ -389,10 +409,12 @@ function createAgentStreamLiveness(onSilent: () => void) {
     fetch: async (init: RequestInit | undefined): Promise<Response> => {
       const response = await nativeStreamFetch("/api/one/agent-chat", init);
       touch();
+      onBytes();
       if (!response.ok || !response.body) return response;
       const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           touch();
+          onBytes();
           controller.enqueue(chunk);
         },
       }));
@@ -983,6 +1005,14 @@ const CHAT_KEY_REFUSAL_MESSAGES: Record<string, string> = {
   CHAT_CONVERSATION_RETIRED: "This conversation is no longer available. Start a new chat.",
 };
 
+const MODEL_CAPACITY_MESSAGE = "One is temporarily at capacity. Please try again in a moment.";
+
+const AUTHORED_RETRYABLE_RUN_ERRORS: Record<string, string> = {
+  RESOURCE_EXHAUSTED: MODEL_CAPACITY_MESSAGE,
+  MODEL_UNAVAILABLE: "One's model service was briefly unavailable. Please try again.",
+  SERVER_RESTARTING: "One was interrupted because the service restarted. Please send that again.",
+};
+
 export function formatAgentChatErrorMessage(message: string, code?: string): string {
   // Chat history is sealed with a key derived from the vault. These refusals are
   // recoverable, so say how; the raw server text is never shown.
@@ -1009,6 +1039,10 @@ export function formatAgentChatErrorMessage(message: string, code?: string): str
   if (code === "DATABASE_UNAVAILABLE" || code === "DATABASE_EXECUTION_ERROR") {
     return "One's conversation history is temporarily unavailable. Please try again.";
   }
+  // The server's own retryable terminal errors (hushh_mcp/one_adk/run_errors.py)
+  // carry a fixed, content-free message; keyed by code, never by that text.
+  const authoredRetryable = code ? AUTHORED_RETRYABLE_RUN_ERRORS[code] : undefined;
+  if (authoredRetryable) return authoredRetryable;
   // AG-UI may deliver provider failures as an untyped RunErrorEvent when the
   // ADK bridge cannot preserve the backend error code. Recognize only the
   // stable provider markers and keep the raw message out of the transcript.
@@ -1018,7 +1052,7 @@ export function formatAgentChatErrorMessage(message: string, code?: string): str
     normalizedMessage.includes("TOO MANY REQUESTS") ||
     /\b429\b/.test(normalizedMessage)
   ) {
-    return "One is temporarily at capacity. Please try again in a moment.";
+    return MODEL_CAPACITY_MESSAGE;
   }
   // AG-UI RunErrorEvent.message may be derived from str(exception). Database
   // drivers append SQL and bound values there, so unknown runtime text is
@@ -1220,7 +1254,7 @@ export async function streamAgentChat(input: {
   const liveness = createAgentStreamLiveness(() => {
     loseStream();
     agent.abortRun();
-  });
+  }, () => handlers.onStreamHealth?.({ kind: "bytes" }));
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
@@ -1371,6 +1405,7 @@ export async function streamAgentChat(input: {
     onEvent: ({ event }) => {
       serverEvents += 1;
       if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") serverTerminal = true;
+      if (isVisibleWorkEvent(String(event.type))) handlers.onStreamHealth?.({ kind: "activity" });
       if (event.type === "REASONING_MESSAGE_CONTENT") {
         const delta = (event as { delta?: unknown }).delta;
         const metadata = (event as { metadata?: unknown }).metadata;
@@ -1825,6 +1860,8 @@ export async function streamAgentChat(input: {
         return;
       }
       const refusal = chatKeyRefusalCode(event.code || "");
+      const strain = classifyBackendStrain({ code: event.code });
+      if (strain) handlers.onStreamHealth?.({ kind: "backend_strain", strain });
       failure = refusal
         ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
         : new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
@@ -1841,6 +1878,10 @@ export async function streamAgentChat(input: {
       }
       const refusal = chatKeyRefusalCode((error as Error & { payload?: unknown }).payload)
         ?? chatKeyRefusalCode(error.message || "");
+      // @ag-ui/client puts a refused request's HTTP status on the error.
+      const httpStatus = (error as Error & { status?: unknown }).status;
+      const strain = classifyBackendStrain({ httpStatus: typeof httpStatus === "number" ? httpStatus : null });
+      if (strain && !refusal) handlers.onStreamHealth?.({ kind: "backend_strain", strain });
       failure = refusal
         ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
         : new Error(formatAgentChatErrorMessage(error.message || ""));
