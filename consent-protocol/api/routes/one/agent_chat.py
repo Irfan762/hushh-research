@@ -56,6 +56,7 @@ from hushh_mcp.one_adk.consent_redaction import (
     redaction_for_history,
     shared_record_for_history,
 )
+from hushh_mcp.one_adk.conversation_titles import ensure_conversation_titles, opening_prompt
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
@@ -71,6 +72,13 @@ from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn
 from hushh_mcp.one_adk.pending_email_draft import (
     STATE_PENDING_EMAIL_DRAFT,
     admit_pending_email_draft,
+)
+from hushh_mcp.one_adk.queued_input import (
+    QUEUED_INPUT_KIND,
+    QueuedInputError,
+)
+from hushh_mcp.one_adk.queued_input import (
+    registry as queued_input_registry,
 )
 from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
 from hushh_mcp.one_adk.shared_with_me_card import (
@@ -1323,6 +1331,7 @@ _ACTIVITY_TOOLS = frozenset(
         "list_my_connections",
         "inspect_selected_drive_files",
         "inspect_private_connectors",
+        "probe_private_connector",
         "discover_workspace_tools",
         "read_workspace_tool",
         "read_selected_drive_search_result",
@@ -1508,6 +1517,9 @@ def _safe_agent_history_metadata(
     descriptors = []
     seen = set()
     presentation = _record(getattr(event, "custom_metadata", None)) or {}
+    if presentation.get("kind") == QUEUED_INPUT_KIND and getattr(event, "author", None) == "user":
+        # A message the person sent while One was working, which joined that turn.
+        return {"queuedInput": "joined"}
     if presentation.get("kind") == "information_request_submission_v1":
         if _submitted_source_id(event) is None:
             return None
@@ -1574,12 +1586,8 @@ def _session_title(session: Any) -> str:
     authored = str((session.state or {}).get("hussh:thread_title") or "").strip()
     if authored:
         return authored
-    for event in session.events:
-        if event.author == "user":
-            text = _event_text(event)
-            if text:
-                return text[:80]
-    return "New conversation"
+    generated = str((session.state or {}).get("hussh:thread_summary_title") or "").strip()
+    return generated or opening_prompt(session)[:80] or "New chat"
 
 
 class RenameConversation(BaseModel):
@@ -1730,6 +1738,12 @@ async def list_conversations(
     sessions = sorted(response.sessions, key=lambda item: item.last_update_time, reverse=True)[
         :limit
     ]
+    await ensure_conversation_titles(
+        sessions=sessions,
+        service=_session_service,
+        owner=user_id,
+        token=str(token.get("token") or ""),
+    )
     return {
         "user_id": user_id,
         "conversations": [
@@ -1998,6 +2012,80 @@ async def delete_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation_id": conversation_id, "deleted": True}
+
+
+# ── Queued input: messages sent while One is still working ─────────────────
+# Owner-bound by the VAULT_OWNER token. No chat key: nothing sealed is read
+# here. Queued text is held in memory until the running turn seals it into the
+# conversation, or dropped when it is returned or withdrawn. See queued_input.py.
+
+
+class EnqueueQueuedInput(BaseModel):
+    client_message_id: str = Field(min_length=8, max_length=64)
+    text: str = Field(min_length=1, max_length=4000)
+
+
+def _queued_input_receipt(receipt: Any) -> dict[str, str]:
+    return {"clientMessageId": receipt.client_message_id, "status": receipt.status}
+
+
+@router.post("/api/one/agent-chat/runs/{conversation_id}/queue")
+async def enqueue_queued_input(
+    conversation_id: str,
+    payload: EnqueueQueuedInput,
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipt = queued_input_registry.enqueue(
+            str(token["user_id"]), conversation_id, payload.client_message_id, payload.text
+        )
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _queued_input_receipt(receipt)
+
+
+@router.delete("/api/one/agent-chat/runs/{conversation_id}/queue/{client_message_id}")
+async def withdraw_queued_input(
+    conversation_id: str,
+    client_message_id: str,
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipt = queued_input_registry.withdraw(
+            str(token["user_id"]), conversation_id, client_message_id
+        )
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _queued_input_receipt(receipt)
+
+
+@router.get("/api/one/agent-chat/runs/{conversation_id}/queue")
+async def queued_input_status(
+    conversation_id: str,
+    ids: list[str] = Query(default_factory=list, max_length=16),
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipts = queued_input_registry.status(str(token["user_id"]), conversation_id, ids)
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"receipts": [_queued_input_receipt(receipt) for receipt in receipts]}
+
+
+@router.post("/api/one/agent-chat/runs/{conversation_id}/stop")
+async def stop_agent_turn(
+    conversation_id: str,
+    token: dict = Depends(require_vault_owner_token),
+):
+    """End the running turn at its next step; queued messages come back unsent.
+
+    ``stopped`` is false when no turn of this conversation runs in this process;
+    the client then stops reading and sends what it queued as the next turn.
+    """
+    settlement = queued_input_registry.request_stop(str(token["user_id"]), conversation_id)
+    if settlement is None:
+        return {"stopped": False, "returned": []}
+    return {"stopped": True, "returned": list(settlement.returned)}
 
 
 # ── Proposal mode: action search and structured proposals ────────────────────
