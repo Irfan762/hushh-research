@@ -87,7 +87,34 @@ _CURATED_OAUTH_RUNTIME_PINS: dict[str, tuple[str, str, str, tuple[str, ...], str
     ),
 }
 
+# Which of a curated provider's tools may run WITHOUT a per-call review card.
+# Reviewed here, in code, not in the operator-writable registry: an edited row
+# must not be able to free a tool. A tool also has to be annotated read-only by
+# the server itself (see mcp_review_outcome); every other tool, including all
+# writes, keeps exact-call review. Adding a provider or a tool is a reviewed
+# code change, and a provider absent from this table keeps review on every call.
+_CURATED_FREE_READ_TOOLS: dict[str, frozenset[str]] = {
+    "hubspot": frozenset(
+        {
+            "get_user_details",
+            "get_organization_details",
+            "discover_hubspot_schema",
+            "search_crm_objects",
+            "get_crm_objects",
+            "search_properties",
+            "get_properties",
+            "search_owners",
+            "query_crm_data",
+            "tool_guidance",
+        }
+    ),
+}
+
 logger = logging.getLogger(__name__)
+
+
+def curated_free_read_tools(connector_id: str) -> frozenset[str]:
+    return _CURATED_FREE_READ_TOOLS.get(connector_id, frozenset())
 
 
 class CuratedConnectorOAuthError(RuntimeError):

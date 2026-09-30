@@ -914,13 +914,22 @@ def _owner_context(**state):
     return SimpleNamespace(user_id="owner", tool_confirmation=None, state=dict(state))
 
 
-def _policy_toolset(policy, tools, *, headers=None, forced=frozenset(), catalog_policy=None):
+def _policy_toolset(
+    policy,
+    tools,
+    *,
+    headers=None,
+    forced=frozenset(),
+    catalog_policy=None,
+    free_reads=frozenset(),
+):
     binding = McpConnectionBinding("owner", "custom_one", 1, 1, "https://example.com/mcp")
     connection = ResolvedMcpConnection(
         binding,
         headers if headers is not None else {"Authorization": "Bearer synthetic"},
         review_policy=policy,
         forced_review_tool_ids=forced,
+        free_read_tool_ids=free_reads,
     )
     approve = AsyncMock(return_value={"status": "review_required"})
     toolset = GovernedMcpToolset(
@@ -929,6 +938,7 @@ def _policy_toolset(policy, tools, *, headers=None, forced=frozenset(), catalog_
         authorize_call=approve,
         review_policy=policy,
         forced_review_tool_ids=forced,
+        free_read_tool_ids=free_reads,
         catalog_policy=catalog_policy,
     )
     session = SimpleNamespace(
@@ -1557,7 +1567,16 @@ async def test_curated_oauth_resolves_reviewed_bearer_binding(registry_harness, 
     assert result.headers == {"Authorization": "Bearer synthetic-token"}
     assert result.binding.generation == 5
     assert result.binding.authority_revision == (hash_,)
-    assert result.review_policy == "always"
+    # Reviewed reads skip the card; the two write tools are not on the list.
+    from hushh_mcp.one_adk.governed_mcp_toolset import mcp_tool_name
+    from hushh_mcp.services.external_connector_curated_oauth import curated_free_read_tools
+
+    assert result.review_policy == "reviewed_writes"
+    assert result.free_read_tool_ids == frozenset(
+        mcp_tool_name("hubspot", name) for name in curated_free_read_tools("hubspot")
+    )
+    assert mcp_tool_name("hubspot", "manage_crm_objects") not in result.free_read_tool_ids
+    assert mcp_tool_name("hubspot", "manage_custom_properties") not in result.free_read_tool_ids
     assert "synthetic-token" not in repr(result)
 
 
@@ -1712,3 +1731,181 @@ def test_toolset_uses_the_configured_budget_unless_given_one(monkeypatch):
     )
     assert default.timeout_seconds == 40.0
     assert explicit.timeout_seconds == 5
+
+
+# --- reviewed_writes: reviewed reads run freely, everything else is reviewed ----
+
+
+@pytest.mark.parametrize(
+    ("descriptor", "forced", "free_read", "expected"),
+    [
+        # The only way to skip review: on the reviewed list AND the server agrees.
+        ({"annotations": READ_ONLY}, False, True, "read_only"),
+        (
+            {"annotations": {"readOnlyHint": True, "destructiveHint": False}},
+            False,
+            True,
+            "read_only",
+        ),
+        # On the list but the server does not call it a read (or is contradictory).
+        ({"annotations": {"readOnlyHint": False}}, False, True, "required"),
+        ({"annotations": {"readOnlyHint": True, "destructiveHint": True}}, False, True, "required"),
+        ({"annotations": {"readOnlyHint": "true"}}, False, True, "required"),
+        ({"name": "unannotated"}, False, True, "required"),
+        (None, False, True, "required"),
+        # Annotated as a read but not on the reviewed list.
+        ({"annotations": READ_ONLY}, False, False, "required"),
+        # An owner rule always wins.
+        ({"annotations": READ_ONLY}, True, True, "required"),
+    ],
+)
+def test_reviewed_writes_frees_only_reviewed_reads_the_server_agrees_are_reads(
+    descriptor, forced, free_read, expected
+):
+    from hushh_mcp.one_adk.governed_mcp_toolset import mcp_review_outcome
+
+    assert (
+        mcp_review_outcome("reviewed_writes", descriptor, forced=forced, free_read=free_read)
+        == expected
+    )
+
+
+def test_free_read_flag_cannot_free_any_other_policy():
+    from hushh_mcp.one_adk.governed_mcp_toolset import mcp_review_outcome
+
+    assert mcp_review_outcome("always", {"annotations": READ_ONLY}, free_read=True) == "required"
+    assert mcp_review_outcome("bogus", {"annotations": READ_ONLY}, free_read=True) == "required"
+    assert mcp_review_outcome(None, {"annotations": READ_ONLY}, free_read=True) == "required"
+
+
+def _free_ids(*names):
+    from hushh_mcp.one_adk.governed_mcp_toolset import mcp_tool_name
+
+    return frozenset(mcp_tool_name("custom_one", name) for name in names)
+
+
+async def test_reviewed_write_policy_runs_a_listed_read_without_a_card_and_audits_it(
+    native_ok, monkeypatch
+):
+    from hushh_mcp.one_adk import governed_mcp_toolset as module
+
+    audited = Mock()
+    monkeypatch.setattr(module, "_audit_unreviewed_call", audited)
+    toolset, approve, _ = _policy_toolset(
+        "reviewed_writes",
+        [_tool("search", SimpleNamespace(readOnlyHint=True))],
+        free_reads=_free_ids("search"),
+    )
+    try:
+        tool = (await toolset.get_tools(SimpleNamespace(user_id="owner")))[0]
+        result = await tool.run_async(args={}, tool_context=_owner_context())
+        assert result["status"] == "ok" and result["review"] == "read_only"
+        approve.assert_not_awaited()
+        native_ok.assert_awaited_once()
+        audited.assert_called_once()
+        assert audited.call_args.args[3] == "read_only"
+    finally:
+        await toolset.close()
+
+
+async def test_reviewed_write_policy_still_reviews_a_write_tool(native_ok):
+    toolset, approve, _ = _policy_toolset(
+        "reviewed_writes",
+        [
+            _tool("search", SimpleNamespace(readOnlyHint=True)),
+            _tool("manage", SimpleNamespace(readOnlyHint=False, destructiveHint=True)),
+        ],
+        free_reads=_free_ids("search"),
+    )
+    try:
+        tools = {
+            t.descriptor["name"]: t
+            for t in await toolset.get_tools(SimpleNamespace(user_id="owner"))
+        }
+        result = await tools["manage"].run_async(args={}, tool_context=_owner_context())
+        assert result == {"status": "review_required", "connectorId": "custom_one"}
+        approve.assert_awaited_once()
+        native_ok.assert_not_awaited()
+    finally:
+        await toolset.close()
+
+
+@pytest.mark.parametrize(
+    "annotations",
+    [
+        None,
+        SimpleNamespace(readOnlyHint=False),
+        SimpleNamespace(readOnlyHint=True, destructiveHint=True),
+    ],
+)
+async def test_a_listed_tool_the_server_stops_calling_a_read_is_reviewed(native_ok, annotations):
+    toolset, approve, _ = _policy_toolset(
+        "reviewed_writes", [_tool("search", annotations)], free_reads=_free_ids("search")
+    )
+    try:
+        tool = (await toolset.get_tools(SimpleNamespace(user_id="owner")))[0]
+        result = await tool.run_async(args={}, tool_context=_owner_context())
+        assert result["status"] == "review_required"
+        approve.assert_awaited_once()
+        native_ok.assert_not_awaited()
+    finally:
+        await toolset.close()
+
+
+async def test_a_read_annotated_tool_that_is_not_on_the_reviewed_list_is_reviewed(native_ok):
+    """A server cannot free a new tool just by labelling it read-only."""
+    toolset, approve, _ = _policy_toolset(
+        "reviewed_writes",
+        [
+            _tool("search", SimpleNamespace(readOnlyHint=True)),
+            _tool("sneaky", SimpleNamespace(readOnlyHint=True)),
+        ],
+        free_reads=_free_ids("search"),
+    )
+    try:
+        tools = {
+            t.descriptor["name"]: t
+            for t in await toolset.get_tools(SimpleNamespace(user_id="owner"))
+        }
+        result = await tools["sneaky"].run_async(args={}, tool_context=_owner_context())
+        assert result["status"] == "review_required"
+        approve.assert_awaited_once()
+        native_ok.assert_not_awaited()
+    finally:
+        await toolset.close()
+
+
+async def test_a_change_to_the_reviewed_read_list_is_a_connection_change(native_ok):
+    toolset, approve, _ = _policy_toolset(
+        "reviewed_writes",
+        [
+            _tool("search", SimpleNamespace(readOnlyHint=True)),
+            _tool("other", SimpleNamespace(readOnlyHint=True)),
+        ],
+        free_reads=_free_ids("search"),
+    )
+    try:
+        tool = (await toolset.get_tools(SimpleNamespace(user_id="owner")))[0]
+        current = toolset.resolve_connection.return_value
+        toolset.resolve_connection.return_value = replace(
+            current, free_read_tool_ids=_free_ids("search", "other")
+        )
+        result = await tool.run_async(args={}, tool_context=_owner_context())
+        assert result["error"] == "MCP_CONNECTION_CHANGED"
+        approve.assert_not_awaited()
+        native_ok.assert_not_awaited()
+    finally:
+        await toolset.close()
+
+
+@pytest.mark.parametrize("bad", [["a"], {"a"}, None, frozenset({1}), "a"])
+def test_free_read_ids_must_be_a_frozenset_of_strings(bad):
+    binding = McpConnectionBinding("owner", "custom_one", 1, 1, "https://example.com/mcp")
+    with pytest.raises(ValueError, match="Invalid MCP review policy"):
+        GovernedMcpToolset(
+            binding=binding,
+            resolve_connection=AsyncMock(),
+            authorize_call=AsyncMock(),
+            review_policy="reviewed_writes",
+            free_read_tool_ids=bad,  # type: ignore[arg-type]
+        )

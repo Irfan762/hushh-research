@@ -1246,3 +1246,33 @@ async def test_configuration_ignores_a_passed_connector_for_a_different_id(servi
     with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_unavailable"):
         await service._configuration("hubspot", other)
     service.registry.get_connector.assert_awaited_once_with("hubspot")
+
+
+# --- reviewed free-read pin -----------------------------------------------------
+
+
+def test_hubspot_free_reads_are_pinned_and_are_only_reads():
+    reads = oauth.curated_free_read_tools("hubspot")
+    assert len(reads) == 10
+    # Nothing that can change data is ever on the list.
+    assert not any(name.startswith("manage_") for name in reads)
+    assert {"manage_crm_objects", "manage_custom_properties"}.isdisjoint(reads)
+
+
+def test_pinned_free_reads_are_all_in_the_committed_tool_allowlist():
+    """A pinned read the descriptor does not expose could never run; catch drift."""
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "config"
+        / "external_mcp_connectors"
+        / "hubspot.uat.json"
+    )
+    allowlist = set(json.loads(path.read_text(encoding="utf-8"))["toolAllowlist"])
+    assert oauth.curated_free_read_tools("hubspot") <= allowlist
+
+
+def test_an_unlisted_provider_has_no_free_reads():
+    assert oauth.curated_free_read_tools("notion") == frozenset()
+    assert oauth.curated_free_read_tools("") == frozenset()

@@ -1660,7 +1660,12 @@ Token exchange and refresh use the public-only transport with redirects and
 environment proxies disabled, public-address DNS pinning, identity encoding,
 and a bounded response before JSON parsing. Curated chat admission separately
 requires a verified owner grant, the reviewed policy, and the connector's
-allowlisted tools; connecting a provider never grants unreviewed execution.
+allowlisted tools. Connecting a provider grants no unreviewed change: only tools
+on a per-provider list reviewed in application code (never in the operator
+registry), and which the server itself also marks read-only, run without a
+per-call review card, each logged as an unreviewed read call. Every other tool,
+including every write, needs exact-call review, and a provider absent from that
+list keeps review on every call.
 
 The existing left drawer mounts Chats and Connections together. Mail uses the existing
 Gmail connection service; Drive uses a synchronously opened popup with exact origin/source/
