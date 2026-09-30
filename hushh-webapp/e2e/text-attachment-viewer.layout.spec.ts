@@ -433,6 +433,35 @@ async function typeAndMeasure(page: Page, text: string, delay: number) {
   };
 }
 
+async function measureNativeTextareaControl(page: Page, text: string, delay: number) {
+  await page.evaluate(() => {
+    const source = document.querySelector<HTMLTextAreaElement>(
+      '[data-testid="text-attachment-editor-textarea"]',
+    )!;
+    const control = source.cloneNode(false) as HTMLTextAreaElement;
+    control.value = source.value;
+    control.setSelectionRange(source.selectionStart, source.selectionEnd);
+    (window as unknown as { __editorControlSource?: HTMLTextAreaElement }).__editorControlSource = source;
+    source.replaceWith(control);
+    control.focus({ preventScroll: true });
+  });
+  try {
+    return await typeAndMeasure(page, text, delay);
+  } finally {
+    await page.evaluate(() => {
+      const source = (window as unknown as { __editorControlSource?: HTMLTextAreaElement }).__editorControlSource;
+      const control = document.querySelector<HTMLTextAreaElement>(
+        '[data-testid="text-attachment-editor-textarea"]',
+      );
+      if (source && control) {
+        control.replaceWith(source);
+        source.focus({ preventScroll: true });
+      }
+      delete (window as unknown as { __editorControlSource?: HTMLTextAreaElement }).__editorControlSource;
+    });
+  }
+}
+
 async function placeCaret(page: Page, fraction: number) {
   return page.evaluate((at) => {
     const textarea = document.querySelector<HTMLTextAreaElement>(
@@ -471,7 +500,9 @@ test.describe("pasted text editor", () => {
 
       // Typing in the middle of the paste lands where the caret is.
       const at = await placeCaret(page, 0.5);
+      const nativeControl = await measureNativeTextareaControl(page, "reconciled twice, ", 20);
       const plain = await typeAndMeasure(page, "reconciled twice, ", 20);
+      console.log(`[editor latency] ${label} native=${JSON.stringify(nativeControl)} editor=${JSON.stringify(plain)}`);
       const value = await page.getByLabel("Pasted text, editable text").inputValue();
       expect(value.slice(at, at + 18)).toBe("reconciled twice, ");
 
