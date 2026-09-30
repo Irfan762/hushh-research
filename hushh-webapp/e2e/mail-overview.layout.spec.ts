@@ -97,7 +97,12 @@ for (const width of [320, 390, 430, 768, 1440]) {
     const hero = page.getByRole("heading", {name: "Draft with One."});
     await expect(hero).toBeVisible();
     expect(await hero.evaluate(el => parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(width < 640 ? 28 : 44);
-    const receipts = page.getByRole("button", {name: "Open receipts"});
+    const receipts = page.getByTestId("mail-receipt-sync");
+    await expect(receipts.locator("button, a, [data-slot=settings-row-chevron]")).toHaveCount(0);
+    expect(await receipts.evaluate(el => getComputedStyle(el).borderTopLeftRadius)).toBe("20px");
+    const beforeHover = await receipts.evaluate(el => getComputedStyle(el).backgroundColor);
+    await receipts.hover();
+    expect(await receipts.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(beforeHover);
     const chat = page.getByRole("button", {name: "Chat with One"});
     const manage = page.getByRole("button", {name: "Manage"});
     for (const control of [receipts, chat, manage]) {

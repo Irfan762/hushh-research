@@ -2070,7 +2070,7 @@ export default function GmailReceiptsPage({
                         })
                       }
                       disabled={gmailActionBusy !== null || loadingStatus}
-                      className="h-12 w-full px-8 text-base sm:w-auto"
+                      className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base"
                       data-voice-control-id="retry_gmail_status"
                       data-voice-label="Retry Mail status"
                       data-voice-purpose="rechecks the Mail connection without opening Google consent."
@@ -2150,7 +2150,6 @@ export default function GmailReceiptsPage({
               fetching={overviewReceiptsFetching}
               receiptDetail={overviewReceiptDetail}
               receiptUpdated={resolveGmailLastUpdatedLabel(gmail.status, gmail.syncRun)}
-              onOpenReceipts={() => setWorkspace("receipts")}
               onOpenChat={handleOpenOneChat}
             />
           ) : null}

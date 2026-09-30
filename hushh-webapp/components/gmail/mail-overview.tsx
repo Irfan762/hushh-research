@@ -39,13 +39,11 @@ export function MailOverview({
   fetching,
   receiptDetail,
   receiptUpdated,
-  onOpenReceipts,
   onOpenChat,
 }: {
   fetching: boolean;
   receiptDetail: string;
   receiptUpdated: string | null;
-  onOpenReceipts: () => void;
   onOpenChat: () => void;
 }) {
   return (
@@ -97,10 +95,8 @@ export function MailOverview({
           leading={<span aria-hidden="true" className="flex size-12 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><FileText className="size-6" /></span>}
           description={<span className="block space-y-0.5"><span className="block text-[13px] leading-snug">{receiptDetail}</span>{receiptUpdated ? <span className="block text-xs leading-snug text-muted-foreground/75">{receiptUpdated}</span> : null}</span>}
           trailing={fetching ? <span role="status" aria-label="Fetching receipts"><Loader2 aria-hidden="true" className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none" /></span> : undefined}
-          chevron
-          onClick={onOpenReceipts}
-          ariaLabel="Open receipts"
-          className="!px-0"
+          testId="mail-receipt-sync"
+          className="!rounded-[20px] border border-emerald-500/15 bg-emerald-500/[0.06] dark:bg-emerald-500/10"
         />
       </div>
       <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="mt-3 h-[54px] w-full justify-center text-base sm:w-full">
