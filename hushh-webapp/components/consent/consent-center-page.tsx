@@ -128,7 +128,7 @@ import {
   isInlineDecidableConsentEntry,
 } from "@/lib/consent/owner-consent-request";
 import { useConsentSharePreview } from "@/lib/consent/consent-share-preview";
-import { ConnectionsService, type ConnectionPage, type ConnectionSummaryEntry } from "@/lib/services/connections-service";
+import { ConnectionsService, type ConnectionPage } from "@/lib/services/connections-service";
 
 import {
   CONSENT_CENTER_PAGE_SIZE,

@@ -9,7 +9,7 @@
  * (the app sent to the background, the tab switched away).
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { TYPOGRAPHY_CLASSNAMES } from "@/components/app-ui/typography";
 import { Check, Copy } from "@/components/icons";
@@ -101,16 +101,13 @@ export function SecureCardReveal({
   const [hidden, setHidden] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
-  const onHideRef = useRef(onHide);
-  onHideRef.current = onHide;
-
   const hide = useCallback(() => {
-    if (onHideRef.current) {
-      onHideRef.current();
+    if (onHide) {
+      onHide();
       return;
     }
     setHidden(true);
-  }, []);
+  }, [onHide]);
 
   useEffect(() => {
     if (hidden) return;
