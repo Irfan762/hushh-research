@@ -1209,3 +1209,40 @@ async def test_refresh_uses_a_shorter_provider_timeout_than_the_turn_deadline(se
     await service.current_credential(connector_id="hubspot", user_id="u1")
 
     assert service._post.await_args.kwargs["timeout_seconds"] == oauth._REFRESH_POST_TIMEOUT < 20
+
+
+# --- hot-path round trips ------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_current_credential_reuses_the_callers_connector_and_skips_the_purge(
+    service, connector
+):
+    hash_ = oauth.curated_policy_hash(connector)
+    row = _row(verified_policy_hash=hash_)
+    service.lifecycle.read = AsyncMock(return_value=row)
+    service.registry.get_connector = AsyncMock()
+    service.credentials.open_credential = Mock(
+        return_value={"oauthClientId": "client-1", "accessToken": "tok", "refreshToken": "r"}
+    )
+    monkey_env = {"HUBSPOT_OAUTH_CLIENT_ID": "client-1", "HUBSPOT_OAUTH_CLIENT_SECRET": "secret-1"}
+    original = oauth.getenv
+    oauth.getenv = lambda name, default="": monkey_env.get(name, default)
+    try:
+        await service.current_credential(connector_id="hubspot", user_id="u1", connector=connector)
+    finally:
+        oauth.getenv = original
+
+    service.registry.get_connector.assert_not_awaited()
+    service.lifecycle.read.assert_awaited_once_with(
+        user_id="u1", connector_id="hubspot", purge=False
+    )
+
+
+@pytest.mark.asyncio
+async def test_configuration_ignores_a_passed_connector_for_a_different_id(service, connector):
+    other = replace(connector, connector_id="notion")
+    service.registry.get_connector = AsyncMock(return_value=None)
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_unavailable"):
+        await service._configuration("hubspot", other)
+    service.registry.get_connector.assert_awaited_once_with("hubspot")

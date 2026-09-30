@@ -1551,7 +1551,9 @@ async def test_curated_oauth_resolves_reviewed_bearer_binding(registry_harness, 
     )
     row["verified_policy_hash"] = hash_
     result = await resolve_registered_connection(registry_harness.context, "hubspot")
-    adapter.current_credential.assert_awaited_once_with(connector_id="hubspot", user_id="owner")
+    adapter.current_credential.assert_awaited_once_with(
+        connector_id="hubspot", user_id="owner", connector=definition
+    )
     assert result.headers == {"Authorization": "Bearer synthetic-token"}
     assert result.binding.generation == 5
     assert result.binding.authority_revision == (hash_,)
@@ -1670,3 +1672,43 @@ async def test_curated_oauth_empty_allowlist_admits_no_tools(registry_harness, m
     resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
     assert resolved.catalog_policy is not None
     assert resolved.catalog_policy([{"name": "search_crm_objects"}]) == []
+
+
+# --- per-step MCP budget knob ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (None, 20.0),
+        ("", 20.0),
+        ("45", 45.0),
+        ("60", 60.0),
+        ("61", 20.0),
+        ("0", 20.0),
+        ("-5", 20.0),
+        ("not-a-number", 20.0),
+    ],
+)
+def test_mcp_call_timeout_is_opt_in_and_bounded(monkeypatch, value, expected):
+    from hushh_mcp.one_adk.governed_mcp_toolset import mcp_call_timeout_seconds
+
+    if value is None:
+        monkeypatch.delenv("MCP_TOOLSET_TIMEOUT_SECONDS", raising=False)
+    else:
+        monkeypatch.setenv("MCP_TOOLSET_TIMEOUT_SECONDS", value)
+    assert mcp_call_timeout_seconds() == expected
+
+
+def test_toolset_uses_the_configured_budget_unless_given_one(monkeypatch):
+    monkeypatch.setenv("MCP_TOOLSET_TIMEOUT_SECONDS", "40")
+    binding = McpConnectionBinding("owner", "hubspot", 1, 1, "https://mcp.hubspot.com/")
+    resolver = AsyncMock()
+    default = GovernedMcpToolset(
+        binding=binding, resolve_connection=resolver, authorize_call=AsyncMock()
+    )
+    explicit = GovernedMcpToolset(
+        binding=binding, resolve_connection=resolver, authorize_call=AsyncMock(), timeout_seconds=5
+    )
+    assert default.timeout_seconds == 40.0
+    assert explicit.timeout_seconds == 5

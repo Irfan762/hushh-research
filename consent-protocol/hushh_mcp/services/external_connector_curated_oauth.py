@@ -170,9 +170,11 @@ class ExternalConnectorCuratedOAuth:
         self.state_codec = state_codec
 
     async def _configuration(
-        self, connector_id: str
+        self, connector_id: str, connector: ExternalMcpConnectorDefinition | None = None
     ) -> tuple[ExternalMcpConnectorDefinition, str, str]:
-        connector = await self.registry.get_connector(connector_id)
+        # A caller that just read the live registry row may pass it to save a query.
+        if connector is None or connector.connector_id != connector_id:
+            connector = await self.registry.get_connector(connector_id)
         if connector is None or not is_curated_oauth_connector(connector):
             raise CuratedConnectorOAuthError("connector_unavailable", status_code=503)
         expected = _CURATED_OAUTH_RUNTIME_PINS.get(connector.connector_id)
@@ -419,17 +421,24 @@ class ExternalConnectorCuratedOAuth:
             logger.warning("curated_connector_oauth.verify_failed code=%s", error)
         return {"connectorId": attempt["connector_id"], "status": status}
 
-    async def current_credential(self, *, connector_id: str, user_id: str) -> tuple[dict, dict]:
+    async def current_credential(
+        self,
+        *,
+        connector_id: str,
+        user_id: str,
+        connector: ExternalMcpConnectorDefinition | None = None,
+    ) -> tuple[dict, dict]:
         """Internal only. Execution additionally enforces chat admission and
-        the review policy before/after any tool call."""
-        row = await self.lifecycle.read(user_id=user_id, connector_id=connector_id)
+        the review policy before/after any tool call. `connector` is the live
+        registry row when the caller already holds it."""
+        row = await self.lifecycle.read(user_id=user_id, connector_id=connector_id, purge=False)
         if (
             not row
             or row["status"] not in {"connected", "verifying"}
             or row["envelope_version"] != 2
         ):
             raise CuratedConnectorOAuthError("reconnect_required", status_code=401)
-        connector, client_id, client_secret = await self._configuration(connector_id)
+        connector, client_id, client_secret = await self._configuration(connector_id, connector)
         # Check the registry hasn't drifted from what was consented to BEFORE
         # any decrypt or provider call: an operator edit (endpoint, token
         # URL, client) must force reconnect, never silently carry an old
@@ -496,7 +505,7 @@ class ExternalConnectorCuratedOAuth:
             # leave the lease held. Shielded so a cancel cannot skip the release.
             await asyncio.shield(self._release_lease(common, lease_id))
             raise
-        updated = await self.lifecycle.read(user_id=user_id, connector_id=connector_id)
+        updated = await self.lifecycle.read(user_id=user_id, connector_id=connector_id, purge=False)
         if (
             not updated
             or updated["connection_generation"] != common["generation"]
@@ -535,7 +544,9 @@ class ExternalConnectorCuratedOAuth:
     ) -> tuple[dict, dict]:
         for delay in (0.3, 0.5, 0.8):
             await asyncio.sleep(delay)
-            fresh = await self.lifecycle.read(user_id=user_id, connector_id=connector_id)
+            fresh = await self.lifecycle.read(
+                user_id=user_id, connector_id=connector_id, purge=False
+            )
             if (
                 fresh
                 and fresh["connection_generation"] == generation

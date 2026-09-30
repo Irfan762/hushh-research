@@ -12,6 +12,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -56,6 +57,21 @@ from hushh_mcp.services.external_mcp_client import (
     _normalize_and_cap,
 )
 from hushh_mcp.services.mcp_public_http import create_bounded_mcp_http_client, validate_mcp_endpoint
+
+
+def mcp_call_timeout_seconds() -> float:
+    """Per-step budget for connector discovery and an approved call.
+
+    Defaults to 20s. A development machine that reaches the database over a
+    high-latency link may raise it with MCP_TOOLSET_TIMEOUT_SECONDS; the value is
+    clamped to the same 60s ceiling the toolset enforces, and a malformed value
+    falls back to the default rather than disabling the bound.
+    """
+    try:
+        value = float(os.getenv("MCP_TOOLSET_TIMEOUT_SECONDS", ""))
+    except ValueError:
+        return 20.0
+    return value if 0 < value <= 60 else 20.0
 
 
 @dataclass(frozen=True)
@@ -196,7 +212,7 @@ async def _resolve_curated_connection(owner: str, connector: Any) -> ResolvedMcp
     adapter = get_external_connector_oauth_service().curated()
     try:
         row, secret = await adapter.current_credential(
-            connector_id=connector.connector_id, user_id=owner
+            connector_id=connector.connector_id, user_id=owner, connector=connector
         )
     except CuratedConnectorOAuthError as error:
         code = "MCP_CREDENTIAL_EXPIRED" if error.status_code == 401 else "MCP_CONNECTION_CHANGED"
@@ -473,13 +489,15 @@ class GovernedMcpToolset(McpToolset):
         binding: McpConnectionBinding,
         resolve_connection: ResolveConnection,
         authorize_call: AuthorizeCall,
-        timeout_seconds: float = 20,
+        timeout_seconds: float | None = None,
         catalog_policy: CatalogPolicy | None = None,
         result_policy: ResultPolicy | None = None,
         review_policy: McpReviewPolicy = "always",
         forced_review_tool_ids: frozenset[str] = frozenset(),
     ) -> None:
         validate_mcp_endpoint(binding.endpoint)
+        if timeout_seconds is None:
+            timeout_seconds = mcp_call_timeout_seconds()
         if not binding.owner_id or not binding.connector_id or binding.generation < 1:
             raise ValueError("Invalid MCP connection binding")
         if binding.credential_version < 1 or not 0 < timeout_seconds <= 60:

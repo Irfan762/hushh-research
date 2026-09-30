@@ -83,8 +83,13 @@ class ExternalConnectorLifecycleStore:
             params,
         )
 
-    async def read(self, *, user_id: str, connector_id: str) -> dict[str, Any] | None:
-        await self.purge_expired()
+    async def read(
+        self, *, user_id: str, connector_id: str, purge: bool = True
+    ) -> dict[str, Any] | None:
+        # Retention runs opportunistically on lifecycle transitions; a hot read
+        # path (every chat step) opts out to save two round trips per call.
+        if purge:
+            await self.purge_expired()
         return await self._transaction(
             lambda connection: self._row(
                 connection,
