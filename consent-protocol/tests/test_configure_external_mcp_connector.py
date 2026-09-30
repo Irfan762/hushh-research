@@ -113,6 +113,26 @@ def test_apply_never_overwrites_a_private_registration(
         cli._apply(descriptor, operator="operator@hushh.ai")
 
 
+def test_apply_refuses_a_manual_descriptor_for_a_registration_only_provider(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _hubspot_descriptor(
+        connectorId="attio",
+        displayName="Attio",
+        mcpEndpoint="https://mcp.attio.com/mcp",
+        oauthAuthorizeUrl="https://app.attio.com/oidc/authorize",
+        oauthTokenUrl="https://app.attio.com/oidc/token",
+        oauthClientIdEnv="ATTIO_OAUTH_CLIENT_ID",
+        tokenEndpointAuth="none",
+    )
+    del payload["oauthClientSecretEnv"]
+    descriptor = load_and_validate_descriptor(_write(tmp_path, payload))
+    monkeypatch.setattr(cli, "get_db", pytest.fail)
+
+    with pytest.raises(ExternalMcpConnectorDescriptorError, match="registration-only spec"):
+        cli._apply(descriptor, operator="operator@hushh.ai")
+
+
 @pytest.mark.asyncio
 async def test_probe_tolerates_auth_gated_discovery(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

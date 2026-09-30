@@ -13,6 +13,11 @@ manifest under config/curated_connectors/ -- pass it with --env:
     python3 scripts/ops/configure_external_mcp_connector.py check config/curated_connectors/notion.json --env uat
     python3 scripts/ops/configure_external_mcp_connector.py apply config/curated_connectors/notion.json --env uat --activate --operator you@hushh.ai
 
+A registration-only public-client spec under config/curated_connector_registrations/
+is deliberately not a descriptor and cannot be applied. It exists only for the
+separate provisioning command to register a client before authenticated tools/list
+can produce the reviewed runtime manifest.
+
 Usage:
     python3 scripts/ops/configure_external_mcp_connector.py check connector.json
     python3 scripts/ops/configure_external_mcp_connector.py probe connector.json
@@ -38,6 +43,7 @@ from hushh_mcp.services.curated_connector_manifest import (  # noqa: E402
     MANIFEST_VERSION,
     CuratedConnectorManifestError,
     get_manifest,
+    get_registration_spec,
     parse_manifest,
 )
 from hushh_mcp.services.external_mcp_client import (  # noqa: E402
@@ -79,8 +85,14 @@ def _require_matches_manifest(descriptor: ValidatedExternalMcpConnectorDescripto
     addresses, admission mode), so the registry can never be ahead of reviewed code.
     Any legacy descriptor for such a provider is refused rather than compared."""
     raw = descriptor.raw
-    manifest = get_manifest(str(raw.get("connectorId")))
+    connector_id = str(raw.get("connectorId"))
+    manifest = get_manifest(connector_id)
     if manifest is None:
+        if get_registration_spec(connector_id) is not None:
+            raise ExternalMcpConnectorDescriptorError(
+                f"{connector_id} has a registration-only spec and cannot be applied. "
+                "Capture authenticated tools/list and add its runtime manifest first."
+            )
         return
     if not any(
         raw == manifest.to_descriptor(environment) for environment in manifest.redirect_uris
