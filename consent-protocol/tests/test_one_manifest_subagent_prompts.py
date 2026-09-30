@@ -36,6 +36,7 @@ def test_consent_routing_is_not_reauthored_by_runtime_instruction():
     assert "Drive file and Drive question requests" in authored
     assert "documentRequestsHasMore" in authored
     assert "informationRequestsHasMore" in authored
+    assert "informationRequestsHaveUnknownPeople" in authored
     assert "documentRequestsHaveUnknownPeople" in authored
     assert "It lists information, Drive file and Drive question requests" in authored
     assert "say X's status is unknown, never claim none" in authored

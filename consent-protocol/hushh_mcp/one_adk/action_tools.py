@@ -121,6 +121,7 @@ from hushh_mcp.services.person_profile_service import (
     PersonProfileService,
 )
 from hushh_mcp.services.personal_knowledge_model_service import get_pkm_service
+from hushh_mcp.services.requester_identity import looks_technical_label
 from hushh_mcp.services.ria_iam_service import RIAIAMService
 from hushh_mcp.services.spoken_name_resolver import (
     UnresolvedPersonName,
@@ -2822,10 +2823,13 @@ async def _list_outgoing_information_requests_only(
         if handle in handles:
             continue
         handles[handle] = record
+        person = str(record.get("displayName") or "").strip()
+        if person.casefold() == "that person" or looks_technical_label(person):
+            person = None
         spoken.append(
             {
                 "requestId": handle,
-                "person": record.get("displayName"),
+                "person": person,
                 "purpose": record.get("purpose"),
                 "sentAt": record.get("sentAt"),
             }
@@ -2838,6 +2842,7 @@ async def _list_outgoing_information_requests_only(
         "requests": spoken,
         "count": len(spoken),
         "hasMore": len(sent) > 10,
+        "hasUnknownPeople": any(not row["person"] for row in spoken),
     }
 
 
@@ -2868,11 +2873,12 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
             "status": "partial",
             "requests": information["requests"],
             "informationRequestsHasMore": information["hasMore"],
+            "informationRequestsHaveUnknownPeople": information["hasUnknownPeople"],
             "documentRequests": [],
             "documentRequestsHasMore": False,
             "documentRequestsHaveUnknownPeople": False,
             "message": "Information requests were checked, but Drive document request status is temporarily unavailable.",
-            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. If informationRequestsHasMore is true, these are only the newest information requests. Do not claim a named person has no request from a partial list.",
+            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. If informationRequestsHasMore is true, these are only the newest information requests. A row without a person label may be the named person's request. Do not claim a named person has no request from a partial list.",
         }
 
     document_requests = drive["items"]
@@ -2883,6 +2889,7 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
             "status": "partial",
             "requests": [],
             "informationRequestsHasMore": None,
+            "informationRequestsHaveUnknownPeople": None,
             "documentRequests": document_requests,
             "documentRequestsHasMore": document_requests_has_more,
             "documentRequestsHaveUnknownPeople": unnamed_document_requests,
@@ -2892,10 +2899,12 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
 
     requests = information["requests"]
     information_requests_has_more = bool(information["hasMore"])
+    unnamed_information_requests = bool(information["hasUnknownPeople"])
     return {
         "status": "ok",
         "requests": requests,
         "informationRequestsHasMore": information_requests_has_more,
+        "informationRequestsHaveUnknownPeople": unnamed_information_requests,
         "documentRequests": document_requests,
         "documentRequestsHasMore": document_requests_has_more,
         "documentRequestsHaveUnknownPeople": unnamed_document_requests,
@@ -2910,7 +2919,8 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
             "Only information requests have consent.cancel_request handles. "
             "If informationRequestsHasMore or documentRequestsHasMore is true, only the newest requests are shown. "
             "For a named person missing from this list, do not claim there are no requests "
-            "if informationRequestsHasMore, documentRequestsHasMore, or "
+            "if informationRequestsHasMore, informationRequestsHaveUnknownPeople, "
+            "documentRequestsHasMore, or "
             "documentRequestsHaveUnknownPeople is true."
             if requests or document_requests
             else "No sent information requests, Drive file requests or Drive questions were found."

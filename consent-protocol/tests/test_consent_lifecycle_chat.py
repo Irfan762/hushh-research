@@ -494,6 +494,29 @@ class TestRevokeAndCancelAreTargetable:
         _drive_status.assert_awaited_once_with(user_id="user_1")
 
     @pytest.mark.asyncio
+    async def test_unresolved_information_person_cannot_support_named_no_request(
+        self, _drive_status
+    ):
+        sent = [
+            {"bundleId": "bundle_unknown", "displayName": "that person"},
+            {"bundleId": "bundle_known", "displayName": "Grace"},
+        ]
+        with (
+            _auth(),
+            patch.object(
+                InformationRequestService, "list_outgoing", new=AsyncMock(return_value=sent)
+            ),
+        ):
+            result = await list_my_outgoing_information_requests(_ctx(_state()))
+        assert result["status"] == "ok"
+        assert result["informationRequestsHasMore"] is False
+        assert result["informationRequestsHaveUnknownPeople"] is True
+        assert [row["person"] for row in result["requests"]] == [None, "Grace"]
+        assert "informationRequestsHaveUnknownPeople" in result["nextStep"]
+        assert "do not claim there are no requests" in result["nextStep"]
+        _drive_status.assert_awaited_once_with(user_id="user_1")
+
+    @pytest.mark.asyncio
     async def test_drive_outage_never_claims_zero_and_does_not_block_information_cancel(
         self, _drive_status
     ):
