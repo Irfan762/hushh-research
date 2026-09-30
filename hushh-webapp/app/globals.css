@@ -703,9 +703,20 @@ textarea {
   --app-safe-area-bottom-effective: var(--app-safe-area-bottom);
   /* Fixed bottom navbar clearance fallback (before runtime measurement). */
   --bottom-nav-offset: 88px;
+  /* ONE column for the persistent bottom chrome. The "Talk to One" bar, the
+   * navigation pill and everything docked above them (the voice panel, the
+   * command transcript) take their width from these two tokens only, applied
+   * once by AppBottomShell (components/app-ui/bottom-chrome-column.ts). The
+   * voice bar used to carry its own 34rem cap and a viewport-relative gutter,
+   * so from ~576px up it sat 96 to 192px narrower than the navigation under it.
+   * The inset is symmetric and clears a landscape notch on either side.
+   * Held by e2e/bottom-chrome-width.layout.spec.ts. */
   --app-bottom-shell-max-width: 48rem;
-  /* Keep the voice launcher compact above the wider five-item navigation. */
-  --app-agent-bar-max-width: 34rem;
+  --app-bottom-shell-inline-inset: max(
+    1rem,
+    env(safe-area-inset-left, 0px),
+    env(safe-area-inset-right, 0px)
+  );
   /* Runtime-measured bottom fixed UI (Navbar / floating theme pill). Overridden by navbar at runtime. */
   --app-bottom-fixed-ui: var(--bottom-nav-offset);
   --app-bottom-route-group-width: 58px;
