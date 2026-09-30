@@ -2,6 +2,7 @@
 
 # ruff: noqa: F811 -- imported pytest fixtures
 
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -55,6 +56,44 @@ async def test_lists_are_bounded_metadata_only_and_do_not_decrypt(sharing, monke
     ] == "incoming"
     with pytest.raises(DriveSharingError, match="request_unavailable"):
         await store.request_status(user_id="unrelated", request_id=prepared["requestId"])
+
+
+@pytest.mark.asyncio
+async def test_chat_outgoing_status_is_requester_scoped_and_contains_no_private_request(sharing):
+    created = await request(sharing)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""CREATE TABLE actor_identity_cache (
+                user_id TEXT PRIMARY KEY, display_name TEXT, email TEXT
+            )""")
+        )
+        connection.execute(
+            text("""INSERT INTO actor_identity_cache(user_id,display_name,email)
+                VALUES ('owner','Manish Sainani','manish@example.invalid')""")
+        )
+        connection.execute(
+            text("""UPDATE drive_share_requests
+                SET preparation_error_code='background_preparation_required'
+                WHERE request_id=:id"""),
+            {"id": created["requestId"]},
+        )
+    store = projection_store(sharing)
+    result = await store.list_outgoing_for_chat(user_id="recipient")
+    assert result == {
+        "items": [
+            {
+                "person": "Manish Sainani",
+                "status": "pending",
+                "sentAt": result["items"][0]["sentAt"],
+            }
+        ],
+        "hasMore": False,
+    }
+    serialized = json.dumps(result)
+    assert "Private six-month statements" not in serialized
+    assert "background_preparation_required" not in serialized
+    assert created["requestId"] not in serialized
+    assert (await store.list_outgoing_for_chat(user_id="unrelated"))["items"] == []
 
 
 @pytest.mark.asyncio

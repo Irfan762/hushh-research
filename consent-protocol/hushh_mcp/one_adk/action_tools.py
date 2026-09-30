@@ -98,6 +98,7 @@ from hushh_mcp.services.domain_contracts import (
     get_canonical_domain_metadata,
     normalize_domain_key,
 )
+from hushh_mcp.services.drive_sharing_projection_store import DriveSharingProjectionStore
 from hushh_mcp.services.information_request_service import (
     InformationRequestService,
 )
@@ -2795,19 +2796,10 @@ async def list_active_grants(tool_context: ToolContext) -> dict[str, Any]:
     }
 
 
-async def list_my_outgoing_information_requests(tool_context: ToolContext) -> dict[str, Any]:
-    """List the information requests this person sent that are still open.
-
-    The mirror of list_pending_information_requests, which is the incoming
-    direction. Hands back an opaque request id; pass it to
-    consent.cancel_request to withdraw one, or omit it to withdraw the most
-    recent. Never says a bundle id.
-    """
-    user_id, blocked = await _read_tool_user_id(tool_context)
-    if blocked is not None:
-        return blocked
-    if user_id is None:
-        raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+async def _list_outgoing_information_requests_only(
+    tool_context: ToolContext, *, user_id: str
+) -> dict[str, Any]:
+    """Keep cancellable information bundles separate from Drive requests."""
     try:
         sent = await InformationRequestService().list_outgoing(requester_user_id=user_id)
     except Exception:  # noqa: BLE001 - consumer-safe boundary
@@ -2844,12 +2836,66 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
         "status": "ok",
         "requests": spoken,
         "count": len(spoken),
+    }
+
+
+async def list_my_outgoing_information_requests(tool_context: ToolContext) -> dict[str, Any]:
+    """List sent information bundles and recent Drive document requests.
+
+    Only the information-bundle ``requests`` have opaque cancel handles. Drive
+    rows are read from their own requester-scoped projection and remain status
+    only; they cannot become targets of ``consent.cancel_request``.
+    """
+    user_id, blocked = await _read_tool_user_id(tool_context)
+    if blocked is not None:
+        return blocked
+    if user_id is None:
+        raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+
+    information = await _list_outgoing_information_requests_only(tool_context, user_id=user_id)
+    try:
+        drive = await DriveSharingProjectionStore().list_outgoing_for_chat(user_id=user_id)
+    except Exception:  # noqa: BLE001 - never turn a failed Drive read into zero requests
+        logger.exception("list_my_outgoing_information_requests drive_status_failed")
+        if information["status"] != "ok":
+            return {
+                "status": "failed",
+                "message": "Your sent request statuses are temporarily unavailable. Please try again.",
+            }
+        return {
+            "status": "partial",
+            "requests": information["requests"],
+            "documentRequests": [],
+            "documentRequestsHasMore": False,
+            "message": "Information requests were checked, but Drive document request status is temporarily unavailable.",
+            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. Do not claim there are no Drive requests.",
+        }
+
+    document_requests = drive["items"]
+    if information["status"] != "ok":
+        return {
+            "status": "partial",
+            "requests": [],
+            "documentRequests": document_requests,
+            "documentRequestsHasMore": drive["hasMore"],
+            "message": "Drive document requests were checked, but information request status is temporarily unavailable.",
+            "nextStep": "Report the Drive document request statuses shown. Do not claim there are no information requests.",
+        }
+
+    requests = information["requests"]
+    return {
+        "status": "ok",
+        "requests": requests,
+        "documentRequests": document_requests,
+        "documentRequestsHasMore": drive["hasMore"],
+        "count": len(requests) + len(document_requests),
         "nextStep": (
-            "Say who was asked and for what. To withdraw one, run "
-            'run_app_action("consent.cancel_request") with its requestId; the app '
-            "shows the confirmation."
-            if spoken
-            else "They have no requests waiting on anyone."
+            "Report the information requests and Drive document requests separately. "
+            "A Drive request may still be pending before any files are available. "
+            "Only information requests have consent.cancel_request handles. "
+            "If documentRequestsHasMore is true, these are only the latest Drive requests."
+            if requests or document_requests
+            else "No sent information or Drive document requests were found."
         ),
     }
 
@@ -3757,7 +3803,12 @@ async def run_app_action(
         # separate listing turn before the app can stage its confirmation.
         # The service still returns only safe handles to the model and the
         # directive expands the newest handle server-side.
-        outgoing = await list_my_outgoing_information_requests(tool_context)
+        user_id, blocked = await _read_tool_user_id(tool_context)
+        if blocked is not None:
+            return blocked
+        if user_id is None:
+            raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+        outgoing = await _list_outgoing_information_requests_only(tool_context, user_id=user_id)
         if outgoing.get("status") != "ok":
             return outgoing
         if not outgoing.get("requests"):

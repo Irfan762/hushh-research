@@ -9,9 +9,52 @@ from hushh_mcp.services.drive_bulk_share_store import bulk_outcome_summary
 from hushh_mcp.services.drive_revocation_store import DriveRevocationStore
 from hushh_mcp.services.drive_sharing_contract import MAX_FILES, DriveSharingError
 from hushh_mcp.services.google_drive_adapter import FILE_ID
+from hushh_mcp.services.requester_identity import label_from_identity_row
 
 
 class DriveSharingProjectionStore(DriveRevocationStore):
+    async def list_outgoing_for_chat(self, *, user_id: str, limit: int = 20) -> dict:
+        """Recent requester-owned Drive statuses, without private request contents.
+
+        The requester already sees these statuses in Consent Center. Chat only
+        needs a human counterpart label and a timestamp; it must not receive a
+        Drive request id that could be mistaken for an information-bundle cancel
+        handle, or the owner's private preparation failure.
+        """
+        if not user_id or type(limit) is not int or not 1 <= limit <= 50:
+            raise DriveSharingError("invalid_argument")
+
+        def operation(connection):
+            rows = (
+                connection.execute(
+                    text("""
+                    SELECT request_id,status,revision,created_at,expires_at,
+                           owner.user_id,owner.display_name,owner.email
+                    FROM drive_share_requests request
+                    LEFT JOIN actor_identity_cache owner ON owner.user_id=request.user_id
+                    WHERE request.recipient_user_id=:user
+                    ORDER BY request.created_at DESC,request.request_id DESC
+                    LIMIT :limit
+                    """),
+                    {"user": user_id, "limit": limit + 1},
+                )
+                .mappings()
+                .all()
+            )
+            return {
+                "items": [
+                    {
+                        "person": label_from_identity_row(row, allow_email_handle=True) or None,
+                        "status": self._summary(row, recipient=True)["status"],
+                        "sentAt": row["created_at"].isoformat(),
+                    }
+                    for row in rows[:limit]
+                ],
+                "hasMore": len(rows) > limit,
+            }
+
+        return await self._transaction(operation)
+
     async def list_requests(self, *, user_id, direction, limit=20, offset=0):
         if (
             direction not in {"incoming", "outgoing"}
