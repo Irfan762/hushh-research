@@ -540,7 +540,23 @@ function reduceServerFrame(
         frame.turn_id !== state.activeInputTurnId &&
         frame.turn_id !== state.activeResponseTurnId &&
         !state.fencedTurnIds.includes(frame.turn_id);
-      if (role === "one" && isStaleOrigin(state, frame.turn_id)) return state;
+      // A provider can start an autonomous response after the current answer's
+      // final transcript, even if its model_end marker has not arrived yet.
+      // Earlier input origins remain fenced, so a late old answer cannot use
+      // this path to take over a newer question.
+      const autonomousAfterFinal =
+        role === "one" &&
+        state.activeInputTurnId !== null &&
+        frame.turn_id !== state.activeInputTurnId &&
+        !state.fencedTurnIds.includes(frame.turn_id) &&
+        state.transcript.some(
+          (item) =>
+            item.role === "one" &&
+            item.turnId === state.activeInputTurnId &&
+            item.final,
+        );
+      if (role === "one" && isStaleOrigin(state, frame.turn_id) && !autonomousAfterFinal)
+        return state;
       if (role === "one" && state.clearedTurnIds.includes(frame.turn_id)) {
         // An answer that was mid-sentence when the view was cleared belongs
         // to the cleared exchange, so its remaining chunks and its
@@ -570,16 +586,18 @@ function reduceServerFrame(
       );
       return {
         ...state,
-        turnId: isStaleOrigin(state, frame.turn_id) && !newInput
+        turnId: isStaleOrigin(state, frame.turn_id) && !newInput && !autonomousAfterFinal
           ? state.turnId
           : frame.turn_id,
         activeInputTurnId: newInput
           ? frame.turn_id
-          : state.activeInputTurnId,
+          : autonomousAfterFinal ? null : state.activeInputTurnId,
         activeResponseTurnId: role === "one"
           ? frame.turn_id
           : newInput ? null : state.activeResponseTurnId,
-        fencedTurnIds: newInput
+        fencedTurnIds: autonomousAfterFinal
+          ? addFencedTurns(state.fencedTurnIds, state.activeInputTurnId)
+          : newInput
           ? addFencedTurns(
               state.fencedTurnIds,
               state.activeInputTurnId,
