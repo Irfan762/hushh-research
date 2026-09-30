@@ -4127,8 +4127,7 @@ class ConnectionsService:
         newly_connected_user_ids = {
             str(item["userId"])
             for item in outcomes
-            if item["outcome"] == "auto_connected"
-            and str(item["userId"]) in activated_target_ids
+            if item["outcome"] == "auto_connected" and str(item["userId"]) in activated_target_ids
         }
         if newly_connected_user_ids:
             _notify_connection_graph_changed(
