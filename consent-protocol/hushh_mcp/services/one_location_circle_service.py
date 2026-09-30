@@ -2279,7 +2279,11 @@ class OneLocationCircleService:
 
         recipients.difference_update(skip_user_ids)
         recipients.discard("")
-        from hushh_mcp.services.push_notifications import send_circle_roster_changed_push
+        try:
+            from hushh_mcp.services.push_notifications import send_circle_roster_changed_push
+        except Exception:  # noqa: BLE001 - a committed mutation cannot be undone by delivery
+            logger.warning("circle.roster_sync_unavailable circle_id=%s", circle_id, exc_info=True)
+            return
 
         for user_id in sorted(recipients):
             try:

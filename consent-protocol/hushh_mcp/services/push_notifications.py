@@ -277,7 +277,7 @@ def send_connection_request_push(
     body = connection_request_body(requester_name)
     deep_link = _connection_request_link(connection_request_id)
     request_id = str(connection_request_id or "").strip()
-    message_id = f"connection-request:{request_id}" if request_id else ""
+    message_id = f"connection-request:{request_id or uuid.uuid4()}"
 
     # Identity and routing fields the CLIENT needs, as opposed to the banner the
     # OS renders. The in-app toast reads only this data map -- it never sees
@@ -296,6 +296,7 @@ def send_connection_request_push(
     sse_payload = {
         "type": "connection_request",
         "action": "REQUESTED",
+        "message_id": message_id,
         # The real row id, not the old synthetic `conn_req:<uid>`. That value
         # was stable per *requester* rather than per request, so the SSE
         # de-dup in api/routes/sse.py silently swallowed every follow-up
@@ -321,11 +322,11 @@ def send_connection_request_push(
         title="New connection request",
         body=body,
         deep_link=deep_link,
-        # Legacy callers without a row id use one generic replacement tag.
-        # Never substitute the raw requester uid into an OS-visible tag or
-        # client message id; without an id, omitting message_id also prevents
-        # unrelated requests from being collapsed by the in-app deduper.
-        notification_tag=message_id or "connection-request",
+        # Legacy callers without a row id keep one generic OS replacement tag,
+        # but each delivery still needs a unique client/SSE transition id.
+        notification_tag=(
+            f"connection-request:{request_id}" if request_id else "connection-request"
+        ),
         notification_category="ONE_CONNECTIONS",
         data=client_data,
     )
@@ -356,8 +357,9 @@ def send_connection_request_cancelled_push(
     deep_link = CONNECTION_REQUEST_LIST_LINK
     request_id = str(connection_request_id or "").strip()
 
+    message_id = f"connection-request-cancelled:{request_id or uuid.uuid4()}"
     client_data = {
-        "message_id": f"connection-request-cancelled:{request_id}" if request_id else "",
+        "message_id": message_id,
         "requester_label": requester_name,
         "request_id": request_id,
     }
@@ -365,6 +367,7 @@ def send_connection_request_cancelled_push(
     sse_payload = {
         "type": "connection_request_cancelled",
         "action": "CANCELLED",
+        "message_id": message_id,
         "request_id": request_id or f"conn_req:{requester_user_id}",
         "user_id": addressee_user_id,
         "requester_user_id": requester_user_id,
@@ -429,7 +432,7 @@ def send_connection_request_resolved_push(
     # longer has anything to review.
     deep_link = CONNECTION_REQUEST_LIST_LINK
     request_id = str(connection_request_id or "").strip()
-    message_id = f"connection-request-resolved:{request_id}" if request_id else ""
+    message_id = f"connection-request-resolved:{request_id or uuid.uuid4()}"
 
     client_data = {
         "message_id": message_id,
@@ -441,6 +444,7 @@ def send_connection_request_resolved_push(
     sse_payload = {
         "type": "connection_request_resolved",
         "action": "ACCEPTED" if accepted else "DECLINED",
+        "message_id": message_id,
         "request_id": request_id or f"conn_req_resolved:{resolver_user_id}",
         "user_id": requester_user_id,
         "resolver_user_id": resolver_user_id,
@@ -458,7 +462,11 @@ def send_connection_request_resolved_push(
         title=title,
         body=body,
         deep_link=deep_link,
-        notification_tag=message_id or "connection-request-resolved",
+        notification_tag=(
+            f"connection-request-resolved:{request_id}"
+            if request_id
+            else "connection-request-resolved"
+        ),
         notification_category="ONE_CONNECTIONS",
         data=client_data,
     )

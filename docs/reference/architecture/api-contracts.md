@@ -1226,7 +1226,9 @@ connections wake the affected accounts. `connection_graph_changed` and
 re-read without creating an alert or Feed item. The same transition is sent
 over FCM; the Postgres user-state channel fans SSE out across backend workers.
 Delivery is best-effort, not replayed, so visible Connect and Circle surfaces
-perform bounded reconciliation if a push is missed. These events carry no
+perform bounded reconciliation if a push is missed: every 30 seconds on an
+open Circle surface and every 60 seconds on the Connection or People overview.
+Those reads do not delay an event that arrives live. These events carry no
 roster, location, or private-information contents and grant no authority.
 
 ### Deprecated (410 Gone)

@@ -231,7 +231,8 @@ def test_connection_request_push_falls_back_to_the_list_without_an_id(monkeypatc
 
     assert captured["deep_link"] == "/one/consent?tab=connections"
     assert captured["data"]["request_id"] == ""
-    assert captured["data"]["message_id"] == ""
+    assert captured["data"]["message_id"].startswith("connection-request:")
+    assert "requester-1" not in captured["data"]["message_id"]
     assert captured["notification_tag"] == "connection-request"
     assert "requester-1" not in str(captured["data"])
     assert "requester-1" not in captured["notification_tag"]
@@ -324,6 +325,38 @@ def test_connection_request_push_reaches_sse_from_a_sync_handler(monkeypatch):
     assert payload["request_id"] == "req-42"
     assert payload["body"] == "John Smith wants to connect with you on Hussh."
     assert payload["deep_link"] == "/one/consent?tab=pending&requestId=req-42"
+
+
+def test_request_then_cancellation_has_distinct_sse_transition_ids(monkeypatch):
+    """A live SSE stream must not discard cancellation of the same request."""
+    from api.routes.sse import _sse_event_id
+
+    pushes: list[dict] = []
+    events: list[dict] = []
+    monkeypatch.setattr(
+        push_module,
+        "send_user_data_push",
+        lambda _user_id, **kwargs: pushes.append(kwargs) or 1,
+    )
+    monkeypatch.setattr(
+        "api.consent_listener.publish_user_state_event_threadsafe",
+        lambda _user_id, payload: events.append(payload) or True,
+    )
+
+    send_connection_request_push(
+        "addressee-1", "requester-1", requester_display_name="Ankit",
+        connection_request_id="req-42",
+    )
+    send_connection_request_cancelled_push(
+        "addressee-1", "requester-1", requester_display_name="Ankit",
+        connection_request_id="req-42",
+    )
+
+    assert [event["request_id"] for event in events] == ["req-42", "req-42"]
+    assert len({_sse_event_id(event) for event in events}) == 2
+    assert [event["message_id"] for event in events] == [
+        push["data"]["message_id"] for push in pushes
+    ]
 
 
 # ---------------------------------------------------------------------------

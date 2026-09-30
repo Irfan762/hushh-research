@@ -4433,6 +4433,7 @@ export function OneLocationAgentPageContent({
   const openCircleIdForRepair = String(searchParams.get("circleId") || "").trim();
   useEffect(() => {
     if (!auth.userId || !vaultOwnerToken || !openCircleIdForRepair) return;
+    let cancelled = false;
     let inFlight = false;
     const timer = window.setInterval(() => {
       if (document.visibilityState !== "visible" || inFlight) return;
@@ -4441,6 +4442,7 @@ export function OneLocationAgentPageContent({
       // transition. A removed member must leave the invalid detail route.
       void OneLocationService.listCircles(vaultOwnerToken)
         .then((circles) => {
+          if (cancelled) return;
           if (!circles.some((circle) => circle.id === openCircleIdForRepair)) {
             router.replace(`${ROUTES.ONE_LOCATION}?view=people`, { scroll: false });
             return;
@@ -4452,7 +4454,10 @@ export function OneLocationAgentPageContent({
           inFlight = false;
         });
     }, 30_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [auth.userId, openCircleIdForRepair, router, vaultOwnerToken]);
 
   const isPeopleViewForRepair = searchParams.get("view") === "people";

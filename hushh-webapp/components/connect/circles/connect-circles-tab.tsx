@@ -531,6 +531,8 @@ export function ConnectCirclesTab({
     },
     [router, searchParams],
   );
+  const goRef = useRef(go);
+  goRef.current = go;
 
   /** Publish a successful local mutation through the same account-scoped
    *  channel remote notifications use. That updates this tab and every other
@@ -583,12 +585,32 @@ export function ConnectCirclesTab({
     if (!currentUserId || !vaultOwnerToken || !isActive) return;
     // Push/SSE is the fast path. A visible-only read repairs a dropped push
     // without requiring a user to blur the app or manually refresh the tab.
+    let cancelled = false;
+    let inFlight = false;
     const timer = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      setReloadToken((token) => token + 1);
-      if (circleIdParam) setDetailReloadToken((token) => token + 1);
+      if (document.visibilityState !== "visible" || inFlight) return;
+      inFlight = true;
+      void OneLocationService.listCircles(vaultOwnerToken)
+        .then((next) => {
+          if (cancelled) return;
+          setLoaded({ token: vaultOwnerToken, ownerId: currentUserId, circles: next });
+          setError(null);
+          setLoading(false);
+          if (circleIdParam && !next.some((circle) => circle.id === circleIdParam)) {
+            goRef.current({ action: null, circleId: null, code: null }, "replace");
+            return;
+          }
+          if (circleIdParam) setDetailReloadToken((token) => token + 1);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+        });
     }, 30_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [circleIdParam, currentUserId, isActive, vaultOwnerToken]);
 
   const closeFlow = useCallback((refreshList = true) => {

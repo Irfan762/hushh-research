@@ -4093,6 +4093,7 @@ def test_notify_failure_does_not_break_leave_circle(monkeypatch: pytest.MonkeyPa
         raise RuntimeError("fcm is down")
 
     monkeypatch.setattr(push_notifications_module, "send_circle_member_left_push", _boom)
+    monkeypatch.delattr(push_notifications_module, "send_circle_roster_changed_push")
 
     service.leave_circle(user_id="member-user", circle_id=circle_id)
 
