@@ -1218,6 +1218,19 @@ Security invariant:
 | GET    | `/api/consent/events/{user_id}/poll/{request_id}`                  | Deprecated and disabled (`410`, `CONSENT_POLL_DEPRECATED`)                                                                                                                                                          |
 | GET    | `/api/v1/consent-events?user_id={user_id}&request_id={request_id}` | Developer-authenticated SSE for the outside agent; prefer `Authorization: Bearer <developer-token>`; emits `snapshot`, `consent_update`, and `heartbeat`; scoped to the developer app that owns the consent request |
 
+The first-party `/api/consent/events/{user_id}` stream also carries metadata-only
+Circle and Connection state doorbells when enabled. Committed membership changes
+wake active Circle viewers; accepted, removed, invite-linked, and contact-sync
+connections wake the affected accounts. `connection_graph_changed` and
+`location_circle_member_*` with `sync_only=true` request an authenticated
+re-read without creating an alert or Feed item. The same transition is sent
+over FCM; the Postgres user-state channel fans SSE out across backend workers.
+Delivery is best-effort, not replayed, so visible Connect and Circle surfaces
+perform bounded reconciliation if a push is missed: every 30 seconds on an
+open Circle surface and every 60 seconds on the Connection or People overview.
+Those reads do not delay an event that arrives live. These events carry no
+roster, location, or private-information contents and grant no authority.
+
 ### Deprecated (410 Gone)
 
 | Method | Path                                       | Replacement                                                                                                                                                                                    |
