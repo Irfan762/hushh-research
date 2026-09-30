@@ -7,6 +7,7 @@ import { toast } from "sonner";
 
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 
+import { SessionVerificationRecovery } from "@/components/auth/session-verification-recovery";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
 import { NativeRouteMarker } from "@/components/app-ui/native-route-marker";
 import { PhoneVerificationFlow } from "@/components/auth/phone-verification-flow";
@@ -22,6 +23,7 @@ import {
 import { useAuth } from "@/lib/firebase/auth-context";
 import {
   buildOneSetupRoute,
+  normalizeStaticExportPathname,
   KAI_MARKET_PATH,
   ROUTES,
 } from "@/lib/navigation/routes";
@@ -70,6 +72,8 @@ export function PhoneMandatePageContent() {
     user,
     loading,
     phoneNumber,
+    sessionVerificationRequired,
+    retrySessionVerification,
     startPhoneVerification,
     confirmPhoneVerification,
     refreshUser,
@@ -186,6 +190,41 @@ export function PhoneMandatePageContent() {
     "phone" | "code" | "linked"
   >("phone");
   const localBypassNavigationRef = useRef<string | null>(null);
+  const [admission, setAdmission] = useState<{
+    userId: string;
+    status: "ready" | "redirecting" | "error";
+  } | null>(null);
+  const [admissionRetry, setAdmissionRetry] = useState(0);
+
+  useEffect(() => {
+    if (!user || sessionVerificationRequired || shouldBypassPhoneMandateForLocalhost(window.location.hostname)) return;
+    const userId = user.uid;
+    let cancelled = false;
+    setAdmission(null);
+    void (async () => {
+      if (admissionRetry > 0) {
+        await PreVaultUserStateService.bootstrapState(userId, { force: true });
+      }
+      const nextPath = await PostAuthRouteService.resolveAfterLogin({
+        userId,
+        redirectPath,
+        phoneNumber,
+        hostname: window.location.hostname,
+      });
+      if (cancelled) return;
+      const needsPhone = normalizeStaticExportPathname(
+        new URL(nextPath, window.location.origin).pathname,
+      ) === ROUTES.PHONE_MANDATE;
+      setAdmission({ userId, status: needsPhone ? "ready" : "redirecting" });
+      if (!needsPhone) router.replace(nextPath);
+    })().catch(() => {
+      if (!cancelled) setAdmission({ userId, status: "error" });
+    });
+    return () => { cancelled = true; };
+    // Admission is per owner, not per token refresh or OTP callback. Once the
+    // form opens, keep it mounted until its completion handler settles.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.uid, redirectPath, admissionRetry, sessionVerificationRequired]);
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -304,10 +343,32 @@ export function PhoneMandatePageContent() {
     );
   }
 
+  if (sessionVerificationRequired) {
+    return (
+      <SessionVerificationRecovery
+        onRetry={() => void retrySessionVerification()}
+        onSignOut={() => void handleSignOut()}
+      />
+    );
+  }
+
   if (shouldBypassLocalPhoneMandate) {
     return (
       <HushhLoader label="Continuing local session..." variant="fullscreen" />
     );
+  }
+
+  if (admission?.userId === user.uid && admission.status === "error") {
+    return (
+      <SessionVerificationRecovery
+        onRetry={() => setAdmissionRetry((attempt) => attempt + 1)}
+        onSignOut={() => void handleSignOut()}
+      />
+    );
+  }
+
+  if (admission?.userId !== user.uid || admission.status !== "ready") {
+    return <HushhLoader label="Checking phone requirement..." variant="fullscreen" />;
   }
 
   const shell = (
