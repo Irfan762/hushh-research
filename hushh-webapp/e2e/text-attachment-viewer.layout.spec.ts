@@ -471,9 +471,10 @@ test.describe("pasted text editor", () => {
 
       // Typing in the middle of the paste lands where the caret is.
       const at = await placeCaret(page, 0.5);
-      const plain = await typeAndMeasure(page, "reconciled twice, ", 20);
+      const plainText = "reconciled twice, ".repeat(3);
+      const plain = await typeAndMeasure(page, plainText, 20);
       const value = await page.getByLabel("Pasted text, editable text").inputValue();
-      expect(value.slice(at, at + 18)).toBe("reconciled twice, ");
+      expect(value.slice(at, at + plainText.length)).toBe(plainText);
 
       // Again with find live: every pause rebuilds ~1,300 highlights.
       await page.getByLabel("Find in text").fill("ledger");
@@ -497,12 +498,15 @@ test.describe("pasted text editor", () => {
       expect(rebuilds, `${label}: highlight rebuilds for 20 keystrokes`).toBe(1);
 
       await placeCaret(page, 0.25);
-      const withFind = await typeAndMeasure(page, "ledger note ", 150);
+      const withFind = await typeAndMeasure(page, "audit note ".repeat(4), 150);
       info.annotations.push({
         type: "latency",
         description: `${label} plain ${JSON.stringify(plain)} withFind ${JSON.stringify(withFind)} rebuilds ${rebuilds}`,
       });
       for (const [name, sample] of [["plain", plain], ["find", withFind]] as const) {
+        // A 12-18 key sample makes its empirical p95 the same observation as
+        // max, so the separate 120 ms tail budget has no effect.
+        expect.soft(sample.count, `${label} ${name} sample count`).toBeGreaterThanOrEqual(40);
         expect.soft(sample.p95, `${label} ${name} p95`).toBeLessThan(LATENCY_P95_BUDGET_MS);
         expect.soft(sample.max, `${label} ${name} max`).toBeLessThan(LATENCY_MAX_BUDGET_MS);
       }
