@@ -320,7 +320,7 @@ describe("supported connector catalog", () => {
       expect(within(details).getByText("Unavailable")).toBeInTheDocument();
       expect(within(details).queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
       expect(within(details).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
-      expect(state.startOAuth).not.toHaveBeenCalled();
+      expect(state.startOAuthConnect).not.toHaveBeenCalled();
     });
 
     it("stays hidden when unavailable and not connected", async () => {
