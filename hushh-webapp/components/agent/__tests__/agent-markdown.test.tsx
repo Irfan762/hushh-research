@@ -46,4 +46,3 @@ describe("AgentMarkdown", () => {
     expect(screen.getByRole("button", { name: "Code copied" })).toBeInTheDocument();
   });
 });
-

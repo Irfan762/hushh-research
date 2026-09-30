@@ -52,7 +52,9 @@ export function shouldBypassPhoneMandateForRoute(pathname?: string | null): bool
 export function shouldRequirePhoneMandate(params: {
   phoneNumber?: string | null;
   phoneVerified?: boolean | null;
-  hasVault: boolean;
+  hasVault: boolean | null;
+  setupResolved?: boolean;
+  /** @deprecated Established accounts are exempt on every route. */
   exemptVaultUsers?: boolean;
   hostname?: string | null;
   pathname?: string | null;
@@ -73,7 +75,9 @@ export function shouldRequirePhoneMandate(params: {
     return false;
   }
 
-  if (params.exemptVaultUsers && params.hasVault) {
+  // Phone admission belongs to unfinished account onboarding, on every route.
+  // A missing Firebase phone is not evidence that an established account is new.
+  if (params.hasVault === true || params.setupResolved === true) {
     return false;
   }
 
