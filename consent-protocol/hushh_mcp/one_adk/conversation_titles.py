@@ -68,13 +68,17 @@ async def generate_titles(
     )
     gene = next(child for child in manifest.subagents if child.id == "one_conversation_title")
     agent = build_single_turn_agent(gene, output_schema=ConversationTitles)
-    return await run_single_turn(
+    result = await run_single_turn(
         agent,
         prompt_parts=json.dumps({"conversations": openings}, ensure_ascii=False),
         user_id=owner,
         consent_token=token,
         timeout_seconds=12,
     )
+
+    if not isinstance(result, ConversationTitles):
+        raise ValueError("Invalid title response")
+    return result
 
 
 async def ensure_conversation_titles(
