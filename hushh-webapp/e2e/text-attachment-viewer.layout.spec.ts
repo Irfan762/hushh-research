@@ -413,8 +413,11 @@ async function typeAndMeasure(page: Page, text: string, delay: number) {
     )!;
     const samples: number[] = [];
     (window as unknown as { __latency: number[] }).__latency = samples;
-    textarea.addEventListener("keydown", (event) => {
-      const start = Math.min(event.timeStamp, performance.now());
+    textarea.addEventListener("keydown", () => {
+      // Start when the page receives the event. WebKit's synthetic event
+      // timestamp can precede dispatch by the automation/runner queue delay;
+      // counting that delay does not measure the editor's response time.
+      const start = performance.now();
       requestAnimationFrame(() => setTimeout(() => samples.push(performance.now() - start), 0));
     });
   });
@@ -617,4 +620,3 @@ test.describe("pasted text editor", () => {
       await page.screenshot({ path: shotPath(`paste-viewer-sent-393-${theme}.png`), animations: "disabled" });
     });
 });
-
