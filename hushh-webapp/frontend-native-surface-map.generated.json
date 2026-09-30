@@ -5266,23 +5266,20 @@
         "route": "/one/profile/connectors",
         "classification": "native-required-functional",
         "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fconnectors",
-        "expectedMarker": "native-route-profile-connectors",
+        "expectedMarker": "native-route-profile",
         "expectedRoute": "/one/profile/connectors",
         "autoReviewerLogin": true,
         "expectedAuth": "authenticated",
         "allowedDataStates": [
-          "loading",
-          "loaded",
-          "empty-valid",
-          "unavailable-valid"
+          "loaded"
         ]
       },
       "shell": {
-        "app_page_shell": true,
-        "page_header": true,
+        "app_page_shell": false,
+        "page_header": false,
         "settings_ui": false,
         "shared_loader": false,
-        "back_button_pattern": "route-local-check-required"
+        "back_button_pattern": "shared-shell"
       },
       "voice_action_contract_file": null,
       "voice_action_contract_ids": [],
@@ -9624,5 +9621,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "6b62560912656dcb8ba5541459c80872444f90751c49e176a8dbf8cd7013d5a0"
+  "content_sha256": "3da4ec052fd213dd3dd53d6e6aa1d1b396142304887ba998d83770df95b57c0e"
 }

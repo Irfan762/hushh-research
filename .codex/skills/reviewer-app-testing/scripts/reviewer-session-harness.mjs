@@ -202,7 +202,13 @@ export async function createReviewerSessionHarness({
       ? "custom_token"
       : "local_credentials";
     await page.addInitScript(
-      ({ expectedUserId, vaultPassphrase, reviewerMutationPolicy, reviewerAuthMode }) => {
+      ({
+        expectedUserId,
+        vaultPassphrase,
+        reviewerSessionPassphrase,
+        reviewerMutationPolicy,
+        reviewerAuthMode,
+      }) => {
         window.__HUSHH_NATIVE_TEST__ = {
           ...(window.__HUSHH_NATIVE_TEST__ || {}),
           enabled: true,
@@ -210,12 +216,16 @@ export async function createReviewerSessionHarness({
           expectedUserId,
           reviewerMutationPolicy,
           reviewerAuthMode,
+          // The backend review-session mint requires the reviewer passphrase
+          // even when this context must not auto-unlock the vault.
+          reviewerSessionPassphrase,
           ...(vaultPassphrase ? { vaultPassphrase } : {}),
         };
       },
       {
         expectedUserId: reviewerUid,
         vaultPassphrase: includePassphrase ? reviewerPassphrase : "",
+        reviewerSessionPassphrase: reviewerPassphrase,
         reviewerMutationPolicy,
         reviewerAuthMode,
       }
