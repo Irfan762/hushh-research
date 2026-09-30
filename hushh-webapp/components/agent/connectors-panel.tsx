@@ -1597,8 +1597,9 @@ function OwnerConnectorsPanel({
       const token = vaultOwnerToken;
       const signal = controller.current?.signal;
       if (
-        !overview?.connectors.some((item) => item.connectorId === connectorId) ||
-        !CURATED_OAUTH_CONNECTORS.has(connectorId) ||
+        !overview?.connectors.some(
+          (item) => item.connectorId === connectorId && item.curatedOAuth === true,
+        ) ||
         !token || !signal || signal.aborted || curatedBusy
       ) return;
       changesInFlight.current.add(target);
