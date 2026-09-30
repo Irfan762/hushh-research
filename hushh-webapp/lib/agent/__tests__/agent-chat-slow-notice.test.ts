@@ -221,7 +221,6 @@ describe("the notice as a sonner toast", () => {
     expect(toasts[0]).toMatchObject({
       id: SLOW_NOTICE_TOAST_ID,
       title: SLOW_NOTICE_COPY.busy.title,
-      description: SLOW_NOTICE_COPY.busy.description,
       duration: Infinity,
       closeButton: true,
       dismissible: true,
@@ -232,12 +231,10 @@ describe("the notice as a sonner toast", () => {
   });
 
   it("uses calm copy: no dashes, no provider, no jargon", () => {
-    for (const { title, description } of Object.values(SLOW_NOTICE_COPY)) {
-      const text = `${title} ${description}`;
-      expect(text).not.toMatch(/[\u2013\u2014]/);
-      expect(text).not.toMatch(/gemini|google|vertex|model|server|429|503|error|quota|api/i);
+    for (const { title } of Object.values(SLOW_NOTICE_COPY)) {
+      expect(title).not.toMatch(/[\u2013\u2014]/);
+      expect(title).not.toMatch(/gemini|google|vertex|model|server|429|503|error|quota|api/i);
       expect(title.length).toBeLessThanOrEqual(72);
-      expect(description.length).toBeLessThanOrEqual(42);
     }
   });
 });

@@ -45,7 +45,6 @@ export type BackendStrain = "busy" | "unavailable";
 export type SlowNoticeView = {
   state: SlowNoticeState;
   title: string;
-  description: string;
 };
 
 export type AgentStreamHealthSignal =
@@ -69,24 +68,21 @@ export type SlowNoticeTimers = {
 
 export type SlowTurnOutcome = "answered" | "failed" | "stopped";
 
-// Short enough that the title holds two lines and the description one at
-// 320 px with widened text; no provider name, no jargon, no blame.
+// One complete, two-line-at-most toast message, even at 320 px with widened
+// text. A quiet turn does not prove server capacity, so only the typed busy
+// signal names that condition.
 export const SLOW_NOTICE_COPY: Record<SlowNoticeState, Omit<SlowNoticeView, "state">> = {
   slow: {
-    title: "One is taking longer than usual. Lots of people are using it right now.",
-    description: "Your message is safe. One will reply soon.",
+    title: "One is taking longer than usual. Your message is safe.",
   },
   connecting: {
-    title: "Still connecting to One. The connection is slow right now.",
-    description: "Your message is safe. One is still on it.",
+    title: "Still connecting to One. Your message is safe.",
   },
   busy: {
-    title: "One is very busy right now. Lots of people are using it at once.",
-    description: "Please try again in a moment.",
+    title: "One is very busy right now. Please try again in a moment.",
   },
   unavailable: {
-    title: "One is briefly unavailable. It should be back in a moment.",
-    description: "Please try again shortly.",
+    title: "One is briefly unavailable. Please try again shortly.",
   },
 };
 

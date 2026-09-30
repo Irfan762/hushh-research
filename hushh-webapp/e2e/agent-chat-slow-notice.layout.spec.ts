@@ -8,8 +8,8 @@ import { awaitProductFont, productFontStyle, stripAppFontFaces } from "./fixture
  * The slow-reply notice, measured in a real browser: one toast, top-anchored
  * under the status bar's safe area, never over the composer (a phone with the
  * keyboard up included), equal side insets, a 16 pt glyph that sits in the
- * same inset as the close control, the title in two lines at most and the
- * reassurance line whole. At phone and desktop widths, light and dark, then
+ * same inset as the close control, and the complete message in two lines at
+ * most. At phone and desktop widths, light and dark, then
  * again with the text widened (CI's Linux fonts set about 1.5px wider).
  * Set SLOW_NOTICE_SHOT_DIR to also capture one screenshot per state at 393.
  */
@@ -101,7 +101,6 @@ type Geometry = {
   close: Box;
   closeGlyph: Box;
   title: Box & { lines: number; clipped: boolean };
-  description: Box & { lines: number; clipped: boolean };
   liveRegion: string | null;
   topInset: number;
 };
@@ -136,7 +135,6 @@ async function measure(page: Page): Promise<Geometry> {
       close: box(toast.querySelector("[data-close-button]")!),
       closeGlyph: box(toast.querySelector("[data-close-button] svg")!),
       title: text(toast.querySelector("[data-title]") as HTMLElement),
-      description: text(toast.querySelector("[data-description]") as HTMLElement),
       liveRegion: document.querySelector("section[aria-live]")?.getAttribute("aria-live") ?? null,
       topInset,
     };
@@ -164,27 +162,22 @@ function assertGrid(g: Geometry, label: string) {
   expect.soft(g.toast.right - middle(g.closeGlyph), `${label}: close centre inset`).toBeCloseTo(24, 0);
   expect.soft([g.icon.width, g.icon.height], `${label}: 16 pt glyph`).toEqual([16, 16]);
   expect.soft([g.close.width, g.close.height], `${label}: 32 pt close target`).toEqual([32, 32]);
-  for (const [name, text] of [["title", g.title], ["description", g.description]] as const) {
-    expect.soft(text.left - g.toast.left, `${label}: ${name} left reserve`).toBeCloseTo(40, 0);
-    expect.soft(g.toast.right - text.right, `${label}: ${name} right reserve`).toBeCloseTo(40, 0);
-  }
+  expect.soft(g.title.left - g.toast.left, `${label}: title left reserve`).toBeCloseTo(40, 0);
+  expect.soft(g.toast.right - g.title.right, `${label}: title right reserve`).toBeCloseTo(40, 0);
 
   // Vertical rhythm: 16 pt above and below the text, glyph and close control
   // centred on it, and a height on the 4 pt grid.
   expect.soft(g.title.top - g.toast.top, `${label}: top padding`).toBeCloseTo(16, 0);
-  expect.soft(g.toast.bottom - g.description.bottom, `${label}: bottom padding`).toBeCloseTo(16, 0);
-  expect.soft(g.description.top - g.title.bottom, `${label}: title to reassurance`).toBeCloseTo(4, 0);
-  const textCentre = (g.title.top + g.description.bottom) / 2;
+  expect.soft(g.toast.bottom - g.title.bottom, `${label}: bottom padding`).toBeCloseTo(16, 0);
+  const textCentre = centre(g.title);
   for (const [name, part] of [["glyph", g.icon], ["close", g.close]] as const) {
     expect.soft(Math.abs(centre(part) - textCentre), `${label}: ${name} centred`).toBeLessThanOrEqual(HALF_PX);
   }
   expect.soft(Math.round(g.toast.height) % 4, `${label}: 4 pt height`).toBe(0);
 
-  // Copy fits whole: two title lines at most, the reassurance on one line.
+  // The complete message fits in at most two lines.
   expect.soft(g.title.lines, `${label}: title lines`).toBeLessThanOrEqual(2);
   expect.soft(g.title.clipped, `${label}: title clipped`).toBe(false);
-  expect.soft(g.description.lines, `${label}: reassurance lines`).toBe(1);
-  expect.soft(g.description.clipped, `${label}: reassurance clipped`).toBe(false);
 }
 
 const VIEWPORTS = [
@@ -216,7 +209,7 @@ for (const dark of [false, true])
       }
       // Widened text (CI's Linux faces set wider): every state still fits whole.
       await page.addStyleTag({
-        content: "[data-testid='agent-chat-slow-notice'] [data-title],[data-testid='agent-chat-slow-notice'] [data-description]{letter-spacing:0.3px}",
+        content: "[data-testid='agent-chat-slow-notice'] [data-title]{letter-spacing:0.3px}",
       });
       for (const state of STATES) {
         await showState(page, state);

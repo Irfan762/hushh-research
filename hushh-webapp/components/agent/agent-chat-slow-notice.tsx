@@ -36,7 +36,7 @@ function SlowNoticeGlyph({ state }: { state: SlowNoticeState }) {
  * glyph's centre sits 24 pt in on the left and the close control's centre 24 pt
  * in on the right, and the text column keeps 40 pt clear on both sides. The
  * close control is a 32 pt target centred on the text block, like the glyph.
- * Title 2 x 20, a 4 pt gap and a 16 pt reassurance line give a 92 pt toast.
+ * The single title holds the full message in at most two lines.
  * Offsets of 15 and 7 are 16 and 8 from the outer edge, inside the 1 px border.
  *
  * Important modifiers because sonner's own attribute selectors
@@ -48,9 +48,7 @@ function SlowNoticeGlyph({ state }: { state: SlowNoticeState }) {
 const SLOW_NOTICE_CLASS_NAMES = {
   toast: "p-[15px]! pe-[39px]! gap-2!",
   icon: "m-0! size-4! [&>svg]:m-0!",
-  content: "gap-1!",
   title: "leading-5!",
-  description: "leading-4!",
   closeButton:
     "left-auto! right-[7px]! top-1/2! size-8! -translate-y-1/2! transform-none! rounded-full! border-0! bg-transparent! text-muted-foreground hover:bg-muted! hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
 } as const;
@@ -60,7 +58,6 @@ export function createSlowNoticeToastPort(onPersonDismiss: () => void): SlowNoti
     show: (view) => {
       toast.message(view.title, {
         id: SLOW_NOTICE_TOAST_ID,
-        description: view.description,
         duration: Infinity,
         closeButton: true,
         dismissible: true,
