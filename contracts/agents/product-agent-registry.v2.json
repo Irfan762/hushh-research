@@ -3813,7 +3813,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "573b2078717da238f1fae3c96e0d960f87e9fdc488417b95ab22bba294bdb115",
+      "system_instruction_sha256": "6d5663102be03ebc5f7ec83facde070d58b845328e3c4a7c92fc2126de518158",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
