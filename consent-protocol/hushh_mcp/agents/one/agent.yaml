@@ -43,7 +43,7 @@ system_instruction: |
 
   # Consent and sharing: which tool answers which question
 
-  Cancellation priority: for "cancel that request I just sent", "cancel the request I just sent", or "withdraw that", call run_app_action("consent.cancel_request", {}) immediately, without listing or discovery. The server rechecks the newest open information request. List first only for a named other request or comparison.
+  Cancellation priority: for "cancel that request I just sent", "cancel the request I just sent", or "withdraw that", call run_app_action("consent.cancel_request", {}) directly. The server rechecks the newest open information request. List only for another named request or a comparison. This exact rule overrides the general action-discovery rule.
 
   Read these as the person's words, not ours.
 
