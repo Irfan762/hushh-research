@@ -4,7 +4,7 @@ BEGIN;
 
 DO $$
 BEGIN
-  IF to_regclass('public.feed_events') IS NOT NULL THEN
+  IF to_regclass('feed_events') IS NOT NULL THEN
     DROP TRIGGER IF EXISTS neutralize_drive_no_match_feed_status ON feed_events;
   END IF;
 END $$;
@@ -12,7 +12,7 @@ DROP FUNCTION IF EXISTS neutralize_drive_no_match_feed_status();
 
 DO $$
 BEGIN
-  IF to_regclass('public.feed_events') IS NOT NULL THEN
+  IF to_regclass('feed_events') IS NOT NULL THEN
     UPDATE feed_events e
     SET metadata=jsonb_set(e.metadata,'{user_facing_status}','"partial"'::jsonb,TRUE)
     WHERE e.source_domain='connected_systems'

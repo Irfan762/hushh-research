@@ -36,10 +36,11 @@ BEGIN
 END $$;
 DO $$
 BEGIN
-  IF to_regclass('public.feed_events') IS NOT NULL
+  -- Release and isolated test schemas both resolve Feed through search_path.
+  IF to_regclass('feed_events') IS NOT NULL
      AND NOT EXISTS (
        SELECT 1 FROM pg_trigger
-       WHERE tgrelid=to_regclass('public.feed_events')
+       WHERE tgrelid=to_regclass('feed_events')
          AND tgname='neutralize_drive_no_match_feed_status'
      ) THEN
     CREATE TRIGGER neutralize_drive_no_match_feed_status
@@ -72,7 +73,7 @@ WHERE r.status='partial'
 -- outcome rows so the owner and requester see the repaired result too.
 DO $$
 BEGIN
-  IF to_regclass('public.feed_events') IS NOT NULL THEN
+  IF to_regclass('feed_events') IS NOT NULL THEN
     UPDATE feed_events e
     SET metadata=jsonb_set(
       e.metadata,'{user_facing_status}',

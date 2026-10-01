@@ -316,6 +316,27 @@ async def test_no_match_migration_repairs_only_empty_historical_outcomes(request
         (found["requestId"], "owner"): "partial",
     }
 
+    with request_bulk.db.engine.connect() as connection:
+        connection.exec_driver_sql(
+            (MIGRATIONS / "rollback/263_drive_request_no_match.rollback.sql")
+            .read_text()
+            .replace("%", "%%")
+        )
+        connection.commit()
+    with request_bulk.db.engine.begin() as connection:
+        assert dict(
+            connection.execute(
+                text("""SELECT request_id::text,status FROM drive_share_requests
+                WHERE request_id IN (:empty,:found)"""),
+                {"empty": empty["requestId"], "found": found["requestId"]},
+            ).all()
+        ) == {empty["requestId"]: "partial", found["requestId"]: "partial"}
+        assert set(
+            connection.execute(
+                text("""SELECT metadata->>'user_facing_status' FROM feed_events""")
+            ).scalars()
+        ) == {"partial"}
+
 
 def _make_frozen_request_undated(
     sharing, request_id, *, purpose="Standup notes from the last 3 days"
@@ -1942,6 +1963,11 @@ async def test_decline_during_provider_page_discards_result_and_blocks_review(
             "arguments": arguments,
             "queries": [{"arguments": arguments}],
             "query_index": 0,
+            "requested_period": {
+                "start": context["purpose"]["periodStart"],
+                "end": context["purpose"]["periodEnd"],
+                "timezone": "UTC",
+            },
             "phase": "user",
             "page_token": None,
             "drive_page_token": None,
