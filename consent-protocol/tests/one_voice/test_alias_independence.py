@@ -18,14 +18,17 @@ from pathlib import Path
 import pytest
 
 from hushh_mcp.one_voice.tools import circles, registry
+from hushh_mcp.one_voice.tools.base import ConfirmedPerson
 from hushh_mcp.one_voice.tools.executor import ToolExecutor
 from hushh_mcp.services import action_gateway
 from tests.one_voice.fakes import MemoryPendingStore
 from tests.one_voice.test_tools_circles import (
     AYESHA,
     FAMILY,
+    PRIYA,
     FakeCircleService,
     make_ctx,
+    now_iso,
 )
 
 ONE_VOICE_ROOT = Path(circles.__file__).resolve().parents[1]
@@ -92,6 +95,28 @@ def test_circle_tools_bind_and_run_with_every_alias_emptied(emptied_gateway):
         )
     )
     assert card.result.status == "confirmation_required" and card.result.tier == "voice"
+    # The batch add reaches its card the same way. Naming several people is still
+    # selection and typed ids, not phrase matching, so it must hold with every
+    # alias table emptied too.
+    ctx.entities.remember_person(
+        ConfirmedPerson(
+            user_id=PRIYA,
+            display_name="Priya Nair",
+            relationship="connected",
+            confirmed_at=now_iso(),
+        )
+    )
+    batch = asyncio.run(
+        executor.call(
+            ctx,
+            "add_circle_members",
+            {
+                "circle": {"circle_id": FAMILY},
+                "people": [{"user_id": AYESHA}, {"user_id": PRIYA}],
+            },
+        )
+    )
+    assert batch.result.status == "confirmation_required" and batch.result.tier == "voice"
     # Schema validation and entity guards still stand: they are not aliases.
     bad = asyncio.run(executor.call(ctx, "rename_circle", {"circle": {"circle_id": "Family"}}))
     assert bad.result.status == "rejected" and bad.result.reason_code == "invalid_arguments"

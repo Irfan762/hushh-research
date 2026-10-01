@@ -446,6 +446,21 @@ class Prepared:
 PrepareHook = Callable[[ToolContext, Any], Awaitable["Prepared | ToolResult"]]
 
 
+def arg_refs(value: Any) -> tuple[Any, ...]:
+    """Every entity ref a tool argument carries, whether it names one or several.
+
+    A batch argument holds a bounded list of refs instead of a single one, and the
+    guard that checks each id was confirmed -- plus the confirmation card that
+    shows the person who is affected -- both have to see all of them. Reading the
+    arity here keeps those two readers identical for one person and for twenty.
+    """
+    if value is None:
+        return ()
+    if isinstance(value, (list, tuple)):
+        return tuple(value)
+    return (value,)
+
+
 @dataclass(frozen=True)
 class ToolSpec:
     name: str
