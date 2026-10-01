@@ -160,6 +160,20 @@ class PendingActionStore:
             """,
             {"user_id": user_id},
         )
+        # A process can die after the confirmation CAS and before the handler
+        # resolves the row. No session will resume that confirmed action, so
+        # remove its sealed dictation once the confirmation has expired.
+        await self._execute(
+            """
+            UPDATE one_voice_pending_actions
+            SET status = 'failed', resolved_at = NOW(),
+                result = '{"status":"draft_open_unconfirmed","needs":null}'::jsonb,
+                args = args - '_sealed_args'
+            WHERE user_id = :user_id AND tool_name = 'send_mail'
+              AND status = 'confirmed' AND expires_at < NOW()
+            """,
+            {"user_id": user_id},
+        )
         await self._execute(
             """
             UPDATE one_voice_pending_actions

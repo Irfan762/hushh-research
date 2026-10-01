@@ -29,7 +29,19 @@ class MemoryPendingStore:
     async def expire_stale(self, *, user_id: str) -> None:
         for row in self.rows.values():
             if (
-                row.status == "pending"
+                row.user_id == user_id
+                and row.tool_name == "send_mail"
+                and row.status == "confirmed"
+                and row.expires_at
+                and datetime.fromisoformat(row.expires_at) < _now()
+            ):
+                row.status = "failed"
+                row.resolved_at = _now().isoformat()
+                row.result = {"status": "draft_open_unconfirmed", "needs": None}
+                row.args.pop("_sealed_args", None)
+            if (
+                row.user_id == user_id
+                and row.status == "pending"
                 and row.expires_at
                 and datetime.fromisoformat(row.expires_at) < _now()
             ):

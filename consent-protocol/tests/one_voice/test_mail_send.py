@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -169,6 +170,31 @@ async def test_tampered_pending_recipient_cannot_open_the_sealed_draft(mail_harn
     assert confirmed.result.reason_code == "execution_failed"
     assert "client_step" not in confirmed.result.public()
     assert confirmed.pending is not None and confirmed.pending.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_expired_confirmed_mail_draft_is_scrubbed_after_an_interrupted_execution():
+    pending = MemoryPendingStore()
+    row, _ = await pending.create(
+        user_id=OWNER,
+        conversation_id="conv-1",
+        tool_name="send_mail",
+        gateway_action_id="email.chat.turn",
+        tier="voice",
+        args={"recipient": {"user_id": AYESHA}, "_sealed_args": "v1:fixture-ciphertext"},
+        summary="draft an email",
+    )
+    await pending.mark_shown(user_id=OWNER, pending_action_id=row.id)
+    await pending.confirm(user_id=OWNER, pending_action_id=row.id, source="voice")
+    row.expires_at = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+
+    await pending.expire_stale(user_id="other-owner")
+    assert row.status == "confirmed" and "_sealed_args" in row.args
+    await pending.expire_stale(user_id=OWNER)
+    assert row.status == "failed"
+    assert row.result == {"status": "draft_open_unconfirmed", "needs": None}
+    assert row.resolved_at is not None
+    assert row.args == {"recipient": {"user_id": AYESHA}}
 
 
 @pytest.mark.asyncio
