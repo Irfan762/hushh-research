@@ -1,6 +1,6 @@
 {
   "contract_name": "prod_core_schema",
-  "expected_migration_version": 263,
+  "expected_migration_version": 264,
   "migration_version_policy": "exact",
   "required_functions": [
     "project_calendar_mail_feed",
@@ -36,7 +36,10 @@
     "refresh_account_deletion_guards_after_identity_ddl",
     "commit_pkm_domain_mutation_v5",
     "clear_location_presence_rating_visit",
-    "preserve_active_location_rating_visit"
+    "preserve_active_location_rating_visit",
+    "circle_chat_membership_ended",
+    "circle_chat_recipient_deleted",
+    "circle_chat_circle_deleted"
   ],
   "required_tables": {
     "account_deletion_tombstones": [
@@ -2248,6 +2251,36 @@
       "onboarding_journey_updated_at",
       "created_at",
       "updated_at"
+    ],
+    "circle_chat_messages": [
+      "id",
+      "sequence",
+      "circle_id",
+      "sender_user_id",
+      "client_message_id",
+      "ciphertext",
+      "iv",
+      "image_ciphertext",
+      "image_iv",
+      "request_digest",
+      "created_at"
+    ],
+    "circle_chat_recipients": [
+      "message_id",
+      "recipient_user_id",
+      "membership_joined_at",
+      "key_id",
+      "envelope",
+      "read_at",
+      "feed_event_id",
+      "push_status",
+      "push_attempts",
+      "push_due_at"
+    ],
+    "circle_chat_preferences": [
+      "circle_id",
+      "user_id",
+      "muted"
     ]
   }
 }

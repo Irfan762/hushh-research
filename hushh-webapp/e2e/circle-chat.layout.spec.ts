@@ -78,6 +78,9 @@ test("preserves a timed-out send across collapse and opens images inside the app
   const sends = await page.evaluate(() => (window as unknown as { chatFixture: { sends: unknown[] } }).chatFixture.sends);
   expect(sends).toHaveLength(2); expect(sends[0]).toEqual(sends[1]);
   await page.getByRole("button", { name: "View image", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
+  await expect.poll(() => page.getByLabel("Circle messages", { exact: true }).evaluate((element) =>
+    element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(8);
   await page.getByRole("button", { name: "Open shared image" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();

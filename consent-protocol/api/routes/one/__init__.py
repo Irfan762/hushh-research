@@ -8,8 +8,8 @@ from .advisors import router as advisors_router
 from .agent_chat import router as agent_chat_router
 from .agent_feedback import router as agent_feedback_router
 from .calendar import router as calendar_router
-from .circle_chat import router as circle_chat_router
 from .capability_runtime import router as capability_runtime_router
+from .circle_chat import router as circle_chat_router
 from .command_proposals import router as command_proposals_router
 from .connections import router as connections_router
 from .drive_actions import router as drive_actions_router

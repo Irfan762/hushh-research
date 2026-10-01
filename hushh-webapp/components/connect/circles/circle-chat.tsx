@@ -30,6 +30,7 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
   const [revoked, setRevoked] = useState(false);
   const [revision, setRevision] = useState(0);
   const [muting, setMuting] = useState(false);
+  const acknowledgedRead = useRef(0);
   useEffect(() => {
     let active = true;
     let cursor = 0;
@@ -43,9 +44,11 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
         while (active && foreground()) {
           const next = await CircleChatService.wait(session, cursor, abort.signal);
           if (!active || abort.signal.aborted || !foreground()) break;
+          if (next.latestSequence !== cursor || next.changed) {
+            dispatchCircleChatChanged(session.userId, session.circleId);
+            dispatchFeedStateChanged("arrived");
+          }
           cursor = next.latestSequence;
-          dispatchCircleChatChanged(session.userId, session.circleId);
-          dispatchFeedStateChanged("arrived");
         }
       } catch (err) {
         if (active && !abort.signal.aborted && unavailable(err)) { setRevoked(true); setState(null); setOpen(false); }
@@ -72,7 +75,7 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
         if (!ready) { await CircleChatService.initialize(session); ready = true; }
         if (!active) return;
         const next = await CircleChatService.state(session, abort.signal);
-        if (active) { setState(next); setError(null); }
+        if (active) { setState(next.latestSequence <= acknowledgedRead.current ? { ...next, unreadCount: 0 } : next); setError(null); }
       } catch (err) {
         if (active && !abort.signal.aborted) {
           setError(errorText(err));
@@ -116,7 +119,7 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
     {revoked ? <p role="alert" className="mt-3 text-sm">You no longer have access to this circle chat.</p> : null}
     {error && !revoked ? <div role="alert" className="mt-3 text-sm">{error} <Button variant="ghost" size="sm" onClick={() => setRevision((n) => n + 1)}>Reconnect</Button></div> : null}
     {started && state && !revoked ? <div hidden={!open}><CircleChatThread session={session} visible={open}
-      onRead={(sequence) => setState((old) => old && old.latestSequence <= sequence ? { ...old, unreadCount: 0 } : old)}
+      onRead={(sequence) => { acknowledgedRead.current = Math.max(acknowledgedRead.current, sequence); setState((old) => old && old.latestSequence <= sequence ? { ...old, unreadCount: 0 } : old); }}
       onRevoked={() => { setRevoked(true); setState(null); setOpen(false); }} /></div> : null}
   </section>;
 }
@@ -136,6 +139,7 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
   const [readRevision, setReadRevision] = useState(0);
   const [atBottom, setAtBottom] = useState(true);
   const transcript = useRef<HTMLDivElement>(null);
+  const messageList = useRef<HTMLOListElement>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const active = useRef(true);
   const last = useRef(0);
@@ -220,6 +224,7 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
       if (atBottomRef.current && transcript.current) transcript.current.scrollTop = transcript.current.scrollHeight;
     });
     resize.observe(transcript.current);
+    if (messageList.current) resize.observe(messageList.current);
     const observer = new IntersectionObserver(([entry]) => {
       if (!entry) return;
       atBottomRef.current = entry.isIntersecting;
@@ -266,7 +271,8 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
     } catch (err) {
       fail(err);
       // A definite roster refusal never committed; reseal only on the person's next Send.
-      if (["CIRCLE_CHAT_ROSTER_CHANGED", "CIRCLE_CHAT_RETRY_CONFLICT"].includes(apiErrorCode(err) ?? "")) setPending(null);
+      if (["CIRCLE_CHAT_ROSTER_CHANGED", "CIRCLE_CHAT_RETRY_CONFLICT"].includes(apiErrorCode(err) ?? "")
+          || err instanceof ApiError && [413, 422].includes(err.status)) setPending(null);
     } finally { sendLock.current = false; if (active.current) setSending(false); }
   };
   return <div className="mt-4 space-y-3">
@@ -289,7 +295,7 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
         } catch (err) { fail(err); } finally { running.current = false; if (active.current) setLoadingOlder(false); }
       }}>Load earlier messages</Button> : null}
       {loading ? <p role="status" className="text-sm text-muted-foreground">Loading messages…</p> : !messages.length ? <p className="py-8 text-center text-sm text-muted-foreground">Start the conversation. Say hello or share an image.</p> : null}
-      <ol className="space-y-3">{messages.map((message) => <li key={message.id} className={`flex ${message.senderUserId === session.userId ? "justify-end" : "justify-start"}`}>
+      <ol ref={messageList} className="space-y-3">{messages.map((message) => <li key={message.id} className={`flex ${message.senderUserId === session.userId ? "justify-end" : "justify-start"}`}>
         <div className={`max-w-[90%] min-w-0 rounded-2xl px-3 py-2 sm:max-w-[75%] ${message.senderUserId === session.userId ? "bg-primary/10" : "bg-card"}`}>
           <p className="text-xs font-semibold">{message.senderUserId === session.userId ? "You" : message.senderName}</p>
           {message.failed ? <p className="text-sm text-muted-foreground">This message could not be opened on this device.</p> : <>

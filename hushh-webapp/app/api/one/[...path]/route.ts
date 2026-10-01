@@ -42,7 +42,8 @@ async function readCircleChatBody(request: NextRequest): Promise<string> {
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
   let size = 0;
-  const timeout = setTimeout(() => void reader.cancel(), 30_000);
+  let timedOut = false;
+  const timeout = setTimeout(() => { timedOut = true; void reader.cancel(); }, 30_000);
   try {
     while (true) {
       const chunk = await reader.read();
@@ -51,6 +52,7 @@ async function readCircleChatBody(request: NextRequest): Promise<string> {
       if (size > CIRCLE_CHAT_MAX_REQUEST_BYTES) throw new RangeError("Chat request is too large");
       chunks.push(chunk.value);
     }
+    if (timedOut) throw new DOMException("Chat request timed out", "TimeoutError");
     const body = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { body.set(chunk, offset); offset += chunk.byteLength; }
@@ -132,7 +134,7 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
     const upstreamSignal =
       path === "agent-chat"
         ? request.signal
-        : AbortSignal.timeout(requestTimeoutMs(path, acceptHeader));
+        : AbortSignal.any([request.signal, AbortSignal.timeout(requestTimeoutMs(path, acceptHeader))]);
 
     const response = await fetch(url, {
       method: request.method,

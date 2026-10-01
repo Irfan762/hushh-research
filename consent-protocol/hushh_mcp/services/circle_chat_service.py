@@ -33,6 +33,11 @@ def _rows(conn: Any, sql: str, params: dict) -> list[dict]:
     return [dict(row) for row in conn.execute(text(sql), params).mappings()]
 
 
+def _visible_sql(prefix: str, suffix: str = "") -> str:
+    """Compose authored SQL fragments; callers bind every runtime value separately."""
+    return "".join((prefix, _VISIBLE, suffix))
+
+
 def _json(value: Any) -> Any:
     return json.loads(value) if isinstance(value, str) else value
 
@@ -108,9 +113,9 @@ class CircleChatService:
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
             roster = self._roster(conn, circle)
-            counts = _rows(conn, "SELECT count(*) FILTER (WHERE r.read_at IS NULL) AS unread, "
-                           "COALESCE(max(m.sequence), 0) AS latest FROM circle_chat_messages m "
-                           + _VISIBLE, {"user": user, "circle": circle})[0]
+            counts = _rows(conn, _visible_sql("SELECT count(*) FILTER (WHERE r.read_at IS NULL) AS unread, "
+                           "COALESCE(max(m.sequence), 0) AS latest FROM circle_chat_messages m "),
+                           {"user": user, "circle": circle})[0]
             prefs = _rows(conn, "SELECT muted FROM circle_chat_preferences "
                           "WHERE circle_id = CAST(:circle AS uuid) AND user_id = :user",
                           {"user": user, "circle": circle})
@@ -127,18 +132,18 @@ class CircleChatService:
         """Reauthorize every long-poll response without loading keys or content."""
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
-            row = _rows(conn, "SELECT COALESCE(max(m.sequence), 0) AS latest "
-                        "FROM circle_chat_messages m " + _VISIBLE, {"user": user, "circle": circle})[0]
+            row = _rows(conn, _visible_sql("SELECT COALESCE(max(m.sequence), 0) AS latest "
+                        "FROM circle_chat_messages m "), {"user": user, "circle": circle})[0]
             return {"latestSequence": row["latest"]}
 
     def key(self, user: str, circle: str, key: str) -> dict:
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
-            rows = _rows(conn, """SELECT k.key_id, k.public_key_jwk, k.encrypted_private_key_jwk
+            rows = _rows(conn, _visible_sql("""SELECT k.key_id, k.public_key_jwk, k.encrypted_private_key_jwk
                 FROM one_location_recipient_keys k WHERE k.user_id = :user AND k.key_id = :key
                 AND k.status IN ('active', 'rotated') AND EXISTS (
                   SELECT 1 FROM circle_chat_messages m
-            """ + _VISIBLE + " AND r.key_id = k.key_id)", {"user": user, "circle": circle, "key": key})
+            """, " AND r.key_id = k.key_id)"), {"user": user, "circle": circle, "key": key})
             if not rows or not rows[0]["encrypted_private_key_jwk"]:
                 raise CircleChatError("CIRCLE_CHAT_KEY_UNAVAILABLE", "This device cannot recover the message key.", 404)
             return {"keyId": rows[0]["key_id"], "publicKeyJwk": _json(rows[0]["public_key_jwk"]),
@@ -149,16 +154,16 @@ class CircleChatService:
         params = {"user": user, "circle": circle, "before": before, "after": after, "limit": limit + 1}
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
-            rows = _rows(conn, """
+            rows = _rows(conn, _visible_sql("""
                 SELECT m.id, m.sequence, m.client_message_id, m.sender_user_id,
                   m.created_at, m.ciphertext, m.iv, m.image_iv, r.envelope,
                   NULLIF(identity.display_name, m.sender_user_id) AS sender_name
                 FROM circle_chat_messages m
-            """ + _VISIBLE + """
+            """, """
                 AND (:before IS NULL OR m.sequence < :before)
                 AND (:after IS NULL OR m.sequence > :after)
             """ + (" ORDER BY m.sequence ASC" if after is not None else " ORDER BY m.sequence DESC")
-                + " LIMIT :limit", params)
+                + " LIMIT :limit"), params)
             more = len(rows) > limit
             rows = rows[:limit]
             return {"items": [_wire(r) for r in sorted(rows, key=lambda r: r["sequence"])], "hasMore": more}
@@ -238,8 +243,8 @@ class CircleChatService:
     def image(self, user: str, circle: str, message: str) -> dict:
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
-            rows = _rows(conn, "SELECT m.image_ciphertext, m.image_iv FROM circle_chat_messages m "
-                         + _VISIBLE + " AND m.id = CAST(:message AS uuid) AND m.image_iv IS NOT NULL",
+            rows = _rows(conn, _visible_sql("SELECT m.image_ciphertext, m.image_iv FROM circle_chat_messages m ",
+                         " AND m.id = CAST(:message AS uuid) AND m.image_iv IS NOT NULL"),
                          {"user": user, "circle": circle, "message": message})
             if not rows:
                 raise CircleChatError("CIRCLE_CHAT_IMAGE_UNAVAILABLE", "Image is no longer available.", 404)
@@ -249,15 +254,15 @@ class CircleChatService:
         with self.db.engine.begin() as conn:
             AccountDeletionLifecycleService.lock_user_writes_in_transaction(conn, user_ids=[user])
             self._circle(conn, user, circle)
-            visible = _rows(conn, "SELECT m.id FROM circle_chat_messages m " + _VISIBLE
-                            + " AND m.sequence = :sequence", {"user": user, "circle": circle, "sequence": sequence})
+            visible = _rows(conn, _visible_sql("SELECT m.id FROM circle_chat_messages m ",
+                            " AND m.sequence = :sequence"), {"user": user, "circle": circle, "sequence": sequence})
             if not visible:
                 raise CircleChatError("CIRCLE_CHAT_READ_INVALID", "That message is no longer available.", 404)
-            changed = _rows(conn, """
+            changed = _rows(conn, _visible_sql("""
                 UPDATE circle_chat_recipients target SET read_at = now(), push_status = 'suppressed'
                 WHERE target.read_at IS NULL AND target.message_id IN (
                   SELECT m.id FROM circle_chat_messages m
-            """ + _VISIBLE + " AND m.sequence <= :sequence) AND target.recipient_user_id = :user RETURNING feed_event_id",
+            """, " AND m.sequence <= :sequence) AND target.recipient_user_id = :user RETURNING feed_event_id"),
                 {"user": user, "circle": circle, "sequence": sequence})
             for row in changed:
                 if row["feed_event_id"]:

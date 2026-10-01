@@ -170,6 +170,7 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
         raise HTTPException(429, "Too many active chat connections.", headers={"Retry-After": "5"})
     _waiting[user] = _waiting.get(user, 0) + 1
     queue = None
+    changed = False
     try:
         queue = await subscribe_consent_queue(user)
         current = await asyncio.to_thread(_call, response, "revision", owner, circle)
@@ -177,12 +178,18 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
             try:
                 async with asyncio.timeout(20):
                     while True:
-                        event = await queue.get()
+                        if await request.is_disconnected():
+                            raise HTTPException(499, "Chat connection closed.")
+                        try:
+                            event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                        except TimeoutError:
+                            continue
                         if str(event.get("circle_id") or "") == str(circle):
+                            changed = True
                             break
             except TimeoutError:
                 pass
-        return await asyncio.to_thread(_call, response, "revision", owner, circle)
+        return {**await asyncio.to_thread(_call, response, "revision", owner, circle), "changed": changed}
     finally:
         if queue is not None:
             await unsubscribe_consent_queue(user, queue)

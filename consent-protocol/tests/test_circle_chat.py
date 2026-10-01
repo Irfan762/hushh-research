@@ -6,6 +6,7 @@ protocol CI service; local runs may point it at a disposable PostgreSQL server.
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import copy
 import os
@@ -15,13 +16,14 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import IntegrityError
 
 from api.middleware import require_vault_owner_token
+from api.routes.one import circle_chat as chat_routes
 from api.routes.one.circle_chat import MAX_REQUEST_BYTES, SendMessage, router
 from hushh_mcp.services import circle_chat_notifications as pushes
 from hushh_mcp.services.circle_chat_service import CircleChatError, CircleChatService
@@ -107,7 +109,7 @@ def test_membership_history_images_retries_read_and_erasure(chat_db):
     assert service.image("bob", circle, sent["id"])["ciphertext"] == payload["imageCiphertext"]
     assert service.messages("bob", circle)["items"][0]["senderName"] == "Alice"
     with chat_db.engine.begin() as conn:
-        conn.execute(text("UPDATE one_location_recipient_keys SET status='rotated', encrypted_private_key_jwk='{}'::jsonb WHERE user_id='bob'"))
+        conn.execute(text("UPDATE one_location_recipient_keys SET status='rotated', encrypted_private_key_jwk='{\"ciphertext\":\"opaque-vault-backup\"}'::jsonb WHERE user_id='bob'"))
     assert service.key("bob", circle, "key-bob-123")["keyId"] == "key-bob-123"
     with pytest.raises(CircleChatError):
         service.key("carol", circle, "key-bob-123")
@@ -215,3 +217,49 @@ def test_route_validation_does_not_echo_private_input():
     assert "PRIVATE_INPUT" not in response.text
     assert "no-store" in response.headers["cache-control"]
     assert client.post(endpoint, content=b"{}", headers={"Content-Length": str(MAX_REQUEST_BYTES + 1)}).status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_wait_reauthorizes_and_releases_disconnected_subscriptions(chat_db, monkeypatch):
+    service = CircleChatService(chat_db)
+    circle = _seed(chat_db)
+    queue = asyncio.Queue()
+    subscribed, removed = asyncio.Event(), []
+
+    async def subscribe(user):
+        subscribed.set()
+        return queue
+
+    async def unsubscribe(user, existing):
+        removed.append(existing)
+
+    disconnected = False
+
+    async def is_disconnected():
+        return disconnected
+
+    monkeypatch.setattr(chat_routes, "CircleChatService", lambda: service)
+    monkeypatch.setattr(chat_routes, "subscribe_consent_queue", subscribe)
+    monkeypatch.setattr(chat_routes, "unsubscribe_consent_queue", unsubscribe)
+    wait = chat_routes.chat_wait.__wrapped__
+    request = SimpleNamespace(is_disconnected=is_disconnected)
+    task = asyncio.create_task(wait(request, Response(), uuid.UUID(circle), after=0, owner={"user_id": "bob"}))
+    await subscribed.wait()
+    # A queued doorbell cannot grant access after membership ends.
+    with chat_db.engine.begin() as conn:
+        conn.execute(text("UPDATE one_location_circle_memberships SET status='left' WHERE user_id='bob'"))
+    await queue.put({"circle_id": circle})
+    with pytest.raises(HTTPException) as lost:
+        await task
+    assert lost.value.status_code == 404
+    assert removed == [queue] and "bob" not in chat_routes._waiting
+    with chat_db.engine.begin() as conn:
+        conn.execute(text("UPDATE one_location_circle_memberships SET status='active',joined_at=clock_timestamp() WHERE user_id='bob'"))
+    subscribed.clear()
+    task = asyncio.create_task(wait(request, Response(), uuid.UUID(circle), after=0, owner={"user_id": "bob"}))
+    await subscribed.wait()
+    disconnected = True
+    with pytest.raises(HTTPException) as closed:
+        await asyncio.wait_for(task, timeout=2)
+    assert closed.value.status_code == 499
+    assert removed == [queue, queue] and "bob" not in chat_routes._waiting

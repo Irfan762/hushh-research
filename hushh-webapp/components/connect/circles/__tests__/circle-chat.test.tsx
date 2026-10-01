@@ -72,3 +72,29 @@ it("acknowledges only a visible conversation in the foreground", async () => {
   act(() => appInteractionCoordinator.handleLifecycle("active"));
   await waitFor(() => expect(api.read).toHaveBeenCalledWith(session, 1));
 });
+
+it("does not restore unread from a state response started before a successful read", async () => {
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  let settle!: (value: unknown) => void;
+  api.state.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+  act(() => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } })));
+  await waitFor(() => expect(settle).toBeDefined());
+  observe(true);
+  await waitFor(() => expect(api.read).toHaveBeenCalledWith(session, 1));
+  await act(async () => settle({ unreadCount: 1, latestSequence: 1, members: [], rosterVersion: "v", muted: false }));
+  expect(screen.queryByLabelText("1 unread messages")).not.toBeInTheDocument();
+});
+
+it("unlocks the unchanged draft after a definite validation rejection", async () => {
+  api.prepare.mockResolvedValue({ clientMessageId: "rejected", ciphertext: "opaque" });
+  api.send.mockRejectedValue(new ApiError("Invalid request", 422));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "editable draft" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await screen.findByText("Invalid request");
+  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled());
+  expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("editable draft");
+  expect(screen.queryByText(/Delivery is unconfirmed/)).not.toBeInTheDocument();
+});

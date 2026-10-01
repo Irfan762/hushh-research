@@ -2193,7 +2193,7 @@ or rejoining starts a new history window.
 | GET | `/api/one/circles/{circle}/chat/messages` | Ascending visible messages; exclusive `before` or `after` sequence cursor; 40 default, 50 maximum |
 | POST | `/api/one/circles/{circle}/chat/messages` | Client UUID, roster version, encrypted content/image and exactly one key wrap per current member, including sender |
 | GET | `/api/one/circles/{circle}/chat/messages/{message}/image` | Separately authorized encrypted image bytes; images are omitted from transcript pages |
-| GET | `/api/one/circles/{circle}/chat/wait?after={sequence}` | Twenty-second JSON long poll over the existing PostgreSQL user-state event bus; subscribe before revision read, reauthorize before response, four waits per user per worker |
+| GET | `/api/one/circles/{circle}/chat/wait?after={sequence}` | Twenty-second JSON long poll over the existing PostgreSQL user-state event bus; subscribe before revision read, reauthorize before response, disconnect cleanup, four waits per user per worker; `changed` distinguishes matching doorbells from idle timeouts |
 | GET | `/api/one/circles/{circle}/chat/keys/{key}` | Owner-only vault-encrypted historical key backup, only for an accessible current-generation message; active/rotated keys, never revoked keys |
 | POST | `/api/one/circles/{circle}/chat/read` | Visible sequence watermark; atomically marks recipient messages and derived Feed rows read |
 | PUT | `/api/one/circles/{circle}/chat/preferences` | `muted` disables queued system pushes while preserving chat and Feed |

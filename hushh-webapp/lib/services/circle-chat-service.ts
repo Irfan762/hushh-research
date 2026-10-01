@@ -39,7 +39,7 @@ export const CircleChatService = {
       vaultOwnerToken: session.vaultOwnerToken, vaultKey: session.vaultKey, strictRecovery: true });
   },
   state: (session: CircleChatSession, signal?: AbortSignal) => apiJson<CircleChatState>(root(session), options(session, signal)),
-  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number }>(
+  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number; changed: boolean }>(
     `${root(session)}/wait?after=${after}`, options(session, signal)),
   messages: (session: CircleChatSession, page: { before?: number; after?: number } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams();

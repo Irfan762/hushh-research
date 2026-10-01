@@ -54,24 +54,24 @@ export async function sealChatMessage(params: {
   if (!params.members.some((member) => member.userId === params.userId)) throw new Error("You are no longer a member of this circle.");
   const id = crypto.randomUUID();
   const rawKey = crypto.getRandomValues(new Uint8Array(32));
-  const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt"]);
-  const context = (kind: string) => chatContext(params.circleId, id, params.userId, kind);
-  const seal = async (bytes: Uint8Array<ArrayBuffer>, kind: string) => {
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv,
-      additionalData: new TextEncoder().encode(context(kind)) }, key, bytes);
-    return { ciphertext: encode(new Uint8Array(cipher)), iv: encode(iv) };
-  };
-  let image: { ciphertext: string; iv: string } | null = null;
-  if (params.file) {
-    if (params.file.size > MAX_CHAT_IMAGE_BYTES) throw new Error("Choose an image up to 5 MB.");
-    const bytes = new Uint8Array(await params.file.arrayBuffer());
-    validateChatImageBytes(bytes, params.file.type);
-    image = await seal(bytes, "image");
-  }
-  const content: ChatContent = { text, image: params.file ? { type: params.file.type, name: params.file.name.slice(0, 160) } : null };
-  const sealed = await seal(new TextEncoder().encode(JSON.stringify(content)), "content");
   try {
+    const key = await crypto.subtle.importKey("raw", rawKey, "AES-GCM", false, ["encrypt"]);
+    const context = (kind: string) => chatContext(params.circleId, id, params.userId, kind);
+    const seal = async (bytes: Uint8Array<ArrayBuffer>, kind: string) => {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv,
+        additionalData: new TextEncoder().encode(context(kind)) }, key, bytes);
+      return { ciphertext: encode(new Uint8Array(cipher)), iv: encode(iv) };
+    };
+    let image: { ciphertext: string; iv: string } | null = null;
+    if (params.file) {
+      if (params.file.size > MAX_CHAT_IMAGE_BYTES) throw new Error("Choose an image up to 5 MB.");
+      const bytes = new Uint8Array(await params.file.arrayBuffer());
+      validateChatImageBytes(bytes, params.file.type);
+      image = await seal(bytes, "image");
+    }
+    const content: ChatContent = { text, image: params.file ? { type: params.file.type, name: params.file.name.slice(0, 160) } : null };
+    const sealed = await seal(new TextEncoder().encode(JSON.stringify(content)), "content");
     const recipients = await Promise.all(params.members.map(async (member) => ({
       userId: member.userId,
       envelope: await sealRecipientPayload({ bytes: rawKey, context: context(`key:${member.userId}`),
