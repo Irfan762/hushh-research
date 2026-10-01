@@ -2409,6 +2409,7 @@ export default function GmailReceiptsPage({
                 "order_id",
               ]}
               searchPlaceholder="Search receipts"
+              preserveMobilePaginationPosition
               initialPageSize={8}
               pageSizeOptions={[8, 16, 24]}
               density="compact"

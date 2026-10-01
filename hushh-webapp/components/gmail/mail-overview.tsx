@@ -126,7 +126,7 @@ export function MailOverview({
           </ul>
         </div>
         <div aria-hidden="true" className="min-w-0 pr-1 sm:pr-3">
-          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px] lg:ml-0 lg:max-w-none`}>
+          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px] lg:ml-0 lg:max-w-[300px]`}>
             {[
               { label: "Reply", icon: Undo2, width: "w-3/4" },
               { label: "Follow up", icon: FileText, width: "w-2/3" },
