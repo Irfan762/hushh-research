@@ -68,8 +68,13 @@ class DrivePermissionStore(DriveSharingStore):
 
     def _grant_authority(self, connection, initial):
         self._participant_gate(connection, initial["user_id"], str(initial["request_id"]))
-        request = self._related_request(connection, initial["user_id"], str(initial["request_id"]))
+        # Account erasure and legacy settlement take the management context
+        # before request/payment locks. Keep grants in that same order.
         context = self._management_context(connection, initial["user_id"], initial["request_id"])
+        request = self._related_request(connection, initial["user_id"], str(initial["request_id"]))
+        from hushh_mcp.services.drive_request_payment_store import DriveRequestPaymentStore
+
+        DriveRequestPaymentStore.require_paid_if_required(connection, request)
         now = connection.execute(text("SELECT clock_timestamp()")).scalar_one()
         if (
             context["private_request_erased_at"] is not None

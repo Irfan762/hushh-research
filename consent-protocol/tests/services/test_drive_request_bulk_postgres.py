@@ -41,6 +41,7 @@ def request_bulk(sharing, monkeypatch):
     monkeypatch.setenv("ENVIRONMENT", "test")
     monkeypatch.setenv("GOOGLE_DRIVE_LIVE", "true")
     monkeypatch.setenv("DRIVE_DOCUMENT_SHARING", "true")
+    monkeypatch.setenv("DRIVE_REQUEST_PAYMENTS_ENABLED", "true")
     monkeypatch.setenv("CONNECTOR_INTERNAL_OWNER_COHORT", "owner,recipient,trusted-member")
     monkeypatch.setenv("DRIVE_SHARING_KEY_V1", base64.b64encode(b"s" * 32).decode())
     with sharing.db.engine.begin() as connection:
@@ -329,7 +330,7 @@ async def _trusted_request(sharing):
     )
 
 
-async def _trusted_review(bulk, sharing):
+async def _trusted_review(bulk, sharing, *, paid=True):
     request = await _trusted_request(sharing)
     review = await bulk.create_review(
         user_id="owner",
@@ -347,7 +348,85 @@ async def _trusted_review(bulk, sharing):
             {"request": request["requestId"]},
         )
         assert sharing._open_request(origin)["trusted_auto"] is True
+        assert origin["payment_required"] is True
+        if paid:
+            connection.execute(
+                text("""INSERT INTO drive_request_payment_orders
+                  (request_id,user_id,requester_user_id,status,paid_at)
+                  VALUES (:request,'owner','trusted-member','paid',clock_timestamp())"""),
+                {"request": request["requestId"]},
+            )
     return review
+
+
+@pytest.mark.asyncio
+async def test_new_trusted_request_cannot_queue_or_claim_grants_until_paid(request_bulk, sharing):
+    review = await _trusted_review(request_bulk, sharing, paid=False)
+    with request_bulk.db.engine.begin() as connection:
+        request_id = connection.execute(
+            text("SELECT origin_request_id FROM drive_bulk_shares WHERE share_id=:share"),
+            {"share": review["shareId"]},
+        ).scalar_one()
+    approval = {
+        "user_id": "owner",
+        "share_id": review["shareId"],
+        "revision": review["revision"],
+        "review_digest": review["reviewDigest"],
+    }
+    with pytest.raises(DriveSharingError, match="payment_required"):
+        await request_bulk.approve(**approval)
+    with request_bulk.db.engine.begin() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM drive_bulk_share_effects")).scalar_one()
+            == 0
+        )
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+              (request_id,user_id,requester_user_id,status)
+              VALUES (:request,'owner','trusted-member','awaiting_payment')"""),
+            {"request": request_id},
+        )
+    with pytest.raises(DriveSharingError, match="payment_required"):
+        await request_bulk.approve(**approval)
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_request_payment_orders
+              SET status='paid',paid_at=clock_timestamp() WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+    await request_bulk.approve(**approval)
+    with request_bulk.db.engine.begin() as connection:
+        assert (
+            connection.execute(text("SELECT count(*) FROM drive_bulk_share_effects")).scalar_one()
+            == 1
+        )
+        connection.execute(
+            text(
+                "UPDATE drive_request_payment_orders SET status='refunded' WHERE request_id=:request"
+            ),
+            {"request": request_id},
+        )
+    with pytest.raises(DriveSharingError, match="payment_required"):
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE drive_request_payment_orders SET status='paid' WHERE request_id=:request"),
+            {"request": request_id},
+        )
+    assert (
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        is not None
+    )
 
 
 async def _approved_request(bulk, sharing, count):
