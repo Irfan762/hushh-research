@@ -4669,6 +4669,59 @@
       "thread_and_consent_contract": null
     },
     {
+      "route": "/one/messages",
+      "page_file": "app/one/messages/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "standard",
+        "exemption_reason": null,
+        "shell_verification_file": "components/direct-messages/direct-messages-page.tsx",
+        "shell_verification_includes": [
+          "AppPageShell",
+          "ConnectionPersonAvatar",
+          "Button"
+        ],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.one.messages",
+          "purpose": "Read and send private one-to-one messages with accepted connections.",
+          "screen": "app",
+          "entry_cue": "",
+          "proactivity": "ambient",
+          "primary_action_id": null,
+          "happy_path_action_ids": [],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Explain that messaging requires an active connection and retain the current conversation.",
+            "cancelled": "Respect the cancellation and retain the current conversation.",
+            "failed": "Acknowledge the message failure and offer a safe retry.",
+            "timeout": "Retain the conversation and offer one safe retry.",
+            "callback_error": "Keep the message screen open and explain that the update could not be verified.",
+            "route_mismatch": "Use only the verified private message route and its generated controls."
+          },
+          "completion_boundary": "A send completes only after the server accepts the message for the active connection.",
+          "next_route": null,
+          "return_policy": "stay",
+          "out_of_scope_behavior": "Do not infer a connection or reveal another person's message history."
+        }
+      },
+      "native": null,
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
       "route": "/one/pkm",
       "page_file": "app/one/pkm/page.tsx",
       "physical_page_exists": true,
@@ -9622,5 +9675,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "99af7a210abc46eb7b7a7005f39dd4498490ca9a6008c2d9e236ce6a01305dbd"
+  "content_sha256": "7de8da7185c7e829856695933f227a131a7f28e9c2bd5c9336d63b773afb5bf4"
 }
