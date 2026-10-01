@@ -12,9 +12,14 @@ function Fixture() {
   const [issue, setIssue] = useState(false);
   return <><AppPageShell width="agent" className="bg-background py-8 text-foreground lg:pt-[80px]">
     <AppPageHeaderRegion className="mx-auto max-w-[820px]">
-      <PageHeader title="Mail" titleRole="agent" description="Connected to your Mail" />
+      <PageHeader
+        title="Mail"
+        titleRole="agent"
+        description="Connected to your Mail"
+        className="[&_[data-slot=page-header-copy]]:!space-y-3"
+      />
     </AppPageHeaderRegion>
-    <AppPageContentRegion className="mx-auto !mt-3.5 max-w-[820px]">
+    <AppPageContentRegion className="mx-auto !mt-0 max-w-[820px]">
     <SurfaceStack compact>
     <GmailWorkspaceNavigation value="overview" onValueChange={() => {}} />
     <MailConnectedAccount onReconnect={() => setAction("reconnect")} onDisconnect={() => setAction("disconnect")} />

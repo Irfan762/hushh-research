@@ -107,9 +107,15 @@ for (const width of [320, 390, 430, 768, 1440]) {
     expect(await receipts.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(beforeHover);
     const mailHeading = page.getByRole("heading", { name: "Mail", exact: true, level: 1 });
     const mailHeadingBounds = (await mailHeading.boundingBox())!;
+    const connectionDetail = page.getByText("Connected to your Mail", { exact: true });
+    const connectionDetailBounds = (await connectionDetail.boundingBox())!;
     const tabsBounds = (await page.getByRole("tablist", { name: "Gmail workspace" }).boundingBox())!;
     expect(tabsBounds.height).toBe(36);
     expect(Math.abs(mailHeadingBounds.x - tabsBounds.x)).toBeLessThanOrEqual(1);
+    const headingToDetailGap = connectionDetailBounds.y - (mailHeadingBounds.y + mailHeadingBounds.height);
+    const detailToTabsGap = tabsBounds.y - (connectionDetailBounds.y + connectionDetailBounds.height);
+    expect(headingToDetailGap).toBeGreaterThanOrEqual(10);
+    expect(Math.abs(headingToDetailGap - detailToTabsGap)).toBeLessThanOrEqual(4);
     expect(Math.abs(tabsBounds.width - (await receipts.boundingBox())!.width)).toBeLessThanOrEqual(1);
     const chat = page.getByRole("button", {name: "Chat with One"});
     const headingBounds = (await hero.boundingBox())!;
