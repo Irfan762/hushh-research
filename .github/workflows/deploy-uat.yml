@@ -58,6 +58,7 @@ jobs:
       contents: read
       checks: read
       deployments: read
+      actions: read
     outputs:
       sha: ${{ steps.resolve-sha.outputs.sha }}
       decision: ${{ steps.resolve-sha.outputs.decision }}

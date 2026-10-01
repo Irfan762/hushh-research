@@ -57,7 +57,19 @@ describe("the production selector CLI", () => {
           payload = state.deployments ?? (state.live ? [{ id: 1, sha: state.live }] : []);
         } else if (path.includes("/statuses")) {
           payload = state.statuses?.[path.split("/").at(-2)] ??
-            [{ state: state.verified === false ? "failure" : "success" }];
+            [{ state: state.verified === false ? "failure" : "success",
+              log_url: "https://github.com/hushh-labs/hushh-research/actions/runs/123/job/456" }];
+        } else if (path.includes("/git/ref/tags/")) {
+          payload = { object: { type: "tag", sha: "d".repeat(40) } };
+        } else if (path.includes("/git/tags/")) {
+          const sha = state.receiptSha ?? state.live;
+          payload = { object: { type: "commit", sha }, message:
+            "sha: " + sha + "\\nrun: https://github.com/hushh-labs/hushh-research/actions/runs/" +
+            (state.receiptRun ?? "123") + "\\nbackend_revision: backend-1\\nfrontend_revision: frontend-1" };
+        } else if (path.includes("/actions/runs/")) {
+          payload = { path: state.workflowPath ?? ".github/workflows/deploy-uat.yml",
+            event: "workflow_dispatch", head_sha: state.runSha ?? state.live,
+            status: "completed", conclusion: "success" };
         } else if (path.includes("/check-runs")) {
           const sha = path.split("/").at(-2);
           const gate = state.candidates.find(item => item.sha === sha)?.gate;
@@ -104,6 +116,12 @@ describe("the production selector CLI", () => {
     { main: LIVE, live: LIVE, statuses: { 1: [{ state: "inactive" }, { state: "success" }] }, candidates: [] },
     { main: LIVE, live: LIVE, deployments: [{ id: 2, sha: B }, { id: 1, sha: LIVE }],
       statuses: { 2: [{ state: "failure" }], 1: [{ state: "success" }] }, candidates: [] },
+    { main: LIVE, live: LIVE, workflowPath: ".github/workflows/rollback.yml", candidates: [] },
+    { main: LIVE, live: LIVE, workflowPath: ".github/workflows/pkm-upgrade-rehearsal.yml", candidates: [] },
+    { main: LIVE, live: LIVE, receiptSha: B, candidates: [] },
+    { main: LIVE, live: LIVE, receiptRun: "999", candidates: [] },
+    { main: LIVE, live: LIVE, runSha: B, candidates: [] },
+    { main: LIVE, live: LIVE, statuses: { 1: [{ state: "success" }] }, candidates: [] },
     { main: B, live: LIVE, candidates: [] },
     { main: B, live: LIVE, candidates: [{ sha: B, gate: "pending" }] },
     { main: B, live: LIVE, candidates: [{ sha: B, gate: "failure" }] },

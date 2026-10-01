@@ -93,13 +93,40 @@ async function uatActualSha() {
       // Keep the historical baseline for forward-selection compatibility,
       // but a no-op requires the newest deployment's current status.
       return { sha: deployment.sha,
-        verified: deployment.id === deployments[0]?.id && statuses[0]?.state === "success" };
+        verified: deployment.id === deployments[0]?.id && statuses[0]?.state === "success",
+        runUrl: statuses[0]?.log_url };
     }
   }
   // Fall back to the newest record. Better a slightly conservative baseline
   // than none: an over-cautious `uat_actual` can only make the selector refuse
   // to move, never make it move somewhere unproven.
   return { sha: deployments[0]?.sha ?? null, verified: false };
+}
+
+/** Environment records use workflow SHA, including for rollback/rehearsal jobs.
+ * Match the healthy release's existing exact-target receipt to that same run.
+ * Missing/advisory tagging proof can block a no-op, never authorize one.
+ */
+async function hasExactReleaseReceipt(state) {
+  let statusUrl;
+  try { statusUrl = new URL(state.runUrl); } catch { return false; }
+  const prefix = `/${REPO}/actions/runs/`;
+  if (statusUrl.origin !== "https://github.com" || !statusUrl.pathname.startsWith(prefix)) return false;
+  const runId = statusUrl.pathname.slice(prefix.length).match(/^(\d+)(?:\/job\/\d+)?$/)?.[1];
+  if (!runId) return false;
+  const ref = await api("/git/ref/tags/deployed/uat-latest");
+  if (ref.object?.type !== "tag") return false;
+  const tag = await api(`/git/tags/${ref.object.sha}`);
+  const receipt = String(tag.message || "").split("\n");
+  if (tag.object?.type !== "commit" || tag.object.sha !== state.sha ||
+    !receipt.includes(`sha: ${state.sha}`) ||
+    !receipt.includes(`run: https://github.com/${REPO}/actions/runs/${runId}`) ||
+    !receipt.some(line => /^backend_revision: \S+$/.test(line)) ||
+    !receipt.some(line => /^frontend_revision: \S+$/.test(line))) return false;
+  const run = await api(`/actions/runs/${runId}`);
+  return run.path === ".github/workflows/deploy-uat.yml" &&
+    run.event === "workflow_dispatch" && run.head_sha === state.sha &&
+    run.status === "completed" && run.conclusion === "success";
 }
 
 async function main() {
@@ -156,10 +183,13 @@ async function main() {
     }
   }
 
-  report({ mainTipSha, uatActual, ...result, candidates });
-
   const confirmedNoOp = allowNoOp && result.decision === "NO_OP" &&
-    uatState.verified && uatActual === mainTipSha;
+    uatState.verified && uatActual === mainTipSha && await hasExactReleaseReceipt(uatState);
+  if (allowNoOp && result.decision === "NO_OP" && !confirmedNoOp) {
+    result.decision = "BLOCKED";
+    result.reason = "Cannot confirm current UAT from the newest successful deployment and its exact-target healthy release receipt.";
+  }
+  report({ mainTipSha, uatActual, ...result, candidates });
 
   if (writeGithubOutput && process.env.GITHUB_OUTPUT) {
     appendFileSync(

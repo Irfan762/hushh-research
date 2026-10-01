@@ -21,7 +21,7 @@ def test_uat_no_op_finishes_before_creating_a_deployment() -> None:
     # record or enter release classification with missing runtime evidence.
     assert "environment" not in selection
     assert selection["permissions"] == {
-        "contents": "read", "checks": "read", "deployments": "read"
+        "contents": "read", "checks": "read", "deployments": "read", "actions": "read"
     }
     assert deploy["needs"] == "select-target"
     assert deploy["if"] == "needs.select-target.outputs.decision == 'DEPLOY_EXACT_SHA'"

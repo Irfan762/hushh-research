@@ -41,7 +41,10 @@ appropriate.
 With a blank `sha`, UAT selects the newest main commit with its own successful
 post-merge gate. If main already matches the newest UAT deployment and its
 latest status is successful, the workflow finishes successfully with a `NO_OP`
-summary. Selection runs before entering the UAT environment, so this no-op
+summary only after matching the existing `deployed/uat-latest` exact-SHA receipt
+to that same successful `deploy-uat.yml` run. Rollback and rehearsal environment
+records, mismatched targets, and missing receipt proof cannot authorize a no-op.
+Selection runs before entering the UAT environment, so this no-op
 creates no deployment record, builds, traffic changes, or release tag updates.
 Unknown deployment state and unavailable or failed gates still block selection.
 An explicit SHA continues through the existing exact-SHA deployment validator.
