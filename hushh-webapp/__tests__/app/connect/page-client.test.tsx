@@ -2508,7 +2508,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
   // `e2e/connect-circle-cta.layout.spec.ts` measured and found correct. Neither
   // half is sufficient on its own; that spec is the other half.
 
-  it("keeps a connection's Remove beside the name, not under it", async () => {
+  it("keeps Message and icon-only removal beside the name", async () => {
     // `stackTrailingOnMobile` puts the trailing control on its own line below
     // `sm:` -- which is 640px, so on every iPhone. It was set here for a single
     // 72px "Remove", and QA read the result as a broken row: "remove neeche aa
@@ -2523,9 +2523,14 @@ describe("Connect — the phone-width geometry QA reported", () => {
     ]);
     render(<ConnectPageClient />);
 
+    const message = await screen.findByRole("button", {
+      name: "Message Abdul Rashid (coming soon)",
+    });
     const remove = await screen.findByRole("button", {
       name: "Remove connection with Abdul Rashid",
     });
+    expect(message.textContent).toContain("Message");
+    expect(message.className).toContain("h-11");
     expect(remove.className).toContain("h-11");
     expect(remove.className).toContain("min-h-11");
     expect(remove.querySelector("svg")).toBeTruthy();
@@ -2535,6 +2540,12 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(remove.className).not.toContain("before:-inset-y-1.5");
     const trailing = remove.closest("div");
     expect(trailing).toBeTruthy();
+    expect(trailing).toContainElement(message);
+
+    fireEvent.click(message);
+    expect(mocks.toastInfo).not.toHaveBeenCalled();
+    expect(mocks.removeConnection).not.toHaveBeenCalled();
+    expect(mocks.routerPush).not.toHaveBeenCalled();
 
     // Whole class tokens, not substrings: this wrapper already carries
     // `max-w-full`, which contains "w-full" and would make a `toContain` check

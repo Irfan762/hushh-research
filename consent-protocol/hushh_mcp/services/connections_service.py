@@ -1,10 +1,11 @@
 """Two-way connection graph: request -> accept/reject handshake.
 
 Requests are directional (requester -> addressee). Accepting creates a mutual
-`connections` row (canonicalized user_a_id < user_b_id) AND mirrors two
-directional `trusted_connections` edges (source='connection') so existing
-location/SOS readers keep working. Identity name-resolution reuses the broad
-discovery directory `list_directory_candidates`, read-only.
+`connections` row (canonicalized user_a_id < user_b_id) and keeps the legacy
+directional `trusted_connections` relationship mirror for older readers. That
+mirror is not Circle membership: no connection path may create a Circle member.
+Identity name-resolution reuses the broad discovery directory
+`list_directory_candidates`, read-only.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import logging
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from uuid import UUID, uuid4
 
 from sqlalchemy import text
@@ -111,7 +112,6 @@ DIRECTORY_AUDIENCES = (
 CONTACT_SYNC_MAX_LOOKUPS = 1000
 CONTACT_SYNC_MINUTE_LOOKUP_LIMIT = 12_000
 CONTACT_SYNC_DAY_LOOKUP_LIMIT = 20_000
-CONTACT_SYNC_TRUSTED_PROJECTION_BATCH_SIZE = 100
 
 # Single source of truth for connection-capability display metadata. Both the
 # offer catalog and the receiver-facing proposal list read from here so the two
@@ -193,11 +193,12 @@ def _default_directory_profiles(owner_user_id: str, user_ids: list[str]) -> list
 
     if not user_ids:
         return []
-    return OneLocationAgentService().search_directory_candidates(
+    result = OneLocationAgentService().search_directory_candidates(
         owner_user_id=owner_user_id,
         candidate_user_ids=user_ids,
         limit=len(user_ids),
-    )["items"]
+    )
+    return cast(list[dict[str, Any]], result["items"])
 
 
 def _default_directory_visible(owner_user_id: str, candidate_user_id: str) -> bool:
@@ -2221,101 +2222,6 @@ class ConnectionsService:
                 reason=reason,
             )
 
-    def _join_trusted_system_circles(
-        self,
-        *,
-        user_a_id: str,
-        user_b_id: str,
-    ) -> None:
-        """Put a newly connected pair into each other's Trusted Circle.
-
-        The mirror image of `_end_one_location_circle_memberships`, which does
-        the reverse on disconnect. Runs on this transaction's connection so the
-        membership and the connection commit together -- the Circle is a
-        projection of the connection, and the two should never be seen apart.
-
-        Contained in a savepoint on purpose. Accepting a connection is a consent
-        transition; the roster is a view of it. A view that fails must not
-        refuse a consent that succeeded. It can only ever lag, never over-grant
-        -- Trusted is excluded from every location-eligibility query in
-        `one_location_agent_service` -- and `ensure_trusted_system_circle` heals
-        it on the owner's next bootstrap.
-        """
-
-        connection = getattr(self, "_transaction_connection", None)
-        if connection is None:
-            # Only reachable behind the lightweight doubles `_transaction`
-            # falls back to. Quiet, unlike the disconnect path above: a missing
-            # membership grants nothing and self-heals, where a missing
-            # teardown leaves a live location path open.
-            logger.info("connections.trusted_circle_join_skipped_no_transaction")
-            return
-        from hushh_mcp.services.one_location_circle_service import (
-            OneLocationCircleService,
-        )
-
-        try:
-            with self._scope_activation_savepoint():
-                OneLocationCircleService.ensure_trusted_membership_for_pair(
-                    connection,
-                    user_a_id=user_a_id,
-                    user_b_id=user_b_id,
-                    source="connection",
-                )
-        except Exception:  # noqa: BLE001 - a projection cannot roll back consent
-            logger.exception("connections.trusted_circle_join_failed")
-
-    def _join_trusted_system_circles_bulk(
-        self,
-        *,
-        pairs: list[tuple[str, str]],
-    ) -> None:
-        """Project Trusted rosters after the canonical graph has committed.
-
-        Each bounded batch owns a fresh transaction and shares a per-user
-        advisory gate with account reset/deletion. The Circle SQL revalidates
-        the active graph, so a cleanup that wins the gate cannot be undone by a
-        late best-effort projection.
-        """
-
-        canonical_pairs = sorted(
-            {
-                (str(first or "").strip(), str(second or "").strip())
-                for first, second in pairs
-                if str(first or "").strip()
-                and str(second or "").strip()
-                and str(first or "").strip() != str(second or "").strip()
-            }
-        )
-        if not canonical_pairs:
-            return
-        from hushh_mcp.services.one_location_circle_service import (
-            OneLocationCircleService,
-        )
-
-        for start in range(0, len(canonical_pairs), CONTACT_SYNC_TRUSTED_PROJECTION_BATCH_SIZE):
-            batch = canonical_pairs[start : start + CONTACT_SYNC_TRUSTED_PROJECTION_BATCH_SIZE]
-            try:
-                with self._transaction():
-                    connection = getattr(self, "_transaction_connection", None)
-                    if connection is None:
-                        logger.info("connections.trusted_circle_bulk_join_skipped_no_transaction")
-                        return
-                    lock_connection_graph_users(
-                        connection,
-                        user_ids={user_id for pair in batch for user_id in pair},
-                    )
-                    OneLocationCircleService.ensure_trusted_memberships_for_pairs(
-                        connection,
-                        pairs=batch,
-                        source="connection",
-                    )
-            except Exception:  # noqa: BLE001 - a projection can self-heal on bootstrap
-                logger.exception(
-                    "connections.trusted_circle_bulk_join_failed batch_start=%s",
-                    start,
-                )
-
     def _end_one_location_circle_memberships(
         self,
         *,
@@ -2716,16 +2622,9 @@ class ConnectionsService:
             # Mirror both directional trusted edges so location/SOS readers keep working.
             self._mirror_trusted_edge(requester, user_id)
             self._mirror_trusted_edge(user_id, requester)
-            # And the same fact once more, as a Circle, because Connect shows
-            # "Trusted" as a real grouping rather than recomputing a tier per
-            # response. A projection, not a permission: the row inserted above
-            # is the consent, and Trusted membership authorizes nothing on its
-            # own.
-            # The canonical pair the RETURNING gave back, not the Python-ordered
-            # one: connections_service already carries a note about Python
-            # bytewise ordering disagreeing with Postgres collation and breaking
-            # 88 of 390 accepts.
-            self._join_trusted_system_circles(user_a_id=user_a, user_b_id=user_b)
+            # A connection is intentionally only a connection. Circle
+            # membership is an explicit, owner-driven action and must never be
+            # inferred from this acceptance transaction.
             scope_results = self._resolve_scope_proposals(
                 request_id=canonical_request_id,
                 actor_user_id=user_id,
@@ -3880,7 +3779,6 @@ class ConnectionsService:
             for item in normalized_matches
         )
         outcomes: list[dict[str, Any]] = []
-        trusted_projection_pairs: list[tuple[str, str]] = []
         activated_target_ids: set[str] = set()
         with self._transaction():
             transaction_connection = getattr(self, "_transaction_connection", None)
@@ -4179,25 +4077,17 @@ class ConnectionsService:
                         sync_started_at=sync_started_at,
                     )
                 )
-                if activated_target_ids:
-                    trusted_projection_pairs = [
-                        (requester_id, str(activation["target_user_id"]))
-                        for activation in activations
-                        if str(activation["target_user_id"]) in activated_target_ids
-                    ]
                 # A canonical row can become a disconnect tombstone after the
                 # earlier FOR UPDATE scan only when it did not exist yet. The
                 # conditional bulk upsert refuses that conflict; report it as
-                # suppressed and never create its origin/trusted/Circle rows.
+                # suppressed and never create its connection origin or legacy
+                # relationship-mirror rows.
                 for item in outcomes:
                     if (
                         str(item["userId"]) in activation_required_target_ids
                         and str(item["userId"]) not in activated_target_ids
                     ):
                         item["outcome"] = "suppressed"
-
-        if trusted_projection_pairs:
-            self._join_trusted_system_circles_bulk(pairs=trusted_projection_pairs)
 
         newly_connected_user_ids = {
             str(item["userId"])
@@ -4208,7 +4098,6 @@ class ConnectionsService:
             _notify_connection_graph_changed(
                 user_ids={requester_id, *newly_connected_user_ids},
             )
-
         counts = {
             "auto_connected": sum(item["outcome"] == "auto_connected" for item in outcomes),
             "already_connected": sum(item["outcome"] == "already_connected" for item in outcomes),
@@ -4244,10 +4133,9 @@ class ConnectionsService:
         with self._transaction():
             # Resolve the immutable pair without taking a row lock, then share
             # the same deterministic per-user graph gate as contact sync,
-            # reset, deletion, and Trusted-Circle projection. Acquiring this
-            # gate before ``connections FOR UPDATE`` preserves the global lock
-            # order and prevents a late projection from restoring a roster
-            # entry after this disconnect commits.
+            # reset and deletion. Acquiring this gate before ``connections FOR
+            # UPDATE`` preserves the global lock order and keeps Circle cleanup
+            # in the same disconnect transaction.
             candidate = self._execute_one(
                 """
                 SELECT id, user_a_id, user_b_id, status

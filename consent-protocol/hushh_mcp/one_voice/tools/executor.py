@@ -34,6 +34,7 @@ from hushh_mcp.one_voice.tools.base import (
     ToolContext,
     ToolResult,
     ToolSpec,
+    arg_refs,
 )
 
 logger = logging.getLogger(__name__)
@@ -103,9 +104,11 @@ class ToolExecutor:
     @staticmethod
     def _entity_problem(spec: ToolSpec, ctx: ToolContext, parsed: Any) -> Rejected | None:
         for arg in spec.person_args:
-            ref = getattr(parsed, arg, None)
-            user_id = getattr(ref, "user_id", None) if ref is not None else None
-            if not user_id or ctx.entities.person(str(user_id)) is None:
+            # Every person named, so a batch cannot smuggle an unconfirmed id in
+            # beside confirmed ones. An absent or empty argument names nobody and
+            # is refused the same way a single missing ref always was.
+            refs = arg_refs(getattr(parsed, arg, None))
+            if not refs:
                 return Rejected(
                     reason_code="person_not_confirmed",
                     spoken_facts=[
@@ -113,6 +116,16 @@ class ToolExecutor:
                     ],
                     needs="disambiguation",
                 )
+            for ref in refs:
+                user_id = getattr(ref, "user_id", None)
+                if not user_id or ctx.entities.person(str(user_id)) is None:
+                    return Rejected(
+                        reason_code="person_not_confirmed",
+                        spoken_facts=[
+                            "I need to confirm who you mean first. Resolve the person, read back their name, and confirm."
+                        ],
+                        needs="disambiguation",
+                    )
         for arg in spec.circle_args:
             ref = getattr(parsed, arg, None)
             circle_id = getattr(ref, "circle_id", None) if ref is not None else None

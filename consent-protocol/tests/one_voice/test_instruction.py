@@ -118,7 +118,12 @@ def test_rule_ten_separates_circle_membership_from_connection_and_leave_from_del
     assert "leave_circle, never delete_circle" in rule
     assert "Confirming which circle or person they meant approves nothing" in rule
     assert "send a connection request only if they ask, with invite_person" in rule
-    assert "one at a time, and report each real result separately" in rule
+    # Several people joining one circle is one call and one card. This replaced
+    # "one at a time", which is what made three names cost three confirmations.
+    assert "Two or more people joining one circle is add_circle_members" in rule
+    assert "never describe a skipped person as added" in rule
+    assert "One person is add_circle_member" in rule
+    assert "one at a time" not in rule, "the batch path makes this instruction wrong"
     # Both circle reads are declared with their first line, so the model can pick them.
     declared = {item["name"] for item in registry.declarations()}
     assert {"get_circle_details", "list_circle_members"} <= declared

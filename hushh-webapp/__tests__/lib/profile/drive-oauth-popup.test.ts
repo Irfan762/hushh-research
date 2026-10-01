@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clearDrivePopupAttempt,
   hasDrivePopupMarker,
+  isDrivePopupReturn,
   isDrivePopupSettlement,
   navigateDriveOAuthPopup,
   notifyDrivePopup,
@@ -8,6 +10,8 @@ import {
   waitForOAuthPopup,
   waitForDrivePopup,
 } from "@/lib/profile/drive-oauth-popup";
+
+const ATTEMPT_KEY = "one_drive_popup_attempt_v1";
 
 describe("Drive popup boundary", () => {
   beforeEach(() => {
@@ -94,6 +98,42 @@ describe("Drive popup boundary", () => {
     expect(() =>
       navigateDriveOAuthPopup(target, attempt(), "https://attacker.invalid"),
     ).toThrow();
+  });
+  it("routes only the current popup attempt's signed-state shape", () => {
+    const currentAttempt = attempt();
+    window.localStorage.setItem(ATTEMPT_KEY, JSON.stringify(currentAttempt));
+    const state = `${currentAttempt.attemptId}.${"a".repeat(64)}`;
+
+    expect(isDrivePopupReturn(state)).toBe(true);
+    for (const otherState of [
+      null,
+      `another-valid-attempt.${"a".repeat(64)}`,
+      `${currentAttempt.attemptId}.short`,
+      `${state}.extra`,
+    ]) {
+      expect(isDrivePopupReturn(otherState)).toBe(false);
+    }
+    expect(readDrivePopupAttempt()).toEqual(currentAttempt);
+  });
+  it("removes malformed and expired popup markers before routing", () => {
+    const state = `${attempt().attemptId}.${"a".repeat(64)}`;
+    for (const marker of ["{not-json", JSON.stringify({ ...attempt(), expiresAt: Date.now() - 1 })]) {
+      window.localStorage.setItem(ATTEMPT_KEY, marker);
+      expect(isDrivePopupReturn(state)).toBe(false);
+      expect(window.localStorage.getItem(ATTEMPT_KEY)).toBeNull();
+      expect(hasDrivePopupMarker()).toBe(false);
+    }
+  });
+  it("clears only its own attempt when another tab has started a newer one", () => {
+    const priorAttempt = attempt();
+    const newerAttempt = { ...attempt(), attemptId: "newer-synthetic-attempt-id" };
+    window.localStorage.setItem(ATTEMPT_KEY, JSON.stringify(newerAttempt));
+
+    clearDrivePopupAttempt(priorAttempt);
+    expect(readDrivePopupAttempt()).toEqual(newerAttempt);
+
+    clearDrivePopupAttempt(newerAttempt);
+    expect(window.localStorage.getItem(ATTEMPT_KEY)).toBeNull();
   });
   it("keeps the redacted settlement available for the opener's storage event", async () => {
     const currentAttempt = attempt();

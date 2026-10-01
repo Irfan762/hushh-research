@@ -20,6 +20,8 @@ from hushh_mcp.services.google_drive_adapter import DriveReadError
 
 
 def _defer_code(error: BaseException) -> str:
+    if str(error) == "date_range_required":
+        return "date_range_required"
     if str(error) == "background_preparation_required":
         return "background_preparation_required"
     if str(error) == "trusted_request_unavailable":
@@ -57,10 +59,20 @@ class DriveTrustedAutoService:
         if request_id is None:
             return None
         require_current = self._authority(user_id, request_id)
+        dates_checked = False
 
         async def guarded():
+            nonlocal dates_checked
             try:
                 await require_current()
+                if not dates_checked:
+                    context = await self.sharing.request_bulk_context(
+                        user_id=user_id, request_id=request_id
+                    )
+                    purpose = context["purpose"]
+                    if not (purpose.get("periodStart") and purpose.get("periodEnd")):
+                        raise DriveReadError("date_range_required")
+                    dates_checked = True
             except (DriveReadError, TimeoutError) as error:
                 await self.sharing.defer_trusted_search(
                     user_id=user_id, request_id=request_id, code=_defer_code(error)
@@ -120,6 +132,10 @@ class DriveTrustedAutoService:
             raise ValueError("invalid trusted batch bound")
         require_current = self._authority(user_id, request_id)
         await require_current()
+        context = await self.sharing.request_bulk_context(user_id=user_id, request_id=request_id)
+        purpose = context["purpose"]
+        if not (purpose.get("periodStart") and purpose.get("periodEnd")):
+            raise DriveReadError("date_range_required")
         request_bulk = DriveRequestBulkService(
             sharing=self.sharing,
             bulk=self.bulk,

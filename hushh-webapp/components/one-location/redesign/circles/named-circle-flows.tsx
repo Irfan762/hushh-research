@@ -1086,7 +1086,6 @@ function CircleMemberRow({
   connecting = false,
   onCancelRequest,
   cancelling = false,
-  membersRemovable = true,
 }: {
   member: OneLocationCircleMember;
   currentUserId: string | null;
@@ -1103,18 +1102,11 @@ function CircleMemberRow({
    *  plain "Requested" status. */
   onCancelRequest?: () => Promise<void>;
   cancelling?: boolean;
-  /** False where the roster is not the owner's to edit.
-   *
-   *  A Trusted Circle's membership is derived from the connection, so
-   *  `_end_membership` refuses a removal with
-   *  LOCATION_CIRCLE_TRUSTED_FOLLOWS_CONNECTION -- the connection is the thing
-   *  to end. Offering Remove there is offering a control that cannot work. */
-  membersRemovable?: boolean;
 }) {
   const isCurrentUser = member.userId === currentUserId;
   const canShare =
     !isCurrentUser && member.phoneVerified && member.secureLocationReady;
-  const canRemove = isOwner && member.role !== "owner" && membersRemovable;
+  const canRemove = isOwner && member.role !== "owner";
 
   const relationship =
     !isCurrentUser && member.relationship && member.relationship !== "self"
@@ -2784,7 +2776,6 @@ export function CircleDetailFlow({
                     currentUserId={currentUserId}
                     isOwner={Boolean(isOwner)}
                     busy={busy}
-                    membersRemovable={circle.systemKind !== "trusted"}
                     cancelling={cancellingUserId === member.userId}
                     onCancelRequest={
                       onCancelMemberRequest
