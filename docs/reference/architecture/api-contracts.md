@@ -1915,6 +1915,18 @@ the recipient list. Ordinary live requests with earlier small reviews switch to
 the complete search when the owner opens them; explicit owner-selected exact
 file reviews retain their original selection.
 
+Every recipient file request requires the requester to supply both exact
+`periodStart` and `periodEnd` calendar dates (`YYYY-MM-DD`) before creation.
+Missing dates return `422 date_range_required`; the private agent asks for both
+dates and checks that they appear in the user's current message before staging
+the card. This includes relative day, week, and month wording. Existing queued
+automatic requests without saved dates cannot continue searching or grant
+Viewer access through the request-bound bulk worker. Owner-approved exact-file
+grants retain their explicit file selection, including already approved legacy
+operations. Owner-initiated shares of already selected exact files are exempt.
+The frozen range is applied to each candidate's title date first, then its
+creation or modification date.
+
 | Method / suffix under `/sharing/requests/{id}` | Contract |
 | --- | --- |
 | `POST /search` | Start or resume the request-bound metadata search. The request ID is the idempotency key; no content or permission is read or written. |
@@ -1957,7 +1969,7 @@ tokens, subjects and endpoints are not returned. Mutations derive owner/generati
 | Method / suffix | Authority and result |
 | --- | --- |
 | `POST /owner/compile/stream` | A-only original-note compilation, separate from consent-sheet preparation and Google sharing. Body `{message,window:{start_date,end_date,timezone}}` uses the canonical named 1–31-day query and fixed local-calendar window from A's successful metadata listing. The server checks the window's span, offset and age before work. Discovery combines a creation-time window, a bounded full-text token search, and children of up to three matching named folders; exact local title/date or verified folder/date filtering follows. Folder children must be Google Docs with a Gemini-note or requested meeting-subject title, and obvious non-note titles are excluded from meeting-note title results too. Excluded ambiguous files and search truncation force partial status. The current Vault Owner and live Drive grant are checked before work, per Google read, and before each private Markdown/complete frame. `text/event-stream` sends `stage {phase}` (`starting`, `searching`, `fetching`, `finalizing`), `file {phase:"fetching",completed,total,failed}` with counts only, `heartbeat`, then ordered `markdown {index,text}` chunks and `complete {status,matched,included,failed,truncated}`. Missing `complete` means interruption and the client discards accumulated Markdown. An `error {code,message}` carries no provider payload. Up to 40 files are read with four concurrent fenced Google REST reads; Markdown is capped at 2 MB with explicit partial coverage. No index, model, persistent artifact, Viewer permission or B disclosure is created. Disconnect cancels this read-only job. |
-| `POST /requests` | B's recent verified Google Firebase identity must match B's Vault Owner; an active A/B connection is required. Accepts an opaque client request ID, exactly one of `ownerUserId` or `ownerPersonRef`, and purpose/period. Public person references resolve server-side; no internal UID is exposed in the profile. B need not connect Drive. |
+| `POST /requests` | B's recent verified Google Firebase identity must match B's Vault Owner; an active A/B connection is required. Accepts an opaque client request ID, exactly one of `ownerUserId` or `ownerPersonRef`, and purpose/period. Every recipient file request requires both period dates or returns `422 date_range_required`. Public person references resolve server-side; no internal UID is exposed in the profile. B need not connect Drive. |
 | `GET /requests` | Participant-scoped incoming/outgoing metadata, bounded pagination; never private candidates. |
 | `GET /requests/{id}` | Participant-only generic status and server-derived `direction`. Preparation and private review remain pending to B; a deep link never grants owner review authority. |
 | `GET /requests/{id}/review` | A-only current private review; exact documents, coverage, recipient and review digest. |

@@ -108,6 +108,48 @@ test.beforeAll(async () => {
   css = stripAppFontFaces(compiler.build([...candidates])) + productFontStyle();
 });
 
+test("relative standup request asks for exact dates before sending", async ({ page }) => {
+  const submissions: Record<string, unknown>[] = [];
+  await page.route("http://localhost/document-request-fixture", (route) =>
+    route.fulfill({
+      contentType: "text/html",
+      body: `<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div></body></html>`,
+    }),
+  );
+  await page.route("**/api/connectors/google_drive/sharing/requests", async (route) => {
+    submissions.push(route.request().postDataJSON());
+    await route.fulfill({
+      status: 202,
+      contentType: "application/json",
+      body: JSON.stringify({
+        requestId: "11111111-1111-4111-8111-111111111111",
+        status: "pending",
+        revision: 0,
+      }),
+    });
+  });
+  await page.goto("http://localhost/document-request-fixture");
+  await page.addScriptTag({ content: script });
+  await page.getByRole("button", { name: "Request files", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Request files", exact: true });
+  await panel.getByLabel("What do you need?").fill("last 3 days standup notes");
+  await expect(panel.getByText("Choose exact start and end dates before sending this request.")).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Send request" })).toBeDisabled();
+  expect(submissions).toHaveLength(0);
+  await page.screenshot({ path: "/tmp/agentone-date-clarification.png" });
+  await panel.getByLabel("Start date").fill("2026-09-29");
+  await panel.getByLabel("End date").fill("2026-10-01");
+  await expect(panel.getByRole("button", { name: "Send request" })).toBeEnabled();
+  await panel.getByRole("button", { name: "Send request" }).click();
+  await expect(panel.getByText("Request sent.")).toBeVisible();
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0].purpose).toEqual({
+    purpose: "last 3 days standup notes",
+    periodStart: "2026-09-29",
+    periodEnd: "2026-10-01",
+  });
+});
+
 for (const width of [320, 390, 768, 1440])
   test(`requesting files preserves chat and bounds the form at ${width}px`, async ({
     page,

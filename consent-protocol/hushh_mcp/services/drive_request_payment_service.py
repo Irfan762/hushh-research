@@ -116,12 +116,15 @@ class DriveRequestPaymentService(DriveRequestPaymentStore):
             connection, user_id=owner, generation=current["connection_generation"]
         )
         request = sharing._related_request(connection, owner, request_id)
+        private = sharing._open_request(request)
+        purpose = private.get("purpose", {})
         if (
             request["recipient_user_id"] != requester_user_id
             or request["status"] != "pending"
             or request["expires_at"] <= datetime.now(UTC)
             or request["preparation_error_code"] == "manual_search_active"
-            or sharing._open_request(request).get("trusted_auto") is not True
+            or private.get("trusted_auto") is not True
+            or not (purpose.get("periodStart") and purpose.get("periodEnd"))
             or not sharing._trusted_recipient_current(
                 connection, owner, participants["recipient_user_id"]
             )

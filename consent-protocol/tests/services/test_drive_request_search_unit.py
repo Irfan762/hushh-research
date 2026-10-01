@@ -99,6 +99,156 @@ def test_request_plan_keeps_all_candidate_file_dates_and_shortcut_mime():
     assert period == {"start": start, "end": end, "timezone": "UTC"}
 
 
+def test_relative_standup_request_requires_dates_before_searching_historical_files():
+    plan = {"mode": "find", "terms": ["standup"], "file_kind": "document"}
+    purpose = {"purpose": "last 3 days standup notes"}
+    with pytest.raises(DriveReadError, match="date_range_required"):
+        compile_request_queries(
+            plan,
+            purpose,
+            "Asia/Kolkata",
+            requested_at=datetime(2026, 10, 1, 17, 45, tzinfo=UTC),
+        )
+
+    _, period = compile_request_queries(
+        plan,
+        {**purpose, "periodStart": "2026-09-29", "periodEnd": "2026-10-01"},
+        "Asia/Kolkata",
+    )
+    assert period == {
+        "start": "2026-09-29",
+        "end": "2026-10-01",
+        "timezone": "Asia/Kolkata",
+    }
+    assert search_module._in_requested_period({"name": "Standup notes 2026-09-30"}, period)
+    assert not search_module._in_requested_period(
+        {"name": "Standup notes 2026-09-28", "modified_time": "2026-10-01T17:00:00Z"},
+        period,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["last 3 days standup notes", "bank statements"])
+async def test_legacy_undated_request_checkpoint_stops_before_provider_read(purpose):
+    read = AsyncMock()
+    context = AsyncMock(return_value={"purpose": {"purpose": purpose}})
+    service = DriveOwnerSearchService(
+        store=SimpleNamespace(),
+        transport=SimpleNamespace(read_tool=read),
+        sharing=SimpleNamespace(request_bulk_context=context),
+    )
+    job = {
+        "user_id": "owner",
+        "checkpoint": {
+            "request_origin_id": "12345678-1234-1234-1234-123456789012",
+            "request": {"query": purpose, "timezone": "Asia/Kolkata"},
+            "requested_period": None,
+            "phase": "user",
+        },
+    }
+    with pytest.raises(DriveReadError, match="date_range_required"):
+        await service._page(job)
+    context.assert_awaited_once_with(
+        user_id="owner", request_id="12345678-1234-1234-1234-123456789012"
+    )
+    read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_legacy_dated_checkpoint_reads_saved_request_before_provider():
+    read = AsyncMock(
+        return_value=SimpleNamespace(payload={"drives": []}, is_error=False, truncated=False)
+    )
+    context = AsyncMock(
+        return_value={
+            "purpose": {
+                "purpose": "last 3 days standup notes",
+                "periodStart": "2026-09-29",
+                "periodEnd": "2026-10-01",
+            }
+        }
+    )
+    service = DriveOwnerSearchService(
+        store=SimpleNamespace(),
+        transport=SimpleNamespace(read_tool=read),
+        sharing=SimpleNamespace(request_bulk_context=context),
+    )
+    job = {
+        "user_id": "owner",
+        "checkpoint": {
+            "request_origin_id": "12345678-1234-1234-1234-123456789012",
+            "request": {"query": "last 3 days standup notes", "timezone": "Asia/Kolkata"},
+            "requested_period": {"start": "2026-09-29", "end": "2026-10-01"},
+            "phase": "drives",
+            "drive_page_token": None,
+            "drive_tokens": [],
+            "drives": [],
+        },
+    }
+
+    checkpoint, files, incomplete, done = await service._page(job)
+
+    assert checkpoint["request_explicit_dates"] is True
+    assert (files, incomplete, done) == ([], False, True)
+    context.assert_awaited_once()
+    read.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_legacy_checkpoint_rejects_period_changed_from_saved_request():
+    read = AsyncMock()
+    service = DriveOwnerSearchService(
+        store=SimpleNamespace(),
+        transport=SimpleNamespace(read_tool=read),
+        sharing=SimpleNamespace(
+            request_bulk_context=AsyncMock(
+                return_value={
+                    "purpose": {
+                        "periodStart": "2026-09-29",
+                        "periodEnd": "2026-10-01",
+                    }
+                }
+            )
+        ),
+    )
+    job = {
+        "user_id": "owner",
+        "checkpoint": {
+            "request_origin_id": "12345678-1234-1234-1234-123456789012",
+            "requested_period": {"start": "2026-01-01", "end": "2026-10-01"},
+        },
+    }
+
+    with pytest.raises(DriveReadError, match="request_changed"):
+        await service._page(job)
+    read.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["last 3 days standup notes", "bank statements"])
+async def test_legacy_undated_request_cannot_resume_or_prepare_existing_results(purpose):
+    lookup = AsyncMock(return_value={"status": "completed", "jobId": "old-job"})
+    service = DriveRequestBulkService(
+        sharing=SimpleNamespace(
+            request_bulk_context=AsyncMock(
+                return_value={
+                    "purpose": {"purpose": purpose},
+                    "status": "pending",
+                    "searchStarted": True,
+                }
+            )
+        ),
+        search=SimpleNamespace(store=SimpleNamespace(by_client=lookup)),
+        bulk=SimpleNamespace(),
+        require_owner=AsyncMock(),
+    )
+    with pytest.raises(DriveReadError, match="date_range_required"):
+        await service.start_search(user_id="owner", request_id="old-request")
+    with pytest.raises(DriveReadError, match="date_range_required"):
+        await service.prepare(user_id="owner", request_id="old-request")
+    lookup.assert_not_awaited()
+
+
 def test_yesterday_uses_requesters_frozen_local_day_even_when_planner_used_utc():
     requested_at = datetime(2026, 9, 29, 21, 33, tzinfo=UTC)
     plan = {
@@ -245,7 +395,11 @@ async def test_explicitly_named_plural_title_is_not_rejected_as_broad_request():
 @pytest.mark.asyncio
 async def test_completed_legacy_request_restarts_search_with_shareability_facts():
     context = {
-        "purpose": {"purpose": "Onboarding documents from last 3 months"},
+        "purpose": {
+            "purpose": "Onboarding documents from last 3 months",
+            "periodStart": "2026-06-29",
+            "periodEnd": "2026-09-29",
+        },
         "revision": 3,
         "requestTimeZone": "Asia/Kolkata",
         "requestCreatedAt": datetime(2026, 9, 29, 21, 33, tzinfo=UTC),
@@ -329,6 +483,7 @@ async def test_request_shortcut_uses_verified_target_and_alias_date():
     arguments = {"query": "name contains 'Standup'", "orderBy": "createdTime desc"}
     checkpoint = {
         "request_origin_id": "request-id",
+        "request_explicit_dates": True,
         "arguments": arguments,
         "queries": [{"arguments": arguments}],
         "query_index": 0,
@@ -366,6 +521,7 @@ def _checkpoint():
     )
     return {
         "request_origin_id": "synthetic-request",
+        "request_explicit_dates": True,
         "request_file_kind": "document",
         "request_subject_terms": ["standup"],
         "request_notes": True,
@@ -514,7 +670,11 @@ async def test_request_returns_a_small_inline_page_then_uses_full_background_pag
         user_id="owner",
         request_id="12345678-1234-1234-1234-123456789012",
         request_revision=1,
-        purpose={"purpose": "Standup notes from last 3 months"},
+        purpose={
+            "purpose": "Standup notes from last 3 months",
+            "periodStart": "2026-06-29",
+            "periodEnd": "2026-09-29",
+        },
         plan={"mode": "find", "terms": ["standup"], "file_kind": "document"},
         require_current=AsyncMock(),
     )
