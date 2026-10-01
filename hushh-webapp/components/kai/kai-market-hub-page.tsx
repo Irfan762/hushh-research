@@ -121,7 +121,11 @@ export function KaiMarketHubPage() {
         className="space-y-3.5 sm:space-y-3.5"
         data-finance-workspace-header="true"
       >
-        <PageHeader title="Finance" titleRole="agent" />
+        <PageHeader
+          title="Finance"
+          titleRole="agent"
+          className="ms-[var(--page-inline-gutter-standard)]"
+        />
         <TopShellTabs
           tabSet={{ ...FINANCE_TAB_DEFINITION, activeValue: visibleTab }}
         />

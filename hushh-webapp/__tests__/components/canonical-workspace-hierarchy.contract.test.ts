@@ -44,7 +44,11 @@ describe("canonical workspace hierarchy", () => {
 
     expect(finance).toContain('width="agent"');
     expect(finance).toContain('className="relative"');
-    expect(finance).toContain('<PageHeader title="Finance" titleRole="agent" />');
+    expect(finance).toContain('title="Finance"');
+    expect(finance).toContain('titleRole="agent"');
+    expect(finance).toContain(
+      'className="ms-[var(--page-inline-gutter-standard)]"',
+    );
     expect(finance).toContain("<TopShellTabs");
     expect(finance).toContain('panelInset="none"');
     expect(finance).not.toContain('style={{ "--one-gutter": "0px" }}');
