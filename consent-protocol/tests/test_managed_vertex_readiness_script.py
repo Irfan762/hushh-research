@@ -39,10 +39,9 @@ def test_readiness_probe_has_cold_response_headroom() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stalled", ["audio", "semantics", "live"])
 @pytest.mark.parametrize("hard_failure", [False, True])
-async def test_stalled_adapter_times_out_without_losing_other_verdicts(
-    monkeypatch: pytest.MonkeyPatch, stalled: str, hard_failure: bool
+async def test_stalled_live_preserves_slower_command_verdicts(
+    monkeypatch: pytest.MonkeyPatch, hard_failure: bool
 ) -> None:
     spec = importlib.util.spec_from_file_location("readiness_timeout_test", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
@@ -55,8 +54,6 @@ async def test_stalled_adapter_times_out_without_losing_other_verdicts(
     from hushh_mcp.services import action_gateway
 
     async def completed(**kwargs):
-        if hard_failure:
-            raise AttributeError("Synthetic candidate defect")
         return None
 
     class AdkModel:
@@ -69,22 +66,23 @@ async def test_stalled_adapter_times_out_without_losing_other_verdicts(
         try:
             await asyncio.Event().wait()
         finally:
-            cancelled.append(stalled)
+            cancelled.append("live")
 
     async def transcribe(self, *args):
-        if stalled == "audio":
-            await stall()
+        await asyncio.sleep(0.06)
         return "Open the Location screen."
 
     async def assess(self, **kwargs):
-        if stalled == "semantics":
-            await stall()
+        # Command probes own a longer budget than text/Live. A hard fault
+        # within that budget must survive the earlier Live timeout.
+        await asyncio.sleep(0.06)
+        if hard_failure:
+            raise AttributeError("Synthetic candidate defect")
         return SimpleNamespace(unsupported=False)
 
     @asynccontextmanager
     async def connect(**kwargs):
-        if stalled == "live":
-            await stall()
+        await stall()
         yield None
 
     monkeypatch.setattr(module, "PROBE_TIMEOUT_SECONDS", 0.03)
@@ -138,4 +136,4 @@ async def test_stalled_adapter_times_out_without_losing_other_verdicts(
     )
     assert report["advisory"] is (not hard_failure)
     assert len(report["probes"]) == 5
-    assert cancelled == [stalled]
+    assert cancelled == ["live"]
