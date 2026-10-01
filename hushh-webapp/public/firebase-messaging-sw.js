@@ -175,6 +175,11 @@ function isSilentNotification(data) {
 }
 
 function notificationTapTarget(data) {
+  if (data?.type === "location_circle_message") {
+    const circleId = String(data.circle_id || "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(circleId)) return "/one/feed";
+    return `/one/connect?tab=circles&action=circle-detail&circleId=${encodeURIComponent(circleId)}&circleChat=1`;
+  }
   const documentRequestId = documentShareNotificationRequestId(data);
   if (documentRequestId) {
     const eventType = normalizedDocumentShareType(data);

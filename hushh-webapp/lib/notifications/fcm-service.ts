@@ -13,6 +13,7 @@
  */
 
 import { Capacitor } from "@capacitor/core";
+import { circleChatNotificationTarget } from "@/lib/circle-chat/routes";
 import { ApiService } from "@/lib/services/api-service";
 import { ROUTES } from "@/lib/navigation/routes";
 import { isAgentConversationId } from "@/lib/agent/agent-chat-turn-watch";
@@ -207,6 +208,8 @@ export function informationRequestAnswerTapTarget(
 export function buildNotificationTapTarget(
   data: Record<string, unknown> | undefined,
 ): string {
+  const circleTarget = circleChatNotificationTarget(data);
+  if (circleTarget) return circleTarget;
   const oneReplyTarget = oneReplyNotificationTapTarget(data);
   if (oneReplyTarget) return oneReplyTarget;
   const answerTarget = informationRequestAnswerTapTarget(data);
@@ -239,6 +242,8 @@ function resolveNotificationClickTarget(
   value: unknown,
   data: Record<string, unknown> | undefined,
 ): string {
+  const circleTarget = circleChatNotificationTarget(data);
+  if (circleTarget) return circleTarget;
   // Older workers send a Feed URL but retain the original typed payload.
   // Only this known event family may bypass the existing Feed URL boundary.
   const locationTarget = incomingLocationShareTarget(data);

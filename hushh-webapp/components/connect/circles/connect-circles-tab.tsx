@@ -25,6 +25,7 @@ import {
 } from "@/components/one-location/redesign/circles/named-circle-flows";
 import { SmsTextIcon } from "@/components/one-location/redesign/sms-text-icon";
 import { createConnectCircleActions } from "@/components/connect/circles/connect-circle-actions";
+import { CircleChat } from "@/components/connect/circles/circle-chat";
 import type { ConnectCirclesSnapshot } from "@/components/connect/circle-discovery";
 import {
   CONNECT_CIRCLE_GRID_CLASSNAME,
@@ -374,6 +375,14 @@ export function ConnectCirclesTab({
   const circleIdParam = String(
     searchParams.get(CONNECT_CIRCLE_ID_PARAM) || "",
   ).trim();
+  const chatSession = useMemo(() => currentUserId && vaultOwnerToken && vault?.vaultKey && circleIdParam
+    ? { userId: currentUserId, circleId: circleIdParam, vaultOwnerToken, vaultKey: vault.vaultKey } : null,
+    [currentUserId, vaultOwnerToken, vault?.vaultKey, circleIdParam]);
+  const consumeChatIntent = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("circleChat");
+    router.replace(`${ROUTES.CONNECT}?${next.toString()}`, { scroll: false });
+  }, [router, searchParams]);
   const joinCode =
     String(searchParams.get(CIRCLE_JOIN_CODE_PARAM) || "").trim() || undefined;
   const trackedSurfaceRef = useRef<string | null>(null);
@@ -691,6 +700,11 @@ export function ConnectCirclesTab({
     return (
       <CircleDetailFlow
         livingCircleExperience
+        renderChat={chatSession ? (circle) => <CircleChat
+          key={`${chatSession.userId}:${chatSession.circleId}:${chatSession.vaultOwnerToken}`}
+          session={chatSession} circleName={circle.name} initialOpen={searchParams.get("circleChat") === "1"}
+          onOpenIntentConsumed={consumeChatIntent}
+        /> : undefined}
         // A signal, not a `key`. Remounting would re-read the roster but also
         // close an open add-people sheet, clear a half-typed search and drop
         // the selection -- and a notification can arrive at any moment.

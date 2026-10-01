@@ -2177,6 +2177,65 @@ the `hushh_tech_client` tool group and no broader capability.
 
 ## Response Format
 
+### Circle member chat
+
+Ordinary named Circles expose member chat through the existing One JSON proxy
+on web and `ApiService.apiFetch` / Capacitor HTTP on iOS and Android. Trusted
+and SMS system Circles are excluded because their rosters have different
+visibility contracts. Every endpoint requires a current `VAULT_OWNER` token;
+the authenticated owner determines the user, and an active Circle membership
+must match the recipient envelope's current `joined_at` generation. Joining
+or rejoining starts a new history window.
+
+| Method | Endpoint | Contract |
+| --- | --- | --- |
+| GET | `/api/one/circles/{circle}/chat` | Current public-key roster/version, unread count, latest sequence and mute state |
+| GET | `/api/one/circles/{circle}/chat/messages` | Ascending visible messages; exclusive `before` or `after` sequence cursor; 40 default, 50 maximum |
+| POST | `/api/one/circles/{circle}/chat/messages` | Client UUID, roster version, encrypted content/image and exactly one key wrap per current member, including sender |
+| GET | `/api/one/circles/{circle}/chat/messages/{message}/image` | Separately authorized encrypted image bytes; images are omitted from transcript pages |
+| GET | `/api/one/circles/{circle}/chat/wait?after={sequence}` | Twenty-second JSON long poll over the existing PostgreSQL user-state event bus; subscribe before revision read, reauthorize before response, four waits per user per worker |
+| GET | `/api/one/circles/{circle}/chat/keys/{key}` | Owner-only vault-encrypted historical key backup, only for an accessible current-generation message; active/rotated keys, never revoked keys |
+| POST | `/api/one/circles/{circle}/chat/read` | Visible sequence watermark; atomically marks recipient messages and derived Feed rows read |
+| PUT | `/api/one/circles/{circle}/chat/preferences` | `muted` disables queued system pushes while preserving chat and Feed |
+
+The new chat wire uses camelCase directly on all surfaces. Clients encrypt a
+fresh AES-256-GCM content key per message, wrap it to every recipient using the
+existing vault-synced P-256 recipient keys, and authenticate Circle, client
+message ID, sender, recipient and payload kind as additional data. Text, image
+bytes, filename and MIME metadata remain encrypted; Feed and pushes carry only
+Circle identifiers and generic activity. This reuses the existing authenticated
+key directory; it does not introduce key verification or a ratcheting protocol.
+
+Images are passive JPEG/PNG/WebP files up to 5 MiB and messages contain at most
+4,000 characters. Both API layers bound chat requests to 7,250,000 bytes.
+Validation and database errors never echo rejected payloads. Responses are
+private/no-store. Native long polling receives complete JSON, so it does not
+depend on streamed fetch through the native bridge. Five-second foreground
+polling repairs missing events; native lifecycle and browser visibility suspend
+work, with catch-up on resume.
+
+Identical retries return the existing message; altered payloads or membership
+generations reject that UUID. Membership and nonblocking key locks serialize
+send authorization without inverting the key-registration lock order. Message,
+recipient wraps, Feed rows and event doorbells commit together. Pushes use a
+bounded five-attempt lease with generic content; provider acceptance is not a
+recipient read receipt. Leaving suppresses old unread Feed activity and pushes;
+deleting a Circle erases its message/image store. Reset/full-account cleanup
+also erases authored messages and recipient-owned wraps/preferences.
+
+Migration `264_circle_chat.sql`, its rollback, the release manifest and UAT
+schema contract travel together. Deploy the migration before the updated
+backend, then the web/native bundle. The rollback removes chat and its derived
+Feed projections; restoring erased history requires a database backup.
+
+Core proofs: `tests/test_circle_chat.py` runs against the existing isolated
+PostgreSQL CI service and tests concurrent retry, membership-generation privacy,
+image authorization, key contention, cursor pagination, leases, mute, deletion,
+tombstones and migration replay. The existing encryption, native notification
+routing and Feed-renderer tests cover authenticated client encryption, recovery
+and safe destinations. Native simulator/device verification remains a separate
+release check; browser WebKit is not an iOS device test.
+
 Backend returns **snake_case**. Frontend transforms to **camelCase** in the service layer.
 
 ```
