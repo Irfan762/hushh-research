@@ -34,7 +34,7 @@ export function MailConnectedAccount({
 }) {
   const openingConfirmation = useRef(false);
   return (
-    <div className="flex items-center justify-between gap-3 rounded-[22px] border border-border/60 bg-card p-4 shadow-sm">
+    <div className="flex items-center justify-between gap-3 rounded-[22px] border border-border/60 bg-card p-4 shadow-sm lg:py-3">
       <div className="flex min-w-0 items-center gap-3.5">
         <MailOverviewIcon />
         <div>
@@ -104,8 +104,8 @@ export function MailOverview({
   onOpenChat: () => void;
 }) {
   return (
-    <section aria-label="Mail overview" className="w-full pb-4 pt-5 sm:pt-8">
-      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:px-4 sm:pb-8">
+    <section aria-label="Mail overview" className="w-full pb-4 pt-5 sm:pt-8 lg:pb-0 lg:pt-3">
+      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:px-4 sm:pb-8 lg:mx-auto lg:min-h-0 lg:max-w-[680px] lg:grid-cols-[1fr_1fr] lg:gap-6 lg:pb-3">
         <div className="relative z-10 min-w-0">
           <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-[color:var(--app-accent-tint)] bg-[color:var(--app-accent-surface)] px-3 py-1 text-xs font-semibold text-[color:var(--app-accent)]">
             <Star aria-hidden="true" className="size-3.5" />
@@ -126,13 +126,13 @@ export function MailOverview({
           </ul>
         </div>
         <div aria-hidden="true" className="min-w-0 pr-1 sm:pr-3">
-          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px]`}>
+          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px] lg:ml-0 lg:max-w-[280px]`}>
             {[
               { label: "Reply", icon: Undo2, width: "w-3/4" },
               { label: "Follow up", icon: FileText, width: "w-2/3" },
               { label: "Write", icon: PenLine, width: "w-1/2" },
             ].map(({ label, icon: Icon, width }, index) => (
-              <div key={label} data-testid="mail-draft-card" style={{ "--card-index": index } as CSSProperties} className={`${styles.card} rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4`}>
+              <div key={label} data-testid="mail-draft-card" style={{ "--card-index": index } as CSSProperties} className={`${styles.card} rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4 lg:py-2.5`}>
                 <div className="flex items-center gap-2 text-xs font-semibold text-foreground sm:text-sm">
                   <Icon className="size-3.5 shrink-0 text-[color:var(--app-accent)] sm:size-4" />
                   {label}
@@ -146,7 +146,7 @@ export function MailOverview({
           </div>
         </div>
       </div>
-      <div className="border-t border-border/50 py-3 sm:py-4">
+      <div className="border-t border-border/50 py-3 sm:py-4 lg:py-2">
         <SettingsRow
           title="Receipt sync"
           leading={<span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-full ${receiptIssue ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"}`}>{receiptIssue ? <AlertCircle className="size-6" /> : <FileText className="size-6" />}</span>}
@@ -156,7 +156,7 @@ export function MailOverview({
           className={`!rounded-[20px] border ${receiptIssue ? "border-destructive/20 bg-destructive/[0.06] dark:bg-destructive/10" : "border-emerald-500/15 bg-emerald-500/[0.06] dark:bg-emerald-500/10"}`}
         />
       </div>
-      <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="mt-3 h-[54px] w-full justify-center text-base sm:w-full">
+      <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="mt-3 h-[54px] w-full justify-center text-base sm:w-full lg:mt-1">
         Chat with One
       </AskOneButton>
     </section>

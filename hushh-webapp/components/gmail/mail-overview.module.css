@@ -1,5 +1,6 @@
 .stack {
   --card-step: 76px;
+  --card-tilt: 3deg;
   position: relative;
   isolation: isolate;
   height: 224px;
@@ -10,7 +11,7 @@
   inset: 0 0 auto;
   z-index: calc(3 - var(--card-index));
   transform: translateY(calc(var(--card-index) * var(--card-step)))
-    rotate(calc((var(--card-index) - 1) * 3deg));
+    rotate(calc((var(--card-index) - 1) * var(--card-tilt)));
   transform-origin: center;
 }
 
@@ -18,6 +19,14 @@
   .stack {
     --card-step: 94px;
     height: 280px;
+  }
+}
+
+@media (min-width: 1024px) {
+  .stack {
+    --card-step: 80px;
+    --card-tilt: 2deg;
+    height: 232px;
   }
 }
 
@@ -33,6 +42,6 @@
 
   .stack:hover .card {
     transform: translateY(calc(var(--card-index) * var(--card-step)))
-      rotate(calc((var(--card-index) - 1) * 3deg));
+      rotate(calc((var(--card-index) - 1) * var(--card-tilt)));
   }
 }

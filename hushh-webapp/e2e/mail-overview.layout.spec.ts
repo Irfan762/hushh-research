@@ -89,7 +89,7 @@ test.beforeAll(async () => {
 
 for (const width of [320, 390, 430, 768, 1440]) {
   test(`Mail overview stays aligned at ${width}px`, async ({ page }, testInfo) => {
-    await page.setViewportSize({ width, height: 900 });
+    await page.setViewportSize({ width, height: width >= 1024 ? 832 : 900 });
     await page.route("http://localhost/mail-overview.js", route => route.fulfill({contentType: "application/javascript; charset=utf-8", body: script}));
     await page.route("http://localhost/mail-overview-fixture", route => route.fulfill({contentType: "text/html", body: `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div><script src="/mail-overview.js"></script></body></html>`}));
     const errors: string[] = [];
@@ -106,6 +106,11 @@ for (const width of [320, 390, 430, 768, 1440]) {
     await receipts.hover();
     expect(await receipts.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(beforeHover);
     const chat = page.getByRole("button", {name: "Chat with One"});
+    if (width >= 1024) {
+      const ctaBounds = (await chat.boundingBox())!;
+      const reservedBounds = (await page.getByTestId("desktop-bottom-clearance").boundingBox())!;
+      expect(ctaBounds.y + ctaBounds.height).toBeLessThanOrEqual(reservedBounds.y - 12);
+    }
     const manage = page.getByRole("button", {name: "Manage"});
     const heroBefore = await hero.boundingBox();
     const triggerBackground = await manage.evaluate(el => getComputedStyle(el).backgroundColor);
