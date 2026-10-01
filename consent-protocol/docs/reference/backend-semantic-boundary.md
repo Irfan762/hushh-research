@@ -195,6 +195,37 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
 - Live eval before promotion: none yet. Mocked contract tests only; extraction
   quality on real mailboxes and calendars is unmeasured.
 
+### Declared: explicit memory save from chat
+
+- Owning agents: `agent_one` decides that the person asked to save (tool `add_to_pkm`,
+  with `whole_message` for a pasted document); `agent_memory_segmentation`,
+  `agent_memory_intent`, `agent_memory_merge` and `agent_pkm_structure` decide what the
+  facts are, where they go, and whether each creates, extends or corrects. Manifests under
+  `consent-protocol/hushh_mcp/agents/`.
+- Structured output: the existing `POST /api/pkm/memory/proposals` preview cards.
+- Host policy (`hushh-webapp/lib/agent/agent-pkm-explicit-save.ts`) enforces authority only.
+  The owner's request is the confirmation for the content they supplied, so a card the
+  agents marked `confirm_first` is written with an `owner_confirmed` receipt. It never
+  changes a card's domain, path, payload or merge mode. It holds back, for the owner's
+  direct tap, a card whose payload has an identifier-class key or value
+  (`contracts/consent/field-sensitivity.v1.json`) or whose save would change what the owner
+  already shares, and it never writes a reserved, degraded, secret or `do_not_save` card.
+- Reconciliation context, not a decision: for each section the device offers up to ten
+  of the owner's existing entity summaries chosen by local word overlap
+  (`AgentPkmContextStore.findReconciliationCandidates`) as `simulated_state.memories`.
+  The merge agent alone decides create, extend, correct or no_op. A `no_op` that names
+  the stored entity it matched is reported as already known; the host never
+  re-derives a merge mode.
+- Display only: `classifyMergeOutcome` (`hushh-webapp/lib/pkm/pkm-supersede-merge.ts`)
+  labels each acknowledged write as new, updated, merged or already known from the stored
+  state the write merged into. It decides nothing about meaning.
+- The KYC keyword route `isExplicitKycIdentitySaveRequest` predates this contract. It is
+  narrowed to a single short section (at most 1,200 characters) so it can no longer take a
+  whole document away from the semantic agents (production, 2026-09-29).
+- Live eval before promotion: the synthetic context-transfer run recorded in
+  `personal-knowledge-model.md`; mocked contract tests in
+  `hushh-webapp/__tests__/services/agent-pkm-explicit-save.test.ts`.
+
 ### Declared: consent scope catalog search (contract C4)
 
 Keyword and synonym matching in `consent-protocol/hushh_mcp/consent/scope_matcher.py`
@@ -222,3 +253,56 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
   `one.proposal_reason_fallback`.
 - Live eval before promotion: none yet. Deterministic ranking tests only
   (`consent-protocol/tests/test_scope_search_ranking.py`).
+
+### Declared: conversation history titles
+
+- Owning agent: `agent_one`, tool-free gene `one_conversation_title` in
+  `consent-protocol/hushh_mcp/agents/one/agent.yaml`.
+- Output: `ConversationTitles` in `hushh_mcp/one_adk/conversation_titles.py`;
+  one unique supplied reference and complete title per untitled conversation,
+  at most 32 characters and six words. Validators reject invalid labels rather
+  than truncating or substituting semantic text.
+- The owner-authenticated history listing supplies only opening user text under
+  the live chat key. Thoughts, assistant answers, shared information, and tool
+  results are excluded. One bounded model call repairs at most 20 visible chats.
+  Titles remain encrypted in `hussh:thread_summary_title`; manual
+  `hussh:thread_title` takes precedence. Revision checks protect concurrent
+  renames/messages; automatic titles preserve conversation recency.
+- Failure: content-free outcome logs, opening-text fallback, and a bounded
+  process-local 60-second retry cooldown. Empty conversations use `New chat`. Disable with `ONE_CHAT_TITLE_SUMMARIES_ENABLED=false`.
+- Surfaces: existing web/iOS/Android chat history response; no voice, A2A, MCP,
+  external tool authority, or PKM mutation is added.
+- Evaluation: mocked contract tests cover privacy, bounded output, persistence,
+  races, and failure. A live synthetic check produced “Tech and biology
+  background” and “Writing my bio”; real-owner content must not enter evaluation logs.
+
+### Declared: One Voice Mail analysis
+
+- Owning agent: the Email specialist under One Voice. One selects the existing
+  `read_mail` tool; `agent_email_read_planner` selects `analyze_mail` and the
+  requested categories from the owner's current question. The existing
+  `agent_email_request_classifier` judges personal-information requests;
+  `agent_email_read_analyzer` extracts action items and mail-derived meetings.
+- Manifest path: `consent-protocol/hushh_mcp/agents/email/agent.yaml`.
+- Structured output: `MailReadPlan` (`operation`, bounded Gmail query and limit,
+  `categories`) and `MailAnalysisAnswer` (`findings` with category, source ref,
+  update refs, detail, state, and zoned due/event time) in
+  `consent-protocol/hushh_mcp/services/email_delegated_read.py`. The personal
+  classifier retains `EMAIL_REQUEST_CLASSIFIER_SCHEMA` in
+  `consent-protocol/hushh_mcp/agents/email/runtime.py`; its nonpersisting service
+  assessment returns a boolean and registry-authored field names.
+- Validator: the reader caps analysis at 12 message bodies, keeps provider IDs
+  server-side, and reports partial coverage. The service accepts only requested
+  categories and refs from that read, requires each update ref to come from the
+  same retrieved thread, and rejects naive or malformed event/due times. A
+  failed category remains unavailable, never zero findings. The Live model sees
+  only code-counted coverage; Mail text and findings are screen-only. No phrase
+  table selects an operation, and analysis neither mutates Mail nor checks the
+  owner's Calendar.
+- Live eval before production promotion: run a consented UAT session on an owner
+  mailbox with positive and negative personal-information requests, an action
+  item with a later completion, and an invitation with a later cancellation or
+  reschedule. Verify the bounded search scope, source and Open bindings, correct
+  timezone, partial-category failure, and the continuous One Voice conversation
+  across in-app navigation. Synthetic contract tests prove the safety boundary;
+  they do not establish classification accuracy on a live mailbox.

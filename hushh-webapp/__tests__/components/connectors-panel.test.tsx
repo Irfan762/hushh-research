@@ -24,6 +24,7 @@ const state = vi.hoisted(() => ({
   calendarStartNativeConnect: vi.fn(),
   calendarCompleteNativeConnect: vi.fn(),
   connectCalendar: vi.fn(),
+  disconnect: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: state.user }) }));
@@ -52,6 +53,7 @@ vi.mock("@/lib/services/external-connector-service", () => ({
   ExternalConnectorService: {
     overview: state.overview,
     startOAuthConnect: state.startOAuthConnect,
+    disconnect: state.disconnect,
     documents: state.documents,
     liveBackground: state.liveBackground,
     setLiveBackground: state.setLiveBackground,
@@ -72,7 +74,10 @@ vi.mock("@/lib/capacitor", () => ({
 }));
 vi.mock("@/components/icons", () => ({
   ArrowLeftIcon: () => null,
+  CaretRightIcon: () => null,
   ChevronRightIcon: () => null,
+  Loader2: () => null,
+  Loader2Icon: () => null,
   SearchIcon: () => null,
   XIcon: () => null,
 }));
@@ -163,8 +168,10 @@ describe("supported connector catalog", () => {
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
     expect(state.push).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
-    expect(screen.getByText(/remove its connected financial records/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect this bank?" });
+    expect(within(dialog).getByText(/removes its connected financial records/)).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
     expect(state.push).not.toHaveBeenCalled();
   });
 
@@ -285,6 +292,200 @@ describe("supported connector catalog", () => {
     }
   });
 
+  describe("curated CRM connector (HubSpot)", () => {
+    const hubspot = {
+      ...catalogItem,
+      connectorId: "hubspot",
+      displayName: "HubSpot",
+      available: true,
+    } as typeof catalogItem & { available: boolean };
+    const withFlag = (connectors: object[], enabled = true) => ({
+      connectors,
+      features: { connections_panel_v2: true, curated_mcp_connectors: enabled },
+    });
+    const realLocation = window.location;
+    let assign: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      assign = vi.fn();
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: { origin: "https://uat.one.hushh.ai", assign },
+      });
+      state.startOAuthConnect.mockReset().mockResolvedValue({
+        authorizeUrl: "https://mcp.hubspot.com/oauth/authorize/user?state=signed",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
+        connectorId: "hubspot",
+      });
+      state.disconnect.mockReset().mockResolvedValue({ status: "revoked", connectorId: "hubspot" });
+    });
+    afterEach(() => {
+      Object.defineProperty(window, "location", { configurable: true, value: realLocation });
+      // eslint-disable-next-line no-restricted-globals -- Clear the synthetic handoff marker.
+      sessionStorage.clear();
+    });
+
+    it("stays hidden while the rollout flag is off", async () => {
+      state.overview.mockResolvedValue(withFlag([hubspot, catalogItem], false));
+      render(panel());
+      expect(await screen.findByText("Example Docs")).toBeInTheDocument();
+      expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
+    });
+
+    it("keeps a connected connector reachable for disconnect while rollout is off", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "connected" }], false));
+      render(panel());
+      const connected = screen.getByRole("region", { name: "Connected" });
+      expect(await within(connected).findByText("HubSpot")).toBeInTheDocument();
+      fireEvent.click(within(connected).getByRole("button", { name: "Disconnect HubSpot" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "Disconnect this connector?" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      await waitFor(() =>
+        expect(state.disconnect).toHaveBeenCalledWith({
+          vaultOwnerToken: "synthetic-owner-token",
+          connectorId: "hubspot",
+        }),
+      );
+    });
+
+    it("does not offer a stale grant a reconnect path while rollout is off", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "verifying" }], false));
+      render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "HubSpot" }));
+      const details = screen.getByRole("region", { name: "HubSpot details" });
+      expect(within(details).getByText("Unavailable")).toBeInTheDocument();
+      expect(within(details).queryByRole("button", { name: "Reconnect" })).not.toBeInTheDocument();
+      expect(within(details).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+      expect(state.startOAuthConnect).not.toHaveBeenCalled();
+    });
+
+    it("stays hidden when unavailable and not connected", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, available: false }, catalogItem]));
+      render(panel());
+      expect(await screen.findByText("Example Docs")).toBeInTheDocument();
+      expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
+    });
+
+    it("starts the web sign-in with a curated handoff marker", async () => {
+      state.overview.mockResolvedValue(withFlag([hubspot]));
+      render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
+      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
+      expect(state.startOAuthConnect).toHaveBeenCalledWith({
+        vaultOwnerToken: "synthetic-owner-token",
+        connectorId: "hubspot",
+        redirectUri: "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
+        flow: "web",
+      });
+      expect(assign).toHaveBeenCalledWith(
+        "https://mcp.hubspot.com/oauth/authorize/user?state=signed",
+      );
+      // eslint-disable-next-line no-restricted-globals -- Read the redacted correlation marker.
+      const marker = JSON.parse(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1") ?? "null");
+      expect(marker).toMatchObject({
+        ownerUserId: "owner-a",
+        curatedConnector: { connectorId: "hubspot" },
+        returnTo: "connector_settings",
+      });
+    });
+
+    it("re-enables Connect when the page is restored from the back/forward cache", async () => {
+      state.overview.mockResolvedValue(withFlag([hubspot]));
+      render(panel());
+      const connect = await screen.findByRole("button", { name: "Connect HubSpot" });
+      fireEvent.click(connect);
+      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled());
+      act(() => {
+        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      });
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
+    });
+
+    it("retires an OAuth start after same-owner token renewal", async () => {
+      let settle!: (value: unknown) => void;
+      state.startOAuthConnect.mockImplementation(() => new Promise((done) => { settle = done; }));
+      state.overview.mockResolvedValue(withFlag([hubspot]));
+      const view = render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
+      await waitFor(() => expect(state.startOAuthConnect).toHaveBeenCalledOnce());
+      state.token = "renewed-owner-token";
+      view.rerender(panel());
+      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
+      await act(async () => settle({
+        authorizeUrl: "https://mcp.hubspot.com/oauth/authorize/user?state=old",
+        attemptId: "old-attempt", connectorId: "hubspot",
+      }));
+      expect(assign).not.toHaveBeenCalled();
+      expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+    });
+
+    it("refuses a non-https authorize URL", async () => {
+      state.startOAuthConnect.mockResolvedValue({
+        authorizeUrl: "http://evil.invalid/authorize",
+        expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
+        connectorId: "hubspot",
+      });
+      state.overview.mockResolvedValue(withFlag([hubspot]));
+      render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
+      await waitFor(() => expect(state.startOAuthConnect).toHaveBeenCalled());
+      expect(assign).not.toHaveBeenCalled();
+    });
+
+    it("offers Disconnect for a connected connector and confirms first", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "connected" }]));
+      render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "Disconnect HubSpot" }));
+      expect(state.disconnect).not.toHaveBeenCalled();
+      const dialog = await screen.findByRole("alertdialog", { name: "Disconnect this connector?" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      await waitFor(() =>
+        expect(state.disconnect).toHaveBeenCalledWith({
+          vaultOwnerToken: "synthetic-owner-token",
+          connectorId: "hubspot",
+        }),
+      );
+    });
+
+    it("clears a pending disconnect after same-owner token renewal", async () => {
+      let settle!: (value: unknown) => void;
+      state.disconnect.mockImplementation(() => new Promise((done) => { settle = done; }));
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "connected" }]));
+      const view = render(panel());
+      fireEvent.click(await screen.findByRole("button", { name: "Disconnect HubSpot" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "Disconnect this connector?" });
+      fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
+      expect(await screen.findByText("Disconnecting…")).toBeInTheDocument();
+      state.token = "renewed-owner-token";
+      view.rerender(panel());
+      await waitFor(() => expect(screen.queryByText("Disconnecting…")).not.toBeInTheDocument());
+      expect(screen.getByRole("button", { name: "Disconnect HubSpot" })).toBeEnabled();
+      await act(async () => settle({ status: "revoked", connectorId: "hubspot" }));
+      expect(screen.getByRole("button", { name: "Disconnect HubSpot" })).toBeEnabled();
+    });
+
+    it("treats a connection stuck before verification as needing sign-in", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "verifying" }]));
+      render(panel());
+      const available = screen.getByRole("region", { name: "Available" });
+      const connected = screen.getByRole("region", { name: "Connected" });
+      expect(
+        await within(available).findByRole("button", { name: "Reconnect HubSpot" }),
+      ).toBeInTheDocument();
+      expect(within(connected).queryByText("HubSpot")).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Disconnect HubSpot" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/choose files/)).not.toBeInTheDocument();
+    });
+
+    it("offers Reconnect when sign-in is needed", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "needs_reauth" }]));
+      render(panel());
+      expect(await screen.findByRole("button", { name: "Reconnect HubSpot" })).toBeInTheDocument();
+    });
+  });
+
   it("does not describe a failed Drive status check as disconnected", async () => {
     state.overview.mockRejectedValue(new Error("synthetic unavailable"));
     render(<ConnectorsPanel open initialConnector="google_drive" {...callbacks} />);
@@ -295,19 +496,39 @@ describe("supported connector catalog", () => {
     expect(screen.getByRole("button", { name: "Retry Drive" })).toBeEnabled();
   });
 
-  it("opens the requested provider directly from the Settings catalog", async () => {
-    render(
+  it("lets Profile hold the open connector and draws no header of its own", async () => {
+    const onActiveConnectorChange = vi.fn();
+    const view = render(
       <ConnectorsPanel
         open
-        surface="settings"
-        initialConnector="gmail"
+        surface="profile"
+        activeConnector={null}
+        onActiveConnectorChange={onActiveConnectorChange}
         {...callbacks}
       />,
     );
-    expect((await screen.findAllByRole("heading", { name: "Gmail" })).length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Back to connectors" })).toBeInTheDocument();
+    // Profile's pane header owns the title and Back.
+    expect(await screen.findByRole("heading", { name: "Available" })).toBeInTheDocument();
+    // Nothing is connected, so there is no empty "Connected" group to read past.
+    expect(screen.queryByRole("heading", { name: "Connected" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back to connectors" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Close connectors" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect Mail" })).toBeInTheDocument();
+    expect(screen.queryByRole("searchbox", { name: "Search connectors" })).not.toBeInTheDocument();
+    const gmailRow = screen.getByRole("button", { name: /^Gmail/ });
+    fireEvent.click(gmailRow);
+    fireEvent.click(gmailRow);
+    // Asked once: a double tap never stacks two identical history entries.
+    expect(onActiveConnectorChange).toHaveBeenCalledExactlyOnceWith("gmail");
+    view.rerender(
+      <ConnectorsPanel
+        open
+        surface="profile"
+        activeConnector="gmail"
+        onActiveConnectorChange={onActiveConnectorChange}
+        {...callbacks}
+      />,
+    );
+    expect(await screen.findByRole("button", { name: "Connect Mail" })).toBeInTheDocument();
   });
 
   it("offers explicit Gmail draft permission only for a connected account without it", async () => {
@@ -342,13 +563,18 @@ describe("supported connector catalog", () => {
     }
   });
 
-  it("shows a compact Gmail disconnect action and asks before changing access", async () => {
+  it("asks before a Gmail disconnect without leaving the list", async () => {
     state.gmailStatus = { connected: true, compose_permission_granted: true };
     render(panel());
     const connected = within(screen.getByRole("region", { name: "Connected" }));
     fireEvent.click(await connected.findByRole("button", { name: "Disconnect Gmail" }));
-    expect(screen.getByText("Disconnect Mail? Drive stays connected.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect Mail?" });
+    expect(within(dialog).getByText("Drive stays connected.")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument());
+    // The question floated over the list; the person never left it.
+    expect(screen.getByRole("region", { name: "Connected" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Back to connectors" })).not.toBeInTheDocument();
   });
 
   it("never duplicates the built-in Drive connection", async () => {
@@ -400,11 +626,87 @@ describe("supported connector catalog", () => {
     state.calendar = { connected: true, loaded: true, error: null, status: { status: "connected" } };
     view.rerender(panel());
     fireEvent.click(screen.getByRole("button", { name: "Disconnect Calendar" }));
-    expect(screen.getByText("Disconnect Calendar from One? Other connections stay active.")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Confirm" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    const dialog = await screen.findByRole("alertdialog", { name: "Disconnect Calendar?" });
+    expect(within(dialog).getByText("Other connections stay active.")).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(state.calendarDisconnect).toHaveBeenCalledExactlyOnceWith("synthetic-firebase-token", "owner-a"));
     await waitFor(() => expect(state.calendarRefresh).toHaveBeenCalledOnce());
+  });
+
+  describe("disconnect state transitions", () => {
+    const connectedCalendar = () => {
+      state.calendar = { connected: true, loaded: true, error: null, status: { status: "connected" } };
+    };
+    const askAndConfirm = async () => {
+      fireEvent.click(await screen.findByRole("button", { name: "Disconnect Calendar" }));
+      const dialog = await screen.findByRole("alertdialog", { name: "Disconnect Calendar?" });
+      return within(dialog).getByRole("button", { name: "Disconnect" });
+    };
+
+    it("sends one disconnect for a double tap and shows the row pending in place", async () => {
+      connectedCalendar();
+      let settle!: (value: unknown) => void;
+      state.calendarDisconnect.mockImplementation(() => new Promise((done) => { settle = done; }));
+      render(panel());
+      const confirm = await askAndConfirm();
+      fireEvent.click(confirm);
+      fireEvent.click(confirm);
+      await waitFor(() => expect(state.calendarDisconnect).toHaveBeenCalledOnce());
+      const connected = within(screen.getByRole("region", { name: "Connected" }));
+      expect(connected.getByText("Disconnecting…")).toBeInTheDocument();
+      expect(connected.getByRole("button", { name: "Disconnect Calendar" })).toBeDisabled();
+      await act(async () => settle({ connected: false, status: "disconnected" }));
+      await waitFor(() => expect(connected.queryByText("Disconnecting…")).not.toBeInTheDocument());
+      expect(state.calendarDisconnect).toHaveBeenCalledOnce();
+    });
+
+    it("says a failed disconnect failed and lets the same row retry", async () => {
+      connectedCalendar();
+      state.calendarDisconnect
+        .mockRejectedValueOnce(new Error("network"))
+        .mockResolvedValueOnce({ connected: false, status: "disconnected" });
+      render(panel());
+      fireEvent.click(await askAndConfirm());
+      const connected = within(screen.getByRole("region", { name: "Connected" }));
+      expect(await connected.findByText("Couldn't disconnect. Try again.")).toBeInTheDocument();
+      expect(connected.getByRole("button", { name: "Disconnect Calendar" })).toBeEnabled();
+      fireEvent.click(await askAndConfirm());
+      await waitFor(() => expect(state.calendarDisconnect).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(connected.queryByText("Couldn't disconnect. Try again.")).not.toBeInTheDocument());
+      expect(state.calendarRefresh).toHaveBeenCalledOnce();
+    });
+
+    it("keeps a disconnected row where it was until the list is revisited", async () => {
+      connectedCalendar();
+      const view = render(panel());
+      fireEvent.click(await askAndConfirm());
+      await waitFor(() => expect(state.calendarRefresh).toHaveBeenCalledOnce());
+      state.calendar = { connected: false, loaded: true, error: null, status: { status: "disconnected" } };
+      view.rerender(panel());
+      // Updated in place: same section, new action, no re-sort under the finger.
+      const connected = within(screen.getByRole("region", { name: "Connected" }));
+      expect(connected.getByRole("button", { name: "Connect Calendar" })).toBeInTheDocument();
+      fireEvent.click(connected.getByRole("button", { name: "Calendar" }));
+      fireEvent.click(await screen.findByRole("button", { name: "Back to connectors" }));
+      const available = within(await screen.findByRole("region", { name: "Available" }));
+      expect(available.getByRole("button", { name: "Connect Calendar" })).toBeInTheDocument();
+    });
+
+    it("asks on the native app with a sheet rather than a dialog", async () => {
+      connectedCalendar();
+      vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+      try {
+        render(panel());
+        fireEvent.click(await screen.findByRole("button", { name: "Disconnect Calendar" }));
+        const sheet = await screen.findByTestId("connector-confirm-sheet");
+        expect(within(sheet).getByText("Disconnect Calendar?")).toBeInTheDocument();
+        expect(screen.queryByTestId("connector-confirm-dialog")).not.toBeInTheDocument();
+        fireEvent.click(within(sheet).getByRole("button", { name: "Disconnect" }));
+        await waitFor(() => expect(state.calendarDisconnect).toHaveBeenCalledOnce());
+      } finally {
+        vi.mocked(Capacitor.isNativePlatform).mockRestore();
+      }
+    });
   });
 
   it("does not claim an unchecked Calendar connection is manageable", async () => {

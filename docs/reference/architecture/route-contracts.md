@@ -80,6 +80,8 @@ Keep navigation documentation aligned with `hushh-webapp/lib/navigation/routes.t
 - `/one/profile/connected-systems`
 - `/one/connected-systems`
 - `/one/connected-systems/[systemId]`
+- `/one/profile/connectors`
+- `/one/profile/connectors/oauth/return`
 - `/one/profile/gmail`
 - `/one/profile/gmail/connection`
 - `/one/profile/gmail/actions`
@@ -177,6 +179,13 @@ by `hushh-webapp/lib/navigation/profile-routes.ts`.
 not be reintroduced as a Connected apps settings surface. Calendar OAuth
 returns through `/one/profile/google/oauth/return` and routes back to Calendar.
 
+`/one/profile/connectors` is the authenticated connector-management surface.
+Its curated OAuth return route is a transient web callback: it consumes only
+the opaque, same-tab handoff and redirects to Connector Settings after
+completion. Native clients may use an already connected curated connector but
+must complete the initial curated OAuth grant on the web until a native callback
+contract is added.
+
 The access manager is the One-owned `/one/consent` workspace. Legacy
 `/consents` links redirect there while preserving transient query state such as
 the selected review tab and request identifier.
@@ -218,6 +227,23 @@ Auth-only routes can still be mandatory even when they intentionally bypass the 
 - `/login`
 - `/register-phone`
 - `/logout`
+
+## Phone onboarding admission
+
+`/register-phone` is the phone step for unfinished new-account onboarding after
+provider authentication. `PostAuthRouteService` and `PhoneMandateGuard` share
+`shouldRequirePhoneMandate`: an existing vault or completed root setup exempts
+an established account on every route, including invitation returns. This is
+an onboarding decision, not a replacement for backend verified-phone, consent,
+or vault authorization on individual operations.
+
+Firebase phone absence alone does not establish an unverified account: backend
+phone claims and newer positive identity-cache claims also count. A missing
+bootstrap phone claim is resolved through identity refresh; a failed or null
+lookup presents retry recovery instead of starting verification. The phone page
+checks admission before showing its form, including direct links and refreshes.
+Once admitted, token revalidation must preserve the pending OTP; an owner change
+must discard it. Incomplete new accounts still resume the phone step.
 
 ## Public SEO and answer-engine projection
 

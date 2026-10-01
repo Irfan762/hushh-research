@@ -5,6 +5,7 @@ import { Capacitor } from "@capacitor/core";
 import { useRouter } from "next/navigation";
 
 import { ROUTES } from "@/lib/navigation/routes";
+import { buildProfileConnectorsPaneHref } from "@/lib/navigation/profile-pane";
 import { ExternalConnectorService } from "@/lib/services/external-connector-service";
 import { useVault } from "@/lib/vault/vault-context";
 import { useAuth } from "@/hooks/use-auth";
@@ -126,6 +127,7 @@ function ConnectorOAuthReturnRouter() {
     ownerUserId: string | null;
     issuer: string | null;
     customConnector?: { connectorId: string; revision: string };
+    curatedConnector?: { connectorId: string };
     returnTo?: "connector_settings";
   } | null>(null);
   useEffect(() => {
@@ -149,6 +151,7 @@ function ConnectorOAuthReturnRouter() {
         ownerUserId: handoff?.reason === "web_full_page" ? handoff.ownerUserId ?? null : null,
         issuer: search.get("iss"),
         customConnector: handoff?.customConnector,
+        curatedConnector: handoff?.curatedConnector,
         returnTo: handoff?.returnTo,
       });
       // A full-page return may wait for vault unlock. Keep provider codes and
@@ -178,8 +181,10 @@ function CustomConnectorOAuthReturnContent({ details, phase, onPhase }: { phase:
   const { user } = useAuth();
   const { vaultKey, vaultOwnerToken, ownerTokenStatus } = useVault();
   const router = useRouter();
+  // A sign-in started from Profile returns to Connectors inside the Profile
+  // pane; one started from chat returns to the chat's Connectors sheet.
   const returnHref = details.returnTo === "connector_settings"
-    ? ROUTES.PROFILE_CONNECTORS : `${ROUTES.HOME}?panel=connectors`;
+    ? buildProfileConnectorsPaneHref() : `${ROUTES.HOME}?panel=connectors`;
   const returnLabel = details.returnTo === "connector_settings" ? "Connectors" : "Chat";
   const started = useRef(false);
   const mounted = useRef(true);
@@ -263,6 +268,8 @@ function ConnectorOAuthReturnContent({ details }: {
     cancelled: boolean;
     attemptId: string | null;
     ownerUserId: string | null;
+    curatedConnector?: { connectorId: string };
+    returnTo?: "connector_settings";
   };
 }) {
   const router = useRouter();
@@ -279,7 +286,9 @@ function ConnectorOAuthReturnContent({ details }: {
 
     // Connectors live in the chat sidebar's "MCP connections" panel now, not
     // a dedicated route -- landing on `?panel=connectors` is what reopens it.
-    const returnHref = `${ROUTES.HOME}?panel=connectors`;
+    const returnHref = details.returnTo === "connector_settings"
+      ? ROUTES.PROFILE_CONNECTORS
+      : `${ROUTES.HOME}?panel=connectors`;
 
     if (cancelled) {
       setMessage("That connection was not completed.");
@@ -295,7 +304,9 @@ function ConnectorOAuthReturnContent({ details }: {
       return;
     }
 
-    void (details.attemptId
+    // A curated connector's attempt lives in the generic v2 lifecycle, which the
+    // owner-token completion route finalizes; the Drive-only popup route never may.
+    void (details.attemptId && !details.curatedConnector
       ? user!.getIdToken().then((idToken) => ExternalConnectorService.completeWebOAuth({
           idToken,
           state,
@@ -307,8 +318,12 @@ function ConnectorOAuthReturnContent({ details }: {
           state,
           code,
         }))
-      .then(() => {
-        setMessage("Connected. Taking you back…");
+      .then((result) => {
+        setMessage(
+          details.curatedConnector && result?.status !== "connected"
+            ? "Signed in, but the connection could not be verified yet. Check Connectors."
+            : "Connected. Taking you back…",
+        );
       })
       .catch((err: unknown) => {
         setMessage(

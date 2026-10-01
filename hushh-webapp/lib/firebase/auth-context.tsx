@@ -1159,8 +1159,18 @@ export function AuthProvider({ children }: AuthProviderProps) {
     [validateAccountSession],
   );
 
+  const retrySessionVerification = useCallback(async () => {
+    if (IS_NATIVE && !userRef.current) {
+      if (!nativeRestoreSettledRef.current) return;
+      setLoading(true);
+      await checkAuth();
+      return;
+    }
+    await validateActiveSession({ force: true });
+  }, [checkAuth, validateActiveSession]);
+
   useEffect(() => {
-    if (!sessionVerificationRequired || !userId) return;
+    if (!sessionVerificationRequired || (!userId && !IS_NATIVE)) return;
 
     let cancelled = false;
     let attempt = 0;
@@ -1183,7 +1193,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           return;
         }
 
-        void validateActiveSession({ force: true }).finally(() => {
+        void retrySessionVerification().finally(() => {
           if (cancelled || !authGateRef.current.sessionVerificationRequired) {
             return;
           }
@@ -1200,7 +1210,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       cancelled = true;
       if (retryTimer !== null) globalThis.clearTimeout(retryTimer);
     };
-  }, [sessionVerificationRequired, userId, validateActiveSession]);
+  }, [sessionVerificationRequired, userId, retrySessionVerification]);
 
   useEffect(() => {
     const handleAuthInvalidated = (event: Event) => {
@@ -1327,6 +1337,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     let privacySequence = 0;
     let privacyReadFailures = 0;
     let privacyRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let foregroundRetryTimer: ReturnType<typeof setTimeout> | null = null;
+    let foregroundRetriesLeft = 0;
     let removePrivacyListener: (() => Promise<void>) | null = null;
     let privacyListenerConnecting = false;
 
@@ -1337,6 +1349,21 @@ export function AuthProvider({ children }: AuthProviderProps) {
         connectNativePrivacyListener();
         void settleNativePrivacyProtectedSession();
       }, 500);
+    };
+
+    const scheduleForegroundRead = () => {
+      if (!mounted || foregroundRetryTimer !== null || foregroundRetriesLeft <= 0 ||
+          document.visibilityState !== "visible") return;
+      foregroundRetriesLeft -= 1;
+      foregroundRetryTimer = setTimeout(() => {
+        foregroundRetryTimer = null;
+        if (!mounted || document.visibilityState !== "visible") return;
+        if (!nativeRestoreSettledRef.current) {
+          scheduleForegroundRead();
+          return;
+        }
+        void settleNativePrivacyProtectedSession();
+      }, 250);
     };
 
     const settleNativePrivacyProtectedSession = async (
@@ -1367,14 +1394,27 @@ export function AuthProvider({ children }: AuthProviderProps) {
       nativePrivacyLatestRef.current = privacyState;
       if (!privacyState.appIsActive) {
         setNativePrivacyReady(null);
+        if (foregroundRetriesLeft > 0) scheduleForegroundRead();
         return;
       }
-
       // Cold native restoration still owns the initial auth decision. Once the
       // identity is published, resuming the app only acknowledges the native
       // privacy cover; it does not perform another account/session request or
       // toggle the React auth gate.
-      if (!nativeRestoreSettledRef.current) await checkAuth();
+      const readBeforeRestore = !nativeRestoreSettledRef.current;
+      if (readBeforeRestore) await checkAuth();
+      if (!mounted || sequence !== privacySequence) return;
+      // A foreground transition during restoration can supersede the state
+      // read before restoration. Let its pending catch-up read the fresh state.
+      if (readBeforeRestore && foregroundRetriesLeft > 0) {
+        scheduleForegroundRead();
+        return;
+      }
+      foregroundRetriesLeft = 0;
+      if (foregroundRetryTimer !== null) {
+        clearTimeout(foregroundRetryTimer);
+        foregroundRetryTimer = null;
+      }
       if (mounted && nativePrivacyLatestRef.current?.generation === privacyState.generation &&
           nativePrivacyLatestRef.current.appIsActive && privacyState.shielded &&
           !terminalInvalidationLatchRef.current && !signOutPromiseRef.current) {
@@ -1407,6 +1447,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
       });
     };
     connectNativePrivacyListener();
+
+    // WebKit can drop a native listener delivery across suspension. A foreground
+    // signal only re-reads native state; the exact-generation native ack still
+    // owns uncovering, and initial identity restoration stays single-owner.
+    const catchUpNativePrivacyAfterForeground = () => {
+      if (!IS_NATIVE || document.visibilityState !== "visible") return;
+      foregroundRetriesLeft = 20;
+      if (!nativeRestoreSettledRef.current) {
+        scheduleForegroundRead();
+        return;
+      }
+      void settleNativePrivacyProtectedSession();
+    };
+    if (IS_NATIVE) {
+      document.addEventListener("visibilitychange", catchUpNativePrivacyAfterForeground);
+      window.addEventListener("focus", catchUpNativePrivacyAfterForeground);
+    }
 
     if (!IS_NATIVE) {
       initialWebAuthWatchdog = globalThis.setTimeout(() => {
@@ -1506,8 +1563,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     return () => {
       mounted = false;
+      if (IS_NATIVE) {
+        document.removeEventListener("visibilitychange", catchUpNativePrivacyAfterForeground);
+        window.removeEventListener("focus", catchUpNativePrivacyAfterForeground);
+      }
       nativePrivacyReconcileRef.current = () => undefined;
       if (privacyRetryTimer !== null) clearTimeout(privacyRetryTimer);
+      if (foregroundRetryTimer !== null) clearTimeout(foregroundRetryTimer);
       void removePrivacyListener?.();
       webAuthRevision += 1;
       webAuthObserverPendingRef.current = false;
@@ -1810,15 +1872,6 @@ export function AuthProvider({ children }: AuthProviderProps) {
     },
     [applyAuthUser, confirmationResult, nativeVerificationId, refreshUser],
   );
-
-  const retrySessionVerification = useCallback(async () => {
-    if (IS_NATIVE && !userRef.current) {
-      setLoading(true);
-      await checkAuth();
-      return;
-    }
-    await validateActiveSession({ force: true });
-  }, [checkAuth, validateActiveSession]);
 
   const beginPostAuthSettlement = useCallback(
     (nextUser: User) => {

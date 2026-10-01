@@ -5,6 +5,12 @@
 tests/services/test_external_connector_lifecycle_postgres.py
 tests/services/test_external_connector_credentials_service.py
 tests/services/test_external_connector_google_oauth.py
+# Curated (operator-registered) connector registration + OAuth, e.g. HubSpot.
+tests/services/test_external_mcp_connector_descriptor.py
+tests/test_configure_external_mcp_connector.py
+tests/services/test_external_connector_curated_oauth.py
+tests/test_uat_connector_rollout_contract.py
+tests/services/test_external_connector_registry_ownership.py
 tests/test_drive_uat_registry_provisioning.py
 tests/services/test_google_drive_adapter.py
 tests/services/test_drive_document_selection.py
@@ -73,6 +79,8 @@ tests/test_email_agent_a2a.py
 tests/test_adk_specialist_chat_services.py
 tests/test_one_external_read_boundary.py
 tests/test_one_external_read_projection.py
+# Queued messages join a live turn only at a step boundary, exactly once, owner-bound.
+tests/test_one_queued_input.py
 tests/test_private_agent_telemetry.py
 tests/test_mcp_log_redaction.py
 
@@ -363,6 +371,7 @@ tests/test_one_follow_up_suggestions.py
 # Shutdown drain: a stream cut by SIGTERM still ends with a terminal RUN_ERROR.
 tests/test_agent_chat_drain.py
 tests/test_encrypted_adk_session_service.py
+tests/test_conversation_titles.py
 tests/scripts/test_eval_one_first_tool.py
 tests/scripts/test_eval_pkm_structure_agent.py
 tests/scripts/test_eval_pkm_latency.py

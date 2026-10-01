@@ -45,8 +45,31 @@ describe("Next proxy root-entry contract", () => {
     expect(response.headers.get("location")).toBeNull();
   });
 
-  it("keeps the canonical connector settings page out of the legacy profile redirect", () => {
-    const response = proxy(request("/one/profile/connectors"));
+  it("sends the legacy Connectors address into the Profile pane, detail included", () => {
+    const list = new URL(proxy(request("/one/profile/connectors")).headers.get("location")!);
+    expect(list.pathname).toBe("/one");
+    expect(list.searchParams.get("profile_pane")).toBe("1");
+    expect(list.searchParams.get("profile_panel")).toBe("connectors");
+    expect(list.searchParams.has("profile_detail")).toBe(false);
+
+    const detail = new URL(
+      proxy(request("/one/profile/connectors?connector=google_drive")).headers.get("location")!,
+    );
+    expect(detail.searchParams.get("profile_detail")).toBe("connector:google_drive");
+    expect(detail.searchParams.has("connector")).toBe(false);
+
+    // An address-bar value that is not a catalog id opens the list, never a detail.
+    const forged = new URL(
+      proxy(request("/one/profile/connectors?connector=%3Cscript%3E")).headers.get("location")!,
+    );
+    expect(forged.searchParams.has("profile_detail")).toBe(false);
+  });
+
+  it("never redirects the provider-registered connector OAuth return", () => {
+    // Deploy-enforced: providers send the person to exactly this address.
+    const response = proxy(
+      request("/one/profile/connectors/oauth/return?code=synthetic&state=synthetic"),
+    );
 
     expect(response.status).toBe(200);
     expect(response.headers.get("location")).toBeNull();
