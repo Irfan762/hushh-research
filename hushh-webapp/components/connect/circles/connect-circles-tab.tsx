@@ -104,7 +104,7 @@ import {
 const SYSTEM_CIRCLE_COPY = {
   trusted: {
     title: "Trusted",
-    description: "Everyone you're connected to",
+    description: "Your connections",
   },
   sms: {
     title: "SMS Circle",
@@ -846,6 +846,7 @@ export function ConnectCirclesTab({
   const renderCircleRow = (circle: OneLocationCircleSummary) => {
     const kind = systemKindOf(circle);
     const { Icon, tone } = circleVisual(circle);
+    const canInviteToEmptyCircle = circle.role === "owner" && circle.memberCount <= 1 && kind !== "trusted";
     const testId = kind
       ? `connect-circle-${kind}`
       : circle.role === "owner"
@@ -878,18 +879,21 @@ export function ConnectCirclesTab({
             {circleRowDescription(circle)}
           </span>
         </span>
-        <span className="col-span-3 flex min-w-0 items-center gap-3 sm:col-auto sm:gap-5">
-          <CircleCluster circle={circle} vaultOwnerToken={vaultOwnerToken ?? ""} reloadToken={reloadToken + refreshToken} />
-          {circle.memberCount <= 1 && circle.role === "owner" && kind !== "trusted" ? (
-            <span className="hidden text-xs text-[color:var(--app-secondary-label)] lg:inline">
-              {kind === "sms" ? "Add members" : "Invite members"}
+        {!canInviteToEmptyCircle ? (
+          <span className="col-span-3 flex min-w-0 items-center gap-3 sm:col-auto sm:gap-5">
+            <CircleCluster circle={circle} vaultOwnerToken={vaultOwnerToken ?? ""} reloadToken={reloadToken + refreshToken} />
+            <span className={`ml-auto inline-flex min-h-9 items-center justify-center rounded-full px-4 text-xs font-semibold [.native-ios_&]:hidden ${circle.role === "owner" ? "bg-[color:var(--app-accent-soft)] text-[color:var(--app-accent)]" : "bg-[color:var(--app-secondary-fill)] text-[color:var(--app-secondary-label)]"}`}>
+              {circle.role !== "owner" ? "View" : "Manage"}
             </span>
-          ) : null}
-          <span className={`ml-auto inline-flex min-h-9 items-center justify-center rounded-full px-4 text-xs font-semibold ${circle.role === "owner" && kind !== "sms" ? "bg-[color:var(--app-accent-soft)] text-[color:var(--app-accent)]" : "bg-[color:var(--app-secondary-fill)] text-[color:var(--app-secondary-label)]"}`}>
-            {circle.role !== "owner" ? "View" : kind === "sms" && circle.memberCount <= 1 ? "Setup" : "Manage"}
           </span>
-        </span>
-        <ChevronRight aria-hidden="true" className="col-start-3 row-start-1 size-5 shrink-0 text-[color:var(--app-secondary-label)] sm:col-auto" />
+        ) : null}
+        {canInviteToEmptyCircle ? (
+          <span aria-hidden="true" data-testid="connect-circle-empty-add" className="col-start-3 row-start-1 inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-dashed border-[color:var(--app-card-border-standard)] text-[color:var(--app-secondary-label)] sm:col-auto">
+            <Plus className="size-5" />
+          </span>
+        ) : (
+          <ChevronRight aria-hidden="true" className="col-start-3 row-start-1 size-5 shrink-0 justify-self-end text-[color:var(--app-secondary-label)] sm:col-auto" />
+        )}
       </button>
     );
   };
@@ -989,7 +993,7 @@ export function ConnectCirclesTab({
           ) : null}
           {owned.length ? (
             <section data-testid="connect-circle-group-owned">
-              <SurfaceCard className="overflow-hidden !p-0">
+              <SurfaceCard className="!overflow-hidden !p-0">
                 <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
                   {owned.map(renderCircleRow)}
                 </div>
@@ -1002,7 +1006,7 @@ export function ConnectCirclesTab({
                 <SectionTitle as="h2">Joined circles</SectionTitle>
                 <RowDescription className="mt-1">Circles created by others that you are part of.</RowDescription>
               </div>
-              <SurfaceCard className="overflow-hidden !p-0">
+              <SurfaceCard className="!overflow-hidden !p-0">
                 <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
                   {joined.map(renderCircleRow)}
                 </div>

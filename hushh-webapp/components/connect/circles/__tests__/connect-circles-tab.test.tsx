@@ -181,7 +181,7 @@ describe("circleRowDescription", () => {
     // never asked. These lines answer the question a Circle you did not create
     // actually raises.
     expect(circleRowDescription(circle("t", "Trusted", 8, "trusted"))).toBe(
-      "Everyone you're connected to · 8 people",
+      "Your connections · 8 people",
     );
     expect(circleRowDescription(circle("s", "SMS Circle", 4, "sms"))).toBe(
       "Gets your SMS · 4 people",
@@ -190,7 +190,7 @@ describe("circleRowDescription", () => {
 
   it("reads honestly when a system Circle is still empty", () => {
     expect(circleRowDescription(circle("t", "Trusted", 1, "trusted"))).toBe(
-      "Everyone you're connected to",
+      "Your connections",
     );
     expect(circleRowDescription(circle("s", "SMS Circle", 1, "sms"))).toBe(
       "Gets your SMS · no one yet",
@@ -345,7 +345,7 @@ describe("ConnectCirclesTab", () => {
     render(<ConnectCirclesTab />);
     const card = await screen.findByTestId("connect-circle-owned");
     expect(within(card).getByText("No members yet")).toBeTruthy();
-    expect(within(card).getByTestId("connect-circle-cluster").querySelector("svg")).toBeTruthy();
+    expect(within(card).getByTestId("connect-circle-empty-add").querySelector("svg")).toBeTruthy();
     expect(card.querySelector("[data-photo-url]")).toBeNull();
   });
 
@@ -509,7 +509,7 @@ describe("ConnectCirclesTab", () => {
     // The accept hook covers a NEW connection. It cannot cover the ones a
     // person already had -- without this call they open the tab to no Trusted
     // Circle at all, and after their next accept to one holding a single name
-    // under the words "Everyone you're connected to".
+    // under the words "Your connections".
     const order: string[] = [];
     mocks.ensureTrusted.mockImplementation(async () => {
       order.push("reconcile");
