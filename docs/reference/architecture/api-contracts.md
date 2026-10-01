@@ -1701,6 +1701,12 @@ does not require an opener vault key; Firebase identity and the prior attempt au
 server completion. Other management routes retain their vault gates. The official web Picker
 receives an in-memory short-lived token only, and selection needs a separate explicit owner
 confirmation. Blocked popups remain in chat; no unencrypted full-page recovery is used.
+Drive's popup marker has a local 9.5-minute correlation deadline so a device clock behind the
+server cannot reject a newly created attempt before Google opens; the server still enforces
+the OAuth attempt's ten-minute expiry during completion.
+The opener removes its attempt marker on settlement, cancellation, expiry, or failed
+navigation. The callback uses popup mode only when a live marker matches the signed
+state's attempt ID; other full-page OAuth returns keep their own handoff.
 
 Connecting Mail, Drive or Calendar from the chat drawer never navigates the chat window, so
 the memory-only vault key, the chat and the open drawer survive. All three open their consent
