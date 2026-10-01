@@ -234,12 +234,16 @@ makes it externalizable or any scope registry entry references it.
 The mandatory gate rehearses synthetic historical versions 0 through 4, heterogeneous
 arrays, sparse and unknown keys, financial statement/Plaid/KYC memory, Gmail-derived
 memory, private scopes, retired aliases, encryption round trips, idempotency, and rollback.
-Protected UAT additionally requires the redacted reviewer shape audit and live PKM/Kai/RIA
-route audit, the chained structure-agent evaluation, and the transaction-rolled-back
-PostgreSQL RPC rehearsal in `db/verify/pkm_v7_zero_loss_rehearsal.sql`. The gate requires
-`PKM_UPGRADE_REVIEWER_SHAPE_AUDIT=1`, `PKM_UPGRADE_STRUCTURE_AGENT_EVAL=1`,
-`PKM_UPGRADE_POSTGRES_REHEARSAL_URL`, and `PKM_UPGRADE_RUNTIME_AUDIT_BASE_URL` when
-`PKM_UPGRADE_PROTECTED_UAT=1`. Financial v7 readers may ship while the server policy
+For selected protected UAT releases, the gate additionally requires the
+transaction-rolled-back PostgreSQL RPC rehearsal in
+`db/verify/pkm_v7_zero_loss_rehearsal.sql`, using
+`PKM_UPGRADE_POSTGRES_REHEARSAL_URL` or complete PostgreSQL connection variables.
+The live PKM/Kai/RIA route audit requires `PKM_UPGRADE_RUNTIME_AUDIT_BASE_URL` or
+explicit postdeploy deferral. Decrypted reviewer-shape artifacts are prohibited
+in CI; use the postdeploy BYOK rehearsal. Paid structure-agent evaluation is
+optional and requires explicit `PKM_UPGRADE_STRUCTURE_AGENT_EVAL=1` locally, or
+UAT's `run_live_model_checks=true` for the synthetic candidate job. A skipped
+model evaluation does not prove semantic quality. Financial v7 readers may ship while the server policy
 remains `off`; v7 writes require explicit cohort eligibility and an inactive kill switch,
 which is rechecked when the commit reaches the API rather than only when a claim is issued.
 

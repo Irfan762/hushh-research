@@ -67,13 +67,6 @@ if [ "${PKM_UPGRADE_PROTECTED_UAT:-}" = "1" ] && [ -z "$POSTGRES_REHEARSAL_TARGE
   exit 1
 fi
 
-if [ "${PKM_UPGRADE_PROTECTED_UAT:-}" = "1" ] \
-  && [ "${PKM_UPGRADE_STRUCTURE_AGENT_EVAL:-}" != "1" ] \
-  && [ "${PKM_UPGRADE_STRUCTURE_AGENT_EVAL_DEFERRED:-}" != "1" ]; then
-  echo "Protected UAT requires a local structure-agent evaluation or an explicit candidate-runtime evaluation deferral." >&2
-  exit 1
-fi
-
 if [ "${PKM_UPGRADE_STRUCTURE_AGENT_EVAL:-}" = "1" ] \
   && [ "${PKM_UPGRADE_STRUCTURE_AGENT_EVAL_DEFERRED:-}" = "1" ]; then
   echo "Choose one structure-agent evaluation location: local gate or candidate runtime." >&2
@@ -120,6 +113,8 @@ if [ "${PKM_UPGRADE_STRUCTURE_AGENT_EVAL:-}" = "1" ]; then
     fi
     "$PYTHON_RUNNER" scripts/eval_pkm_structure_agent.py "${EVAL_ARGS[@]}"
   done
+else
+  echo "Skipping live structure-agent evaluation: not explicitly requested."
 fi
 
 if [ -n "${PKM_UPGRADE_RUNTIME_AUDIT_BASE_URL:-}" ]; then

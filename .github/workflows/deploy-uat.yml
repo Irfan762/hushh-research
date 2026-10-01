@@ -17,6 +17,11 @@ on:
         description: "Exact green main SHA to deploy (blank defaults to latest origin/main)"
         required: false
         type: string
+      run_live_model_checks:
+        description: "Opt in to paid candidate Gemini/Vertex readiness and synthetic PKM evaluation"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   # write: this workflow tags a healthy release as "last known good"
@@ -362,6 +367,7 @@ jobs:
             --frontend-base-sha "${{ steps.predeploy-state.outputs.frontend_sha }}" \
             --deploy-backend "${{ steps.scope.outputs.deploy_backend }}" \
             --deploy-frontend "${{ steps.scope.outputs.deploy_frontend }}" \
+            --run-live-model-checks "${{ inputs.run_live_model_checks && 'true' || 'false' }}" \
             --github-output "$GITHUB_OUTPUT" \
             --json-output /tmp/uat-verification-plan.json
 
@@ -814,7 +820,6 @@ jobs:
 
           if [ "${{ steps.verification-plan.outputs.run_pkm_upgrade_gate }}" = "true" ]; then
             PKM_UPGRADE_PROTECTED_UAT=1 \
-            PKM_UPGRADE_STRUCTURE_AGENT_EVAL_DEFERRED=1 \
             PKM_UPGRADE_RUNTIME_AUDIT_DEFERRED=1 \
               ./scripts/ci/pkm-upgrade-gate.sh
           fi
@@ -1932,7 +1937,8 @@ jobs:
               },
               "candidate_pkm_evaluator": {
                   "required": int(os.environ.get("PKM_EVALUATOR_RUNS") or "0") != 0,
-                  "outcome": os.environ.get("PKM_EVALUATOR_OUTCOME", ""),
+                  "outcome": (os.environ.get("PKM_EVALUATOR_OUTCOME") or "not_run")
+                  if int(os.environ.get("PKM_EVALUATOR_RUNS") or "0") != 0 else "skipped",
                   "advisory": True,
                   "warning": os.environ.get("PKM_EVALUATOR_OUTCOME") == "failure",
               },
@@ -2661,7 +2667,7 @@ jobs:
             echo "- Verification plan: \`${{ steps.verification-plan.outputs.reason }}\`"
             echo "- Verification lanes: \`${{ steps.verification-plan.outputs.lanes }}\`"
             echo "- PKM evaluator runs: \`${{ steps.verification-plan.outputs.pkm_evaluator_runs }}\`"
-            echo "- Candidate PKM evaluator outcome (advisory): \`${{ steps.verify-candidate-pkm-evaluator.outputs.outcome }}\`"
+            echo "- Candidate PKM evaluator outcome (advisory): \`${{ steps.verify-candidate-pkm-evaluator.outputs.outcome || (steps.verification-plan.outputs.pkm_evaluator_runs == '0' && 'skipped' || 'not_run') }}\`"
             echo "- PKM upgrade gate required: \`${{ steps.verification-plan.outputs.run_pkm_upgrade_gate }}\`"
             echo "- Reviewer BYOK required: \`${{ steps.verification-plan.outputs.run_reviewer_byok }}\`"
             echo "- Backend deployed SHA before run: \`${{ steps.predeploy-state.outputs.backend_sha || 'unknown' }}\`"
