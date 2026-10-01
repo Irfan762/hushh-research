@@ -16,7 +16,7 @@ const after = <T,>(ms: number, value: T) =>
   new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
 
 // ---- routing ----------------------------------------------------------------
-const router = { replace: noop, push: noop, prefetch: noop, back: noop, refresh: noop };
+const router = { replace: noop, push: (href: string) => { document.body.dataset.lastNavigation = href; }, prefetch: noop, back: noop, refresh: noop };
 export const useRouter = () => router;
 export const usePathname = () => "/one/connect";
 export const useSearchParams = () => new URLSearchParams();
@@ -72,7 +72,7 @@ const people = ["Avery Stone", "Blake Rivera", "Drew Morgan"].map(
     maskedPhone: `••• ••• ${4400 + index}`,
     maskedEmail: `p***${index}@example.com`,
     mutualConnectionCount: index === 0 ? 2 : 0,
-    mutualConnectionPreview: index === 0 ? { displayName: "Alex Chen", photoUrl: null } : null,
+    mutualConnectionPreview: index === 0 ? { displayName: "Alex Chen", photoUrl: null, publicPersonRef: "person_alex" } : null,
     relationship: "none",
   }),
 );

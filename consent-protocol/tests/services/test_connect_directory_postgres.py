@@ -322,7 +322,7 @@ def test_mutuals_use_active_edges_in_both_directions_and_exclude_blocks(connecti
     )
     rows = connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all()
     assert [dict(row) for row in rows] == [
-        {"candidate_id": "candidate", "mutual_count": 1, "preview_user_id": None}
+        {"candidate_id": "candidate", "mutual_count": 1, "preview_user_id": "z-peer"}
     ]
     connection.execute(
         text(
@@ -330,3 +330,21 @@ def test_mutuals_use_active_edges_in_both_directions_and_exclude_blocks(connecti
         )
     )
     assert connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all() == []
+
+
+def test_bounded_directory_profile_lookup_keeps_visibility_and_empty_list_boundary(connection):
+    _person(connection, OWNER, "Owner")
+    _person(connection, "visible", "Visible Peer")
+    _person(connection, "hidden", "Hidden Peer", discoverable=False)
+    _person(connection, "outside", "Outside Selection")
+    service = _Directory(connection)
+    result = service.search_directory_candidates(
+        owner_user_id=OWNER,
+        candidate_user_ids=["visible", "hidden"],
+        limit=50,
+    )
+    assert [item["userId"] for item in result["items"]] == ["visible"]
+    assert (
+        service.search_directory_candidates(owner_user_id=OWNER, candidate_user_ids=[])["items"]
+        == []
+    )

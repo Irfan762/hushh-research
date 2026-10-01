@@ -174,7 +174,11 @@ for (const dark of [false, true]) {
       const cards = page.getByTestId("directory-person-card");
       await expect(cards).toHaveCount(3);
       await expect(cards.first()).toContainText("p***0@example.com");
-      await expect(cards.first()).toContainText("Alex Chen & 1 other mutual");
+      await expect(cards.first()).toContainText("Alex Chen");
+      await expect(cards.first()).toContainText("2 mutual connections");
+      const mutual = cards.first().getByRole("button", { name: "Open mutual connection Alex Chen's profile" });
+      await mutual.click();
+      await expect(page.locator("body")).toHaveAttribute("data-last-navigation", /^\/people\/person_alex\?/);
       await expect(cards.nth(1).getByTestId("mutual-connection")).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Create your own circle" })).toBeEnabled();
       await expect(page.getByRole("button", { name: /Message .*coming soon/ })).toHaveCount(6);
@@ -188,7 +192,12 @@ for (const dark of [false, true]) {
       else if (width >= 360) expect(geometry[0].top).toBe(geometry[1].top);
       else expect(geometry[1].top).toBeGreaterThan(geometry[0].top);
       await page.getByRole("button", { name: /Remove connection with Alex Chen/ }).click();
-      await expect(page.getByRole("button", { name: "Confirm", exact: true })).toBeVisible();
+      const dialog = page.getByRole("alertdialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole("button", { name: "Delete", exact: true })).toBeVisible();
+      const bounds = await dialog.boundingBox();
+      expect(bounds).not.toBeNull();
+      expect(Math.abs(bounds!.x + bounds!.width / 2 - width / 2)).toBeLessThan(2);
       await page.getByRole("button", { name: "Cancel", exact: true }).click();
       await page.getByTestId("connect-my-connections-toggle").click();
       await expect(page.locator("#connect-my-connections-panel")).toBeHidden();

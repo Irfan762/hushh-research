@@ -24,7 +24,7 @@ WITH viewer_peers AS (
       )
 )
 SELECT candidate_id, COUNT(DISTINCT peer_id) AS mutual_count,
-       MIN(peer_id) FILTER (WHERE peer_id = ANY(CAST(:page_user_ids AS TEXT[]))) AS preview_user_id
+       MIN(peer_id) AS preview_user_id
 FROM visible_shared
 GROUP BY candidate_id
 """

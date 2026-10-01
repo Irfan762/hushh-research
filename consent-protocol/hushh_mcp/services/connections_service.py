@@ -187,6 +187,19 @@ def _default_directory_search(
     )
 
 
+def _default_directory_profiles(owner_user_id: str, user_ids: list[str]) -> list[dict[str, Any]]:
+    """Resolve a bounded preview through the same live directory eligibility gate."""
+    from hushh_mcp.services.one_location_agent_service import OneLocationAgentService
+
+    if not user_ids:
+        return []
+    return OneLocationAgentService().search_directory_candidates(
+        owner_user_id=owner_user_id,
+        candidate_user_ids=user_ids,
+        limit=len(user_ids),
+    )["items"]
+
+
 def _default_directory_visible(owner_user_id: str, candidate_user_id: str) -> bool:
     from hushh_mcp.services.one_location_agent_service import OneLocationAgentService
 
@@ -322,6 +335,7 @@ class ConnectionsService:
         directory_lookup: Callable[[str], list[dict[str, Any]]] | None = None,
         directory_search: Callable[..., dict[str, Any]] | None = None,
         directory_visible: Callable[[str, str], bool] | None = None,
+        directory_profiles: Callable[[str, list[str]], list[dict[str, Any]]] | None = None,
         scope_entries_lookup: Callable[[str], list[dict[str, Any]]] | None = None,
         notifier: Callable[..., Any] | None = None,
         cancel_notifier: Callable[..., Any] | None = None,
@@ -331,6 +345,7 @@ class ConnectionsService:
         self._directory_lookup = directory_lookup or _default_directory_lookup
         self._directory_search = directory_search or _default_directory_search
         self._directory_visible = directory_visible or _default_directory_visible
+        self._directory_profiles = directory_profiles or _default_directory_profiles
         self._scope_entries_lookup = scope_entries_lookup or _default_scope_entries_lookup
         self._notifier = notifier if notifier is not None else _default_notifier
         self._cancel_notifier = (
@@ -3391,8 +3406,8 @@ class ConnectionsService:
         ria_user_ids = self._verified_ria_user_ids([str(p.get("userId") or "") for p in people])
         public_person_refs = self._public_person_refs([str(p.get("userId") or "") for p in people])
 
-        # One page-bound graph read. Preview identities must already have passed
-        # the directory's live eligibility checks; never expose a private peer.
+        # One page-bound graph read, then a bounded live directory lookup for
+        # shared peers. Preview visibility must not depend on the current page.
         mutual_rows = (
             self._execute_many(
                 MUTUAL_CONNECTIONS_SQL,
@@ -3402,7 +3417,17 @@ class ConnectionsService:
             else []
         )
         mutuals = {str(row.get("candidate_id") or ""): row for row in mutual_rows}
-        eligible_people = {str(person.get("userId") or ""): person for person in people}
+        preview_user_ids = sorted(
+            {str(row.get("preview_user_id") or "") for row in mutual_rows} - {""}
+        )
+        eligible_people = (
+            {
+                str(person.get("userId") or ""): person
+                for person in self._directory_profiles(user_id, preview_user_ids)
+            }
+            if preview_user_ids
+            else {}
+        )
 
         def mutual_payload(uid: str) -> dict[str, Any]:
             row = mutuals.get(uid) or {}
@@ -3413,6 +3438,7 @@ class ConnectionsService:
                 "mutualConnectionPreview": {
                     "displayName": peer["displayName"],
                     "photoUrl": peer.get("photoUrl"),
+                    "publicPersonRef": peer.get("publicPersonRef"),
                 }
                 if count and peer and peer.get("displayName")
                 else None,

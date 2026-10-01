@@ -3570,6 +3570,14 @@ export default function ConnectPageClient() {
                                               )
                                           : undefined
                                       }
+                                      onOpenMutual={
+                                        !isSelectionMode && person.mutualConnectionPreview?.publicPersonRef
+                                          ? () => router.push(buildPersonProfileRoute(
+                                              person.mutualConnectionPreview!.publicPersonRef!,
+                                              { from: ROUTES.CONNECT },
+                                            ))
+                                          : undefined
+                                      }
                                       trailing={
                                         isSelectionMode ? (
                                           // A disabled checkbox alone said nothing about WHY.

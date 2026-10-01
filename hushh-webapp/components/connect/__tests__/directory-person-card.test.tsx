@@ -24,7 +24,16 @@ describe("directory card", () => {
     const view = render(<DirectoryPersonCard {...props} />);
     expect(screen.getByTestId("mutual-connection")).toHaveTextContent("3 mutual connections");
     view.rerender(<DirectoryPersonCard {...props} person={{ ...props.person, mutualConnectionPreview: { displayName: "Alex", photoUrl: null } }} />);
-    expect(screen.getByTestId("mutual-connection")).toHaveTextContent("Alex & 2 others mutual");
+    expect(screen.getByTestId("mutual-connection")).toHaveTextContent("Alex3 mutual connections");
+  });
+  it("opens the mutual profile independently of the candidate profile", () => {
+    const openMutual = vi.fn();
+    const openPerson = vi.fn();
+    render(<DirectoryPersonCard person={{ ...person, mutualConnectionCount: 1, mutualConnectionPreview: { displayName: "Alex", photoUrl: "https://example.com/alex.png", publicPersonRef: "person_alex" } }} title={person.displayName} leading={<span>TP</span>} onClick={openPerson} onOpenMutual={openMutual} trailing={<button>Connect</button>} />);
+    fireEvent.click(screen.getByRole("button", { name: "Open mutual connection Alex's profile" }));
+    expect(openMutual).toHaveBeenCalledOnce();
+    expect(openPerson).not.toHaveBeenCalled();
+    expect(screen.getByTestId("mutual-connection")).toHaveTextContent("Mutual connection");
   });
   it("keeps bulk-selection checkboxes interactive", () => {
     const changed = vi.fn();
