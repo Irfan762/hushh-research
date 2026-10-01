@@ -14,6 +14,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 
+from hushh_mcp.runtime_settings import clear_runtime_settings_caches
 from hushh_mcp.services.connection_graph_service import lock_connection_graph_users
 from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 from hushh_mcp.services.drive_owner_search_service import DriveOwnerSearchService
@@ -47,6 +48,10 @@ def request_bulk(sharing, monkeypatch):
     monkeypatch.setenv("GOOGLE_DRIVE_LIVE", "true")
     monkeypatch.setenv("DRIVE_DOCUMENT_SHARING", "true")
     monkeypatch.setenv("DRIVE_REQUEST_PAYMENTS_ENABLED", "true")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_local_only_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_payment_test_secret")
+    monkeypatch.setenv("APP_FRONTEND_ORIGIN", "https://test.example")
+    clear_runtime_settings_caches()
     monkeypatch.setenv("CONNECTOR_INTERNAL_OWNER_COHORT", "owner,recipient,trusted-member")
     monkeypatch.setenv("DRIVE_SHARING_KEY_V1", base64.b64encode(b"s" * 32).decode())
     with sharing.db.engine.begin() as connection:
@@ -104,7 +109,8 @@ def request_bulk(sharing, monkeypatch):
             (:circle,'trusted-member','active')"""),
             {"circle": circle},
         )
-    return DriveBulkShareStore(db=sharing.db)
+    yield DriveBulkShareStore(db=sharing.db)
+    clear_runtime_settings_caches()
 
 
 async def _request(sharing):
