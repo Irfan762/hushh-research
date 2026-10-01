@@ -1195,13 +1195,21 @@ export default function ConnectPageClient() {
   }, [inviteToOneShare]);
 
   const [directoryRefreshNonce, setDirectoryRefreshNonce] = useState(0);
-  const resultSetKey = `${user?.uid ?? ""}:${directoryAudience}:${pageSize}:${trimmedQuery}:${directoryRefreshNonce}`;
+  const directoryScopeKey = `${user?.uid ?? ""}:${directoryAudience}:${pageSize}:${trimmedQuery}`;
+  const resultSetKey = `${directoryScopeKey}:${directoryRefreshNonce}`;
+  const [renderedDirectoryScopeKey, setRenderedDirectoryScopeKey] =
+    useState(directoryScopeKey);
   const [renderedResultSetKey, setRenderedResultSetKey] =
     useState(resultSetKey);
   if (renderedResultSetKey !== resultSetKey) {
     setRenderedResultSetKey(resultSetKey);
     setCurrentPage(1);
-    setPeople([]);
+    // Background graph refresh keeps useful cards visible until replacements
+    // arrive. A different owner, audience, or search must clear stale results.
+    if (renderedDirectoryScopeKey !== directoryScopeKey) {
+      setRenderedDirectoryScopeKey(directoryScopeKey);
+      setPeople([]);
+    }
     setHasMore(false);
     setError(null);
     setLoading(true);

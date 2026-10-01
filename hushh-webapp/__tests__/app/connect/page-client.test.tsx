@@ -508,6 +508,25 @@ describe("P0 connection reconciliation", () => {
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
   });
 
+  it("keeps directory cards visible during a background graph refresh", async () => {
+    const refreshed = deferred<{ items: ReturnType<typeof person>[]; hasMore: boolean }>();
+    mocks.searchDirectory.mockResolvedValueOnce({
+      items: [person("first", "Visible Person")],
+      hasMore: false,
+    }).mockImplementation(() => refreshed.promise);
+    render(<ConnectPageClient />);
+    await screen.findByText("Visible Person");
+    act(() => dispatchConnectionGraphChanged("me"));
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Visible Person")).toBeVisible();
+    expect(screen.queryByText("Finding people…")).toBeNull();
+    await act(async () => {
+      refreshed.resolve({ items: [person("next", "Updated Person")], hasMore: false });
+    });
+    await screen.findByText("Updated Person");
+    expect(screen.queryByText("Visible Person")).toBeNull();
+  });
+
   it("reconciles on foreground focus and coalesces a duplicate focus burst", async () => {
     const visibility = vi
       .spyOn(document, "visibilityState", "get")
