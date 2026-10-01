@@ -1386,7 +1386,6 @@ export default function ConnectPageClient() {
         CacheSyncService.onConnectionCapabilityMutated(user.uid);
         // A Circle roster open behind this sheet is now stale: the row that
         // said "Connect" should say "Requested". Re-read rather than patch.
-        setCircleRefreshToken((token) => token + 1);
         toast.success(
           outgoing
             ? "Connection request sent"
@@ -1467,6 +1466,7 @@ export default function ConnectPageClient() {
           audience: connectionAudienceRef.current,
           removedConnection: true,
         });
+        setCircleRefreshToken((token) => token + 1);
         suppressNextLocalGraphEventRef.current = true;
         CacheSyncService.onConnectionGraphMutated(user.uid);
         // Let the directory offer "Connect" again for this person.
@@ -2059,7 +2059,7 @@ export default function ConnectPageClient() {
           id: "circles",
           title: "Circles",
           purpose:
-            "See the groups you are in -- Trusted holds everyone you are connected to, the SMS Circle gets your SMS -- and open one to manage who is in it.",
+            "See the groups you are in -- Trusted is manually managed, the SMS Circle gets your SMS -- and open one to manage who is in it.",
         },
         {
           id: "people",
