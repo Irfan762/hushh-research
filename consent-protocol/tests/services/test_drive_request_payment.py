@@ -464,7 +464,7 @@ async def test_refund_first_dispatch_timestamp_survives_uncertain_retry(sharing)
     with sharing.db.engine.begin() as connection:
         connection.execute(
             text("""UPDATE drive_share_requests
-          SET payment_required=TRUE,expires_at=clock_timestamp()-interval '1 second'
+          SET payment_required=TRUE,status='expired'
           WHERE request_id=:request"""),
             {"request": request_id},
         )
