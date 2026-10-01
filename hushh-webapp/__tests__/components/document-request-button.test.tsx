@@ -359,7 +359,8 @@ describe("requesting exact files from a connection", () => {
     mount();
     await openFiles(undefined, false);
     fireEvent.change(screen.getByLabelText("Start date"), { target: { value: "2026-09-01" } });
-    expect(screen.getByText("Choose both dates, with the end on or after the start.")).toBeVisible();
+    expect(screen.getByText("Choose exact start and end dates before sending this request.")).toBeVisible();
+    expect(screen.queryByText("Choose both dates, with the end on or after the start.")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send request" })).toBeDisabled();
     expect(state.googleIdentity).not.toHaveBeenCalled();
   });

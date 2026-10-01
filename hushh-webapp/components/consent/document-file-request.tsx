@@ -365,7 +365,7 @@ export function RequestFilesButton({
                   Choose exact start and end dates before sending this request.
                 </HelperText>
               ) : null}
-              {!validDocumentRequestPeriod(start || null, end || null) ? (
+              {start && end && !validDocumentRequestPeriod(start, end) ? (
                 <HelperText role="status">
                   Choose both dates, with the end on or after the start.
                 </HelperText>
