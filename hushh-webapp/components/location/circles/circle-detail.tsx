@@ -104,6 +104,10 @@ const PENDING_TOOLS = new Set([
   "rename_circle",
   "set_circle_kind",
   "add_circle_member",
+  // The batch add writes the same roster, so an open batch card must block
+  // this screen's own Add control exactly as a single-add card does. Without it
+  // the person can tap Add while a card for the same circle is still waiting.
+  "add_circle_members",
 ]);
 
 function isOkResult(result: ToolResultPublic | null | undefined): boolean {

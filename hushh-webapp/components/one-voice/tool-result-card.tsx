@@ -101,6 +101,7 @@ const CIRCLE_TOOLS = new Set([
   "set_circle_kind",
   "delete_circle",
   "add_circle_member",
+  "add_circle_members",
   "remove_circle_member",
   "leave_circle",
   "respond_circle_invite",

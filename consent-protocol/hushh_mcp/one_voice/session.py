@@ -40,6 +40,7 @@ from hushh_mcp.one_voice.tools.base import (
     ToolContext,
     ToolResult,
     ToolSpec,
+    arg_refs,
     restore_context,
 )
 from hushh_mcp.one_voice.tools.executor import ToolCallOutcome, ToolExecutor
@@ -1581,10 +1582,13 @@ class VoiceSession:
                     cards.append({"kind": "person", **person.model_dump(mode="json")})
             return cards
         for arg in spec.person_args:
-            ref = getattr(parsed, arg, None)
-            person = self.ctx.entities.person(str(getattr(ref, "user_id", ""))) if ref else None
-            if person:
-                cards.append({"kind": "person", **person.model_dump(mode="json")})
+            # One chip per person named, so a card proposing a group shows the
+            # whole group. A card that named only the first of several would ask
+            # for consent to something wider than it displayed.
+            for ref in arg_refs(getattr(parsed, arg, None)):
+                person = self.ctx.entities.person(str(getattr(ref, "user_id", "")))
+                if person:
+                    cards.append({"kind": "person", **person.model_dump(mode="json")})
         for arg in spec.circle_args:
             ref = getattr(parsed, arg, None)
             circle = self.ctx.entities.circle(str(getattr(ref, "circle_id", ""))) if ref else None
@@ -1619,6 +1623,18 @@ def _public_args(args: dict[str, Any]) -> dict[str, Any]:
             out[key] = {
                 k: (v[:120] if isinstance(v, str) else v) for k, v in list(value.items())[:8]
             }
+        elif isinstance(value, list):
+            # A batch argument is a bounded list of refs. Rendering it as the word
+            # "list" would make the one frame that records what was asked for
+            # useless on exactly the calls that affect several people.
+            out[key] = [
+                (
+                    {k: (v[:120] if isinstance(v, str) else v) for k, v in list(item.items())[:8]}
+                    if isinstance(item, dict)
+                    else (item[:120] if isinstance(item, str) else item)
+                )
+                for item in value[:20]
+            ]
         else:
             out[key] = str(type(value).__name__)
     return out
