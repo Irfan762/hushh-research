@@ -249,20 +249,12 @@ class DriveBulkShareStore(DriveLivePreferences):
                   WHERE conn.status='active'
                     AND ((conn.user_a_id=:owner AND conn.user_b_id=:recipient)
                       OR (conn.user_b_id=:owner AND conn.user_a_id=:recipient))
-                    AND (
-                      EXISTS(
-                        SELECT 1 FROM one_location_circles c
-                        JOIN one_location_circle_memberships m ON m.circle_id=c.id
-                        WHERE c.owner_user_id=:owner AND c.system_kind='trusted'
-                          AND c.status='active' AND m.user_id=:recipient
-                          AND m.status='active'
-                      )
-                      OR NOT EXISTS(
-                        SELECT 1 FROM one_location_circles c
-                        JOIN one_location_circle_memberships m ON m.circle_id=c.id
-                        WHERE c.owner_user_id=:owner AND c.system_kind='trusted'
-                          AND m.user_id=:recipient
-                      )
+                    AND EXISTS(
+                      SELECT 1 FROM one_location_circles c
+                      JOIN one_location_circle_memberships m ON m.circle_id=c.id
+                      WHERE c.owner_user_id=:owner AND c.system_kind='trusted'
+                        AND c.status='active' AND m.user_id=:recipient
+                        AND m.status='active'
                     )
                 )
                 """),
