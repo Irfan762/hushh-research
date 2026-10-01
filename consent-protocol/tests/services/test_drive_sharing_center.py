@@ -4,12 +4,14 @@
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
 
 from hushh_mcp.services.consent_center_service import ConsentCenterService
-from hushh_mcp.services.drive_sharing_center_contributor import DriveSharingCenterContributor
+from hushh_mcp.services.drive_live_preferences import DriveLivePreferences
+from hushh_mcp.services.drive_sharing_center_contributor import DriveSharingCenterContributor, entry
 from tests.services.test_drive_permission_executor import (  # noqa: F401
     connector_postgres_url,
     documents,
@@ -20,7 +22,131 @@ from tests.services.test_drive_permission_executor import (  # noqa: F401
     rows,
     sharing,
 )
+from tests.services.test_drive_request_bulk_postgres import request_bulk  # noqa: F401
 from tests.services.test_drive_sharing_store import request, review
+
+
+@pytest.mark.parametrize(
+    ("search_state", "attention_required"),
+    [
+        ("queued", False),
+        ("running", False),
+        ("completed", False),
+        ("failed", True),
+        ("limited", True),
+        ("stopped", True),
+        ("expired", True),
+        (None, True),
+    ],
+)
+def test_trusted_auto_attention_follows_linked_search_state(search_state, attention_required):
+    row = {
+        "source": "share",
+        "id": f"document_share_request:{uuid4()}",
+        "request_id": uuid4(),
+        "bucket": "incoming_requests",
+        "status": "pending",
+        "issued_at": 0,
+        "direction": "incoming",
+        "state": "pending",
+        "revision": 1,
+        "preparation_error_code": "trusted_auto_active",
+        "owner_search_state": search_state,
+        "trusted_authority_ready": True,
+        "trusted_batch_seen": False,
+        "trusted_work_active": True,
+        "trusted_recovery_needed": False,
+    }
+    assert entry(row)["metadata"]["owner_attention_required"] is attention_required
+
+
+def test_background_setup_label_is_owner_only_and_clears_on_resume():
+    row = {
+        "source": "share",
+        "id": f"document_share_request:{uuid4()}",
+        "request_id": uuid4(),
+        "bucket": "incoming_requests",
+        "status": "pending",
+        "issued_at": 0,
+        "direction": "incoming",
+        "state": "pending",
+        "revision": 1,
+        "preparation_error_code": "background_preparation_required",
+        "owner_search_state": None,
+        "trusted_authority_ready": False,
+        "trusted_batch_seen": False,
+        "trusted_work_active": False,
+        "trusted_recovery_needed": False,
+    }
+    assert entry(row)["scope_description"] == "Enable background Drive access"
+    row["bucket"] = "outgoing_requests"
+    row["direction"] = "outgoing"
+    assert entry(row)["scope_description"] == "Google Drive files"
+    row["bucket"] = "incoming_requests"
+    row["direction"] = "incoming"
+    row["preparation_error_code"] = "trusted_auto_queued"
+    assert entry(row)["scope_description"] == "Google Drive files"
+
+
+def test_trusted_progress_stays_visible_after_first_confirmed_grant():
+    row = {
+        "source": "share",
+        "id": f"document_share_request:{uuid4()}",
+        "request_id": uuid4(),
+        "bucket": "active_grants",
+        "status": "active",
+        "issued_at": 0,
+        "direction": "outgoing",
+        "state": "pending",
+        "revision": 1,
+        "preparation_error_code": "trusted_auto_active",
+        "owner_search_state": "running",
+        "trusted_authority_ready": True,
+        "trusted_batch_seen": True,
+        "trusted_work_active": True,
+        "trusted_recovery_needed": False,
+    }
+    item = entry(row)
+    assert item["kind"] == "active_grant"
+    assert item["metadata"]["automatic_progress_active"] is True
+    assert item["metadata"]["automatic_progress_stage"] == "sharing"
+    row["trusted_recovery_needed"] = True
+    assert entry(row)["metadata"]["automatic_progress_active"] is False
+    row["trusted_recovery_needed"] = False
+    row["state"] = "completed"
+    assert entry(row)["metadata"]["automatic_progress_active"] is False
+
+
+@pytest.mark.parametrize("payment_status", ["awaiting_payment", "checkout_open"])
+def test_owner_waits_for_requester_payment_without_approval_task(payment_status):
+    row = {
+        "source": "share",
+        "id": f"document_share_request:{uuid4()}",
+        "request_id": uuid4(),
+        "bucket": "incoming_requests",
+        "status": "pending",
+        "issued_at": 0,
+        "direction": "incoming",
+        "state": "pending",
+        "revision": 1,
+        "preparation_error_code": "trusted_auto_active",
+        "owner_search_state": "completed",
+        "trusted_authority_ready": True,
+        "trusted_batch_seen": True,
+        "trusted_work_active": True,
+        "trusted_recovery_needed": False,
+        "payment_status": payment_status,
+        "payment_reconciliation_required": False,
+    }
+    item = entry(row)
+    assert item["scope_description"] == "Waiting for requester payment"
+    assert item["metadata"]["payment_waiting_for_requester"] is True
+    assert item["metadata"]["automatic_progress_active"] is False
+    assert item["metadata"]["owner_attention_required"] is False
+    assert "paymentStatus" not in item["metadata"]
+    row["state"] = "expired"
+    row["bucket"] = "history"
+    assert entry(row)["scope_description"] == "Google Drive files"
 
 
 @pytest.mark.asyncio
@@ -72,6 +198,82 @@ def center(store):
 
 
 @pytest.mark.asyncio
+async def test_background_setup_appears_only_in_the_owner_request(sharing):
+    created = await request(sharing)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_share_requests
+              SET preparation_error_code='background_preparation_required'
+              WHERE request_id=:request_id"""),
+            {"request_id": created["requestId"]},
+        )
+    projection = DriveSharingCenterContributor(db=sharing.db)
+    owner = await projection.page("owner", bucket="incoming_requests", limit=20)
+    requester = await projection.page("recipient", bucket="outgoing_requests", limit=20)
+    assert owner["items"][0]["scope_description"] == "Enable background Drive access"
+    assert owner["items"][0]["metadata"]["owner_attention_required"] is True
+    assert requester["items"][0]["scope_description"] == "Google Drive files"
+    assert (
+        await projection.page(
+            "owner", bucket="incoming_requests", limit=20, query="background Drive access"
+        )
+    )["total"] == 1
+    assert (
+        await projection.page(
+            "recipient", bucket="outgoing_requests", limit=20, query="background Drive access"
+        )
+    )["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_requester_can_reopen_payment_from_consent_center(sharing):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE drive_share_requests SET payment_required=TRUE WHERE request_id=:request"),
+            {"request": request_id},
+        )
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+              (request_id,user_id,requester_user_id,status)
+              VALUES (:request,'owner','recipient','awaiting_payment')"""),
+            {"request": request_id},
+        )
+    projection = DriveSharingCenterContributor(db=sharing.db)
+    requester = (await projection.page("recipient", bucket="outgoing_requests", limit=1))["items"][
+        0
+    ]
+    assert requester["metadata"]["paymentStatus"] == "awaiting_payment"
+    assert requester["metadata"]["paymentAmountCents"] == 1000
+    assert requester["metadata"]["paymentCurrency"] == "usd"
+    assert requester["metadata"]["automatic_progress_active"] is False
+    assert (await sharing.request_status(user_id="recipient", request_id=request_id))[
+        "paymentStatus"
+    ] == "awaiting_payment"
+    assert "paymentStatus" not in await sharing.request_status(
+        user_id="owner", request_id=request_id
+    )
+    owner = (await projection.page("owner", bucket="incoming_requests", limit=1))["items"][0]
+    assert "paymentStatus" not in owner["metadata"]
+    assert owner["scope_description"] == "Waiting for requester payment"
+    assert owner["metadata"]["owner_attention_required"] is False
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_request_payment_orders SET status='checkout_open'
+              WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+    reopened = (await projection.page("recipient", bucket="outgoing_requests", limit=1))["items"][0]
+    assert reopened["metadata"]["paymentStatus"] == "checkout_open"
+    owner_reopened = (await projection.page("owner", bucket="incoming_requests", limit=1))["items"][
+        0
+    ]
+    assert owner_reopened["scope_description"] == "Waiting for requester payment"
+    assert owner_reopened["metadata"]["owner_attention_required"] is False
+
+
+@pytest.mark.asyncio
 async def test_metadata_only_previews_counts_and_filtered_pages(sharing, monkeypatch):
     for _ in range(61):
         await request(sharing)
@@ -107,7 +309,11 @@ async def test_metadata_only_previews_counts_and_filtered_pages(sharing, monkeyp
         "state",
         "revision",
         "recorded_outcome_only",
+        "automatic_progress_active",
+        "automatic_progress_stage",
+        "owner_attention_required",
     }
+    assert row["metadata"]["owner_attention_required"] is True
     assert "recipient@example" not in str(snapshot) and "purpose" not in str(snapshot)
     assert (
         await projection.page(
@@ -154,6 +360,244 @@ async def test_metadata_only_previews_counts_and_filtered_pages(sharing, monkeyp
     assert (await service.list_center("recipient", actor="investor", surface="pending"))[
         "total"
     ] == 0
+
+
+@pytest.mark.asyncio
+async def test_trusted_auto_progress_never_claims_owner_attention(sharing, request_bulk):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    projection = DriveSharingCenterContributor(db=sharing.db)
+
+    async def attention() -> bool:
+        page = await projection.page("owner", bucket="incoming_requests", limit=1)
+        assert page["total"] == 1
+        return page["items"][0]["metadata"]["owner_attention_required"]
+
+    assert await attention() is True  # Ordinary request: owner review.
+    with sharing.db.engine.begin() as connection:
+        circle_id = str(uuid4())
+        connection.execute(
+            text("INSERT INTO one_location_circles VALUES (:id,'owner','trusted','active')"),
+            {"id": circle_id},
+        )
+        connection.execute(
+            text("INSERT INTO one_location_circle_memberships VALUES (:id,'recipient','active')"),
+            {"id": circle_id},
+        )
+    # An absent preference is the default-on state for a verified live Drive
+    # connection; the projection must agree with the worker authority check.
+    with sharing.db.engine.connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM drive_live_preferences WHERE user_id='owner'")
+            ).scalar_one()
+            == 0
+        )
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE drive_share_requests SET preparation_error_code='trusted_auto_queued' WHERE request_id=:id"
+            ),
+            {"id": request_id},
+        )
+    assert await attention() is False  # Queued request awaiting its first search job.
+
+    job_id = str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""
+                INSERT INTO drive_owner_search_jobs
+                  (job_id,user_id,client_request_id,request_digest,connection_generation,
+                   consent_version,status,checkpoint_envelope)
+                VALUES (:job,'owner',:id,:digest,1,'drive-owner-search-v1',
+                        'queued','{}'::jsonb)
+            """),
+            {"job": job_id, "id": request_id, "digest": "a" * 64},
+        )
+        connection.execute(
+            text("""INSERT INTO drive_owner_search_results
+              (job_id,user_id,position,file_digest,metadata_envelope)
+              VALUES (:job,'owner',1,:digest,'{}'::jsonb)"""),
+            {"job": job_id, "digest": "b" * 64},
+        )
+        connection.execute(
+            text(
+                "UPDATE drive_share_requests SET preparation_error_code='trusted_auto_active' WHERE request_id=:id"
+            ),
+            {"id": request_id},
+        )
+    for state in ("queued", "running", "completed"):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE drive_owner_search_jobs SET status=:state WHERE job_id=:job"),
+                {"state": state, "job": job_id},
+            )
+        assert await attention() is False
+
+    # release() can fail the job without updating the request's trusted_auto_active
+    # marker. The Feed must surface the owner task using the linked job state.
+    for state in ("failed", "limited", "stopped"):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text("UPDATE drive_owner_search_jobs SET status=:state WHERE job_id=:job"),
+                {"state": state, "job": job_id},
+            )
+        assert await attention() is True
+
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE drive_owner_search_jobs SET status='completed',expires_at=clock_timestamp() - INTERVAL '1 second' WHERE job_id=:job"
+            ),
+            {"job": job_id},
+        )
+    assert await attention() is True
+
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("DELETE FROM drive_owner_search_jobs WHERE job_id=:job"), {"job": job_id}
+        )
+    assert await attention() is True
+
+    # Background setup, a changed relationship, terminal preparation failure,
+    # and explicit manual takeover all restore an owner task.
+    for code in (
+        "background_preparation_required",
+        "trusted_relationship_changed",
+        "preparation_unavailable",
+        "manual_search_active",
+    ):
+        with sharing.db.engine.begin() as connection:
+            connection.execute(
+                text(
+                    "UPDATE drive_share_requests SET preparation_error_code=:code WHERE request_id=:id"
+                ),
+                {"code": code, "id": request_id},
+            )
+        assert await attention() is True
+
+
+@pytest.mark.asyncio
+async def test_trusted_progress_is_participant_scoped_and_tracks_durable_work(
+    sharing, request_bulk
+):
+    circle_id = str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("INSERT INTO one_location_circles VALUES (:id,'owner','trusted','active')"),
+            {"id": circle_id},
+        )
+        connection.execute(
+            text("INSERT INTO one_location_circle_memberships VALUES (:id,'recipient','active')"),
+            {"id": circle_id},
+        )
+    preference = DriveLivePreferences(db=sharing.db)
+    await preference.set_background(user_id="owner", enabled=True, confirmed=True)
+    created = await request(sharing)
+    request_id = created["requestId"]
+    projection = DriveSharingCenterContributor(db=sharing.db)
+
+    async def participants(stage: str | None, active: bool) -> None:
+        owner = (await projection.page("owner", bucket="incoming_requests", limit=1))["items"][0]
+        recipient = (await projection.page("recipient", bucket="outgoing_requests", limit=1))[
+            "items"
+        ][0]
+        assert owner["id"] == recipient["id"] == f"document_share_request:{request_id}"
+        assert (owner["kind"], recipient["kind"]) == ("incoming_request", "outgoing_request")
+        for item in (owner, recipient):
+            assert item["metadata"]["automatic_progress_active"] is active
+            assert item["metadata"]["automatic_progress_stage"] == stage
+            assert "Private six-month statements" not in str(item)
+            assert "recipient@example" not in str(item)
+        assert owner["metadata"]["owner_attention_required"] is not active
+
+    await participants("preparing", True)
+    job_id = str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_owner_search_jobs
+              (job_id,user_id,client_request_id,request_digest,connection_generation,
+               consent_version,status,checkpoint_envelope)
+              VALUES (:job,'owner',:request,:digest,1,'drive-owner-search-v1',
+                'queued','{}'::jsonb)"""),
+            {"job": job_id, "request": request_id, "digest": "a" * 64},
+        )
+        connection.execute(
+            text("""UPDATE drive_share_requests SET preparation_error_code='trusted_auto_active',
+              bulk_search_started_at=clock_timestamp() WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+    await participants("finding", True)
+    share_id = str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_bulk_shares
+              (share_id,user_id,search_job_id,client_request_id,request_digest,
+               connection_generation,search_revision,review_digest,status,file_count,
+               recipient_count,excluded_envelope,origin_request_id,origin_request_revision,
+               progressive_batch,approval_source,approved_at)
+              VALUES (:share,'owner',:job,:client,:digest,1,1,:review,'queued',1,
+                1,'{}'::jsonb,:request,0,TRUE,'trusted_auto',clock_timestamp())"""),
+            {
+                "share": share_id,
+                "job": job_id,
+                "client": str(uuid4()),
+                "digest": "a" * 64,
+                "review": "b" * 64,
+                "request": request_id,
+            },
+        )
+    await participants("sharing", True)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE drive_owner_search_jobs SET status='completed' WHERE job_id=:job"),
+            {"job": job_id},
+        )
+    await participants("sharing", True)  # Search done; Drive grants still queued.
+
+    await preference.set_background(user_id="owner", enabled=False, confirmed=True)
+    await participants(None, False)
+    await preference.set_background(user_id="owner", enabled=True, confirmed=True)
+    await participants("sharing", True)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE one_location_circle_memberships SET status='removed'
+              WHERE circle_id=:circle AND user_id='recipient'"""),
+            {"circle": circle_id},
+        )
+    await participants(None, False)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE one_location_circle_memberships SET status='active'
+              WHERE circle_id=:circle AND user_id='recipient'"""),
+            {"circle": circle_id},
+        )
+        connection.execute(
+            text("UPDATE drive_owner_search_jobs SET status='failed' WHERE job_id=:job"),
+            {"job": job_id},
+        )
+    await participants(None, False)
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE drive_owner_search_jobs SET status='completed' WHERE job_id=:job"),
+            {"job": job_id},
+        )
+        connection.execute(
+            text("UPDATE drive_bulk_shares SET status='completed' WHERE share_id=:share"),
+            {"share": share_id},
+        )
+    await participants(None, False)  # Nothing is in flight; owner can recover if needed.
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_share_requests SET
+              created_at=clock_timestamp()-INTERVAL '31 days',
+              expires_at=clock_timestamp()-INTERVAL '1 day'
+              WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+    expired = (await projection.page("owner", bucket="history", limit=1))["items"][0]
+    assert expired["metadata"]["automatic_progress_active"] is False
+    assert expired["metadata"]["automatic_progress_stage"] is None
 
 
 @pytest.mark.asyncio

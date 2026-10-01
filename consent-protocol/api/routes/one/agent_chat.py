@@ -51,17 +51,40 @@ from hushh_mcp.one_adk.consent_continuation import (
     admit_consent_continuation,
     continued_outcomes,
 )
+from hushh_mcp.one_adk.consent_redaction import (
+    access_ended_outcome,
+    redaction_for_history,
+    shared_record_for_history,
+)
+from hushh_mcp.one_adk.conversation_titles import ensure_conversation_titles, opening_prompt
 from hushh_mcp.one_adk.drive_result_privacy import _safe_result as safe_connector_result
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import READ_TOOLS, STATE_EXECUTION_SURFACE
 from hushh_mcp.one_adk.external_read_projection import redacted_read_receipt
+from hushh_mcp.one_adk.feed_attention import (
+    FEED_ATTENTION_LABEL,
+    FeedAttentionError,
+    admit_feed_attention,
+    opened_feed_items,
+)
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
 from hushh_mcp.one_adk.pending_email_draft import (
     STATE_PENDING_EMAIL_DRAFT,
     admit_pending_email_draft,
 )
+from hushh_mcp.one_adk.queued_input import (
+    QUEUED_INPUT_KIND,
+    QueuedInputError,
+)
+from hushh_mcp.one_adk.queued_input import (
+    registry as queued_input_registry,
+)
 from hushh_mcp.one_adk.request_secrets import consume_request_secret, store_request_secret
+from hushh_mcp.one_adk.shared_with_me_card import (
+    SHARED_WITH_ME_CARD_KIND,
+    project_shared_with_me_card,
+)
 from hushh_mcp.one_adk.text_attachments import history_text_attachments
 from hushh_mcp.one_adk.turn_completion import (
     newest_turn_answered,
@@ -325,6 +348,9 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
     consent_continuation = await _admit_consent_continuation(
         forwarded, input_data=input_data, owner_id=user_id if token else ""
     )
+    feed_attention = await _admit_feed_attention(
+        forwarded, input_data=input_data, owner_id=user_id if token else ""
+    )
     # The device sends a coarse position only when the person already granted
     # location; pre-vault turns never keep it.
     turn_location = admit_turn_location(forwarded)
@@ -368,8 +394,35 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
             gmail_information_request_context
         ),
         **consent_continuation,
+        **feed_attention,
         STATE_PENDING_EMAIL_DRAFT: pending_email_draft,
     }
+
+
+async def _admit_feed_attention(
+    forwarded: dict[str, Any], *, input_data: RunAgentInput, owner_id: str
+) -> dict[str, Any]:
+    """Admit the turn a push tap starts about one feed update, or nothing."""
+    if forwarded.get("feedAttention") is None:
+        return {}
+    from hushh_mcp.services.feed_attention_push import get_offered_feed_item
+
+    session = None
+    if owner_id and input_data.thread_id:
+        session = await _session_service.get_session(
+            app_name=ONE_APP_NAME, user_id=owner_id, session_id=input_data.thread_id
+        )
+    try:
+        return await admit_feed_attention(
+            forwarded,
+            owner_id=owner_id,
+            messages=input_data.messages,
+            session_state=dict(session.state) if session is not None else None,
+            get_item=get_offered_feed_item,
+        )
+    except FeedAttentionError as exc:
+        logger.info("one.feed_attention_refused status=%s", exc.status_code)
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
 
 
 async def _admit_consent_continuation(
@@ -423,16 +476,7 @@ async def _admit_consent_continuation(
 
 _app = App(
     name=ONE_APP_NAME,
-    root_agent=build_one_text_agent(
-        allow_workspace_tools=True,
-        include_thought_summaries=True,
-        tool_mode="typed_chat",
-    ),
-    resumability_config=ResumabilityConfig(is_resumable=True),
-)
-_gmail_information_request_app = App(
-    name=ONE_APP_NAME,
-    root_agent=build_one_text_agent(tool_mode="gmail_information_request"),
+    root_agent=build_one_text_agent(allow_workspace_tools=True, include_thought_summaries=True),
     resumability_config=ResumabilityConfig(is_resumable=True),
 )
 _intro_app = App(
@@ -515,18 +559,6 @@ _agent = TimedADKAgent.from_app(
     emit_messages_snapshot=True,
     capabilities=_authenticated_capabilities,
 )
-_gmail_information_request_agent = TimedADKAgent.from_app(
-    _gmail_information_request_app,
-    head=HEAD_ONE,
-    user_id_extractor=_user_id,
-    max_concurrent_executions=_MAX_CONCURRENT_EXECUTIONS,
-    execution_timeout_seconds=_EXECUTION_TIMEOUT_SECONDS,
-    session_manager=_durable_session_manager,
-    use_in_memory_services=True,
-    use_thread_id_as_session_id=True,
-    emit_messages_snapshot=True,
-    capabilities=_authenticated_capabilities,
-)
 _intro_agent = TimedADKAgent.from_app(
     _intro_app,
     head=HEAD_INTRO,
@@ -563,13 +595,7 @@ _agent.detached_turn_hook = _notify_detached_turn
 
 async def _resolve_agent(_request: Request, input_data: RunAgentInput) -> ADKAgent:
     state = input_data.state if isinstance(input_data.state, dict) else {}
-    if not state.get(STATE_CONSENT_TOKEN):
-        return _intro_agent
-    return (
-        _gmail_information_request_agent
-        if state.get(STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID)
-        else _agent
-    )
+    return _agent if state.get(STATE_CONSENT_TOKEN) else _intro_agent
 
 
 add_adk_fastapi_endpoint(
@@ -845,6 +871,102 @@ def _safe_information_request_descriptor(
         return {
             "activityType": "one.information_request_review.v1",
             "content": content,
+        }
+    return None
+
+
+def _safe_shared_with_me_descriptor(
+    event: Any, selected_parts: list[Any] | None = None
+) -> dict[str, Any] | None:
+    """Restore the "Shared with you" card (CONTRACT-2 C6) from its sealed tool result.
+
+    The card carries labels, field names, dates and the refs the device opens
+    each item by; it never carried a value. Each card is re-validated field by
+    field, so a stored result cannot smuggle anything else into history.
+    """
+    parts = (
+        selected_parts
+        if selected_parts is not None
+        else (getattr(getattr(event, "content", None), "parts", None) or [])
+    )
+    for part in parts:
+        function_response = getattr(part, "function_response", None)
+        if (
+            function_response is None
+            or getattr(function_response, "name", "") != "list_information_shared_with_me"
+        ):
+            continue
+        result = _record(getattr(function_response, "response", None)) or {}
+        for key in ("result", "content", "data"):
+            nested = _record(result.get(key))
+            if nested and nested.get("status"):
+                result = nested
+                break
+        raw_cards = result.get("cards")
+        if result.get("status") != "ok" or not isinstance(raw_cards, list):
+            return None
+        cards = [
+            card
+            for raw in raw_cards[:20]
+            if (card := project_shared_with_me_card(_record(raw))) is not None
+        ]
+        if not cards:
+            return None
+        return {"activityType": SHARED_WITH_ME_CARD_KIND, "content": {"cards": cards}}
+    return None
+
+
+def _safe_proposal_source(
+    event: Any, selected_parts: list[Any] | None = None
+) -> dict[str, Any] | None:
+    """The recipient of One's ask card (``propose_information_request``), or None.
+
+    The ask card is a send surface exactly like a discovery card, so its receipt
+    is bound the same way: a sealed ``proposal_ready`` result in this
+    conversation that carries a proposal, and a person whose reference matches
+    their profile path. Nothing else of the proposal leaves the session.
+    """
+    parts = (
+        selected_parts
+        if selected_parts is not None
+        else (getattr(getattr(event, "content", None), "parts", None) or [])
+    )
+    for part in parts:
+        function_response = getattr(part, "function_response", None)
+        if (
+            function_response is None
+            or getattr(function_response, "name", "") != "propose_information_request"
+        ):
+            continue
+        result = _record(getattr(function_response, "response", None)) or {}
+        for key in ("result", "content", "data"):
+            nested = _record(result.get(key))
+            if nested and nested.get("status"):
+                result = nested
+                break
+        proposed = result.get("proposed")
+        if result.get("status") != "proposal_ready" or not isinstance(proposed, list):
+            return None
+        if not any(_record(item) for item in proposed):
+            return None
+        person = _record(result.get("person")) or {}
+        display_name = _bounded_text(person.get("displayName"), 120)
+        profile_path = _bounded_text(person.get("profilePath"), 180)
+        person_ref = _bounded_text(person.get("personRef"), 128)
+        if (
+            not display_name
+            or not profile_path
+            or not person_ref
+            or not _SAFE_PROFILE_PATH.fullmatch(profile_path)
+            or profile_path.rsplit("/", 1)[-1] != person_ref
+        ):
+            return None
+        return {
+            "person": {
+                "displayName": display_name,
+                "profilePath": profile_path,
+                "personRef": person_ref,
+            }
         }
     return None
 
@@ -1209,6 +1331,7 @@ _ACTIVITY_TOOLS = frozenset(
         "list_my_connections",
         "inspect_selected_drive_files",
         "inspect_private_connectors",
+        "probe_private_connector",
         "discover_workspace_tools",
         "read_workspace_tool",
         "read_selected_drive_search_result",
@@ -1265,6 +1388,7 @@ _ACTIVITY_TOOLS = frozenset(
         "resolve_onboarding_goal",
         "get_current_time",
         "get_my_location",
+        "suggest_follow_ups",
     }
 )
 _MCP_ACTIVITY_TOOL = re.compile(r"^mcp_[0-9a-f]{40}$")
@@ -1393,6 +1517,9 @@ def _safe_agent_history_metadata(
     descriptors = []
     seen = set()
     presentation = _record(getattr(event, "custom_metadata", None)) or {}
+    if presentation.get("kind") == QUEUED_INPUT_KIND and getattr(event, "author", None) == "user":
+        # A message the person sent while One was working, which joined that turn.
+        return {"queuedInput": "joined"}
     if presentation.get("kind") == "information_request_submission_v1":
         if _submitted_source_id(event) is None:
             return None
@@ -1419,6 +1546,8 @@ def _safe_agent_history_metadata(
         if descriptor is None:
             descriptor = _safe_information_request_descriptor(event, [part])
         if descriptor is None:
+            descriptor = _safe_shared_with_me_descriptor(event, [part])
+        if descriptor is None:
             descriptor = _safe_document_request_descriptor(event, [part])
         if descriptor is None:
             descriptor = _safe_drive_share_descriptor(event, [part])
@@ -1432,9 +1561,10 @@ def _safe_agent_history_metadata(
             getattr(getattr(part, "function_response", None), "id", None), 128
         )
         card_id = f"{event_identity}:{invocation_identity or index}"
-        if card_id in (suppressed_discovery_ids or set()) and _safe_discovery_descriptor(
-            event, [part]
+        if card_id in (suppressed_discovery_ids or set()) and (
+            _safe_discovery_descriptor(event, [part]) or _safe_proposal_source(event, [part])
         ):
+            # Sent: the submission event restores this card in its sent state.
             continue
         if card_id in seen:
             continue
@@ -1456,12 +1586,8 @@ def _session_title(session: Any) -> str:
     authored = str((session.state or {}).get("hussh:thread_title") or "").strip()
     if authored:
         return authored
-    for event in session.events:
-        if event.author == "user":
-            text = _event_text(event)
-            if text:
-                return text[:80]
-    return "New conversation"
+    generated = str((session.state or {}).get("hussh:thread_summary_title") or "").strip()
+    return generated or opening_prompt(session)[:80] or "New chat"
 
 
 class RenameConversation(BaseModel):
@@ -1474,7 +1600,14 @@ class RecordInformationRequestSubmission(BaseModel):
     idempotency_key: str = Field(min_length=16, max_length=256)
 
 
-def _discovery_source(session: Any, activity_id: str) -> tuple[str, dict[str, Any]] | None:
+def _request_source(session: Any, activity_id: str) -> tuple[str, dict[str, Any]] | None:
+    """The one send card in this conversation that ``activity_id`` names.
+
+    A discovery card (``discover_person_information``) or One's ask card
+    (``propose_information_request``). Anything else, or an ambiguous id, is None.
+    Before 2026-09-28 only discovery cards were recognised, so every Send on an
+    ask card got 404 here and its answer was then refused with 409.
+    """
     matches: list[tuple[str, dict[str, Any]]] = []
     for event in session.events:
         event_id = (
@@ -1483,15 +1616,16 @@ def _discovery_source(session: Any, activity_id: str) -> tuple[str, dict[str, An
             or "event"
         )
         for index, part in enumerate(getattr(getattr(event, "content", None), "parts", None) or []):
-            descriptor = _safe_discovery_descriptor(event, [part])
-            if descriptor is None:
+            discovery = _safe_discovery_descriptor(event, [part])
+            source = discovery["content"] if discovery else _safe_proposal_source(event, [part])
+            if source is None:
                 continue
             tool_id = _bounded_text(
                 getattr(getattr(part, "function_response", None), "id", None), 128
             )
             card_id = f"{event_id}:{tool_id or index}"
             if activity_id in {card_id, tool_id}:
-                matches.append((card_id, descriptor["content"]))
+                matches.append((card_id, source))
     return matches[0] if len(matches) == 1 else None
 
 
@@ -1523,10 +1657,10 @@ async def record_information_request_submission(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Conversation not found.")
-    source = _discovery_source(session, payload.source_activity_id)
+    source = _request_source(session, payload.source_activity_id)
     if source is None:
-        raise HTTPException(status_code=404, detail="Discovery card not found.")
-    source_card_id, discovery = source
+        raise HTTPException(status_code=404, detail="Request card not found.")
+    source_card_id, source_card = source
     try:
         bundle = await InformationRequestService().verify_submission_receipt(
             requester_user_id=owner,
@@ -1535,9 +1669,9 @@ async def record_information_request_submission(
         )
     except InformationRequestError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
-    person = discovery["person"]
+    person = source_card["person"]
     if bundle["personRef"] != person.get("personRef") or not bundle.get("items"):
-        raise HTTPException(status_code=409, detail="Request recipient did not match discovery.")
+        raise HTTPException(status_code=409, detail="Request recipient did not match the card.")
     statuses = [item["status"] for item in bundle["items"]]
     status = statuses[0] if all(value == statuses[0] for value in statuses) else "mixed"
     hours = bundle["durationSeconds"] // 3600
@@ -1604,6 +1738,12 @@ async def list_conversations(
     sessions = sorted(response.sessions, key=lambda item: item.last_update_time, reverse=True)[
         :limit
     ]
+    await ensure_conversation_titles(
+        sessions=sessions,
+        service=_session_service,
+        owner=user_id,
+        token=str(token.get("token") or ""),
+    )
     return {
         "user_id": user_id,
         "conversations": [
@@ -1619,6 +1759,49 @@ async def list_conversations(
             }
             for session in sessions
         ],
+    }
+
+
+# At most this many shared requests are re-checked per history load.
+_MAX_CONSENT_ACCESS_CHECKS = 10
+
+
+async def _consent_access_for_history(
+    owner: str, state: Any
+) -> tuple[dict[str, str], dict[str, str]]:
+    """``(invocation_id -> bundle_id, bundle_id -> ended outcome)`` for this load.
+
+    A bundle latched as ended by a model turn is ended. Otherwise its current
+    outcome is read (requester-bound) so a revoke is honoured on the very next
+    history load, before any new turn runs. A failed read redacts: the safe
+    direction, for this response only.
+    """
+    by_invocation, ended = redaction_for_history(state)
+    pending = [bundle for bundle in dict.fromkeys(by_invocation.values()) if bundle not in ended]
+    service = InformationRequestService()
+    for bundle_id in pending[:_MAX_CONSENT_ACCESS_CHECKS]:
+        try:
+            outcome = access_ended_outcome(
+                await service.get(requester_user_id=owner, bundle_id=bundle_id)
+            )
+        except Exception as exc:  # noqa: BLE001 - unknown means redact
+            logger.info("one.history_consent_access_unknown error=%s", type(exc).__name__)
+            outcome = "revoked"
+        if outcome:
+            ended[bundle_id] = outcome
+    for bundle_id in pending[_MAX_CONSENT_ACCESS_CHECKS:]:
+        ended[bundle_id] = "revoked"
+    return by_invocation, ended
+
+
+def _consent_access_metadata(state: Any, bundle_id: str, ended: dict[str, str]) -> dict[str, Any]:
+    """The ``metadata.consentAccess`` field on an assistant message (CONTRACT C3)."""
+    outcome = ended.get(bundle_id)
+    return {
+        "bundleId": bundle_id,
+        "state": "ended" if outcome else "live",
+        "outcome": outcome,
+        **shared_record_for_history(state, bundle_id),
     }
 
 
@@ -1661,8 +1844,14 @@ async def conversation_history(
                 if isinstance(receipt.get("structured"), dict):
                     receipts[event.invocation_id] = receipt["structured"]
     # A follow-up turn that reported an owner's answer shows as a status chip.
+    # A bundle can be continued twice (answer, then end of access), so every
+    # outcome label is a chip once this conversation continued any request.
     consent_outcomes = continued_outcomes(session.state)
-    outcome_labels = {CONSENT_OUTCOME_LABELS[outcome] for outcome in consent_outcomes.values()}
+    outcome_labels = set(CONSENT_OUTCOME_LABELS.values()) if consent_outcomes else set()
+    consent_by_invocation, consent_ended = await _consent_access_for_history(user_id, session.state)
+    # A turn a push tap started about a feed update shows as the same kind of chip.
+    if opened_feed_items(session.state):
+        outcome_labels.add(FEED_ATTENTION_LABEL)
     # A turn's cards and Activity belong with its answer, as they were shown
     # live. Card-only tool events fold into the answer; a turn without an
     # answer keeps its last card message as the anchor.
@@ -1717,6 +1906,26 @@ async def conversation_history(
                 metadata = {**(metadata or {}), "specialist_read": receipts[turn]}
         if event.author == "user" and text in outcome_labels:
             metadata = {**(metadata or {}), "kind": "selection", "display": text}
+        consent_bundle = consent_by_invocation.get(str(turn or ""))
+        if consent_bundle and event.author == "user" and text in outcome_labels:
+            # The status chip that opened the answer turn names its request.
+            metadata = {
+                **(metadata or {}),
+                "consentBundleId": consent_bundle,
+                **({"consentAccessEnded": True} if consent_bundle in consent_ended else {}),
+            }
+        elif consent_bundle and event.author != "user":
+            access = _consent_access_metadata(session.state, consent_bundle, consent_ended)
+            tag = {"consentBundleId": consent_bundle, "consentAccess": access}
+            if access["state"] == "ended":
+                # Revoke redacts everywhere: the text, its cards and its
+                # activity never leave the server again (founder decision 1).
+                # One "Access ended" message per turn, at the turn's anchor.
+                if not is_anchor:
+                    continue
+                text, metadata = "", {**tag, "consentAccessEnded": True}
+            else:
+                metadata = {**(metadata or {}), **tag}
         messages.append(
             {
                 "id": event.id or f"{event.invocation_id}:{len(messages)}",
@@ -1738,6 +1947,8 @@ async def conversation_history(
         "turn": {"pending": newest_turn_pending(session.events)},
         # Requests whose answer this conversation already continued with.
         "consentOutcomes": consent_outcomes,
+        # Shared requests whose access has ended: {bundle_id: "revoked"|"expired"}.
+        "consentAccessEnded": consent_ended,
     }
 
 
@@ -1801,6 +2012,80 @@ async def delete_conversation(
     if not deleted:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     return {"conversation_id": conversation_id, "deleted": True}
+
+
+# ── Queued input: messages sent while One is still working ─────────────────
+# Owner-bound by the VAULT_OWNER token. No chat key: nothing sealed is read
+# here. Queued text is held in memory until the running turn seals it into the
+# conversation, or dropped when it is returned or withdrawn. See queued_input.py.
+
+
+class EnqueueQueuedInput(BaseModel):
+    client_message_id: str = Field(min_length=8, max_length=64)
+    text: str = Field(min_length=1, max_length=4000)
+
+
+def _queued_input_receipt(receipt: Any) -> dict[str, str]:
+    return {"clientMessageId": receipt.client_message_id, "status": receipt.status}
+
+
+@router.post("/api/one/agent-chat/runs/{conversation_id}/queue")
+async def enqueue_queued_input(
+    conversation_id: str,
+    payload: EnqueueQueuedInput,
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipt = queued_input_registry.enqueue(
+            str(token["user_id"]), conversation_id, payload.client_message_id, payload.text
+        )
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _queued_input_receipt(receipt)
+
+
+@router.delete("/api/one/agent-chat/runs/{conversation_id}/queue/{client_message_id}")
+async def withdraw_queued_input(
+    conversation_id: str,
+    client_message_id: str,
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipt = queued_input_registry.withdraw(
+            str(token["user_id"]), conversation_id, client_message_id
+        )
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return _queued_input_receipt(receipt)
+
+
+@router.get("/api/one/agent-chat/runs/{conversation_id}/queue")
+async def queued_input_status(
+    conversation_id: str,
+    ids: list[str] = Query(default_factory=list, max_length=16),
+    token: dict = Depends(require_vault_owner_token),
+):
+    try:
+        receipts = queued_input_registry.status(str(token["user_id"]), conversation_id, ids)
+    except QueuedInputError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"receipts": [_queued_input_receipt(receipt) for receipt in receipts]}
+
+
+@router.post("/api/one/agent-chat/runs/{conversation_id}/stop")
+async def stop_agent_turn(
+    conversation_id: str,
+    token: dict = Depends(require_vault_owner_token),
+):
+    """End the running turn at its next step; queued messages come back unsent.
+
+    ``stopped`` is false when no turn of this conversation runs in this process;
+    the client then stops reading and sends what it queued as the next turn.
+    """
+    settlement = queued_input_registry.request_stop(str(token["user_id"]), conversation_id)
+    if settlement is None:
+        return {"stopped": False, "returned": []}
+    return {"stopped": True, "returned": list(settlement.returned)}
 
 
 # ── Proposal mode: action search and structured proposals ────────────────────

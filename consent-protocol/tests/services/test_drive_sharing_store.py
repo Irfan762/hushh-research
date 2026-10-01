@@ -51,9 +51,23 @@ async def sharing(documents, monkeypatch):
         connection.exec_driver_sql(
             "CREATE TABLE connections(id UUID PRIMARY KEY,user_a_id TEXT,user_b_id TEXT,status TEXT)"
         )
+        connection.exec_driver_sql(
+            "CREATE TABLE connection_origins(connection_id UUID,status TEXT,origin_kind TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE one_location_circles(id UUID,owner_user_id TEXT,system_kind TEXT,status TEXT)"
+        )
+        connection.exec_driver_sql(
+            "CREATE TABLE one_location_circle_memberships(circle_id UUID,user_id TEXT,status TEXT)"
+        )
+        pair_id = str(uuid4())
         connection.execute(
             text("INSERT INTO connections VALUES (:id,'owner','recipient','active')"),
-            {"id": str(uuid4())},
+            {"id": pair_id},
+        )
+        connection.execute(
+            text("INSERT INTO connection_origins VALUES (:id,'active','direct_request')"),
+            {"id": pair_id},
         )
         connection.commit()
         for name in (
@@ -70,6 +84,8 @@ async def sharing(documents, monkeypatch):
             "251_drive_owner_search_jobs.sql",
             "254_drive_bulk_shares.sql",
             "256_drive_request_bulk_search.sql",
+            "259_drive_progressive_request_batches.sql",
+            "262_drive_request_payments.sql",
         ):
             # Raw SQL preserves JSON colons; double percent signs for psycopg2's
             # parameter parser while retaining PostgreSQL format() placeholders.
@@ -89,6 +105,29 @@ async def request(sharing, client_id=None):
             purpose="Private six-month statements", periodStart="2026-01-01", periodEnd="2026-06-30"
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_request_keeps_requester_calendar_context_encrypted(sharing):
+    created = await sharing.create_request(
+        recipient=VerifiedGoogleRecipient(
+            "recipient", "1234567", "recipient@example.invalid", datetime.now(UTC)
+        ),
+        owner_user_id="owner",
+        client_request_id=str(uuid4()),
+        purpose=ShareRequestPurpose(purpose="Notes from yesterday's onboarding call"),
+        request_time_zone="Asia/Kolkata",
+    )
+
+    context = await sharing.request_bulk_context(user_id="owner", request_id=created["requestId"])
+    assert context["requestTimeZone"] == "Asia/Kolkata"
+    assert context["requestCreatedAt"].tzinfo is not None
+    with sharing.db.engine.connect() as connection:
+        serialized = connection.execute(
+            text("SELECT request_envelope::text FROM drive_share_requests WHERE request_id=:id"),
+            {"id": created["requestId"]},
+        ).scalar_one()
+    assert "Asia/Kolkata" not in serialized
 
 
 async def review(sharing):
@@ -364,7 +403,11 @@ async def test_queue_grants_refuses_a_plan_that_names_other_files(sharing):
     )
     with pytest.raises(DriveSharingError, match="invalid_selection"):
         sharing._queue_grants(
-            None, request=None, approval=approval, sources=[{"document_id": "one"}], batch="b"
+            None,
+            request={"payment_required": False},
+            approval=approval,
+            sources=[{"document_id": "one"}],
+            batch="b",
         )
 
 

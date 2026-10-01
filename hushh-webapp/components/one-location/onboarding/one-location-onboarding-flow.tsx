@@ -20,7 +20,6 @@ import {
   UserPlus,
 } from "@/components/icons";
 import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
-import { FlowActionGroup } from "@/components/app-ui/flow-actions";
 import { OnboardingStepper } from "@/components/app-ui/onboarding-stepper";
 import { Button } from "@/components/ui/button";
 import { ContactSourceBadge } from "@/components/connections/contact-source-badge";
@@ -393,7 +392,7 @@ function WelcomeRadar() {
           data-one-welcome-core
         >
           <MapPin
-            className="h-6 w-6 fill-[#087ff5]/16 stroke-[#087ff5]"
+            className="h-6 w-6 text-[color:var(--app-accent)]"
             strokeWidth={2.7}
           />
         </span>
@@ -499,7 +498,7 @@ function WelcomeScreen({
           </div>
           {/* Centered measure like the feature-screen CTA below: full-width
               here stretched edge to edge on desktop and read as a bar. */}
-          <div className="mx-auto w-full max-w-[430px] shrink-0">
+          <div className="mx-auto w-full max-w-[244px] shrink-0">
             <PrimaryButton inverse onClick={onStart}>
               Get started
             </PrimaryButton>
@@ -619,11 +618,11 @@ const SHARE_LOCATION_AVATARS = [
   },
 ] as const;
 
-function TwoLineFeatureTitle({
+function FeatureTitle({
   lines,
   className,
 }: {
-  lines: readonly [string, string];
+  lines: readonly string[];
   className?: string;
 }) {
   return (
@@ -668,7 +667,7 @@ function ShareLocationFeatureCard() {
         >
           Share location
         </span>
-        <TwoLineFeatureTitle
+        <FeatureTitle
           lines={["Can’t explain", "where you are?"]}
           className="font-[family-name:var(--font-app-display)] text-[21px]"
         />
@@ -744,8 +743,8 @@ function CheckInFeatureCard() {
         >
           Check in
         </span>
-        <TwoLineFeatureTitle
-          lines={["Stuck waiting", "in line?"]}
+        <FeatureTitle
+          lines={["At the venue,", "but can't find", "each other?"]}
           className="text-[19px]"
         />
         <p
@@ -807,7 +806,7 @@ function SaveMySoulFeatureCard() {
         >
           SMS · Save My Soul
         </span>
-        <TwoLineFeatureTitle
+        <FeatureTitle
           lines={["Need help but", "can’t talk?"]}
           className="text-[19px]"
         />
@@ -957,7 +956,7 @@ function FeaturesScreen({
         </p>
       </div>
       <div
-        className="mx-auto w-full max-w-[430px] shrink-0 pt-5"
+        className="mx-auto w-full max-w-[244px] shrink-0 pt-5"
         data-one-feature-cta
       >
         <PrimaryButton
@@ -1709,36 +1708,32 @@ function ReadyScreen({
                 <p className="mt-2 text-[12px] leading-[18px] text-[#96999e] dark:text-[color:var(--app-secondary-label)]">
                   Expires in 72 hours
                 </p>
-                <FlowActionGroup
-                  className="mt-4"
-                  secondary={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="standard"
-                      onClick={onCopy}
-                      className="border-[#d5d9df] bg-white text-[#1f2b3d] dark:border-[color:var(--app-separator)] dark:bg-[color:var(--app-secondary-surface)] dark:text-[color:var(--app-label)]"
-                    >
-                      {copied ? (
-                        <Check className="h-5 w-5" strokeWidth={2.5} />
-                      ) : (
-                        <Copy className="h-5 w-5" strokeWidth={2} />
-                      )}
-                      {copied ? "Copied" : "Copy"}
-                    </Button>
-                  }
-                  primary={
-                    <Button
-                      type="button"
-                      size="standard"
-                      onClick={onShare}
-                      className="bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
-                    >
-                      <Share2 className="h-5 w-5" strokeWidth={2} />
-                      Share
-                    </Button>
-                  }
-                />
+                <div className="mt-4 grid grid-cols-2 items-center gap-2.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="standard"
+                    onClick={onCopy}
+                    className="border-[#d5d9df] bg-white text-[#1f2b3d] dark:border-[color:var(--app-separator)] dark:bg-[color:var(--app-secondary-surface)] dark:text-[color:var(--app-label)]"
+                  >
+                    {copied ? (
+                      <Check className="h-5 w-5" strokeWidth={2.5} />
+                    ) : (
+                      <Copy className="h-5 w-5" strokeWidth={2} />
+                    )}
+                    {copied ? "Copied" : "Copy"}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    size="standard"
+                    onClick={onShare}
+                    className="bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)]"
+                  >
+                    <Share2 className="h-5 w-5" strokeWidth={2} />
+                    Share
+                  </Button>
+                </div>
               </>
             ) : (
               <p className="flex min-h-24 items-center justify-center px-2 text-center text-sm leading-5 text-[#6f7580] dark:text-[color:var(--app-secondary-label)]">

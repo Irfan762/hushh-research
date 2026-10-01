@@ -7,11 +7,8 @@ import { usePathname } from "next/navigation";
 import {
   Loader2,
   Lock,
-  Mail,
-  PenLine,
   RefreshCw,
   Receipt,
-  Trash2,
 } from "@/components/icons";
 import { toast } from "sonner";
 
@@ -28,7 +25,7 @@ import {
   GmailWorkspaceNavigation,
   type GmailWorkspace,
 } from "@/components/gmail/gmail-workspace-navigation";
-import { AskOneButton } from "@/components/agent/ask-one-button";
+import { MailOverview, MailConnectedAccount } from "@/components/gmail/mail-overview";
 import { SetupCompletionFooter } from "@/components/onboarding/setup/setup-completion-footer";
 import { SurfaceInset, SurfaceStack } from "@/components/app-ui/surfaces";
 import { Progress } from "@/components/ui/progress";
@@ -53,6 +50,7 @@ import { ROUTES } from "@/lib/navigation/routes";
 import {
   describeGmailReceiptScanProgress,
   resolveGmailStatusSummary,
+  resolveGmailLastUpdatedLabel,
   resolveGmailSyncFeedback,
   sanitizeGmailUserMessage,
 } from "@/lib/profile/mail-flow";
@@ -436,7 +434,6 @@ export default function GmailReceiptsPage({
   const [gmailPopupAttempt, setGmailPopupAttempt] =
     useState<GmailOAuthPopupAttempt | null>(null);
   const [showDisconnectConfirm, setShowDisconnectConfirm] = useState(false);
-  const [showMailManagement, setShowMailManagement] = useState(false);
   const receiptsRef = useRef<ReceiptListItem[]>([]);
   const pageRef = useRef(1);
   const pendingSyncFeedbackRef = useRef(false);
@@ -459,6 +456,7 @@ export default function GmailReceiptsPage({
   useEffect(() => {
     if (workspace === "kyc" && user?.uid) setKycVisitedOwner(user.uid);
   }, [workspace, user?.uid]);
+
   const setWorkspace = useCallback(
     (nextWorkspace: GmailWorkspace) => {
       setWorkspaceState(nextWorkspace);
@@ -653,11 +651,6 @@ export default function GmailReceiptsPage({
 
   const syncing = gmail.syncingRun;
   const isConnected = gmail.presentation.isConnected;
-  const hasKnownGmailAccount = Boolean(
-    gmail.status?.google_email ||
-    gmail.status?.connected ||
-    gmail.status?.connected_at,
-  );
   const loadingStatus = gmail.loadingStatus;
 
   useEffect(() => {
@@ -1330,6 +1323,28 @@ export default function GmailReceiptsPage({
       }),
     [gmail.status, gmail.statusError, loadingStatus],
   );
+  // The run response settles before the aggregate status refresh. Prefer it
+  // so a completed fetch never keeps the overview spinner alive.
+  const overviewReceiptsFetching = gmail.syncRun
+    ? gmail.syncRun.status === "queued" || gmail.syncRun.status === "running"
+    : isSyncingState;
+  const overviewReceiptIssue = statusSummary.tone === "error" ||
+    gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled";
+  const overviewReceiptDetail = loadingStatus
+    ? "Checking your Mail status…"
+    : overviewReceiptsFetching
+    ? hasStaleBackgroundSync
+      ? "Sync is taking longer than usual."
+      : isPassiveBackfillState
+        ? "Fetching older purchases…"
+        : "Fetching your latest purchases…"
+    : statusSummary.tone === "error"
+      ? `${statusSummary.title}. ${statusSummary.detail}`
+      : gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled"
+        ? "Sync interrupted. Open receipts to retry."
+        : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
+          ? "Your latest receipts are ready."
+          : "Organize your purchases in one place.";
   const primaryActionLabel = isConnected
     ? syncing
       ? "Syncing receipts…"
@@ -1860,7 +1875,7 @@ export default function GmailReceiptsPage({
   return (
     <AppPageShell
       as="div"
-      width="reading"
+      width={journeyVariant === "workspace" ? "agent" : "reading"}
       className="pb-[calc(var(--app-bottom-fixed-ui,96px)+1.5rem)]"
       nativeTest={{
         routeId:
@@ -1881,17 +1896,16 @@ export default function GmailReceiptsPage({
               : "empty-valid",
       }}
     >
-      <AppPageHeaderRegion>
+      <AppPageHeaderRegion className={journeyVariant === "workspace" ? "mx-auto max-w-[820px]" : undefined}>
         <PageHeader
-          // Named for the source, not the artefact: the breadcrumb on both
-          // routes that render this page says "Gmail", and the setup checklist
-          // row that leads here says "Connect Gmail".
           title="Mail"
-          // On /one/gmail the top bar's trail already says "Mail" beside the
-          // back arrow, so the workspace does not draw it again. The setup
-          // step keeps its visible title: setup has no trail.
-          titleVisuallyHidden={journeyVariant === "workspace"}
+          titleRole={journeyVariant === "workspace" ? "agent" : "page"}
           description={pageTitle}
+          className={
+            journeyVariant === "workspace"
+              ? "[&_[data-slot=page-header-copy]]:!space-y-3"
+              : undefined
+          }
           actions={
             isConnected && journeyVariant === "onboarding" ? (
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -1921,7 +1935,6 @@ export default function GmailReceiptsPage({
                   data-voice-label="Disconnect Mail"
                   data-voice-purpose="disconnects Mail sync while keeping stored receipts available."
                 >
-                  <Trash2 className="mr-2 h-4 w-4" />
                   Disconnect
                 </Button>
               </div>
@@ -1930,7 +1943,7 @@ export default function GmailReceiptsPage({
         />
       </AppPageHeaderRegion>
 
-      <AppPageContentRegion>
+      <AppPageContentRegion className={journeyVariant === "workspace" ? "mx-auto !mt-0 max-w-[820px]" : undefined}>
         <SurfaceStack compact>
           {journeyVariant === "workspace" ? (
             <GmailWorkspaceNavigation
@@ -1940,31 +1953,14 @@ export default function GmailReceiptsPage({
           ) : null}
 
           {journeyVariant === "workspace" && isConnected && workspace === "overview" ? (
-            <div className="flex items-center justify-between gap-4 border-y border-border/60 py-2">
-              <p className="flex items-center gap-2.5 text-sm font-medium text-emerald-700 dark:text-emerald-400">
-                <span aria-hidden="true" className="h-2.5 w-2.5 rounded-full bg-emerald-500" />
-                Connected
-              </p>
-              <Button
-                type="button"
-                variant="none"
-                effect="fade"
-                aria-expanded={showMailManagement}
-                aria-controls="mail-management-panel"
-                onClick={() => setShowMailManagement((open) => !open)}
-                className="min-h-11 px-2 text-[17px] font-normal !text-[color:var(--app-accent)]"
-              >
-                {showMailManagement ? "Done" : "Manage"}
-              </Button>
-            </div>
+            <MailConnectedAccount
+              busy={gmailActionBusy !== null || loadingStatus}
+              onReconnect={() => void handleConnectGmail()}
+              onDisconnect={() => setShowDisconnectConfirm(true)}
+            />
           ) : null}
 
-          <div id="mail-management-panel" className="contents">
-          {journeyVariant === "onboarding" ||
-          !isConnected ||
-          (workspace === "overview" &&
-            (showMailManagement || loadingStatus || statusSummary.tone === "error" ||
-              isSyncingState || hasStaleBackgroundSync)) ? (
+          {journeyVariant === "onboarding" || !isConnected ? (
             <SurfaceInset
               className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
             >
@@ -2050,7 +2046,7 @@ export default function GmailReceiptsPage({
                   <Button
                     onClick={() => void handleConnectGmail()}
                     disabled={gmailActionBusy !== null}
-                    className="h-12 w-full px-8 text-base shadow-lg sm:w-auto sm:min-w-[260px]"
+                    className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base shadow-lg"
                     data-voice-control-id="open_gmail_connector"
                     data-voice-action-id={
                       journeyVariant === "onboarding"
@@ -2060,11 +2056,6 @@ export default function GmailReceiptsPage({
                     data-voice-label={primaryActionLabel}
                     data-voice-purpose="starts Mail connection or reconnection from this receipts page."
                   >
-                    {gmailActionBusy === "connect" ? (
-                      <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-                    ) : (
-                      <Mail className="mr-2 h-5 w-5" />
-                    )}
                     {primaryActionLabel}
                   </Button>
                   {gmail.statusError ? (
@@ -2078,28 +2069,13 @@ export default function GmailReceiptsPage({
                         })
                       }
                       disabled={gmailActionBusy !== null || loadingStatus}
-                      className="h-12 w-full px-8 text-base sm:w-auto"
+                      className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base"
                       data-voice-control-id="retry_gmail_status"
                       data-voice-label="Retry Mail status"
                       data-voice-purpose="rechecks the Mail connection without opening Google consent."
                     >
                       <RefreshCw className="mr-2 h-4 w-4" />
                       Retry Mail status
-                    </Button>
-                  ) : null}
-                  {hasKnownGmailAccount ? (
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      onClick={() => setShowDisconnectConfirm(true)}
-                      disabled={gmailActionBusy !== null}
-                      className="h-12 w-full px-8 text-base sm:w-auto"
-                      data-voice-control-id="disconnect_gmail"
-                      data-voice-label="Disconnect Mail"
-                      data-voice-purpose="disconnects Mail sync while keeping stored receipts available."
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Disconnect
                     </Button>
                   ) : null}
                   {connectGmailHelper ? (
@@ -2109,39 +2085,8 @@ export default function GmailReceiptsPage({
                   ) : null}
                 </div>
               ) : null}
-              {isConnected &&
-              journeyVariant === "workspace" &&
-              workspace === "overview" &&
-              showMailManagement &&
-              !loadingStatus ? (
-                <div className="flex w-full flex-col items-center gap-2 pt-2 sm:flex-row">
-                  <Button
-                    type="button"
-                    variant="destructive"
-                    effect="fade"
-                    onClick={() => setShowDisconnectConfirm(true)}
-                    disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
-                  >
-                    <Trash2 className="mr-1.5 h-4 w-4 shrink-0" />
-                    <span className="truncate">Disconnect Mail</span>
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="muted"
-                    onClick={() => void handleConnectGmail()}
-                    disabled={gmailActionBusy !== null}
-                    className="min-h-11 w-full min-w-0 flex-1 px-2 sm:px-4"
-                  >
-                    <RefreshCw className="mr-1.5 h-4 w-4 shrink-0" />
-                    <span className="truncate">Reconnect Mail</span>
-                  </Button>
-                </div>
-              ) : null}
             </SurfaceInset>
           ) : null}
-
-          </div>
 
           {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
             <SetupCompletionFooter
@@ -2171,29 +2116,19 @@ export default function GmailReceiptsPage({
           {/* Stable Tab Content Container with Min-Height & Smooth Fade Transition */}
           <div className="min-h-[340px] w-full space-y-4 transition-opacity duration-150 animate-in fade-in">
             {isConnected && workspace === "overview" ? (
-            <section className="mx-auto flex w-full max-w-md flex-col items-center px-4 py-10 text-center sm:py-12">
-              <div aria-hidden="true" className="relative mb-5 flex h-20 w-20 items-center justify-center rounded-[22px] bg-[color:var(--app-accent-tint)] text-[color:var(--app-accent)]">
-                <Mail className="h-10 w-10" />
-                <PenLine className="absolute bottom-4 right-3 h-5 w-5 rounded bg-[color:var(--app-accent-surface)]" />
-              </div>
-              <h2 className="text-2xl font-semibold tracking-tight text-foreground">Draft with One</h2>
-              <p className="mt-2 max-w-xs text-base leading-relaxed text-muted-foreground">
-                Draft, reply, or follow up. You approve before sending.
-              </p>
-              <AskOneButton
-                onClick={handleOpenOneChat}
-                showIcon={false}
-                size="prominent"
-                className="mt-6 w-full max-w-xs justify-center sm:w-full"
-              >
-                Chat with One
-              </AskOneButton>
-            </section>
+            <MailOverview
+              fetching={overviewReceiptsFetching}
+              receiptIssue={overviewReceiptIssue}
+              receiptCount={receiptListReady ? total : undefined}
+              receiptDetail={overviewReceiptDetail}
+              receiptUpdated={resolveGmailLastUpdatedLabel(gmail.status, gmail.syncRun)}
+              onOpenChat={handleOpenOneChat}
+            />
           ) : null}
 
           {isConnected && (kycVisitedOwner === user?.uid || workspace === "kyc") ? (
             <div hidden={workspace !== "kyc"} key={`${user?.uid ?? "guest"}:${Boolean(vaultKey && vaultOwnerToken)}`}>
-              <GmailVerificationOnboarding
+            <GmailVerificationOnboarding
               userId={user?.uid || null}
               vaultKey={vaultKey}
               vaultOwnerToken={vaultOwnerToken}
@@ -2224,9 +2159,11 @@ export default function GmailReceiptsPage({
               </div>
               <h2 className="text-2xl font-semibold tracking-tight text-foreground">Receipts</h2>
               <p className="mt-2 max-w-xs text-[15px] leading-[22px] text-muted-foreground">
-                One organizes your email receipts into a shopping summary.
+                One organizes your email receipts{" "}
+                <br />
+                into a shopping summary.
               </p>
-              <div className="mt-6 flex w-full max-w-xs flex-col items-center gap-1">
+              <div className="mt-6 flex w-full max-w-[244px] flex-col items-center gap-1">
                 <Button
                   type="button"
                   size="prominent"
@@ -2471,6 +2408,7 @@ export default function GmailReceiptsPage({
                 "order_id",
               ]}
               searchPlaceholder="Search receipts"
+              preserveMobilePaginationPosition
               initialPageSize={8}
               pageSizeOptions={[8, 16, 24]}
               density="compact"

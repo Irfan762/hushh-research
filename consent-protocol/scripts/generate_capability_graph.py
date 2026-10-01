@@ -730,7 +730,45 @@ def _read_workflow_predecessor(ref: str) -> dict[str, Any]:
     return payload
 
 
-def _merge_workflow_predecessor(graph: dict[str, Any], predecessor: dict[str, Any]) -> None:
+def _merged_workflow_predecessor_refs(base_ref: str | None = None) -> tuple[str, ...]:
+    """Keep the other parent of a merge with the current PR base.
+
+    The base graph supplies one workflow history. A merged feature parent may
+    carry another compatible history, which must survive the default CI check
+    without a one-off generator flag. Only committed ancestors are returned;
+    ``_read_workflow_predecessor`` still validates their graph and semantics.
+    """
+
+    if not (REPO_ROOT / ".git").exists():
+        return ()
+    base_commit = _resolve_base_commit(_resolve_base_ref(base_ref))
+    if not base_commit:
+        return ()
+    merges = subprocess.run(  # noqa: S603 - fixed git executable/arguments
+        ["git", "rev-list", "--first-parent", "--merges", "HEAD"],  # noqa: S607
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    for merge in merges:
+        lineage = subprocess.run(  # noqa: S603 - fixed git executable/arguments
+            ["git", "rev-list", "--parents", "-n", "1", merge],  # noqa: S607
+            cwd=REPO_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.split()
+        if base_commit in lineage[1:]:
+            return tuple(parent for parent in lineage[1:] if parent != base_commit)
+    return ()
+
+
+def _merge_workflow_predecessor(
+    graph: dict[str, Any],
+    predecessor: dict[str, Any],
+    deprecations: tuple[dict[str, Any], ...] = (),
+) -> None:
     """Preserve a merged branch's history only after proving its workflow semantics."""
 
     current = _workflow_by_id(graph)
@@ -742,6 +780,13 @@ def _merge_workflow_predecessor(graph: dict[str, Any], predecessor: dict[str, An
         equal = _semantic_index({"workflows": [old]}) == _semantic_index(
             {"workflows": [new] if new else []}
         )
+        retired = not equal and _semantic_change_has_deprecation(
+            predecessor, graph, semantic_id, deprecations
+        )
+        if retired:
+            # The exact deprecation record rejects active runs on the old graph.
+            # Do not merge that predecessor into current compatibility.
+            continue
         if not equal and not _workflow_change_is_additive(predecessor, graph, semantic_id):
             raise RuntimeError(f"Workflow predecessor is not compatible: {workflow_id}")
         entry = entries[workflow_id]
@@ -813,8 +858,15 @@ def build_payload(
         graph,
         semantic_diff,
     )
-    for ref in workflow_predecessor_refs:
-        _merge_workflow_predecessor(graph, _read_workflow_predecessor(ref))
+    predecessors = dict.fromkeys(
+        (*workflow_predecessor_refs, *_merged_workflow_predecessor_refs(base_ref))
+    )
+    for ref in predecessors:
+        _merge_workflow_predecessor(
+            graph,
+            _read_workflow_predecessor(ref),
+            deprecations,
+        )
     return graph
 
 

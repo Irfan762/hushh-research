@@ -46,6 +46,7 @@ const MAX_TRANSCRIPT_ITEMS = 200;
 // Only turns still streaming at the moment of a clear are suppressed, so this
 // list holds at most the handful of turns in flight at once.
 const MAX_CLEARED_TURN_IDS = 8;
+const MAX_FENCED_TURN_IDS = 16;
 const MAX_TIMELINE_ITEMS = 50;
 const MAX_ENTITIES = 20;
 const MAX_CANDIDATES = 5;
@@ -115,6 +116,14 @@ export type ToolResultTone = "success" | "neutral" | "failure" | "pending";
 const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED]);
 
 /** An armed-but-unsent outcome: neither success nor failure yet. */
+/**
+ * Statuses that ask the surface to do something rather than report an outcome.
+ *
+ * They carry nothing of their own to show, and the surface they act on is the
+ * result already displayed.
+ */
+export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
+
 export function isPendingStatus(status: string | null | undefined): boolean {
   return PENDING_STATUSES.has(String(status || "").trim());
 }
@@ -253,6 +262,12 @@ export function voiceErrorForClose(
         message: VOICE_UNAVAILABLE_MESSAGE,
         recoverable: false,
       };
+    case 1006:
+      return {
+        code: "network_lost",
+        message: "Connection lost. Tap Try again to resume talking to One.",
+        recoverable: true,
+      };
     default:
       return {
         code: reason
@@ -304,6 +319,7 @@ export function isLocalCloseReason(reason: string | null | undefined): boolean {
 /** Error frames the server sends while the session keeps running. */
 const INFORMATIONAL_ERROR_CODES = new Set<string>([
   "protocol",
+  "turn_busy",
   "firebase_proof_required",
   // The tap's proof failed verification (expired, revoked, other account);
   // the card stays pending and a fresh tap can still complete it.
@@ -448,6 +464,25 @@ function fenceTurnTranscript(
   return changed ? next : transcript;
 }
 
+function addFencedTurns(
+  previous: string[],
+  ...turnIds: (string | null | undefined)[]
+): string[] {
+  const next = [...previous];
+  for (const turnId of turnIds) {
+    if (turnId && !next.includes(turnId)) next.push(turnId);
+  }
+  return next.slice(-MAX_FENCED_TURN_IDS);
+}
+
+function isStaleOrigin(state: VoiceSessionState, turnId: string | null | undefined): boolean {
+  return Boolean(
+    turnId &&
+      (state.fencedTurnIds.includes(turnId) ||
+        (state.activeInputTurnId && turnId !== state.activeInputTurnId)),
+  );
+}
+
 // --- server frames ------------------------------------------------------------
 
 function reduceServerFrame(
@@ -461,7 +496,7 @@ function reduceServerFrame(
       return {
         ...state,
         // An open card the server re-lists is still waiting on the person.
-        phase: first ? "confirming" : "listening",
+        phase: state.phase === "paused" ? "paused" : first ? "confirming" : "listening",
         serverState: null,
         sessionId: frame.session_id,
         conversationId: frame.conversation_id,
@@ -487,14 +522,47 @@ function reduceServerFrame(
             ? state.pendingAction
             : null,
         clientStep: null,
+        activeInputTurnId: null,
+        activeResponseTurnId: null,
+        fencedTurnIds: [],
       };
     }
-    case "audio":
-      return { ...state, turnId: frame.turn_id, idleDeadlineAt: null };
+    case "audio": {
+      const origin = frame.origin_turn_id || frame.turn_id;
+      if (isStaleOrigin(state, origin)) return state;
+      return {
+        ...state,
+        turnId: frame.turn_id,
+        activeResponseTurnId: origin,
+        idleDeadlineAt: null,
+      };
+    }
     case "transcript.input":
     case "transcript.output": {
       const role: TranscriptItem["role"] =
         frame.type === "transcript.input" ? "you" : "one";
+      const newInput =
+        role === "you" &&
+        frame.turn_id !== state.activeInputTurnId &&
+        frame.turn_id !== state.activeResponseTurnId &&
+        !state.fencedTurnIds.includes(frame.turn_id);
+      // A provider can start an autonomous response after the current answer's
+      // final transcript, even if its model_end marker has not arrived yet.
+      // Earlier input origins remain fenced, so a late old answer cannot use
+      // this path to take over a newer question.
+      const autonomousAfterFinal =
+        role === "one" &&
+        state.activeInputTurnId !== null &&
+        frame.turn_id !== state.activeInputTurnId &&
+        !state.fencedTurnIds.includes(frame.turn_id) &&
+        state.transcript.some(
+          (item) =>
+            item.role === "one" &&
+            item.turnId === state.activeInputTurnId &&
+            item.final,
+        );
+      if (role === "one" && isStaleOrigin(state, frame.turn_id) && !autonomousAfterFinal)
+        return state;
       if (role === "one" && state.clearedTurnIds.includes(frame.turn_id)) {
         // An answer that was mid-sentence when the view was cleared belongs
         // to the cleared exchange, so its remaining chunks and its
@@ -524,7 +592,32 @@ function reduceServerFrame(
       );
       return {
         ...state,
-        turnId: frame.turn_id,
+        turnId: isStaleOrigin(state, frame.turn_id) && !newInput && !autonomousAfterFinal
+          ? state.turnId
+          : frame.turn_id,
+        activeInputTurnId: newInput
+          ? frame.turn_id
+          : autonomousAfterFinal ? null : state.activeInputTurnId,
+        activeResponseTurnId: role === "one"
+          ? frame.turn_id
+          : newInput ? null : state.activeResponseTurnId,
+        fencedTurnIds: autonomousAfterFinal
+          ? addFencedTurns(state.fencedTurnIds, state.activeInputTurnId)
+          : newInput
+          ? addFencedTurns(
+              state.fencedTurnIds,
+              state.activeInputTurnId,
+              state.activeResponseTurnId,
+              state.pendingAction?.origin_turn_id,
+            ).filter((id) => id !== frame.turn_id)
+          : state.fencedTurnIds,
+        // A new question owns the visible answer slot. Older tool receipts
+        // remain in the timeline and any pending action still settles by ID.
+        lastResult: newInput ? null : state.lastResult,
+        phase:
+          newInput && state.phase !== "paused" && state.phase !== "error"
+            ? "understanding"
+            : state.phase,
         idleDeadlineAt: null,
         transcript,
         historyCleared: hasVisibleTranscript(transcript)
@@ -539,17 +632,36 @@ function reduceServerFrame(
           : state.transcript;
       return {
         ...state,
-        turnId: frame.turn_id,
+        turnId: isStaleOrigin(state, frame.turn_id) ? state.turnId : frame.turn_id,
+        activeInputTurnId:
+          (frame.state === "model_end" || frame.state === "interrupted") &&
+          state.activeInputTurnId === frame.turn_id
+            ? null
+            : state.activeInputTurnId,
+        activeResponseTurnId: !isStaleOrigin(state, frame.turn_id)
+          ? frame.turn_id
+          : state.activeResponseTurnId,
+        // A completed origin can finish audio already scheduled by the player,
+        // but late frames must never reclaim a later question's answer slot.
+        fencedTurnIds:
+          frame.state === "model_end" || frame.state === "interrupted"
+            ? addFencedTurns(state.fencedTurnIds, frame.turn_id)
+            : state.fencedTurnIds,
         transcript,
         idleDeadlineAt: null,
       };
     }
     case "state": {
+      if (isStaleOrigin(state, frame.turn_id)) return state;
+      // The relay can send an untagged listening state while a queued typed
+      // input is waiting for the previous provider turn to finish.
+      if (!frame.turn_id && frame.state === "listening" && state.activeInputTurnId)
+        return state;
       const phase = mapServerStateToPhase(state.phase, frame.state);
       return {
         ...state,
         serverState: frame.state,
-        phase,
+        phase: state.phase === "paused" && frame.state !== "error" ? "paused" : phase,
         turnId: frame.turn_id ?? state.turnId,
         idleDeadlineAt:
           frame.state === "complete" && state.idleTimeoutMs
@@ -560,18 +672,32 @@ function reduceServerFrame(
     case "tool.started": {
       const item: ToolTimelineItem = {
         callId: frame.call_id || null,
+        turnId: frame.turn_id || null,
         tool: frame.tool,
         argsSummary: summarizeArgs(frame.args_public),
       };
       return {
         ...state,
         idleDeadlineAt: null,
+        activeResponseTurnId: !isStaleOrigin(state, frame.turn_id)
+          ? frame.turn_id || state.activeResponseTurnId
+          : state.activeResponseTurnId,
         toolTimeline: [...state.toolTimeline, item].slice(-MAX_TIMELINE_ITEMS),
       };
     }
     case "tool.result": {
       const ok = frame.ok === true;
       const result = frame.result_public;
+      const matchingCall = frame.call_id
+        ? [...state.toolTimeline].reverse().find((item) => item.callId === frame.call_id)
+        : undefined;
+      const originTurnId = frame.turn_id || matchingCall?.turnId || null;
+      // Missing correlation may still settle its exact pending card, but it
+      // cannot take ownership of a newer question's answer slot.
+      const belongsToCurrentInput = originTurnId
+        ? !isStaleOrigin(state, originTurnId)
+        : state.turnId === null && state.activeInputTurnId === null &&
+          state.activeResponseTurnId === null;
       // A normal confirmed action emits `pending_action.resolved` first, but
       // a terminal result can still arrive without that frame after a relay
       // reconnect. Its exact pending id lets the client retire only the card
@@ -612,6 +738,7 @@ function reduceServerFrame(
           ...state.toolTimeline,
           {
             callId: frame.call_id,
+            turnId: originTurnId,
             tool: frame.tool,
             argsSummary: "",
             result,
@@ -622,6 +749,7 @@ function reduceServerFrame(
         timeline = state.toolTimeline.slice();
         timeline[index] = {
           ...timeline[index]!,
+          turnId: originTurnId || timeline[index]!.turnId,
           tool: frame.tool || timeline[index]!.tool,
           result,
           ok,
@@ -631,15 +759,24 @@ function reduceServerFrame(
         ...state,
         idleDeadlineAt: null,
         phase:
+          belongsToCurrentInput &&
           matchesOpenPending && resolvedStatus === "executed" && !awaitingDevice
             ? "complete"
-            : matchesOpenPending &&
+            : belongsToCurrentInput && matchesOpenPending &&
                 state.phase !== "paused" &&
                 state.phase !== "error"
               ? "listening"
               : state.phase,
         toolTimeline: timeline,
-        lastResult: result,
+        // A dispatch does not replace what is displayed. There is exactly one
+        // result slot and no history, so letting a dispatch land in it would
+        // clear the card it refers to: "open the second one" would take away the
+        // list that made "second" mean anything. It still joins the timeline, so
+        // it is observable; it just does not become the thing on screen.
+        lastResult: DISPATCH_ONLY_STATUSES.has(String(result.status || "").trim()) ||
+          !belongsToCurrentInput
+          ? state.lastResult
+          : result,
         pendingAction:
           matchesOpenPending && pending
             ? {
@@ -654,8 +791,10 @@ function reduceServerFrame(
       };
     }
     case "pending_action": {
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       const {
         type: _type,
+        turn_id: _turnId,
         risk_level,
         requires_tap,
         entities,
@@ -663,6 +802,7 @@ function reduceServerFrame(
         ...row
       } = frame;
       void _type;
+      void _turnId;
       const pending: PendingActionView = {
         ...row,
         riskLevel: risk_level,
@@ -704,7 +844,9 @@ function reduceServerFrame(
         ...state,
         idleDeadlineAt: null,
         phase:
-          executed && !awaitingDevice
+          state.activeInputTurnId
+            ? state.phase
+            : executed && !awaitingDevice
             ? "complete"
             : state.phase === "paused" || state.phase === "error"
               ? state.phase
@@ -720,8 +862,10 @@ function reduceServerFrame(
       };
     }
     case "entity_card": {
-      const { type: _type, ...payload } = frame;
+      if (isStaleOrigin(state, frame.turn_id)) return state;
+      const { type: _type, turn_id: _turnId, ...payload } = frame;
       void _type;
+      void _turnId;
       return {
         ...state,
         idleDeadlineAt: null,
@@ -729,6 +873,7 @@ function reduceServerFrame(
       };
     }
     case "candidate_picker":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       return {
         ...state,
         idleDeadlineAt: null,
@@ -739,11 +884,13 @@ function reduceServerFrame(
         },
       };
     case "ui_directive":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       // Directives are side effects the provider runs; the reducer only notes activity.
       return state.idleDeadlineAt === null
         ? state
         : { ...state, idleDeadlineAt: null };
     case "client_step.request":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       return {
         ...state,
         idleDeadlineAt: null,
@@ -911,6 +1058,9 @@ export function reduceVoiceSession(
           reconnectReason: null,
           idleDeadlineAt: null,
           clientStep: null,
+          activeInputTurnId: null,
+          activeResponseTurnId: null,
+          fencedTurnIds: [],
         };
       }
       return {

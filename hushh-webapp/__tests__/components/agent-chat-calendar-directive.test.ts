@@ -33,22 +33,24 @@ function makeToolEvent(
 }
 
 describe("getCalendarDirectiveFromToolEvent", () => {
-  it("persists chat-started same-window OAuth attempts before navigation", () => {
+  it("never navigates the chat window to connect Google", () => {
+    // The vault key is memory-only: any chat OAuth redirect would drop it.
     const source = readFileSync(
       join(process.cwd(), "components/agent/agent-chat-workspace.tsx"),
       "utf8",
     );
-    const persistAt = source.indexOf("persistGoogleOAuthSameWindowAttempt(attempt)");
-    const navigateAt = source.indexOf(
-      "window.location.assign(start.authorize_url)",
-      persistAt,
-    );
-    expect(persistAt).toBeGreaterThan(-1);
-    expect(navigateAt).toBeGreaterThan(persistAt);
-    const catchAt = source.indexOf("} catch (error) {", navigateAt);
-    const errorMetricAt = source.indexOf('"one_calendar_action"', catchAt);
-    expect(catchAt).toBeGreaterThan(navigateAt);
-    expect(errorMetricAt).toBeGreaterThan(catchAt);
+    expect(source).not.toContain("window.location.assign(start.authorize_url)");
+    expect(source).not.toContain("persistGoogleOAuthSameWindowAttempt");
+    expect(source).not.toMatch(/location\.(assign|replace|href\s*=)\([^)]*authorize/);
+    const connectAt = source.indexOf('if (type === "calendar.connect") {');
+    const block = source.slice(connectAt, connectAt + 700);
+    expect(block).toContain('runDirectiveConnect("calendar")');
+    const runnerAt = source.indexOf("const runDirectiveConnect = ");
+    const runner = source.slice(runnerAt, runnerAt + 3_000);
+    expect(runner).toContain("connectCalendarInPlace(");
+    expect(runner).toContain('purpose: "modify"');
+    // A failed Calendar connect is still recorded.
+    expect(runner).toContain('"one_calendar_action"');
   });
 
   it("returns null for non-calendar tools", () => {
@@ -280,28 +282,11 @@ describe("getGmailInformationRequestReplyPayload", () => {
     const event = makeToolEvent(
       "open_gmail_information_request_reply",
       { status: "draft_opened" },
-      {
-        body: "Here are the requested details.",
-        owner_supplied_requested_information: true,
-      },
-    );
-
-    expect(getGmailInformationRequestReplyPayload(event)).toEqual({
-      body: "Here are the requested details.",
-      ownerSuppliedRequestedInformation: true,
-    });
-  });
-
-  it("does not treat a draft based on existing information as a new KYC answer", () => {
-    const event = makeToolEvent(
-      "open_gmail_information_request_reply",
-      { status: "draft_opened" },
       { body: "Here are the requested details." },
     );
 
     expect(getGmailInformationRequestReplyPayload(event)).toEqual({
       body: "Here are the requested details.",
-      ownerSuppliedRequestedInformation: false,
     });
   });
 

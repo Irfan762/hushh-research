@@ -13,6 +13,7 @@ from typing import Annotated, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 from hushh_mcp.one_voice.tools.base import LOCATION_UPDATES_PENDING as _LOCATION_UPDATES_PENDING
+from hushh_mcp.one_voice.tools.mail import MAIL_OPEN_DISPATCHED as _MAIL_OPEN_DISPATCHED
 
 PROTOCOL_VERSION = "one-voice-v1"
 INPUT_MIME = "audio/pcm;rate=16000"
@@ -25,6 +26,9 @@ MAX_CONTEXT_JSON_CHARS = 48_000
 # Interim status of a device-executed Location updates step (resume/pause
 # tools); defined with the tool contract, re-exported here for the wire.
 LOCATION_UPDATES_PENDING = _LOCATION_UPDATES_PENDING
+# Re-exported for the wire, like the status above it, so the relay does not have
+# to import a tool family to know a dispatch when it sees one.
+MAIL_OPEN_DISPATCHED = _MAIL_OPEN_DISPATCHED
 # Interim status of an armed Save My Soul alert: grants exist, the device has
 # not published a position yet, and nobody has been reached.
 SOS_GRANTS_CREATED = "sos_grants_created"
@@ -63,6 +67,10 @@ class AuthFrame(_Frame):
     firebase_id_token: str | None = Field(default=None, max_length=8_000)
     conversation_id: str = Field(min_length=36, max_length=36)
     client: dict[str, Any] = Field(default_factory=dict)
+    # The owner's IANA zone, for resolving "today" and "this week" on their
+    # clock rather than the server's. A hint, never authority: it is validated
+    # downstream and falls back to UTC. Bounded because it reaches ZoneInfo.
+    timezone: str | None = Field(default=None, max_length=64)
     resume: bool = False
 
 
@@ -76,6 +84,7 @@ class AudioFrame(_Frame):
 class TextFrame(_Frame):
     type: Literal["text"]
     text: str = Field(min_length=1, max_length=MAX_TEXT_CHARS)
+    request_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class AppContextFrame(_Frame):
@@ -208,14 +217,47 @@ def session_ready(
     }
 
 
-def audio_out(data_b64: str, *, turn_id: str) -> dict[str, Any]:
-    return {"type": "audio", "data": data_b64, "mime_type": OUTPUT_MIME, "turn_id": turn_id}
+def audio_out(
+    data_b64: str, *, turn_id: str, narration: bool = False, origin_turn_id: str | None = None
+) -> dict[str, Any]:
+    """One chunk of speech for the player.
+
+    ``narration`` marks audio this server synthesized rather than audio the Live
+    model produced. The client needs the distinction for one reason: while
+    narration plays, the microphone must be closed on every device, because the
+    speaker is carrying mail-derived text and the Live session transcribes what
+    the microphone hears straight into the context this feature exists to keep it
+    out of. Ordinary model speech needs no such gate -- it is already in that
+    context -- and closing the mic for it would cost barge-in.
+
+    Additive and optional, so a client that predates it plays the audio and
+    ignores the field.
+    """
+    frame: dict[str, Any] = {
+        "type": "audio",
+        "data": data_b64,
+        "mime_type": OUTPUT_MIME,
+        "turn_id": turn_id,
+    }
+    if narration:
+        frame["narration"] = True
+    if origin_turn_id:
+        frame["origin_turn_id"] = origin_turn_id
+    return frame
 
 
 def transcript(
-    kind: Literal["input", "output"], text: str, *, final: bool, turn_id: str
+    kind: Literal["input", "output"],
+    text: str,
+    *,
+    final: bool,
+    turn_id: str,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
-    return {"type": f"transcript.{kind}", "text": text, "final": final, "turn_id": turn_id}
+    frame = {"type": f"transcript.{kind}", "text": text, "final": final, "turn_id": turn_id}
+    if request_id:
+        frame["request_id"] = request_id
+    return frame
 
 
 def turn(
@@ -234,8 +276,13 @@ def voice_state(
     return {"type": "state", "state": state, "turn_id": turn_id}
 
 
-def tool_started(*, call_id: str, tool: str, args_public: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "tool.started", "call_id": call_id, "tool": tool, "args_public": args_public}
+def tool_started(
+    *, call_id: str, tool: str, args_public: dict[str, Any], turn_id: str | None = None
+) -> dict[str, Any]:
+    frame = {"type": "tool.started", "call_id": call_id, "tool": tool, "args_public": args_public}
+    if turn_id:
+        frame["turn_id"] = turn_id
+    return frame
 
 
 def tool_result(
@@ -245,6 +292,7 @@ def tool_result(
     tool: str,
     result_public: dict[str, Any],
     ok: bool | None = None,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "type": "tool.result",
@@ -256,6 +304,8 @@ def tool_result(
     }
     if pending_action_id:
         payload["pending_action_id"] = pending_action_id
+    if turn_id:
+        payload["turn_id"] = turn_id
     return payload
 
 
@@ -265,6 +315,7 @@ def pending_action(
     receipt_token: str | None,
     entities: list[dict[str, Any]],
     risk_level: str,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     payload = {
         "type": "pending_action",
@@ -275,6 +326,8 @@ def pending_action(
     }
     if receipt_token:
         payload["receipt_token"] = receipt_token
+    if turn_id:
+        payload["turn_id"] = turn_id
     return payload
 
 
@@ -289,35 +342,63 @@ def pending_resolved(
     }
 
 
-def entity_card(*, kind: Literal["person", "circle"], payload: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "entity_card", "kind": kind, **payload}
+def entity_card(
+    *, kind: Literal["person", "circle"], payload: dict[str, Any], turn_id: str | None = None
+) -> dict[str, Any]:
+    frame = {"type": "entity_card", "kind": kind, **payload}
+    if turn_id:
+        frame["turn_id"] = turn_id
+    return frame
 
 
 def candidate_picker(
-    *, kind: Literal["person", "circle"], question: str, candidates: list[dict[str, Any]]
+    *,
+    kind: Literal["person", "circle"],
+    question: str,
+    candidates: list[dict[str, Any]],
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    frame = {
         "type": "candidate_picker",
         "kind": kind,
         "question": question,
         "candidates": candidates,
     }
+    if turn_id:
+        frame["turn_id"] = turn_id
+    return frame
 
 
-def ui_directive(*, directive_id: str, kind: str, payload: dict[str, Any]) -> dict[str, Any]:
-    return {"type": "ui_directive", "directive_id": directive_id, "kind": kind, "payload": payload}
+def ui_directive(
+    *, directive_id: str, kind: str, payload: dict[str, Any], turn_id: str | None = None
+) -> dict[str, Any]:
+    frame = {"type": "ui_directive", "directive_id": directive_id, "kind": kind, "payload": payload}
+    if turn_id:
+        frame["turn_id"] = turn_id
+    return frame
 
 
 def client_step_request(
-    *, step_id: str, kind: str, payload: dict[str, Any], timeout_s: int
+    *,
+    step_id: str,
+    kind: str,
+    payload: dict[str, Any],
+    timeout_s: int,
+    turn_id: str | None = None,
+    confirmed_pending_action_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    frame = {
         "type": "client_step.request",
         "step_id": step_id,
         "kind": kind,
         "payload": payload,
         "timeout_s": timeout_s,
     }
+    if turn_id:
+        frame["turn_id"] = turn_id
+    if confirmed_pending_action_id:
+        frame["confirmed_pending_action_id"] = confirmed_pending_action_id
+    return frame
 
 
 def reconnect_required(reason: Literal["go_away", "max_duration"]) -> dict[str, Any]:

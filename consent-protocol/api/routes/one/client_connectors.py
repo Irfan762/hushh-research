@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -46,7 +46,8 @@ async def get_client_connector(
     token_data: dict[str, Any] = Depends(require_firebase_auth),
     _: dict[str, Any] = Depends(require_vault_owner_token),
 ) -> dict[str, Any]:
-    return await get_client_connector_service().get(user_id=_owner(token_data, user_id))
+    result = await get_client_connector_service().get(user_id=_owner(token_data, user_id))
+    return cast(dict[str, Any], result)
 
 
 @router.post("/client-connector")
@@ -56,12 +57,13 @@ async def register_client_connector(
     _: dict[str, Any] = Depends(require_vault_owner_token),
 ) -> dict[str, Any]:
     try:
-        return await get_client_connector_service().register(
+        result = await get_client_connector_service().register(
             user_id=_owner(token_data, request.user_id),
             connector_public_key=request.connector_public_key,
             connector_key_id=request.connector_key_id,
             connector_wrapping_alg=request.connector_wrapping_alg,
             public_key_fingerprint=request.public_key_fingerprint,
         )
+        return cast(dict[str, Any], result)
     except ClientConnectorError as exc:
         raise _error(exc) from exc

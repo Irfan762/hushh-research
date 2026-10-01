@@ -81,7 +81,6 @@ system_instruction: |
   - An explicit correction of the owner's existing meaning should map to correct. Words such as "now" or "actually" inside a historical or quoted narrative are not sufficient on their own.
   - Deletions such as "forget that" and "delete that" should map to delete.
   - One-off reminders and operational requests should usually be ephemeral and not durable PKM.
-  - An owner's direct request to keep clear supplied ordinary facts for future reference is a durable profile or preference mutation, not ambiguity. Set requires_confirmation=false when the fact and domain are clear and the information is not sensitive, shared, financial, a correction or deletion, or otherwise constrained.
   - If the prompt is too vague to safely persist, return ambiguous + requires_confirmation=true.
   - contract_version must be 1.
 

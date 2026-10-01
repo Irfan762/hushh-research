@@ -38,6 +38,12 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from google.adk.tools.tool_context import ToolContext
 
 from hushh_mcp.consent.pii_sanitizer import mask_email
+from hushh_mcp.consent.scope_matcher import (
+    fallback_scopes,
+    is_proposable_entry,
+    match_scopes,
+    tokens,
+)
 from hushh_mcp.consent.token import validate_token_with_db
 from hushh_mcp.constants import ConsentScope
 from hushh_mcp.one_adk import action_retrieval
@@ -49,6 +55,10 @@ from hushh_mcp.one_adk.action_retrieval import (
     search_actions,
 )
 from hushh_mcp.one_adk.request_secrets import resolve_request_secret
+from hushh_mcp.one_adk.shared_with_me_card import (
+    SHARED_WITH_ME_CARD_KIND,
+    build_shared_with_me_cards,
+)
 from hushh_mcp.one_adk.voice_domain_policy import (
     is_voice_domain_disabled,
     is_voice_entirely_disabled,
@@ -89,6 +99,7 @@ from hushh_mcp.services.domain_contracts import (
     get_canonical_domain_metadata,
     normalize_domain_key,
 )
+from hushh_mcp.services.drive_sharing_projection_store import DriveSharingProjectionStore
 from hushh_mcp.services.information_request_service import (
     InformationRequestService,
 )
@@ -110,6 +121,7 @@ from hushh_mcp.services.person_profile_service import (
     PersonProfileService,
 )
 from hushh_mcp.services.personal_knowledge_model_service import get_pkm_service
+from hushh_mcp.services.requester_identity import looks_technical_label
 from hushh_mcp.services.ria_iam_service import RIAIAMService
 from hushh_mcp.services.spoken_name_resolver import (
     UnresolvedPersonName,
@@ -2026,7 +2038,7 @@ async def discover_person_information(
                     "label": item.get("label") or "Information",
                     "description": item.get("description"),
                     "domain": item_domain or "Other",
-                    "sensitivity": item.get("sensitivity") or "standard",
+                    "sensitivity": item.get("sensitivity") or "sensitive",
                     "pathSegments": item.get("pathSegments") or [],
                 }
             )
@@ -2036,6 +2048,7 @@ async def discover_person_information(
                 "label": g.get("label") or "Shared information",
                 "domain": g.get("domain") or "Other",
                 "scopeRef": g.get("scopeRef"),
+                "sensitivity": g.get("sensitivity") or "sensitive",
                 "status": g.get("status") or "granted",
                 "expiresAt": g.get("expiresAt"),
                 "requestId": g.get("requestId"),
@@ -2080,10 +2093,14 @@ async def list_information_shared_with_me(
     tool_context: ToolContext,
     person: str = "",
 ) -> dict[str, Any]:
-    """List information that connections have shared with this person through active consent grants.
+    """Show what connections have already shared with this person, as a secure card.
 
-    Returns who has shared information with you, the specific fields/labels granted,
-    domains, and the profile link where the decrypted value can be opened using the vault key.
+    Call it when the person asks whether they have, or asks to see, something
+    another person already shared ("do we have access to Manish's tax
+    record?", "show me it"). The chat renders a "Shared with you" card that
+    decrypts the values on the person's own device. This result holds labels,
+    field names and dates only, never a value. Reply in one short line such as
+    "Here's what Manish shared with you:" and let the card show the rest.
     """
     user_id, blocked = await _read_tool_user_id(tool_context)
     if blocked is not None:
@@ -2110,11 +2127,22 @@ async def list_information_shared_with_me(
             requester_user_id=user_id,
             person_ref=selected_person_ref,
         )
+        # Contract C6: one card per person, no values. The chat renders it
+        # from this result; the model reads the same labels and field names.
+        cards = build_shared_with_me_cards(shares)
+        # Model-facing guidance, not a line to repeat. Measured on UAT
+        # 2026-09-28: the old sentence was read out verbatim next to an offer to
+        # "prepare a card" while a card was already on screen.
         empty_message = (
-            f"{selected_person_name} has not shared any information with you yet."
+            f"Nothing from {selected_person_name} yet. If they asked about something of "
+            f"{selected_person_name}'s, call propose_information_request now with their "
+            "words and question instead of replying; do not tell them nothing was shared "
+            "or offer to prepare a card."
             if selected_person_name
             else "No connections have shared information with you yet."
         )
+        names = [card["person"]["displayName"] for card in cards]
+        lead = names[0] if len(names) == 1 else "your connections"
         return {
             "status": "ok",
             **(
@@ -2122,19 +2150,18 @@ async def list_information_shared_with_me(
                 if selected_person_ref and selected_person_name
                 else {}
             ),
-            "shares": shares,
-            "count": len(shares),
+            "kind": SHARED_WITH_ME_CARD_KIND,
+            "cards": cards,
+            **({"card": cards[0]} if len(cards) == 1 else {}),
+            "count": sum(len(card["items"]) for card in cards),
             "nextStep": (
-                (
-                    f"Tell the person what {selected_person_name} has granted. "
-                    if selected_person_name
-                    else "Tell the person what their connections have granted. "
-                )
-                + "Values stay end-to-end encrypted. If the bound Chat request card is "
-                "available, its reveal control opens approved information in their unlocked "
-                "app; do not claim to have read the private values from these grant labels. "
-                "Only offer the same-app profilePath if the person asks to open Profile."
-                if shares
+                f'Reply in one short line, for example "Here\'s what {lead} shared with you:". '
+                "The secure card below it is already on screen and opens the values on the "
+                "person's own device, asking them to unlock if needed. You have labels and "
+                "field names only: never guess, restate or invent a value, and do not say you "
+                "cannot display it, that a card may be available, or to open Profile. Never "
+                "say grant, scope, domain or PKM."
+                if cards
                 else empty_message
             ),
         }
@@ -2462,6 +2489,196 @@ def _pending_scope_labels(scopes: list[dict[str, Any]]) -> list[str]:
     return [str(item.get("label") or "Information") for item in scopes]
 
 
+def _propose_scopes(
+    requestable: list[dict[str, Any]],
+    fields: str,
+    question: str,
+    *,
+    ignore_words: tuple[str, ...],
+) -> tuple[list[dict[str, Any]], list[str], dict[str, str]]:
+    """Resolve what was asked about to catalog rows: the model's words first.
+
+    1. The model's own words, verbatim, by label or domain (unchanged rule).
+    2. Words that named nothing, through label-and-synonym catalog search
+       ("favorite restaurant" reaches Food preferences), best row each.
+    3. Only if still nothing: the person's question, the same way.
+    Returns (matched rows, words that still matched nothing, scopeRef -> why).
+
+    A record's schema field ("Kind", "Status") or app state
+    ("parse_fallback") is never preselected, whatever it scores: One picks
+    the category a person means ("Food preferences"). Measured 2026-09-28:
+    "What's Kushal's favorite restaurant?" proposed "Kind".
+    """
+    requestable = [item for item in requestable if is_proposable_entry(item)]
+    matched, unmatched = _match_requested_fields(requestable, fields)
+    reasons = {str(item.get("scopeRef")): "Matches what you asked for" for item in matched}
+
+    def _add(item: dict[str, Any], why: str) -> None:
+        ref = str(item.get("scopeRef"))
+        if ref not in reasons:
+            matched.append(item)
+            reasons[ref] = why
+
+    still_unmatched: list[str] = []
+    for spoken in unmatched:
+        # The question is context: "income" in a tax question is about taxes.
+        best = match_scopes(
+            requestable, spoken, limit=1, ignore_words=ignore_words, context=question
+        )
+        if best:
+            _add(dict(best[0].entry), best[0].why)
+        else:
+            still_unmatched.append(spoken)
+    if not matched and str(question or "").strip():
+        best = match_scopes(requestable, question, limit=1, ignore_words=ignore_words)
+        if best:
+            _add(dict(best[0].entry), best[0].why)
+    return matched, still_unmatched, reasons
+
+
+def _proposed_item(item: Any, why: str) -> dict[str, str]:
+    return {
+        "scope": str(item.get("scopeRef") or ""),
+        "label": str(item.get("label") or "Information"),
+        "why": why or "Matches what you asked for",
+        # C7: the catalog's server-side answer; deny by default when absent.
+        "sensitivity": "standard" if item.get("sensitivity") == "standard" else "sensitive",
+    }
+
+
+def _proposal_alternatives(
+    requestable: list[dict[str, Any]],
+    matched: list[dict[str, Any]],
+    words: str,
+    ignore_words: tuple[str, ...],
+    limit: int = 3,
+) -> list[dict[str, str]]:
+    """The next-best rows, so Change can offer a near miss without a round trip."""
+    chosen = {str(item.get("scopeRef")) for item in matched}
+    alternatives: list[dict[str, str]] = []
+    proposable = [item for item in requestable if is_proposable_entry(item)]
+    for match in match_scopes(proposable, words, limit=None, ignore_words=ignore_words):
+        if str(match.entry.get("scopeRef")) in chosen:
+            continue
+        alternatives.append(_proposed_item(match.entry, match.why))
+        if len(alternatives) >= limit:
+            break
+    return alternatives
+
+
+def _duration_default(hours: int) -> str:
+    """ "7d" for whole days, else a label ("5 hours"); the card accepts both forms."""
+    if hours % 24 == 0:
+        return f"{hours // 24}d"
+    return f"{hours} {'hour' if hours == 1 else 'hours'}"
+
+
+_REASON_FALLBACK = "To answer a question about you."
+_POSSESSIVE = re.compile(r"(?:'|\u2019)s$")
+
+
+def _reason_suggestion(fields: str, question: str, ignore_words: tuple[str, ...]) -> str:
+    """A reason built from the person's own words, used only when One gave none.
+
+    One authors the reason from the question and its intent
+    (``agent.yaml``: "To pick a restaurant for dinner"). This fallback runs only
+    when that came back empty, and it is built from what the person asked
+    about ("To know your favorite restaurant."), never from a catalog label:
+    the label-built "I'd like to know your kind." reached the owner on
+    2026-09-28. The caller records that it ran (``reasonSource``).
+    """
+    ignored = {word for raw in ignore_words for word in tokens(raw)}
+    for source in (fields, question):
+        kept = []
+        for raw in str(source or "").split():
+            word = _POSSESSIVE.sub("", raw.strip(' \t.,;:!?"()[]'))
+            content = tokens(word)
+            if not word or not content or any(token in ignored for token in content):
+                continue
+            kept.append(word.lower() if not word.isupper() else word)
+        phrase = " ".join(kept).strip()
+        if phrase:
+            return f"To know your {phrase}."[:500]
+    return _REASON_FALLBACK
+
+
+async def _already_pending(
+    user_id: str, person_ref: str, matched: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """The newest request to this person still waiting on any of ``matched``."""
+    try:
+        waiting = await InformationRequestService().pending_for_scope_refs(
+            requester_user_id=user_id,
+            person_ref=person_ref,
+            scope_refs=[str(item.get("scopeRef") or "") for item in matched],
+        )
+    except Exception:  # noqa: BLE001 - a failed check must not block a new request
+        logger.warning("one.proposal_pending_check_unavailable")
+        return None
+    return waiting[0] if waiting else None
+
+
+def _already_pending_result(
+    waiting: dict[str, Any],
+    matched: list[dict[str, Any]],
+    *,
+    person_ref: str,
+    display_name: str,
+) -> dict[str, Any]:
+    """Report a request that is already waiting, with its living card; never a Send.
+
+    Carries no ``proposed`` list on purpose: that key renders a fresh ask card
+    with Send, which is exactly the defect.
+    """
+    labels = [str(label) for label in waiting.get("labels") or []] or _pending_scope_labels(matched)
+    seconds = int(waiting.get("durationSeconds") or 0)
+    days, hours = divmod(seconds // 3600, 24)
+    duration = (
+        f"{days} {'day' if days == 1 else 'days'}"
+        if days and not hours
+        else f"{seconds // 3600} {'hour' if seconds // 3600 == 1 else 'hours'}"
+    )
+    domain_by_label = {
+        str(item.get("label") or ""): str(item.get("domainLabel") or "Information")
+        for item in matched
+    }
+    logger.info("one.proposal_already_pending items=%d", len(labels))
+    return {
+        "status": "already_pending",
+        "person": {
+            "displayName": display_name,
+            "personRef": person_ref,
+            "profilePath": f"/people/{person_ref}",
+        },
+        "bundleId": waiting.get("bundleId"),
+        "fields": labels,
+        "purpose": waiting.get("purpose"),
+        "sentAt": waiting.get("sentAt"),
+        # The same descriptor the request card renders after Send, so the
+        # chat can show the living card for the request that is waiting.
+        "livingCard": {
+            "personName": display_name,
+            "purpose": waiting.get("purpose"),
+            "durationLabel": duration,
+            "status": "pending",
+            "direction": "outgoing",
+            "phase": "submitted",
+            "subjectRef": person_ref,
+            "bundleId": waiting.get("bundleId"),
+            "fields": [
+                {"label": label, "domain": domain_by_label.get(label, "Information")}
+                for label in labels
+            ],
+        },
+        "nextStep": (
+            f"Say in one short line that your request to {display_name} for "
+            f"{', '.join(labels[:5])} is already waiting on them, and that the request card "
+            "shows where it stands. Do not ask them to tap Send, do not offer to send it "
+            "again, and do not call another consent action."
+        ),
+    }
+
+
 async def list_pending_information_requests(tool_context: ToolContext) -> dict[str, Any]:
     """List the information requests waiting on the owner's decision: who asks, for what, until when.
 
@@ -2483,20 +2700,37 @@ async def list_pending_information_requests(tool_context: ToolContext) -> dict[s
             "status": "failed",
             "message": "Your pending requests are temporarily unavailable. Please try again.",
         }
-    request_ids = [str(item.get("requestId") or "") for item in pending if item.get("requestId")]
+    # The ids the app turns into the owner's pending cards (one per waiting
+    # item). A request with none cannot be shown as a card from here.
+    request_ids: list[str] = []
+    for item in pending:
+        ids = item.get("requestIds")
+        for request_id in ids if isinstance(ids, list) else [item.get("requestId")]:
+            text = str(request_id or "").strip()
+            if text and text not in request_ids:
+                request_ids.append(text)
+    request_ids = request_ids[:20]
+    if not pending:
+        next_step = "Nothing is waiting on them right now."
+    elif request_ids:
+        next_step = (
+            "Say who is asking and for what in one short line. The app shows each waiting "
+            "request as a card below your reply, with Allow and Don't allow; allowing is the "
+            "owner's tap, never yours. To decline one from here, name it and run "
+            'run_app_action("consent.deny") with its requestId; the app shows the confirmation.'
+        )
+    else:
+        next_step = (
+            "Say who is asking and for what. No card can be shown for these here, so do not "
+            "say a card is on screen; they can decide in the Consent Center."
+        )
     return {
         "status": "ok",
         "pendingRequests": pending,
         "count": len(pending),
         "pendingRequestIds": request_ids,
-        "nextStep": (
-            "Say who is asking and for what. The browser is showing each request as a card "
-            "with Approve and Deny; approving is the owner's tap. To decline one from here, "
-            'name it and run run_app_action("consent.deny") with its requestId; the app '
-            "shows the confirmation."
-            if pending
-            else "Nothing is waiting on them right now."
-        ),
+        "cardsShown": bool(request_ids),
+        "nextStep": next_step,
     }
 
 
@@ -2563,21 +2797,13 @@ async def list_active_grants(tool_context: ToolContext) -> dict[str, Any]:
     }
 
 
-async def list_my_outgoing_information_requests(tool_context: ToolContext) -> dict[str, Any]:
-    """List the information requests this person sent that are still open.
-
-    The mirror of list_pending_information_requests, which is the incoming
-    direction. Hands back an opaque request id; pass it to
-    consent.cancel_request to withdraw one, or omit it to withdraw the most
-    recent. Never says a bundle id.
-    """
-    user_id, blocked = await _read_tool_user_id(tool_context)
-    if blocked is not None:
-        return blocked
-    if user_id is None:
-        raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+async def _list_outgoing_information_requests_only(
+    tool_context: ToolContext, *, user_id: str
+) -> dict[str, Any]:
+    """Keep cancellable information bundles separate from Drive requests."""
     try:
-        sent = await InformationRequestService().list_outgoing(requester_user_id=user_id)
+        # One extra row distinguishes a complete list from the newest page.
+        sent = await InformationRequestService().list_outgoing(requester_user_id=user_id, limit=11)
     except Exception:  # noqa: BLE001 - consumer-safe boundary
         logger.exception("list_my_outgoing_information_requests failed")
         return {
@@ -2587,7 +2813,7 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
 
     handles: dict[str, dict[str, Any]] = {}
     spoken: list[dict[str, Any]] = []
-    for record in sent:
+    for record in sent[:10]:
         bundle_id = str(record.get("bundleId") or "").strip()
         if not bundle_id:
             # cancel_request requires the bundle identity; an unbound row is
@@ -2597,10 +2823,16 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
         if handle in handles:
             continue
         handles[handle] = record
+        raw_person = str(record.get("displayName") or "").strip()
+        person: str | None = (
+            None
+            if raw_person.casefold() == "that person" or looks_technical_label(raw_person)
+            else raw_person
+        )
         spoken.append(
             {
                 "requestId": handle,
-                "person": record.get("displayName"),
+                "person": person,
                 "purpose": record.get("purpose"),
                 "sentAt": record.get("sentAt"),
             }
@@ -2612,12 +2844,89 @@ async def list_my_outgoing_information_requests(tool_context: ToolContext) -> di
         "status": "ok",
         "requests": spoken,
         "count": len(spoken),
+        "hasMore": len(sent) > 10,
+        "hasUnknownPeople": any(not row["person"] for row in spoken),
+    }
+
+
+async def list_my_outgoing_information_requests(tool_context: ToolContext) -> dict[str, Any]:
+    """List sent information bundles, Drive file requests and Drive questions.
+
+    Only the information-bundle ``requests`` have opaque cancel handles. Drive
+    rows are read from their own requester-scoped projection and remain status
+    only; they cannot become targets of ``consent.cancel_request``.
+    """
+    user_id, blocked = await _read_tool_user_id(tool_context)
+    if blocked is not None:
+        return blocked
+    if user_id is None:
+        raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+
+    information = await _list_outgoing_information_requests_only(tool_context, user_id=user_id)
+    try:
+        drive = await DriveSharingProjectionStore().list_outgoing_for_chat(user_id=user_id)
+    except Exception:  # noqa: BLE001 - never turn a failed Drive read into zero requests
+        logger.exception("list_my_outgoing_information_requests drive_status_failed")
+        if information["status"] != "ok":
+            return {
+                "status": "failed",
+                "message": "Your sent request statuses are temporarily unavailable. Please try again.",
+            }
+        return {
+            "status": "partial",
+            "requests": information["requests"],
+            "informationRequestsHasMore": information["hasMore"],
+            "informationRequestsHaveUnknownPeople": information["hasUnknownPeople"],
+            "documentRequests": [],
+            "documentRequestsHasMore": False,
+            "documentRequestsHaveUnknownPeople": False,
+            "message": "Information requests were checked, but Drive document request status is temporarily unavailable.",
+            "nextStep": "Report the information requests shown, and say Drive request status could not be checked. If informationRequestsHasMore is true, these are only the newest information requests. A row without a person label may be the named person's request. Do not claim a named person has no request from a partial list.",
+        }
+
+    document_requests = drive["items"]
+    document_requests_has_more = bool(drive["hasMore"])
+    unnamed_document_requests = any(not row.get("person") for row in document_requests)
+    if information["status"] != "ok":
+        return {
+            "status": "partial",
+            "requests": [],
+            "informationRequestsHasMore": None,
+            "informationRequestsHaveUnknownPeople": None,
+            "documentRequests": document_requests,
+            "documentRequestsHasMore": document_requests_has_more,
+            "documentRequestsHaveUnknownPeople": unnamed_document_requests,
+            "message": "Drive document requests were checked, but information request status is temporarily unavailable.",
+            "nextStep": "Report the Drive request statuses shown. Do not claim there are no information requests. A named person's Drive status is not ruled out if more rows exist or a row has no person label.",
+        }
+
+    requests = information["requests"]
+    information_requests_has_more = bool(information["hasMore"])
+    unnamed_information_requests = bool(information["hasUnknownPeople"])
+    return {
+        "status": "ok",
+        "requests": requests,
+        "informationRequestsHasMore": information_requests_has_more,
+        "informationRequestsHaveUnknownPeople": unnamed_information_requests,
+        "documentRequests": document_requests,
+        "documentRequestsHasMore": document_requests_has_more,
+        "documentRequestsHaveUnknownPeople": unnamed_document_requests,
+        **(
+            {"count": len(requests) + len(document_requests)}
+            if not (information_requests_has_more or document_requests_has_more)
+            else {}
+        ),
         "nextStep": (
-            "Say who was asked and for what. To withdraw one, run "
-            'run_app_action("consent.cancel_request") with its requestId; the app '
-            "shows the confirmation."
-            if spoken
-            else "They have no requests waiting on anyone."
+            "Report information requests, Drive file requests and Drive questions separately. "
+            "A pending file request was sent; this list does not verify which files are available. "
+            "Only information requests have consent.cancel_request handles. "
+            "If informationRequestsHasMore or documentRequestsHasMore is true, only the newest requests are shown. "
+            "For a named person missing from this list, do not claim there are no requests "
+            "if informationRequestsHasMore, informationRequestsHaveUnknownPeople, "
+            "documentRequestsHasMore, or "
+            "documentRequestsHaveUnknownPeople is true."
+            if requests or document_requests
+            else "No sent information requests, Drive file requests or Drive questions were found."
         ),
     }
 
@@ -2629,18 +2938,22 @@ async def propose_information_request(
     tool_context: ToolContext,
     duration_hours: int = _INFORMATION_REQUEST_DEFAULT_HOURS,
     selection_handle: str = "",
+    question: str = "",
 ) -> dict[str, Any]:
-    """Prepare an information request to one named person for the fields they said, ready to confirm.
+    """Prepare a request to one named person for what was asked about, ready to confirm.
 
-    Resolves the person (connections, then the directory), matches the spoken
-    fields to that person's requestable catalog by label or domain, checks the
-    purpose and duration, and parks a proposal. Nothing is sent: read the
-    proposal back so they know what is about to be asked. When the owner's
-    connector is ready, the tool stages the app's one confirmation card; the
-    visible tap is the authorization, so do not ask for a spoken yes or call
-    another consent action. If connectorReady is false the owner's secure key
-    is not ready and nothing can be asked for yet; tell them to unlock their
-    private agent and try again.
+    Call it directly when someone asks about another person's information
+    ("What is Kushal's favorite restaurant?") or asks you to request it. Pass
+    the person, the things in the person's own words as ``fields``, their
+    question as they said it as ``question``, and ``purpose``: their reason if
+    they gave one, otherwise a short reason you infer from the question ("To
+    pick a restaurant for dinner"); they can edit it on the card. The server picks the
+    closest thing that person makes requestable, from labels only, and parks a
+    proposal; the card shows it with Send and Change. Nothing is sent: the
+    person's tap on that card is the authorization, so do not ask for a spoken
+    yes or call another consent action. If connectorReady is false the owner's
+    secure key is not ready and nothing can be asked for yet; tell them to
+    unlock their private agent and try again.
     """
     user_id, blocked = await _read_tool_user_id(tool_context)
     if blocked is not None:
@@ -2657,7 +2970,7 @@ async def propose_information_request(
             tool_context,
             selection_handle,
         )
-        profile = await PersonProfileService().get_viewer_profile(
+        profile = await PersonProfileService().get_requestable_catalog(
             viewer_user_id=user_id, public_person_ref=person_ref
         )
         if profile.get("personRef") != person_ref:
@@ -2679,7 +2992,9 @@ async def propose_information_request(
                 },
                 "message": f"{display_name} has not made any information requestable yet.",
             }
-        matched, unmatched = _match_requested_fields(requestable, fields)
+        matched, unmatched, reasons = _propose_scopes(
+            requestable, fields, question, ignore_words=(display_name, person)
+        )
         if not matched:
             by_domain: dict[str, list[str]] = {}
             for item in requestable[:40]:
@@ -2695,9 +3010,16 @@ async def propose_information_request(
                 },
                 "unmatchedFields": unmatched,
                 "availableFields": by_domain,
+                "proposed": [],
+                "alternatives": [
+                    _proposed_item(match.entry, match.why)
+                    for match in fallback_scopes(
+                        [item for item in requestable if is_proposable_entry(item)], limit=3
+                    )
+                ],
                 "message": (
-                    f"None of those fields match what {display_name} makes requestable. "
-                    "Offer the available fields grouped by domain and ask which they want."
+                    f"Nothing {display_name} makes available matches that. Name the "
+                    "alternatives in plain words and ask which one they mean. Nothing was sent."
                 ),
             }
         if len(matched) > 50:
@@ -2717,7 +3039,29 @@ async def propose_information_request(
                     "domain or name the exact fields you want. Nothing has been sent."
                 ),
             }
+        # A5 (localhost run 4): asked again while the same request waits on
+        # the same person, One said "tap Send" on a fresh card. What is
+        # already waiting is reported as waiting, with its living card.
+        waiting = await _already_pending(user_id, person_ref, matched)
+        if waiting is not None:
+            pending_refs = set(waiting["scopeRefs"])
+            if all(str(item.get("scopeRef")) in pending_refs for item in matched):
+                return _already_pending_result(
+                    waiting, matched, person_ref=person_ref, display_name=display_name
+                )
+            # Only part of it is waiting: propose the rest, never the same item twice.
+            matched = [item for item in matched if str(item.get("scopeRef")) not in pending_refs]
+        # Contract C4: One authors the reason from the question (or passes the
+        # person's own), and the person can edit it on the card before Send.
+        # Only an empty one is filled here, from the person's words, and the
+        # substitution is recorded rather than passed off as One's.
         cleaned_purpose = str(purpose or "").strip()
+        reason_source = "agent"
+        if not cleaned_purpose:
+            cleaned_purpose = _reason_suggestion(fields, question, (display_name, person))
+            reason_source = "fallback"
+            logger.info("one.proposal_reason_fallback")
+        reason_suggestion = cleaned_purpose
         if not 8 <= len(cleaned_purpose) <= 500:
             return {
                 "status": "needs_clarification",
@@ -2758,30 +3102,12 @@ async def propose_information_request(
         for stale in list(proposals)[:-_INFORMATION_REQUEST_MAX_PROPOSALS]:
             proposals.pop(stale, None)
         tool_context.state[_STATE_INFORMATION_REQUEST_PROPOSALS] = proposals
-        proposal_directive: dict[str, Any] | None = None
-        if connector_ready:
-            # The proposal is the authority-bearing boundary for this flow.
-            # Park the same server-resolved directive that run_app_action would
-            # have produced, but do it here so a model that ends after the
-            # proposal still gives the browser one visible confirmation card.
-            # The full slots stay in the server-resolved directive contract;
-            # the browser consumes them only to execute after the visible tap.
-            action_id = "consent.request"
-            action_entry = get_action_gateway_action(action_id)
-            flags = _directive_flags(action_entry)
-            directive_payload = {
-                "actionId": action_id,
-                "slots": _resolved_directive_slots(
-                    action_id, {"proposal_id": proposal_id}, tool_context
-                ),
-                "needsConfirmation": flags["needsConfirmation"],
-                "trustedActivationRequired": flags["trustedActivationRequired"],
-            }
-            tool_context.state[f"{_STATE_PENDING_DIRECTIVE}:{action_id}"] = {
-                "kind": "action",
-                "payload": directive_payload,
-            }
-            proposal_directive = directive_payload
+        # No parked consent.request directive here. The ask card this result
+        # renders has its own Send, which is the single path to a request; a
+        # parked directive drew a second "Ask ... / Cancel" bar under it that
+        # stayed after Send and could send a second request (2026-09-28). A
+        # model that still calls run_app_action("consent.request") with this
+        # proposal id gets the confirmation from that tool, as before.
         result = {
             "status": "proposal_ready",
             "proposalId": proposal_id,
@@ -2794,25 +3120,31 @@ async def propose_information_request(
             "unmatchedFields": unmatched,
             "purpose": cleaned_purpose,
             "durationHours": hours,
+            # Contract C4 shape. ``scope`` is the opaque per-person reference
+            # (the same one the catalog search returns), never a raw scope.
+            "proposed": [
+                _proposed_item(item, reasons.get(str(item.get("scopeRef")), "")) for item in matched
+            ],
+            "alternatives": _proposal_alternatives(
+                requestable, matched, f"{fields} {question}", (display_name, person)
+            ),
+            "duration_default": _duration_default(hours),
+            "reason_suggestion": reason_suggestion,
+            "reasonSource": reason_source,
             "connectorReady": connector_ready,
             "nextStep": (
-                "Read back who you are asking, what you are asking for, why, and for how long, "
-                "in plain words. Name the things themselves, never a path or an id. The app "
-                "will show one confirmation card for this proposal; do not ask for a spoken "
-                "yes or call another consent action yourself. Their tap is what authorizes it. "
-                "Say nothing was sent until the action result confirms it."
+                f"Say one short line, for example \"I'll ask {display_name}. Here's what "
+                "I'd request:\" The card already shows what, why and for how long, with "
+                "Send and Change, so do not repeat it, do not offer to prepare a card, and do "
+                "not say they have not shared anything with you. Never say grant, scope, "
+                "domain or PKM. Do not ask for a spoken yes or call another consent action: "
+                "their tap on Send is what authorizes it, and nothing is sent until then."
                 if connector_ready
                 else "The owner's secure key is not ready yet, so nothing can be asked for. "
                 "Say exactly that in plain words, tell them to unlock their private agent and try "
                 "again, and do not use the word connector: it means nothing to them."
             ),
         }
-        if proposal_directive is not None:
-            # AG-UI does not forward ADK state deltas emitted by function tools.
-            # Reuse the existing parked-directive result shape so the browser
-            # can stage the same one-tap confirmation without a second model
-            # tool call.
-            result["directive"] = proposal_directive
         return result
     except ConsentLifecycleError as exc:
         return _information_person_error(exc, tool_context, user_id)
@@ -3502,7 +3834,12 @@ async def run_app_action(
         # separate listing turn before the app can stage its confirmation.
         # The service still returns only safe handles to the model and the
         # directive expands the newest handle server-side.
-        outgoing = await list_my_outgoing_information_requests(tool_context)
+        user_id, blocked = await _read_tool_user_id(tool_context)
+        if blocked is not None:
+            return blocked
+        if user_id is None:
+            raise AssertionError("_read_tool_user_id returned no user_id with blocked=None")
+        outgoing = await _list_outgoing_information_requests_only(tool_context, user_id=user_id)
         if outgoing.get("status") != "ok":
             return outgoing
         if not outgoing.get("requests"):
@@ -4990,29 +5327,52 @@ async def set_preferred_model(model_id: str, tool_context: ToolContext) -> dict[
     }
 
 
-async def add_to_pkm(memory_text: str, reason: str, tool_context: ToolContext) -> dict[str, Any]:
-    """Save or queue durable personal context to the user's encrypted PKM through the frontend PKM writer.
+async def add_to_pkm(
+    memory_text: str,
+    reason: str,
+    tool_context: ToolContext,
+    whole_message: bool = False,
+) -> dict[str, Any]:
+    """Hand information the person asked you to save to their device, which saves it to their private memory.
 
-    Use only when the user explicitly asks to save, remember, store, or add information to PKM or memory.
+    Use only when the person explicitly asks to save, remember, store, or add information to
+    their memory. Set whole_message=true when they pasted a document or a long passage and
+    asked to save it: their device reads their own message, so pass a one-line summary as
+    memory_text instead of copying the text. For one detail stated in conversation, pass that
+    detail as memory_text.
+
+    This call saves nothing by itself. The device prepares, reconciles and encrypts the
+    details, and its result card reports what was saved, updated, merged or skipped.
     """
     clean_text = str(memory_text or "").strip()
-    if not clean_text:
+    if not clean_text and not whole_message:
         return {
             "status": "missing_text",
             "message": "Specify the exact information to save to memory.",
         }
 
-    # If PKM write uses source_text in slots, let's match the AgentChatActionPlan logic:
+    slots: dict[str, Any] = {"source_text": clean_text[:50_000]}
+    if whole_message:
+        # The browser substitutes the owner's own message for this turn. The
+        # model never has to reproduce a long document as a tool argument.
+        slots["source_scope"] = "turn"
     tool_context.state[f"{_STATE_PENDING_DIRECTIVE}:pkm_add"] = {
         "kind": "action",
-        "payload": {
-            "actionId": "pkm.add",
-            "slots": {"source_text": clean_text[:50_000]},
-        },
+        "payload": {"actionId": "pkm.add", "slots": slots},
     }
+    # Measured on production 2026-09-29: this used to return "Saving eligible
+    # details privately.", and One told the person their document had been
+    # "queued and submitted" to memory when nothing had been saved. The truth at
+    # this point is only that the device has the request.
     return {
-        "status": "directive_parked",
-        "message": "Saving eligible details privately.",
+        "status": "handed_to_device",
+        "saved": False,
+        "message": (
+            "Nothing is saved yet. The person's device is preparing and saving this privately, "
+            "and its card will show what was saved, updated, merged or skipped. Say it is "
+            "being saved on their device. Do not say it is saved, queued or submitted, and do "
+            "not list the details."
+        ),
     }
 
 

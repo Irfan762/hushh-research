@@ -375,12 +375,23 @@ jobs:
           if-no-files-found: ignore
 
   web-targeted-check:
-    name: "Web Targeted Contracts"
+    name: "Web Targeted Contracts (${{ matrix.part }})"
     needs: [preflight-gate]
     if: >-
       !cancelled() && needs['preflight-gate'].result == 'success' &&
       (needs['preflight-gate'].outputs.frontend == 'true')
     runs-on: ubuntu-latest
+    # Two legs that partition the matched packs (scripts/ci/web-targeted-check.sh,
+    # WEB_TARGETED_PART): `node` runs the Vitest and verifier packs and never
+    # downloads a browser; `browser` runs the Playwright packs, several at once.
+    # On one runner the browser packs ran one test at a time and were ~11 of
+    # the lane's ~13 minutes (run 36346187928). ci-status reads the aggregate
+    # result, which is `success` only when every leg succeeded. fail-fast is
+    # off so a red leg never hides the other leg's verdict.
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [node, browser]
     # Was 15, which the job could not fit. Downloading Chromium and WebKit
     # took 13-15 minutes on its own, so the lane either died mid-download or
     # reached the checks with ~100 seconds left and was cancelled part-way
@@ -404,6 +415,7 @@ jobs:
       # frontend-targeted lane must use the same locked runtime dependencies
       # rather than falling back to the runner's ambient Python installation.
       - uses: ./consent-protocol/.github/actions/setup-python-uv
+        if: matrix.part == 'node'
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           protocol-dir: ./consent-protocol
@@ -414,6 +426,7 @@ jobs:
       # PR restores them instead of re-downloading ~400MB per run.
       - name: Cache Playwright browsers
         id: playwright-cache
+        if: matrix.part == 'browser'
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
@@ -424,6 +437,7 @@ jobs:
       # ignores an author border-radius that Chromium honours, so a
       # Chromium-only run passes controls that are visibly broken on an iPhone.
       - name: Install Playwright browsers
+        if: matrix.part == 'browser'
         run: |
           set -euo pipefail
           # The one dependency install for this job. It is the same
@@ -444,7 +458,14 @@ jobs:
       - name: Run targeted web contract checks
         run: bash scripts/ci/orchestrate.sh web-targeted
         env:
-          WEB_CI_DEPS_INSTALLED: "1"
+          WEB_TARGETED_PART: ${{ matrix.part }}
+          # Only the browser leg ran npm ci in the step above; the node leg
+          # installs inside the script.
+          WEB_CI_DEPS_INSTALLED: ${{ matrix.part == 'browser' && '1' || '0' }}
+          # 3 of the runner's 4 vCPUs run tests; the fourth keeps the Node test
+          # runner and fixture builds from starving a browser. Only the Playwright
+          # config reads it, so it is inert in the node leg.
+          PLAYWRIGHT_WORKERS: "3"
           WEB_TARGETED_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           WEB_TARGETED_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           WEB_TARGETED_BASE_REF: ${{ github.base_ref || 'main' }}
@@ -453,9 +474,40 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v6
         with:
-          name: web-targeted-npm-audit-report
+          name: web-targeted-npm-audit-report-${{ matrix.part }}
           path: hushh-webapp/npm-audit-report.json
           if-no-files-found: ignore
+
+  # Linux WebKit remains in the browser layout pack. Its software-rendered
+  # native 100 KB textarea takes longer than our editor on the same runner,
+  # so absolute key-to-paint latency is verified on macOS, the closer Safari
+  # environment. Keep the 50 ms p95 / 120 ms max contract and both engines.
+  web-editor-performance-check:
+    name: "Web Editor Performance (macOS)"
+    needs: [preflight-gate]
+    if: >-
+      !cancelled() && needs['preflight-gate'].result == 'success' &&
+      (needs['preflight-gate'].outputs.frontend == 'true')
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: hushh-webapp/package-lock.json
+
+      - name: Install web dependencies and browsers
+        working-directory: hushh-webapp
+        run: |
+          npm ci
+          npx playwright install chromium webkit
+
+      - name: Verify 100 KB editor latency on macOS
+        working-directory: hushh-webapp
+        run: npm run test:layout-editor-performance
 
   # The whole Vitest suite (~9,600 tests) plus the contract verifiers that used
   # to run only in Queue Validation. It gates every PR that touches the
@@ -463,13 +515,23 @@ jobs:
   # critical path. Until 2026-09 the full suite ran only in the merge queue,
   # which every maintainer bypasses, so a red unit test gated nothing.
   web-full-suite-check:
-    name: "Web Full Suite (Vitest)"
+    name: "Web Full Suite (Vitest) ${{ matrix.shard }}/3"
     needs: [preflight-gate]
     if: >-
       !cancelled() && needs['preflight-gate'].result == 'success' &&
       (needs['preflight-gate'].outputs.frontend == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Three Vitest shards (`vitest --shard`, every test file in exactly one).
+    # On one runner the suite took 425-715s of a 7.5-13.8 minute lane (runs
+    # 36346187928, 36345696733). ci-status reads the aggregate result, which is
+    # `success` only when all three shards succeeded, so its "frontend changed
+    # requires a successful full suite" rule still holds. fail-fast is off so
+    # one red shard never cancels the others and hides their failures.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -495,6 +557,7 @@ jobs:
       - name: Run the full Vitest suite and contract verifiers
         run: bash scripts/ci/orchestrate.sh web-full-suite
         env:
+          WEB_FULL_SUITE_SHARD: ${{ matrix.shard }}/3
           CAPABILITY_GRAPH_BASE_REF: origin/${{ github.base_ref || 'main' }}
           CI_NATIVE_PARITY_REQUIRED: ${{ env.CI_NATIVE_PARITY_REQUIRED }}
 
@@ -569,38 +632,31 @@ jobs:
           plutil -insert GOOGLE_APP_ID -string "1:123456789:ios:abcdef1234567890abcdef" "$PLIST"
           plutil -lint "$PLIST"
 
-      - name: Prepare generated Capacitor iOS project
+      # There is deliberately no actions/cache for these packages. A cache saved
+      # by a pull_request run is scoped to that PR, so a new PR never restored
+      # one (every restore key missed on 36346187928), each save cost ~80s and
+      # ~4.5GB of the repository's 10GB cache budget, evicting the npm cache
+      # every other lane restores from main.
+      #
+      # Resolution stays sequential after cap sync. A background prefetch under
+      # the web export was measured on run 36371292301: the export slowed from
+      # 223s to 478s on the shared macOS runner and the resolve after sync still
+      # took 218s, because sync regenerates the package graph the prefetch used.
+      - name: Build the native web export
+        shell: bash
+        run: npm run --prefix hushh-webapp cap:build
+
+      - name: Sync the generated Capacitor iOS project
+        shell: bash
+        run: npm run --prefix hushh-webapp cap:sync:ios
+
+      # A cold simulator boot sat between the build and the first test (~110s
+      # from link to first test on 36346187928). Booting now overlaps it with
+      # resolution and compilation; xcodebuild waits for a device still booting.
+      - name: Boot the iPhone Simulator in the background
         shell: bash
         run: |
           set -euo pipefail
-          npm run --prefix hushh-webapp cap:build
-          npm run --prefix hushh-webapp cap:sync:ios
-
-      - name: Cache Swift packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ${{ runner.temp }}/spm
-            ~/Library/Caches/org.swift.swiftpm
-          key: spm-ci-${{ runner.os }}-${{ hashFiles('hushh-webapp/ios/App/CapApp-SPM/Package.swift', 'hushh-webapp/ios/**/Package.resolved') }}
-          restore-keys: |
-            spm-ci-${{ runner.os }}-
-            spm-${{ runner.os }}-
-
-      - name: Resolve Swift package dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          xcodebuild -resolvePackageDependencies \
-            -project "${XCODE_PROJECT}" \
-            -scheme "${XCODE_SCHEME}" \
-            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm"
-
-      - name: Compile app and run native iOS unit tests
-        shell: bash
-        run: |
-          set -euo pipefail
-          set -o pipefail
           SIMULATOR_ID="$(python3 - <<'PY'
           import json
           import subprocess
@@ -621,6 +677,25 @@ jobs:
           raise SystemExit("No available iPhone Simulator is installed on the CI runner.")
           PY
           )"
+          echo "SIMULATOR_ID=${SIMULATOR_ID}" >> "$GITHUB_ENV"
+          nohup xcrun simctl bootstatus "${SIMULATOR_ID}" -b \
+            > "${RUNNER_TEMP}/simulator-boot.log" 2>&1 &
+
+      - name: Resolve Swift package dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -resolvePackageDependencies \
+            -project "${XCODE_PROJECT}" \
+            -scheme "${XCODE_SCHEME}" \
+            -clonedSourcePackagesDirPath "${RUNNER_TEMP}/spm"
+
+      - name: Compile app and run native iOS unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -o pipefail
+          test -n "${SIMULATOR_ID:-}" || { echo "::error::SIMULATOR_ID was not selected"; exit 1; }
           xcodebuild test \
             -project "${XCODE_PROJECT}" \
             -scheme "${XCODE_SCHEME}" \
@@ -700,6 +775,7 @@ jobs:
           path: |
             ${{ runner.temp }}/AppTests.xcresult
             ${{ runner.temp }}/xcodebuild-ios-tests.log
+            ${{ runner.temp }}/simulator-boot.log
           if-no-files-found: ignore
           retention-days: 7
 
@@ -1000,6 +1076,7 @@ jobs:
       - preflight-gate
       - web-core-check
       - web-targeted-check
+      - web-editor-performance-check
       - web-full-suite-check
       - ios-native-check
       - android-native-check
@@ -1022,6 +1099,7 @@ jobs:
           PREFLIGHT="${{ needs['preflight-gate'].result }}"
           WEB_CORE="${{ needs['web-core-check'].result }}"
           WEB_TARGETED="${{ needs['web-targeted-check'].result }}"
+          WEB_EDITOR_PERF="${{ needs['web-editor-performance-check'].result }}"
           WEB_FULL_SUITE="${{ needs['web-full-suite-check'].result }}"
           IOS_NATIVE="${{ needs['ios-native-check'].result }}"
           ANDROID_NATIVE="${{ needs['android-native-check'].result }}"
@@ -1038,6 +1116,7 @@ jobs:
           printf 'preflight-gate=%s\n' "$PREFLIGHT"
           printf 'web-core-check=%s\n' "$WEB_CORE"
           printf 'web-targeted-check=%s\n' "$WEB_TARGETED"
+          printf 'web-editor-performance-check=%s\n' "$WEB_EDITOR_PERF"
           printf 'web-full-suite-check=%s\n' "$WEB_FULL_SUITE"
           printf 'ios-native-check=%s\n' "$IOS_NATIVE"
           printf 'android-native-check=%s\n' "$ANDROID_NATIVE"
@@ -1053,6 +1132,10 @@ jobs:
             echo "Changed frontend sources require a successful full Vitest suite run."
             fail=1
           fi
+          if [ "${{ needs.paths.outputs.frontend }}" = "true" ] && [ "$WEB_EDITOR_PERF" != "success" ]; then
+            echo "Changed frontend sources require a successful macOS editor performance run."
+            fail=1
+          fi
           if [ "${{ needs.paths.outputs.ios }}" = "true" ] && [ "$IOS_NATIVE" != "success" ]; then
             echo "Changed iOS sources require a successful native build and XCTest run."
             fail=1
@@ -1061,7 +1144,7 @@ jobs:
             echo "Changed Android sources require a successful native compile and unit run."
             fail=1
           fi
-          for result in "$SECRET_SCAN" "$DCO" "$PR_BASE_POLICY" "$REPO_GOVERNANCE" "$PATHS" "$PREFLIGHT" "$WEB_CORE" "$WEB_TARGETED" "$WEB_FULL_SUITE" "$IOS_NATIVE" "$ANDROID_NATIVE" "$PROTOCOL" "$MCP_PACKAGE" "$INTEGRATION" "$MAIN_FRESHNESS"; do
+          for result in "$SECRET_SCAN" "$DCO" "$PR_BASE_POLICY" "$REPO_GOVERNANCE" "$PATHS" "$PREFLIGHT" "$WEB_CORE" "$WEB_TARGETED" "$WEB_EDITOR_PERF" "$WEB_FULL_SUITE" "$IOS_NATIVE" "$ANDROID_NATIVE" "$PROTOCOL" "$MCP_PACKAGE" "$INTEGRATION" "$MAIN_FRESHNESS"; do
             if [ "$result" = "failure" ] || [ "$result" = "cancelled" ] || [ "$result" = "timed_out" ]; then
               fail=1
             fi

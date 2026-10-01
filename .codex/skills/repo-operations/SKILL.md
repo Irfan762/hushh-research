@@ -1,6 +1,6 @@
 ---
 name: repo-operations
-description: Use when working on Hussh CI/CD, refreshing a branch from main, maintainer PR landing or an explicitly requested direct push to main, branch protection, merge queue, GitHub Actions, deploys, env or secret parity, Cloud Run or Cloud Build operations, UAT or production rollout, incident triage, or operational verification.
+description: Use when working on Hussh CI/CD, branch protection, merge queue, GitHub Actions, deploys, env or secret parity, Cloud Run or Cloud Build operations, UAT or production rollout, incident triage, or operational verification.
 ---
 
 # Hussh Repo Operations Skill
@@ -8,7 +8,7 @@ description: Use when working on Hussh CI/CD, refreshing a branch from main, mai
 ## Purpose and Trigger
 
 - Primary scope: `repo-operations-intake`
-- Trigger on CI/CD, refreshing a branch from `main`, maintainer PR landing, an explicitly requested direct push to `main`, branch protection, merge queue, deploys, env parity, runtime rollout, and operational verification.
+- Trigger on CI/CD, branch protection, merge queue, deploys, env parity, runtime rollout, and operational verification.
 - Avoid overlap with `repo-context`, `planning-board`, and `docs-governance`.
 
 ## Coverage and Ownership

@@ -9,9 +9,9 @@
  * holds the single voice lease while a session runs. It never reaches for
  * the bounded recorder or browser speech.
  *
- * Every server frame goes through the reducer FIRST (dispatchServerFrame);
- * side effects (playback, `pending_action.shown`, screen effects, generic
- * directives, client steps, reconnect) run after. UI success is never
+ * Turn-owned effects are fenced before dispatch. Admitted frames go through
+ * the reducer before playback, screen effects, directives and client steps.
+ * UI success is never
  * decided here: it comes from `tool.result ok:true` and
  * `pending_action.resolved executed` in the reducer.
  */
@@ -27,7 +27,6 @@ import {
   type ReactNode,
 } from "react";
 import { usePathname } from "next/navigation";
-import { App } from "@capacitor/app";
 import { Capacitor } from "@capacitor/core";
 
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
@@ -64,6 +63,7 @@ import {
   decideHalfDuplex,
 } from "@/lib/one-voice/audio/half-duplex";
 import { bytesFromBase64 } from "@/lib/one-voice/audio/pcm";
+import { MailOpenError, openOfferedMail } from "@/lib/one-voice/mail-open";
 import { LivePlaybackScheduler } from "@/lib/one-voice/audio/playback";
 import { isFirebasePlaneTool } from "@/lib/one-voice/confirmation";
 import type {
@@ -109,7 +109,7 @@ export interface VoiceLiveClientLike {
   connect(): Promise<void>;
   close(reason?: string): void;
   sendAudio(pcm16: Uint8Array): boolean;
-  sendText(text: string): boolean;
+  sendText(text: string, requestId?: string): boolean;
   sendAppContext(context: AppContextInput): void;
   pendingShown(pendingActionId: string): boolean;
   confirm(
@@ -145,6 +145,8 @@ export interface VoiceCaptureLike {
   start(options: CaptureStartOptions): Promise<CaptureStartResult>;
   setMuted(muted: boolean): void;
   stop(): void;
+  /** A route switch can reveal an OS-ended track without a visibility event. */
+  isTrackLive?(): boolean;
 }
 
 export interface VoicePlaybackLike {
@@ -174,13 +176,13 @@ export type VoiceSessionDeps = {
   /** Runs a callback after the next paint (requestAnimationFrame by default). */
   afterPaint?: (callback: () => void) => void;
   now?: () => number;
-  backgroundGraceMs?: number;
   clientStepTimeoutMs?: number;
   directiveClaimMs?: number;
 };
 
 export const ONE_VOICE_LEASE_OWNER = "one-voice-live" as const;
-export const BACKGROUND_GRACE_MS = 20_000;
+/** Transport acknowledgement bound, not a conversational turn timeout. */
+const TYPED_INPUT_ACK_TIMEOUT_MS = 10_000;
 export const CLIENT_STEP_TIMEOUT_MS = 25_000;
 /**
  * The most a server-advertised `timeout_s` may extend a client step. A device
@@ -192,6 +194,12 @@ export const CLIENT_STEP_TIMEOUT_MAX_MS = 60_000;
 export const DIRECTIVE_CLAIM_MS = 500;
 const LEVEL_DISPATCH_INTERVAL_MS = 80;
 const LEVEL_QUANTUM = 0.02;
+let providerMountSequence = 0;
+
+function traceVoiceSession(event: string, facts: Record<string, string | number | boolean>): void {
+  // No owner, conversation, route, transcript or mail content enters diagnostics.
+  console.info("one_voice.session", { event, ...facts });
+}
 
 function defaultCreateAudioContext(): AudioContext | null {
   if (typeof window === "undefined") return null;
@@ -346,16 +354,31 @@ type LiveSession = {
   isReconnect: boolean;
   client: VoiceLiveClientLike;
   capture: VoiceCaptureLike | null;
+  captureReady: boolean;
   playback: VoicePlaybackLike;
   audioContext: AudioContext | null;
   lease: VoiceSessionLease | null;
   gate: HalfDuplexGate | null;
+  /**
+   * A server-synthesized narration is playing, so the microphone is closed.
+   *
+   * Independent of `gate`, which is null on every device that reports echo
+   * cancellation -- i.e. on the devices most people use. Leaving the mic open
+   * through a narration would feed the digest back through
+   * `input_audio_transcription` into the operational session's compressed context
+   * and its persisted resumption handle, which is the one boundary this whole
+   * feature is built around. Frames are dropped while it is set, never buffered,
+   * so nothing is replayed when it clears.
+   */
+  narrating: boolean;
   paused: boolean;
+  pauseReason: string | null;
   stoppedLocally: boolean;
   tornDown: boolean;
   closeHandled: boolean;
   unsubscribes: Array<() => void>;
-  graceTimer: ReturnType<typeof setTimeout> | null;
+  captureGeneration: number;
+  resumePromise: Promise<boolean> | null;
   clientSteps: Map<string, ClientStepEntry>;
   directiveTimers: Set<ReturnType<typeof setTimeout>>;
   /**
@@ -366,6 +389,8 @@ type LiveSession = {
    * Cleared when the relay resolves that id, or when the session ends.
    */
   confirmingPendingId: string | null;
+  awaitingTypedRequestId: string | null;
+  awaitingTypedRequestDeadlineAt: number | null;
 };
 
 type DirectiveContext = {
@@ -402,10 +427,18 @@ function runDirective(
       session.directiveTimers.delete(claimTimer);
       claimTimer = null;
     }
-    if (!session.tornDown) session.client.uiSettled(frame.directive_id, status);
+    if (!session.tornDown)
+      session.client.uiSettled(
+        frame.directive_id,
+        isStaleOrigin(frame.turn_id) ? "ignored" : status,
+      );
   };
   const runGeneric = () => {
     if (settled) return;
+    if (isStaleOrigin(frame.turn_id)) {
+      finish("ignored");
+      return;
+    }
     void executeDirective(frame.kind, frame.payload || {}, {
       pathname: context.pathname,
     }).then(
@@ -415,6 +448,10 @@ function runDirective(
   };
   const screenOwned = isScreenOwnedDirective(frame.kind);
   const settle = (status: "opened" | "failed" | "ignored") => {
+    if (isStaleOrigin(frame.turn_id)) {
+      finish("ignored");
+      return;
+    }
     if (status === "ignored" && !screenOwned) {
       runGeneric();
       return;
@@ -443,6 +480,14 @@ function runDirective(
 }
 
 const VoiceSessionContext = createContext<VoiceSessionController | null>(null);
+
+function isStaleOrigin(turnId: string | null | undefined): boolean {
+  if (!turnId) return false;
+  const current = useVoiceSessionStore.getState().state;
+  return current.fencedTurnIds.includes(turnId) || Boolean(
+    current.activeInputTurnId && current.activeInputTurnId !== turnId
+  );
+}
 
 // --- provider -----------------------------------------------------------------
 
@@ -492,6 +537,11 @@ export function VoiceSessionProvider({
   const mutedRef = useRef(false);
   const pendingExternalRequest = useRef<AgentConversationRequest | null>(null);
   const lastLevelDispatchRef = useRef({ at: 0, level: 0 });
+  useEffect(() => {
+    const mount = ++providerMountSequence;
+    traceVoiceSession("provider_mount", { mount });
+    return () => traceVoiceSession("provider_unmount", { mount });
+  }, []);
 
   const dispatch = useCallback(
     (event: VoiceSessionEvent) =>
@@ -524,10 +574,10 @@ export function VoiceSessionProvider({
   const teardown = useCallback((session: LiveSession, reason: string) => {
     if (session.tornDown) return;
     session.tornDown = true;
-    if (session.graceTimer !== null) {
-      clearTimeout(session.graceTimer);
-      session.graceTimer = null;
-    }
+    session.captureGeneration += 1;
+    session.resumePromise = null;
+    session.awaitingTypedRequestId = null;
+    session.awaitingTypedRequestDeadlineAt = null;
     for (const entry of session.clientSteps.values()) {
       if (entry.timer !== null) clearTimeout(entry.timer);
     }
@@ -570,29 +620,81 @@ export function VoiceSessionProvider({
   >(async () => false);
 
   const reconnectsRef = useRef(0);
+  /** A resumable close waits here when the app is backgrounded or offline. */
+  const pendingNetworkReconnectRef = useRef<string | null>(null);
+  const reconnectEpochRef = useRef(0);
+  const reconnectRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const queueFailedReconnectRef = useRef<(
+    conversationId: string,
+    epoch: number,
+  ) => void>(() => undefined);
 
   const handleClose = useCallback(
     (session: LiveSession, info: LiveCloseInfo) => {
       if (session.closeHandled) return;
       session.closeHandled = true;
+      traceVoiceSession("socket_close", {
+        code: info.code,
+        clean: info.clean,
+        resumable: info.resumable,
+        locallyStopped: session.stoppedLocally,
+        paused: session.paused,
+        captureLive: session.captureReady && session.capture?.isTrackLive?.() !== false,
+      });
+      const wasBackgroundPaused =
+        session.paused && session.pauseReason === "app_backgrounded";
       teardown(session, `closed:${info.reason}`);
       const before = readState();
       const serverAsked = !session.stoppedLocally && canAutoReconnect(before);
-      const reconnect =
-        serverAsked &&
+      const networkLost =
+        !session.stoppedLocally &&
+        info.code === 1006 &&
+        info.resumable &&
+        !hasOpenPendingAction(before);
+      const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+      const active = appInteractionCoordinator.getLifecycleSnapshot().state === "active";
+      const eligible =
         latest.current.enabled &&
+        latest.current.isVaultUnlocked &&
+        Boolean(latest.current.vaultOwnerToken) &&
+        Boolean(latest.current.user?.uid) &&
         reconnectsRef.current < MAX_AUTO_RECONNECTS;
+      const reconnect =
+        (serverAsked || networkLost) &&
+        eligible &&
+        !offline &&
+        active;
       // The reducer reconnects on the reason alone; when this device refuses
       // (owner switched, budget spent) the close is reported as local so the
       // state lands idle instead of waiting on a socket that never opens.
       const reason =
         serverAsked && !reconnect ? localCloseReason(info.reason) : info.reason;
       dispatch({ type: "closed", code: info.code, reason, now: now() });
+      if ((serverAsked || networkLost) && eligible && !reconnect && (offline || !active))
+        pendingNetworkReconnectRef.current = session.conversationId;
+      if (wasBackgroundPaused && info.code === 4009 && !reconnect) {
+        // The relay's idle watchdog may expire while a tab is hidden. Keep
+        // the conversation id for an explicit retry, and explain why the mic
+        // did not restart when the person returned.
+        dispatch({
+          type: "local_error",
+          error: {
+            code: "voice_pause_expired",
+            message: "One paused while you were away. Tap Try again to resume.",
+            recoverable: true,
+          },
+        });
+      }
       if (reconnect) {
+        pendingNetworkReconnectRef.current = null;
         reconnectsRef.current += 1;
+        const epoch = reconnectEpochRef.current;
         void openSessionRef.current({
           conversationId: session.conversationId,
           isReconnect: true,
+        }).then((opened) => {
+          if (!opened)
+            queueFailedReconnectRef.current(session.conversationId, epoch);
         });
       }
     },
@@ -601,8 +703,24 @@ export function VoiceSessionProvider({
 
   const stopSession = useCallback(
     (reason: string) => {
+      // A failed reconnect may wait for the next online event. A person's
+      // Stop or an ownership transition must cancel that deferred attempt.
+      if (reason !== "start_failed") reconnectEpochRef.current += 1;
+      pendingNetworkReconnectRef.current = null;
+      if (reconnectRetryTimerRef.current !== null) {
+        clearTimeout(reconnectRetryTimerRef.current);
+        reconnectRetryTimerRef.current = null;
+      }
       if (openingRef.current) openingRef.current.cancelled = true;
       const session = sessionRef.current;
+      traceVoiceSession("stop", {
+        reason,
+        hasSession: Boolean(session),
+        paused: Boolean(session?.paused),
+        captureLive: Boolean(
+          session?.captureReady && session.capture?.isTrackLive?.() !== false,
+        ),
+      });
       if (!session) return;
       session.stoppedLocally = true;
       // The client reports its close synchronously; handleClose tears down.
@@ -619,6 +737,7 @@ export function VoiceSessionProvider({
     [handleClose],
   );
   const stopRef = useRef(stopSession);
+  const pauseRef = useRef<(reason: string) => void>(() => undefined);
 
   // -- frame side effects --------------------------------------------------------
 
@@ -627,6 +746,10 @@ export function VoiceSessionProvider({
       void loadDirectives().then(
         (directives) => {
           if (sessionRef.current !== session || session.tornDown) return;
+          if (isStaleOrigin(frame.turn_id)) {
+            session.client.uiSettled(frame.directive_id, "ignored");
+            return;
+          }
           runDirective(session, frame, directives, {
             pathname: pathnameRef.current,
             claimMs: depsRef.current?.directiveClaimMs ?? DIRECTIVE_CLAIM_MS,
@@ -636,7 +759,10 @@ export function VoiceSessionProvider({
         },
         () => {
           if (!session.tornDown)
-            session.client.uiSettled(frame.directive_id, "failed");
+            session.client.uiSettled(
+              frame.directive_id,
+              isStaleOrigin(frame.turn_id) ? "ignored" : "failed",
+            );
         },
       );
     },
@@ -711,14 +837,108 @@ export function VoiceSessionProvider({
   const handleFrame = useCallback(
     (session: LiveSession, frame: ServerFrame) => {
       if (sessionRef.current !== session || session.tornDown) return;
+      const before = useVoiceSessionStore.getState().state;
+      const origin = "turn_id" in frame && typeof frame.turn_id === "string"
+        ? frame.turn_id
+        : null;
+      if (
+        frame.type === "tool.result" && !origin &&
+        (before.turnId !== null || before.activeInputTurnId !== null ||
+          before.activeResponseTurnId !== null || before.fencedTurnIds.length > 0 ||
+          Boolean(frame.pending_action_id))
+      ) {
+        // A legacy result may settle its exact card, but once this session
+        // has seen a question it has no safe screen or answer owner. Initial
+        // autonomous results can still reach their screen handlers.
+        dispatchServerFrame(frame, now());
+        return;
+      }
+      const staleOrigin = isStaleOrigin(origin);
+      if (staleOrigin) {
+        if (frame.type === "tool.result") {
+          // An exact pending card may still settle, but an older result must
+          // never replace the current screen's Mail list or trigger a handler.
+          dispatchServerFrame(frame, now());
+          return;
+        }
+        if (frame.type === "ui_directive") {
+          session.client.uiSettled(frame.directive_id, "ignored");
+          return;
+        }
+        if (frame.type === "client_step.request") {
+          if (frame.confirmed_pending_action_id) {
+            // The relay only marks a step after the person confirmed its exact
+            // card. Finish that action even if a newer question is underway;
+            // its answer remains fenced from the newer turn.
+            requestClientStep(session, frame);
+            return;
+          }
+          session.client.clientStepResult(frame.step_id, "failed", {
+            reason: "superseded_turn",
+          });
+          return;
+        }
+        if (
+          frame.type === "pending_action" ||
+          frame.type === "entity_card" ||
+          frame.type === "candidate_picker"
+        ) return;
+      }
       dispatchServerFrame(frame, now());
       const store = useVoiceSessionStore.getState();
       switch (frame.type) {
         case "session.ready":
           sendAppContext();
+          // The relay being ready says nothing about whether getUserMedia has
+          // completed. Keep the visible status honest until capture is live.
+          if (session.paused || !session.captureReady)
+            dispatch({ type: "paused" });
+          return;
+        case "transcript.input":
+          if (
+            store.state.activeInputTurnId === frame.turn_id &&
+            before.activeInputTurnId !== frame.turn_id
+          ) {
+            // Voice barge-in has already named a new question. Stop queued
+            // speech now, without waiting for a provider interrupt marker.
+            session.narrating = false;
+            session.playback.flush();
+            const previousTurn = before.activeResponseTurnId || before.turnId;
+            if (previousTurn && previousTurn !== frame.turn_id)
+              session.playback.fenceTurn(previousTurn);
+          }
+          if (
+            frame.request_id &&
+            frame.request_id === session.awaitingTypedRequestId
+          ) {
+            session.awaitingTypedRequestId = null;
+            session.awaitingTypedRequestDeadlineAt = null;
+          }
           return;
         case "audio": {
           if (session.paused) return;
+          if (session.awaitingTypedRequestId) {
+            if (
+              session.awaitingTypedRequestDeadlineAt !== null &&
+              now() < session.awaitingTypedRequestDeadlineAt
+            )
+              return;
+            session.awaitingTypedRequestId = null;
+            session.awaitingTypedRequestDeadlineAt = null;
+          }
+          const activeInputTurnId = store.state.activeInputTurnId;
+          if (
+            frame.origin_turn_id &&
+            store.state.fencedTurnIds.includes(frame.origin_turn_id)
+          )
+            return;
+          if (
+            frame.origin_turn_id &&
+            activeInputTurnId &&
+            frame.origin_turn_id !== activeInputTurnId
+          )
+            return;
+          if (frame.narration === true) session.narrating = true;
           try {
             session.playback.enqueue(
               bytesFromBase64(frame.data),
@@ -732,6 +952,15 @@ export function VoiceSessionProvider({
         case "turn":
           if (frame.state === "interrupted")
             session.playback.fenceTurn(frame.turn_id);
+          return;
+        case "error":
+          if (frame.code === "turn_busy") {
+            session.awaitingTypedRequestId = null;
+            session.awaitingTypedRequestDeadlineAt = null;
+          }
+          // A refused confirm remains tappable; its next attempt is not a
+          // duplicate of the failed one.
+          session.confirmingPendingId = null;
           return;
         case "pending_action": {
           const id = frame.pending_action_id;
@@ -759,17 +988,11 @@ export function VoiceSessionProvider({
         case "client_step.request":
           requestClientStep(session, frame);
           return;
-        case "error":
-          // The relay answered the confirm with a refusal (a missing or
-          // invalid sign-in proof keeps the card pending): the next tap is a
-          // legitimate retry, not a duplicate.
-          session.confirmingPendingId = null;
-          return;
         default:
           return;
       }
     },
-    [now, requestClientStep, sendAppContext, settleDirective],
+    [dispatch, now, requestClientStep, sendAppContext, settleDirective],
   );
 
   // -- capture ------------------------------------------------------------------
@@ -789,29 +1012,84 @@ export function VoiceSessionProvider({
 
   const startCapture = useCallback(
     async (session: LiveSession): Promise<void> => {
+      const generation = session.captureGeneration;
       const capture = (
         depsRef.current?.createCapture ?? (() => new LiveAudioCapture())
       )();
       session.capture = capture;
+      session.captureReady = false;
       capture.setMuted(mutedRef.current);
-      const result = await capture.start({
-        ...(session.audioContext ? { audioContext: session.audioContext } : {}),
-        onFrame: (pcm16) => {
-          if (
-            sessionRef.current !== session ||
-            session.tornDown ||
-            session.paused
-          )
-            return;
-          if (session.gate && !session.gate.allows()) return;
-          session.client.sendAudio(pcm16);
-        },
-        onLevel: dispatchLevel,
-      });
-      if (sessionRef.current !== session || session.tornDown) {
+      let result: CaptureStartResult;
+      try {
+        result = await capture.start({
+          ...(session.audioContext
+            ? { audioContext: session.audioContext }
+            : {}),
+          onFrame: (pcm16) => {
+            if (
+              sessionRef.current !== session ||
+              session.tornDown ||
+              session.paused
+            )
+              return;
+            // Dropped, not buffered: a queued frame would replay the narration
+            // into the model the moment the gate lifted.
+            if (session.narrating) return;
+            if (session.gate && !session.gate.allows()) return;
+            session.client.sendAudio(pcm16);
+          },
+          onLevel: dispatchLevel,
+          onEnded: () => {
+            if (
+              sessionRef.current !== session ||
+              session.capture !== capture ||
+              session.captureGeneration !== generation
+            )
+              return;
+            pauseRef.current("microphone_ended");
+            dispatch({
+              type: "local_error",
+              error: {
+                code: "mic_ended",
+                message: "Microphone stopped. Tap to resume One.",
+                recoverable: true,
+              },
+            });
+          },
+        });
+      } catch (error) {
+        if (
+          sessionRef.current !== session ||
+          session.tornDown ||
+          session.capture !== capture ||
+          session.captureGeneration !== generation
+        ) {
+          capture.stop();
+          return;
+        }
+        session.capture = null;
+        session.captureReady = false;
+        throw error;
+      }
+      if (
+        sessionRef.current !== session ||
+        session.tornDown ||
+        session.capture !== capture ||
+        session.captureGeneration !== generation ||
+        appInteractionCoordinator.getLifecycleSnapshot().state !== "active"
+      ) {
         capture.stop();
         return;
       }
+      if (capture.isTrackLive?.() === false) {
+        capture.stop();
+        session.capture = null;
+        throw new MicCaptureError({
+          code: "not_readable",
+          message: "Microphone stopped before One could listen.",
+        });
+      }
+      session.captureReady = true;
       const preference = depsRef.current?.halfDuplexPreference?.() ?? "auto";
       const halfDuplex = decideHalfDuplex({
         echoCancellation: result.echoCancellation,
@@ -850,19 +1128,25 @@ export function VoiceSessionProvider({
         isReconnect: input.isReconnect,
         client: null as unknown as VoiceLiveClientLike,
         capture: null,
+        captureReady: false,
         playback,
         audioContext,
         lease: null,
         gate: null,
+        narrating: false,
         paused: false,
+        pauseReason: null,
         stoppedLocally: false,
         tornDown: false,
         closeHandled: false,
         unsubscribes: [],
-        graceTimer: null,
+        captureGeneration: 0,
+        resumePromise: null,
         clientSteps: new Map(),
         directiveTimers: new Set(),
         confirmingPendingId: null,
+        awaitingTypedRequestId: null,
+        awaitingTypedRequestDeadlineAt: null,
       };
       const clientOptions: OneLiveClientOptions = {
         ticket: async () => {
@@ -934,13 +1218,22 @@ export function VoiceSessionProvider({
       session.lease = appInteractionCoordinator.acquireVoiceLease({
         owner: ONE_VOICE_LEASE_OWNER,
         onRevoked: (reason) => {
-          if (sessionRef.current === session)
-            stopRef.current(`lease_revoked:${reason}`);
+          if (sessionRef.current !== session) return;
+          session.lease = null;
+          if (reason === "app_backgrounded") {
+            pauseRef.current(reason);
+            return;
+          }
+          stopRef.current(`lease_revoked:${reason}`);
         },
       });
       session.unsubscribes.push(
         playback.onSpeakingChanged((speaking) => {
           if (sessionRef.current !== session) return;
+          // The player reports silence once the queue has drained, tail included,
+          // so the mic reopens when the narration has actually stopped being
+          // audible rather than when the last chunk was handed over.
+          if (!speaking) session.narrating = false;
           session.gate?.onSpeaking(speaking);
           dispatch({ type: "speaking", speaking });
         }),
@@ -965,6 +1258,8 @@ export function VoiceSessionProvider({
         dispatch({ type: "local_error", error });
         return false;
       }
+      if (!session.paused && session.captureReady)
+        dispatch({ type: "resumed" });
       return true;
     },
     [dispatch, handleClose, handleFrame, now, startCapture],
@@ -972,26 +1267,81 @@ export function VoiceSessionProvider({
 
   const resumeSession = useCallback(
     async (session: LiveSession): Promise<boolean> => {
-      if (session.graceTimer !== null) {
-        clearTimeout(session.graceTimer);
-        session.graceTimer = null;
-      }
-      session.paused = false;
-      if (session.audioContext && session.audioContext.state === "suspended") {
-        await session.audioContext.resume().catch(() => undefined);
-      }
-      try {
-        await startCapture(session);
-      } catch (error) {
-        if (sessionRef.current !== session) return false;
-        stopRef.current("resume_failed");
-        dispatch({ type: "local_error", error: toVoiceError(error) });
-        return false;
-      }
-      if (sessionRef.current !== session || session.tornDown) return false;
-      dispatch({ type: "resumed" });
-      sendAppContext();
-      return true;
+      if (session.resumePromise) return session.resumePromise;
+      const work = async (): Promise<boolean> => {
+        if (
+          sessionRef.current !== session ||
+          session.tornDown ||
+          appInteractionCoordinator.getLifecycleSnapshot().state !== "active"
+        )
+          return false;
+        const generation = session.captureGeneration;
+        if (
+          session.audioContext &&
+          session.audioContext.state === "suspended"
+        ) {
+          await session.audioContext.resume().catch(() => undefined);
+        }
+        if (
+          sessionRef.current !== session ||
+          session.tornDown ||
+          session.captureGeneration !== generation ||
+          appInteractionCoordinator.getLifecycleSnapshot().state !== "active"
+        )
+          return false;
+        if (!session.lease) {
+          session.lease = appInteractionCoordinator.acquireVoiceLease({
+            owner: ONE_VOICE_LEASE_OWNER,
+            onRevoked: (reason) => {
+              if (sessionRef.current !== session) return;
+              session.lease = null;
+              if (reason === "app_backgrounded") {
+                pauseRef.current(reason);
+                return;
+              }
+              stopRef.current(`lease_revoked:${reason}`);
+            },
+          });
+        }
+        const lease = session.lease;
+        try {
+          await startCapture(session);
+        } catch (error) {
+          if (
+            sessionRef.current === session &&
+            !session.tornDown &&
+            session.captureGeneration === generation
+          ) {
+            dispatch({ type: "local_error", error: toVoiceError(error) });
+            if (session.lease === lease) {
+              lease.release("resume_failed");
+              session.lease = null;
+            }
+          }
+          return false;
+        }
+        if (
+          sessionRef.current !== session ||
+          session.tornDown ||
+          session.captureGeneration !== generation ||
+          !session.capture ||
+          !session.captureReady ||
+          session.lease !== lease ||
+          !lease.isCurrent() ||
+          appInteractionCoordinator.getLifecycleSnapshot().state !== "active"
+        )
+          return false;
+        session.paused = false;
+        session.pauseReason = null;
+        dispatch({ type: "resumed" });
+        sendAppContext();
+        return true;
+      };
+      const promise = work().finally(() => {
+        if (session.resumePromise === promise) session.resumePromise = null;
+      });
+      session.resumePromise = promise;
+      return session.resumePromise;
     },
     [dispatch, sendAppContext, startCapture],
   );
@@ -1002,6 +1352,8 @@ export function VoiceSessionProvider({
    */
   const begin = useCallback(async (): Promise<BeginOutcome> => {
     if (!latest.current.enabled) return "refused";
+    if (appInteractionCoordinator.getLifecycleSnapshot().state !== "active")
+      return "refused";
     const running = sessionRef.current;
     if (running) {
       if (running.paused)
@@ -1030,6 +1382,8 @@ export function VoiceSessionProvider({
     }
     if (!conversationIdRef.current)
       conversationIdRef.current = crypto.randomUUID();
+    reconnectEpochRef.current += 1;
+    pendingNetworkReconnectRef.current = null;
     reconnectsRef.current = 0;
     const opened = await openSession({
       conversationId: conversationIdRef.current,
@@ -1044,28 +1398,30 @@ export function VoiceSessionProvider({
   const pause = useCallback(
     (reason: string) => {
       const session = sessionRef.current;
-      if (!session || session.paused || session.tornDown) return;
+      if (!session || session.tornDown) return;
+      const wasPaused = session.paused;
       session.paused = true;
+      session.pauseReason = reason;
+      session.captureGeneration += 1;
+      // A foreground capture may still be inside getUserMedia or worklet load.
+      // Retire that attempt so another foreground event can start a fresh one.
+      session.resumePromise = null;
       try {
         session.capture?.stop();
       } catch {
         // ignore
       }
       session.capture = null;
+      session.captureReady = false;
+      if (wasPaused) return;
+      session.narrating = false;
       session.playback.flush();
       session.gate?.reset();
       session.client.cancel({ scope: "turn" });
       dispatch({ type: "paused" });
-      const graceMs = depsRef.current?.backgroundGraceMs ?? BACKGROUND_GRACE_MS;
-      session.graceTimer = setTimeout(() => {
-        session.graceTimer = null;
-        if (sessionRef.current === session)
-          stopRef.current(`background:${reason}`);
-      }, graceMs);
     },
     [dispatch],
   );
-  const pauseRef = useRef(pause);
   useEffect(() => {
     stopRef.current = stopSession;
     openSessionRef.current = openSession;
@@ -1074,20 +1430,101 @@ export function VoiceSessionProvider({
   }, [begin, openSession, pause, stopSession]);
 
   useEffect(() => {
-    const background = () => {
-      if (document.hidden) pauseRef.current("hidden");
+    const queueFailedReconnect = (conversationId: string, epoch: number) => {
+      if (
+        reconnectEpochRef.current !== epoch ||
+        sessionRef.current ||
+        openingRef.current ||
+        pendingNetworkReconnectRef.current ||
+        reconnectsRef.current >= MAX_AUTO_RECONNECTS
+      ) return;
+      pendingNetworkReconnectRef.current = conversationId;
+      if (
+        navigator.onLine !== false &&
+        appInteractionCoordinator.getLifecycleSnapshot().state === "active" &&
+        reconnectRetryTimerRef.current === null
+      ) {
+        reconnectRetryTimerRef.current = setTimeout(() => {
+          reconnectRetryTimerRef.current = null;
+          reconnectWhenOnline();
+        }, 1000 * reconnectsRef.current);
+      }
     };
-    document.addEventListener("visibilitychange", background);
-    const handle = Capacitor.isNativePlatform()
-      ? App.addListener("appStateChange", ({ isActive }) => {
-          if (!isActive) pauseRef.current("inactive");
-        })
-      : null;
+    queueFailedReconnectRef.current = queueFailedReconnect;
+    const reconnectWhenOnline = () => {
+      const conversationId = pendingNetworkReconnectRef.current;
+      if (
+        !conversationId ||
+        sessionRef.current ||
+        openingRef.current ||
+        !latest.current.enabled ||
+        !latest.current.isVaultUnlocked ||
+        !latest.current.vaultOwnerToken ||
+        !latest.current.user?.uid ||
+        navigator.onLine === false ||
+        appInteractionCoordinator.getLifecycleSnapshot().state !== "active" ||
+        reconnectsRef.current >= MAX_AUTO_RECONNECTS
+      ) return;
+      if (reconnectRetryTimerRef.current !== null) {
+        clearTimeout(reconnectRetryTimerRef.current);
+        reconnectRetryTimerRef.current = null;
+      }
+      reconnectsRef.current += 1;
+      pendingNetworkReconnectRef.current = null;
+      const epoch = reconnectEpochRef.current;
+      void openSessionRef.current({ conversationId, isReconnect: true }).then((opened) => {
+        if (!opened) queueFailedReconnect(conversationId, epoch);
+      });
+    };
+    const lifecycleChanged = () => {
+      const lifecycle = appInteractionCoordinator.getLifecycleSnapshot();
+      if (lifecycle.state === "background") {
+        pauseRef.current("app_backgrounded");
+        return;
+      }
+      const session = sessionRef.current;
+      if (session?.paused) void resumeSession(session);
+      reconnectWhenOnline();
+    };
+    window.addEventListener("online", reconnectWhenOnline);
+    const unsubscribe =
+      appInteractionCoordinator.subscribeLifecycle(lifecycleChanged);
+    lifecycleChanged();
     return () => {
-      document.removeEventListener("visibilitychange", background);
-      void handle?.then((listener) => listener.remove());
+      window.removeEventListener("online", reconnectWhenOnline);
+      unsubscribe();
+      if (reconnectRetryTimerRef.current !== null) {
+        clearTimeout(reconnectRetryTimerRef.current);
+        reconnectRetryTimerRef.current = null;
+      }
+      queueFailedReconnectRef.current = () => undefined;
     };
-  }, []);
+  }, [resumeSession]);
+
+  const submitText = useCallback(
+    (session: LiveSession, text: string): boolean => {
+      if (session.tornDown || session.paused) return false;
+      const requestId = crypto.randomUUID();
+      const previousRequestId = session.awaitingTypedRequestId;
+      const previousDeadline = session.awaitingTypedRequestDeadlineAt;
+      session.awaitingTypedRequestId = requestId;
+      session.awaitingTypedRequestDeadlineAt =
+        now() + TYPED_INPUT_ACK_TIMEOUT_MS;
+      if (!session.client.sendText(text, requestId)) {
+        if (session.awaitingTypedRequestId === requestId) {
+          session.awaitingTypedRequestId = previousRequestId;
+          session.awaitingTypedRequestDeadlineAt = previousDeadline;
+        }
+        return false;
+      }
+      session.narrating = false;
+      session.playback.flush();
+      const turnId = readState().turnId;
+      if (turnId) session.playback.fenceTurn(turnId);
+      return true;
+    },
+    [now, readState],
+  );
 
   // -- conversation ownership ------------------------------------------------------
 
@@ -1130,8 +1567,7 @@ export function VoiceSessionProvider({
           const session = sessionRef.current;
           if (outcome !== "started" || !session || session.tornDown)
             return false;
-          session.client.sendText(text);
-          return true;
+          return submitText(session, text);
         });
       } else if (running && !running.paused) {
         // The shared request is a toggle: a second one ends the session.
@@ -1183,7 +1619,7 @@ export function VoiceSessionProvider({
         cancelPendingRequest,
       );
     };
-  }, [dispatch, enabled]);
+  }, [dispatch, enabled, submitText]);
 
   // Ownership handed away, vault locked, or unmount: the session ends.
   useEffect(() => {
@@ -1204,7 +1640,18 @@ export function VoiceSessionProvider({
   // App context follows the route, the OS permission, and screen reports.
   useEffect(() => {
     sendAppContext();
-  }, [pathname, osPermission, sendAppContext]);
+    const session = sessionRef.current;
+    if (
+      session &&
+      !session.paused &&
+      session.captureReady &&
+      session.capture?.isTrackLive?.() === false &&
+      appInteractionCoordinator.getLifecycleSnapshot().state === "active"
+    ) {
+      pauseRef.current("microphone_ended");
+      void resumeSession(session);
+    }
+  }, [pathname, osPermission, resumeSession, sendAppContext]);
   useEffect(() => {
     const onPermission = (event: Event) => {
       const detail = (event as CustomEvent<OneVoiceOsPermissionDetail>).detail;
@@ -1240,17 +1687,26 @@ export function VoiceSessionProvider({
   const interrupt = useCallback(() => {
     const session = sessionRef.current;
     if (!session || session.tornDown) return;
+    // Local Stop reaches a narration where barge-in cannot: `fenceTurn` assigns a
+    // narration's unseen turn id a HIGHER order than the model turn it followed,
+    // so fencing the model's turn never stops it. `flush()` does, and it runs
+    // first here. The mic reopens now, because the drain callback that would
+    // otherwise clear this is exactly what the flush prevents.
+    session.narrating = false;
     session.playback.flush();
     const turnId = readState().turnId;
     if (turnId) session.playback.fenceTurn(turnId);
     session.client.interrupt();
   }, [readState]);
 
-  const sendText = useCallback((text: string) => {
-    const session = sessionRef.current;
-    if (!session || session.tornDown) return;
-    session.client.sendText(text);
-  }, []);
+  const sendText = useCallback(
+    (text: string) => {
+      const session = sessionRef.current;
+      if (!session || session.tornDown) return;
+      submitText(session, text);
+    },
+    [submitText],
+  );
 
   const confirmPending = useCallback(
     async (options?: { consentVersion?: string | null }) => {
@@ -1301,6 +1757,29 @@ export function VoiceSessionProvider({
       }
     },
     [readState],
+  );
+
+  const openMail = useCallback(
+    async (input: {
+      ordinal: number;
+      offerRevision: number;
+      conversationId: string;
+    }) => {
+      // The token is read from `latest.current` for the same reason start() does:
+      // the closure variable is a render-time snapshot, and this runs on a tap.
+      const token = latest.current.vaultOwnerToken;
+      if (!token) throw new MailOpenError("auth_missing");
+      // The conversation comes from the result that drew the row. Reading the
+      // live id here would resolve the position against whatever conversation a
+      // reconnect has since moved to, and open a different message.
+      return openOfferedMail({
+        vaultOwnerToken: token,
+        conversationId: input.conversationId,
+        ordinal: input.ordinal,
+        offerRevision: input.offerRevision,
+      });
+    },
+    [],
   );
 
   const cancelPending = useCallback(() => {
@@ -1357,6 +1836,7 @@ export function VoiceSessionProvider({
       interrupt,
       sendText,
       confirmPending,
+      openMail,
       cancelPending,
       chooseCandidate,
       clearView,
@@ -1371,6 +1851,7 @@ export function VoiceSessionProvider({
       interrupt,
       sendText,
       confirmPending,
+      openMail,
       cancelPending,
       chooseCandidate,
       clearView,

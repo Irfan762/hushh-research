@@ -1,15 +1,102 @@
 """Bounded participant projections; private suggestions never cross to B."""
 
+from collections import Counter
+from datetime import UTC, datetime
 from uuid import UUID
 
 from sqlalchemy import text
 
+from hushh_mcp.services.drive_bulk_share_store import bulk_outcome_summary
+from hushh_mcp.services.drive_live_query_store import STALE_CLAIM_SECONDS
 from hushh_mcp.services.drive_revocation_store import DriveRevocationStore
 from hushh_mcp.services.drive_sharing_contract import MAX_FILES, DriveSharingError
 from hushh_mcp.services.google_drive_adapter import FILE_ID
+from hushh_mcp.services.requester_identity import label_from_identity_row
 
 
 class DriveSharingProjectionStore(DriveRevocationStore):
+    @staticmethod
+    def _chat_request_status(row, *, now: datetime) -> str:
+        if row["request_type"] == "files":
+            return DriveSharingProjectionStore._summary(row, recipient=True)["status"]
+        status = row["status"]
+        if status == "pending" and row["expires_at"] <= now:
+            return "expired"
+        if status == "running":
+            if (
+                row["expires_at"] <= now
+                and row["decided_at"] is not None
+                and (now - row["decided_at"]).total_seconds() > STALE_CLAIM_SECONDS
+            ):
+                return "expired"
+            return "pending"
+        return status
+
+    async def list_outgoing_for_chat(self, *, user_id: str, limit: int = 20) -> dict:
+        """Recent requester-owned file requests and Drive questions, metadata only.
+
+        The requester already sees these statuses in Consent Center. Chat only
+        needs a human counterpart label and a timestamp; it must not receive a
+        Drive request id that could be mistaken for an information-bundle cancel
+        handle, or the owner's private preparation failure.
+        """
+        if not user_id or type(limit) is not int or not 1 <= limit <= 50:
+            raise DriveSharingError("invalid_argument")
+
+        def operation(connection):
+            # The question table arrived after file requests. Older deployments
+            # can still report their file requests while that schema rolls out.
+            queries_installed = bool(
+                connection.execute(
+                    text("SELECT to_regclass('drive_live_query_requests') IS NOT NULL")
+                ).scalar_one()
+            )
+            question_rows = (
+                """
+                UNION ALL
+                SELECT request_id,status,revision,created_at,expires_at,decided_at,
+                       user_id AS owner_user_id,'question'::text AS request_type
+                FROM drive_live_query_requests WHERE requester_user_id=:user
+                """
+                if queries_installed
+                else ""
+            )
+            rows = (
+                connection.execute(
+                    text(f"""
+                    SELECT request.*,owner.user_id,owner.display_name,owner.email
+                    FROM (
+                      SELECT request_id,status,revision,created_at,expires_at,
+                             NULL::timestamptz AS decided_at,user_id AS owner_user_id,
+                             'files'::text AS request_type
+                      FROM drive_share_requests WHERE recipient_user_id=:user
+                      {question_rows}
+                    ) request
+                    LEFT JOIN actor_identity_cache owner ON owner.user_id=request.owner_user_id
+                    ORDER BY request.created_at DESC,request.request_id DESC
+                    LIMIT :limit
+                    """),  # nosec B608 -- optional SQL fragment is a static literal
+                    {"user": user_id, "limit": limit + 1},
+                )
+                .mappings()
+                .all()
+            )
+            now = datetime.now(UTC)
+            return {
+                "items": [
+                    {
+                        "person": label_from_identity_row(row, allow_email_handle=True) or None,
+                        "requestType": row["request_type"],
+                        "status": self._chat_request_status(row, now=now),
+                        "sentAt": row["created_at"].isoformat(),
+                    }
+                    for row in rows[:limit]
+                ],
+                "hasMore": len(rows) > limit,
+            }
+
+        return await self._transaction(operation)
+
     async def list_requests(self, *, user_id, direction, limit=20, offset=0):
         if (
             direction not in {"incoming", "outgoing"}
@@ -49,6 +136,11 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                         **self._summary(row, recipient=direction == "outgoing"),
                         "createdAt": row["created_at"].isoformat(),
                         "direction": direction,
+                        **(
+                            self._payment_metadata(connection, row["request_id"])
+                            if direction == "outgoing"
+                            else {}
+                        ),
                     }
                     for row in rows[:limit]
                 ],
@@ -92,6 +184,7 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                     "recipient_user_id": None,
                 }
             recipient = request["recipient_user_id"] == user_id
+            payment = self._payment_metadata(connection, request_id) if recipient else {}
             private = self._open_request(request) if request.get("request_envelope") else None
             grants = (
                 connection.execute(
@@ -112,33 +205,75 @@ class DriveSharingProjectionStore(DriveRevocationStore):
             )
             if len(grants) > MAX_FILES:
                 raise DriveSharingError("sharing_storage_unavailable")
-            bulk = (
-                self._row(
-                    connection,
-                    """SELECT share_id,status,file_count
+            bulks = (
+                connection.execute(
+                    text("""SELECT share_id,status,file_count,progressive_batch
                 FROM drive_bulk_shares WHERE origin_request_id=:request
                   AND user_id=:owner AND approved_at IS NOT NULL
-                  AND expires_at>clock_timestamp()""",
+                  AND expires_at>clock_timestamp()
+                ORDER BY created_at,share_id"""),
                     {"request": request_id, "owner": request["user_id"]},
                 )
+                .mappings()
+                .all()
                 if request.get("user_id")
-                else None
+                else []
             )
+            if (
+                recipient
+                and request.get("payment_required")
+                and payment.get("paymentStatus") != "paid"
+            ):
+                bulks = []
             bulk_shared = 0
-            if bulk:
-                bulk_shared = connection.execute(
-                    text("""SELECT count(*)
-                    FROM drive_bulk_share_effects WHERE share_id=:share
-                      AND recipient_user_id=:recipient
-                      AND state IN ('succeeded','preexisting')"""),
-                    {"share": bulk["share_id"], "recipient": request["recipient_user_id"]},
-                ).scalar_one()
+            bulk_summary = None
+            bulk_file_count = 0
+            if bulks:
+                counts = Counter()
+                issues = Counter()
+                for bulk in bulks:
+                    active_request = request_id if bulk["progressive_batch"] else None
+                    total = (
+                        connection.execute(
+                            text("""SELECT count(*) FROM drive_bulk_share_files
+                            WHERE share_id=:share AND origin_request_id=:request"""),
+                            {"share": bulk["share_id"], "request": request_id},
+                        ).scalar_one()
+                        if active_request is not None
+                        else bulk["file_count"]
+                    )
+                    bulk_file_count += total
+                    summary = bulk_outcome_summary(
+                        connection,
+                        share_id=bulk["share_id"],
+                        total=total,
+                        recipient_user_id=request["recipient_user_id"],
+                        active_request_id=active_request,
+                    )
+                    counts.update(summary["counts"])
+                    issues.update({item["reasonCode"]: item["count"] for item in summary["issues"]})
+                bulk_summary = {
+                    "counts": dict(counts),
+                    "issues": [
+                        {"reasonCode": reason, "count": count}
+                        for reason, count in sorted(issues.items())
+                    ],
+                }
+                bulk_shared = (
+                    bulk_summary["counts"]["shared"] + bulk_summary["counts"]["alreadyShared"]
+                )
             files = []
             for row in grants:
                 removed = row["revoke_state"] in {"succeeded", "absent"}
                 delivered = row["state"] in {"succeeded", "preexisting", "present_unattributed"}
                 # B sees no private candidates or failed/uncertain file names.
                 if recipient and (not delivered or removed):
+                    continue
+                if (
+                    recipient
+                    and request.get("payment_required")
+                    and payment.get("paymentStatus") != "paid"
+                ):
                     continue
                 plan = self._plan(row)
                 file_id = plan["file_id"]
@@ -169,16 +304,35 @@ class DriveSharingProjectionStore(DriveRevocationStore):
                 "recipient": private["recipient"] if recipient and private else None,
                 "result": {
                     **self._summary(request, recipient=recipient),
-                    "files": [] if bulk else files,
+                    **payment,
+                    "files": [] if bulks else files,
                     **(
                         {
-                            "bulkShareId": str(bulk["share_id"]),
-                            "fileCount": bulk["file_count"],
+                            "bulkShareId": str(bulks[-1]["share_id"]),
+                            "progressiveBatch": any(bulk["progressive_batch"] for bulk in bulks),
+                            "batchCount": len(bulks),
+                            "fileCount": bulk_file_count,
                             "sharedCount": bulk_shared,
-                            "sharingStatus": bulk["status"],
+                            "sharingStatus": "running"
+                            if request["status"] == "pending"
+                            else "completed"
+                            if request["status"] == "completed"
+                            else "partial"
+                            if request["status"] == "partial"
+                            else bulks[-1]["status"],
+                            "bulkStatus": bulks[-1]["status"]
+                            if not any(bulk["progressive_batch"] for bulk in bulks)
+                            else "running"
+                            if request["status"] == "pending"
+                            else "completed"
+                            if request["status"] == "completed"
+                            else "partial"
+                            if request["status"] == "partial"
+                            else bulks[-1]["status"],
+                            **bulk_summary,
                             "nextCursor": None,
                         }
-                        if bulk
+                        if bulks
                         else {}
                     ),
                     "recordedOutcomeOnly": True,

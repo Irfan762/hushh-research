@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => {
   return {
     routerPush: vi.fn(),
+    navigateToAgentChat: vi.fn(),
     useAuth: vi.fn(),
     useGmailConnectorStatus: vi.fn(),
     toast: {
@@ -83,6 +84,10 @@ let gmailView: ReturnType<typeof buildGmailView>;
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: mocks.routerPush }),
   usePathname: () => "/one/profile/receipts",
+}));
+
+vi.mock("@/lib/navigation/agent-navigation", () => ({
+  navigateToAgentChat: mocks.navigateToAgentChat,
 }));
 
 vi.mock("sonner", () => ({
@@ -175,56 +180,6 @@ vi.mock("@/components/vault/vault-unlock-dialog", () => ({
   VaultUnlockDialog: () => null,
 }));
 
-vi.mock("@/components/ui/alert-dialog", () => ({
-  AlertDialog: ({
-    children,
-    open,
-  }: {
-    children: React.ReactNode;
-    open?: boolean;
-  }) => (open ? <div>{children}</div> : null),
-  AlertDialogAction: ({
-    children,
-    onClick,
-    disabled,
-  }: {
-    children: React.ReactNode;
-    onClick?: React.MouseEventHandler<HTMLButtonElement>;
-    disabled?: boolean;
-  }) => (
-    <button type="button" onClick={onClick} disabled={disabled}>
-      {children}
-    </button>
-  ),
-  AlertDialogCancel: ({
-    children,
-    disabled,
-  }: {
-    children: React.ReactNode;
-    disabled?: boolean;
-  }) => (
-    <button type="button" disabled={disabled}>
-      {children}
-    </button>
-  ),
-  // Radix's AlertDialogContent carries role="alertdialog"; mirror it.
-  AlertDialogContent: ({ children }: { children: React.ReactNode }) => (
-    <div role="alertdialog">{children}</div>
-  ),
-  AlertDialogDescription: ({ children }: { children: React.ReactNode }) => (
-    <p>{children}</p>
-  ),
-  AlertDialogFooter: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  AlertDialogHeader: ({ children }: { children: React.ReactNode }) => (
-    <div>{children}</div>
-  ),
-  AlertDialogTitle: ({ children }: { children: React.ReactNode }) => (
-    <h2>{children}</h2>
-  ),
-}));
-
 vi.mock("@/lib/morphy-ux/button", () => ({
   Button: ({
     children,
@@ -253,7 +208,6 @@ vi.mock("lucide-react", () => ({
   Send: () => <span />,
   ShieldCheck: () => <span />,
   ShoppingBag: () => <span />,
-  Sparkles: () => <span />,
   Trash2: () => <span />,
 }));
 
@@ -935,7 +889,7 @@ describe("ProfileReceiptsPage", () => {
     );
   });
 
-  it.each(["overview", "receipts"] as const)("hides only the background progress visual in %s", async (workspace) => {
+  it.each(["overview", "receipts"] as const)("keeps background sync informational in %s", async (workspace) => {
     mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
       syncRun: {
         run_id: "background-scan", user_id: "user-123", trigger_source: "manual",
@@ -949,15 +903,39 @@ describe("ProfileReceiptsPage", () => {
       },
     }));
     render(<ProfileReceiptsPage initialWorkspace={workspace} />);
-    await waitFor(() => {
-      const bars = screen.getAllByRole("progressbar", { hidden: true });
-      expect(bars.length).toBeGreaterThan(0);
-      for (const bar of bars) {
-        expect(bar).toHaveClass("hidden");
-        expect(bar).toHaveAttribute("data-value", "30");
-      }
-    });
-    expect(screen.getAllByText(/10/).length).toBeGreaterThan(0);
+    if (workspace === "overview") {
+      expect(await screen.findByRole("status", { name: "Fetching receipts" })).toBeVisible();
+      expect(screen.queryByRole("progressbar", { hidden: true })).not.toBeInTheDocument();
+      expect(screen.getByTestId("mail-receipt-sync")).toHaveTextContent("Receipt sync");
+    } else {
+      await waitFor(() => {
+        const bars = screen.getAllByRole("progressbar", { hidden: true });
+        expect(bars.length).toBeGreaterThan(0);
+        for (const bar of bars) {
+          expect(bar).toHaveClass("hidden");
+          expect(bar).toHaveAttribute("data-value", "30");
+        }
+      });
+      expect(screen.getAllByText(/10/).length).toBeGreaterThan(0);
+    }
+    expect(mocks.gmailReceiptsService.syncNow).not.toHaveBeenCalled();
+  });
+
+  it("shows a connected sync failure only in the lower receipt status card", async () => {
+    const connected = buildGmailView();
+    mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
+      status: { ...connected.status, last_sync_status: "failed" },
+      presentation: { ...connected.presentation, state: "sync_failed" },
+    }));
+    render(<ProfileReceiptsPage />);
+
+    const receiptStatus = await screen.findByTestId("mail-receipt-sync");
+    expect(receiptStatus).toHaveTextContent("Sync failed.");
+    expect(receiptStatus).toHaveClass("border-destructive/20");
+    expect(screen.queryByText("Status", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Draft with One." })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Manage" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Fetching receipts" })).not.toBeInTheDocument();
     expect(mocks.gmailReceiptsService.syncNow).not.toHaveBeenCalled();
   });
 
@@ -1349,6 +1327,23 @@ describe("ProfileReceiptsPage", () => {
     ).toBeVisible();
   });
 
+  it("hides Disconnect for a disconnected remembered account and restores it after reconnect", async () => {
+    const connected = makeGmailView();
+    mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
+      status: { ...connected.status, connected: false, status: "disconnected", revoked: true, google_email: "akshat@example.com" },
+      presentation: { ...connected.presentation, state: "disconnected", isConnected: false },
+    }));
+    const { rerender } = render(<ProfileReceiptsPage />);
+    expect(await screen.findByRole("button", { name: /reconnect mail/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /disconnect/i })).not.toBeInTheDocument();
+
+    mocks.useGmailConnectorStatus.mockReturnValue(connected);
+    rerender(<ProfileReceiptsPage />);
+    fireEvent.keyDown(await screen.findByRole("button", { name: /^manage$/i }), { key: "ArrowDown" });
+    expect(await screen.findByRole("menuitem", { name: /^disconnect$/i })).toBeVisible();
+    expect(screen.getByRole("menuitem", { name: /^reconnect$/i })).toBeVisible();
+  });
+
   it("retains the KYC panel while switching between Mail tabs", async () => {
     render(<ProfileReceiptsPage />);
     fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
@@ -1678,6 +1673,42 @@ describe("ProfileReceiptsPage", () => {
     ).toBeGreaterThan(0);
   });
 
+  it("opens One chat from the overview CTA", () => {
+    render(<ProfileReceiptsPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Chat with One" }));
+    expect(mocks.navigateToAgentChat).toHaveBeenCalledOnce();
+  });
+
+  it("reconnects through the existing read-consent flow", async () => {
+    render(<ProfileReceiptsPage />);
+    fireEvent.keyDown(screen.getByRole("button", { name: /^manage$/i }), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^reconnect$/i }));
+    await waitFor(() => expect(GmailReceiptsService.startConnect).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "read", userId: "user-123" }),
+    ));
+    expect(mocks.gmailOAuthPopup.open).toHaveBeenCalledOnce();
+  });
+
+  it("keeps Mail connected when disconnect confirmation is canceled", async () => {
+    render(<ProfileReceiptsPage />);
+    fireEvent.keyDown(screen.getByRole("button", { name: /^manage$/i }), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^disconnect$/i }));
+    fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Keep connected" }));
+    expect(gmailView.disconnectGmail).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+
+  it("shows a zero receipt count only after the receipt list has loaded", async () => {
+    render(<ProfileReceiptsPage />);
+    expect(within(screen.getByTestId("mail-receipt-sync")).queryByText(/0 receipts/)).toBeNull();
+    expect(GmailReceiptsService.listReceipts).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("tab", { name: "Receipts" }));
+    await waitFor(() => expect(GmailReceiptsService.listReceipts).toHaveBeenCalled());
+    await screen.findByText(/no receipts yet/i);
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    expect(within(screen.getByTestId("mail-receipt-sync")).getByText(/0 receipts/)).toBeTruthy();
+  });
+
   it("deletes the Gmail receipt cache when disconnecting", async () => {
     vi.mocked(GmailReceiptsService.listReceipts).mockResolvedValue({
       items: [makeReceipt(1, "Stored Shop")],
@@ -1705,9 +1736,9 @@ describe("ProfileReceiptsPage", () => {
     );
     // Disconnect is available through Manage on the Mail overview.
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    fireEvent.click(screen.getByRole("button", { name: /^manage$/i }));
+    fireEvent.keyDown(screen.getByRole("button", { name: /^manage$/i }), { key: "ArrowDown" });
     fireEvent.click(
-      await screen.findByRole("button", { name: /^disconnect mail$/i }),
+      await screen.findByRole("menuitem", { name: /^disconnect$/i }),
     );
     expect(screen.getByText("Disconnect Mail?")).toBeTruthy();
 

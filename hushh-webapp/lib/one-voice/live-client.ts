@@ -174,6 +174,17 @@ function errorFrameReason(code: string): VoiceUnavailableError["reason"] {
   }
 }
 
+function resolveBrowserTimeZone(): string | undefined {
+  if (typeof window === "undefined") {
+    return undefined;
+  }
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export class OneLiveClient {
   private readonly options: OneLiveClientOptions;
   private readonly now: () => number;
@@ -352,6 +363,10 @@ export class OneLiveClient {
             protocol_version: ONE_VOICE_PROTOCOL_VERSION,
             input_mime_type: INPUT_MIME,
           },
+          // Relative dates ("today", "this week") are the owner's, and only the
+          // browser knows their zone. A hint: the server validates it and falls
+          // back to UTC.
+          timezone: resolveBrowserTimeZone() ?? null,
           resume: Boolean(this.options.resume),
         };
         this.rawSend(ws, authFrame);
@@ -511,10 +526,14 @@ export class OneLiveClient {
 
   // -- outbound: control -----------------------------------------------------
 
-  sendText(text: string): boolean {
+  sendText(text: string, requestId?: string): boolean {
     const clean = String(text || "").trim();
     if (!clean) return false;
-    return this.sendControl({ type: "text", text: clean });
+    return this.sendControl({
+      type: "text",
+      text: clean,
+      ...(requestId ? { request_id: requestId } : {}),
+    });
   }
 
   /**

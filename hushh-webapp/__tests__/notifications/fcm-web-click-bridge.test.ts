@@ -83,6 +83,18 @@ describe("web system-notification click bridge", () => {
     );
   });
 
+  it("opens the live payment action for a requester payment push", () => {
+    expect(buildNotificationTapTarget({
+      type: "document_share_payment_ready",
+      request_id: "11111111-1111-4111-8111-111111111111",
+      deep_link: "/one/profile?ignored=true",
+    })).toBe("/one/feed");
+    expect(buildNotificationTapTarget({
+      type: "document_share_payment_refunded",
+      request_id: "11111111-1111-4111-8111-111111111111",
+    })).toBe("/one/feed");
+  });
+
   it.each([
     {
       type: "document_share_review_ready",
@@ -124,6 +136,20 @@ describe("web system-notification click bridge", () => {
     expect(
       buildNotificationTapTarget({ type: "information_request_updated", bundle_id: "../one/profile" }),
     ).toBe("/");
+  });
+
+  it("opens a fresh chat for a One-has-something push, never its deep_link", () => {
+    expect(
+      buildNotificationTapTarget({
+        type: "one_feed_attention",
+        feed_item_id: "4812",
+        deep_link: "https://evil.example/phish",
+      }),
+    ).toBe("/?feedAttention=4812");
+    // A malformed id lands on the durable Feed row, never a forged route.
+    expect(
+      buildNotificationTapTarget({ type: "one_feed_attention", feed_item_id: "../one/profile" }),
+    ).toBe("/one/feed");
   });
 
   it("accepts Feed navigation and acknowledges the matching click id", async () => {

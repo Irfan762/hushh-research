@@ -847,6 +847,15 @@ export class OneLocationService {
     return response.circle;
   }
 
+  /** Anonymous metadata only; this does not resolve membership or join. */
+  static async previewPublicCircleCode(code: string): Promise<{ name: string; ownerDisplayName: string }> {
+    const response = await apiJson<{ circle: { name: string; ownerDisplayName: string } }>(
+      "/api/one/location/circle-codes/public-preview",
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) },
+    );
+    return response.circle;
+  }
+
   static async updateNamedCircle(params: {
     vaultOwnerToken: string;
     circleId: string;
@@ -1560,7 +1569,7 @@ export class OneLocationService {
         // MAIL_API_KEY). On native, a relative path resolves against the
         // backend, where this path does not exist, so the alert's email leg
         // would 404 on iOS and Android — the two platforms an SOS is most
-        // likely to be sent from. Same treatment as `/api/auth/mail`.
+        // likely to be sent from. Use the Next.js origin for this route.
       }>(`${nextRouteOrigin()}/api/one/location/sos-email`, {
         method: "POST",
         headers: jsonAuthHeaders(params.vaultOwnerToken),

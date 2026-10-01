@@ -1,4 +1,5 @@
 import { ApiService } from "@/lib/services/api-service";
+import { serverNow } from "@/lib/agent/server-clock";
 import { projectCustomConnectorTurnConfigurations, type CustomConnectorConfiguration } from "@/lib/connections/custom-connector-schema";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
 import { parseConnectorReadReceipt, type ConnectorReadExperience } from "@/lib/agent/connector-read-receipt";
@@ -12,9 +13,18 @@ import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
+import { FOLLOW_UP_TOOL_NAME, parseFollowUpSuggestions } from "@/lib/agent/follow-up-suggestions";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
 import { resolveTurnLocation } from "@/lib/agent/turn-location";
+import {
+  QUEUED_INPUT_EVENT,
+  parseQueuedInputNotice,
+  parseQueuedInputStatus,
+  type QueuedInputNotice,
+  type QueuedInputPorts,
+  type QueuedInputStatus,
+} from "@/lib/agent/agent-chat-live-turn-queue";
 import {
   ChatKeyUnavailableError,
   chatKeyRefusalCode,
@@ -31,6 +41,10 @@ import {
   parseStoredTextAttachments,
   type AgentTextAttachment,
 } from "@/lib/agent/large-text-attachment";
+import {
+  classifyBackendStrain,
+  type AgentStreamHealthSignal,
+} from "@/lib/agent/agent-chat-slow-notice";
 import {
   parseAgentActivityExperience,
   parseAgentToolResultExperience,
@@ -60,8 +74,61 @@ export type AgentChatMessage = {
     turnActivity?: { activityType?: string; content?: unknown } | null;
     /** Pasted text sent with a user turn, restored as a chip (never as message text). */
     attachments?: AgentTextAttachment[];
+    /** A message sent while One was working, which joined that reply. */
+    queuedInput?: "joined";
+    /** The information request this outcome chip or continuation answer belongs to. */
+    consentBundleId?: string;
+    /** The server hid this answer because sharing it relied on has ended. */
+    consentAccessEnded?: boolean;
+    /** Whose shared information this answer used, by name and human label only. */
+    consentAccess?: AgentChatConsentAccess;
   } | null;
 };
+
+/**
+ * `metadata.consentAccess` on an answer that used another person's shared
+ * information (contract C3). Names and human labels only, never values.
+ */
+export type AgentChatConsentAccess = {
+  bundleId: string;
+  state: "live" | "ended";
+  /** Why access ended; null while it is live. */
+  outcome: "revoked" | "expired" | null;
+  personName: string | null;
+  labels: string[];
+};
+
+function endedReason(value: unknown): "revoked" | "expired" | null {
+  return value === "revoked" || value === "expired" ? value : null;
+}
+
+/**
+ * Read `metadata.consentAccess`, falling back to the response's
+ * `consentAccessEnded` map for the reason. Anything malformed reads as absent.
+ */
+export function parseConsentAccess(
+  value: unknown,
+  endedByBundle: Readonly<Record<string, unknown>> = {},
+): AgentChatConsentAccess | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const bundleId = typeof record.bundleId === "string" ? record.bundleId.trim() : "";
+  if (!bundleId) return undefined;
+  const outcome = endedReason(record.outcome) ?? endedReason(endedByBundle[bundleId]);
+  const labels = Array.isArray(record.labels)
+    ? record.labels.filter((label): label is string => typeof label === "string" && Boolean(label.trim()))
+      .map((label) => label.trim().slice(0, 120)).slice(0, 20)
+    : [];
+  const personName = typeof record.personName === "string" && record.personName.trim()
+    ? record.personName.trim().slice(0, 120) : null;
+  return {
+    bundleId,
+    state: record.state === "ended" || outcome ? "ended" : "live",
+    outcome,
+    personName,
+    labels,
+  };
+}
 
 function utf8ToBase64(text: string): string {
   const bytes = new TextEncoder().encode(text);
@@ -103,8 +170,9 @@ export type AgentChatConversation = {
   model?: string | null;
   message_count: number;
   created_at?: string | null;
-  updated_at?: string | null;
-  last_message_at?: string | null;
+  /** ADK session times arrive as epoch seconds; older rows may be ISO strings. */
+  updated_at?: string | number | null;
+  last_message_at?: string | number | null;
 };
 
 export type AgentChatToolEvent = {
@@ -168,6 +236,8 @@ export type AgentChatStreamHandlers = {
   onSources?: (sources: AgentSource[]) => void;
   /** The optional id is the AG-UI activity/tool identity for transport dedupe. */
   onStructuredExperience?: (experience: AgentStructuredExperience, eventId?: string) => void;
+  /** 2-3 next questions One wrote with this answer; only for the latest answer, never stored. */
+  onFollowUpSuggestions?: (suggestions: string[]) => void;
   /** Owner-only count progress from a server AG-UI activity; never inferred from time. */
   onDriveBatchProgress?: (progress: DriveBatchProgress, eventId?: string) => void;
   onSpecialistDirective?: (directive: SpecialistDirectiveEvent) => void;
@@ -178,6 +248,13 @@ export type AgentChatStreamHandlers = {
    * be joined to the turn, or matched after a reload (history uses event ids).
    */
   onServerMessageId?: (serverMessageId: string) => void;
+  /** Where messages queued during this turn landed, by client id only. */
+  onQueuedInput?: (notice: QueuedInputNotice) => void;
+  /**
+   * Transport health for the slow-reply notice: bytes, the first visible work,
+   * or server strain from a typed code or status. Never content.
+   */
+  onStreamHealth?: (signal: AgentStreamHealthSignal) => void;
 };
 
 /** The last assistant message with content in a messages snapshot: this turn's answer. */
@@ -268,6 +345,17 @@ function readString(record: Record<string, unknown>, key: string): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Server events that show One is working on the turn: answer text, a tool or
+ * agent step, activity, a custom notice, a thought. Run bookkeeping (started,
+ * state and message snapshots) is not work the person is waiting on.
+ */
+const VISIBLE_WORK_EVENT_PREFIXES = ["TEXT_MESSAGE_", "TOOL_CALL_", "ACTIVITY_", "REASONING_", "THINKING_"] as const;
+
+function isVisibleWorkEvent(type: string): boolean {
+  return type === "CUSTOM" || VISIBLE_WORK_EVENT_PREFIXES.some((prefix) => type.startsWith(prefix));
+}
+
 const GENERIC_AGENT_CHAT_ERROR =
   "One couldn't complete that response. Please try again.";
 
@@ -308,7 +396,7 @@ const AGENT_CHAT_STREAM_WATCHDOG_TICK_MS = 5_000;
  * completes such a run quietly. `fetch` is the HttpAgent transport with every
  * body chunk noted; `start` arms the silence watchdog for one run.
  */
-function createAgentStreamLiveness(onSilent: () => void) {
+function createAgentStreamLiveness(onSilent: () => void, onBytes: () => void = () => undefined) {
   let lastBytesAtMs = Date.now();
   let timer: ReturnType<typeof setInterval> | null = null;
   const touch = () => {
@@ -322,10 +410,12 @@ function createAgentStreamLiveness(onSilent: () => void) {
     fetch: async (init: RequestInit | undefined): Promise<Response> => {
       const response = await nativeStreamFetch("/api/one/agent-chat", init);
       touch();
+      onBytes();
       if (!response.ok || !response.body) return response;
       const body = response.body.pipeThrough(new TransformStream<Uint8Array, Uint8Array>({
         transform(chunk, controller) {
           touch();
+          onBytes();
           controller.enqueue(chunk);
         },
       }));
@@ -502,6 +592,11 @@ const SERVER_TOOL_PRESENTATION: Record<
     label: "Connectors",
     message: "Checking your saved connectors.",
     activity: "Checking your connectors",
+  },
+  probe_private_connector: {
+    label: "Connectors",
+    message: "Checking that server.",
+    activity: "Checking the server",
   },
   discover_workspace_tools: {
     label: "Connector access",
@@ -783,6 +878,13 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Using your approximate location for this answer.",
     activity: "Checking your location",
   },
+  // Rendered as chips under the answer, never as an Activity row; named here so
+  // the roster label guard holds and no surface falls back to "Agent step".
+  suggest_follow_ups: {
+    label: "Follow-up ideas",
+    message: "Suggesting what you could ask next.",
+    activity: "Suggesting next questions",
+  },
   // ADK's own confirmation step for a reviewed connector call. Live only:
   // history restores the reviewed call's row, never this envelope.
   adk_request_confirmation: {
@@ -851,7 +953,7 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     const id = typeof step?.id === "string" ? step.id.trim().slice(0, 128) : "";
     const toolName = typeof step?.tool === "string" ? step.tool : "";
     const rawStatus = step?.status;
-    if (!step || !id || !toolName) return [];
+    if (!step || !id || !toolName || toolName === FOLLOW_UP_TOOL_NAME) return [];
     const mcp = /^mcp_[0-9a-f]{40}$/.test(toolName);
     const presentation = workspaceToolPresentation(toolName, step.provider) ??
       SERVER_TOOL_PRESENTATION[toolName];
@@ -880,6 +982,7 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     if (rawStatus === "interrupted") message = "This step did not finish.";
     else if (toolName === "discover_workspace_tools" || toolName === "read_workspace_tool") message = "Connector access checked.";
     else if (toolName === "inspect_private_connectors") message = "One checked your connectors.";
+    else if (toolName === "probe_private_connector") message = "One checked that server.";
     else if (toolName === "read_selected_drive_search_result") {
       message = step.readStatus === "ok" ? "Drive file checked."
         : step.readStatus === "input_required" ? "Choose the file again."
@@ -901,6 +1004,14 @@ const CHAT_KEY_REFUSAL_MESSAGES: Record<string, string> = {
   CHAT_KEY_INVALID: "Unlock your vault, then try again. If this keeps happening, update or refresh the app.",
   CHAT_KEY_MISMATCH: "Your chat history did not open with this vault. Unlock your vault again, then try again.",
   CHAT_CONVERSATION_RETIRED: "This conversation is no longer available. Start a new chat.",
+};
+
+const MODEL_CAPACITY_MESSAGE = "One is temporarily at capacity. Please try again in a moment.";
+
+const AUTHORED_RETRYABLE_RUN_ERRORS: Record<string, string> = {
+  RESOURCE_EXHAUSTED: MODEL_CAPACITY_MESSAGE,
+  MODEL_UNAVAILABLE: "One's model service was briefly unavailable. Please try again.",
+  SERVER_RESTARTING: "One was interrupted because the service restarted. Please send that again.",
 };
 
 export function formatAgentChatErrorMessage(message: string, code?: string): string {
@@ -929,6 +1040,10 @@ export function formatAgentChatErrorMessage(message: string, code?: string): str
   if (code === "DATABASE_UNAVAILABLE" || code === "DATABASE_EXECUTION_ERROR") {
     return "One's conversation history is temporarily unavailable. Please try again.";
   }
+  // The server's own retryable terminal errors (hushh_mcp/one_adk/run_errors.py)
+  // carry a fixed, content-free message; keyed by code, never by that text.
+  const authoredRetryable = code ? AUTHORED_RETRYABLE_RUN_ERRORS[code] : undefined;
+  if (authoredRetryable) return authoredRetryable;
   // AG-UI may deliver provider failures as an untyped RunErrorEvent when the
   // ADK bridge cannot preserve the backend error code. Recognize only the
   // stable provider markers and keep the raw message out of the transcript.
@@ -938,7 +1053,7 @@ export function formatAgentChatErrorMessage(message: string, code?: string): str
     normalizedMessage.includes("TOO MANY REQUESTS") ||
     /\b429\b/.test(normalizedMessage)
   ) {
-    return "One is temporarily at capacity. Please try again in a moment.";
+    return MODEL_CAPACITY_MESSAGE;
   }
   // AG-UI RunErrorEvent.message may be derived from str(exception). Database
   // drivers append SQL and bound values there, so unknown runtime text is
@@ -1000,7 +1115,8 @@ async function sendWithChatKey(send: () => Promise<Response>): Promise<Response>
 
 export type AgentChatConsentContinuation = {
   bundleId: string;
-  outcome: "granted" | "denied" | "expired";
+  /** Sent as itself; the server admits it only when the ledger reads the same. */
+  outcome: "granted" | "partially_granted" | "denied" | "expired" | "revoked";
   sharedInformation?: string;
 };
 
@@ -1023,6 +1139,8 @@ export type PendingEmailDraftContext = {
 export async function streamAgentChat(input: {
   userId: string;
   message: string;
+  /** Stable id for this turn's user message, so a resend is recognised as the same one. */
+  messageId?: string;
   /** Pasted text sent as separate document parts, never folded into `message`. */
   attachments?: readonly AgentTextAttachment[];
   conversationId?: string | null;
@@ -1040,6 +1158,11 @@ export async function streamAgentChat(input: {
    * the server admits it only for an approved grant and keeps it for this turn.
    */
   consentContinuation?: AgentChatConsentContinuation;
+  /**
+   * The turn a "One has something for you" tap starts. Only the opaque feed
+   * row id is sent; the server admits it only for an item it actually pushed.
+   */
+  feedAttention?: { itemId: string };
   /** One saved Drive result, checked against the current owner and live Drive before use. */
   driveSearchSelection?: { jobId: string; position: number };
   pendingEmailDraft?: PendingEmailDraftContext | null;
@@ -1132,13 +1255,13 @@ export async function streamAgentChat(input: {
   const liveness = createAgentStreamLiveness(() => {
     loseStream();
     agent.abortRun();
-  });
+  }, () => handlers.onStreamHealth?.({ kind: "bytes" }));
   const agent = new HttpAgent({
     url: "/api/one/agent-chat",
     threadId,
     headers: { Authorization: `Bearer ${input.vaultOwnerToken}`, ...chatKeyHeaders },
     initialMessages: [{
-      id: crypto.randomUUID(),
+      id: input.messageId || crypto.randomUUID(),
       role: "user",
       content: buildAgentUserMessageContent(input.message, input.attachments),
     }],
@@ -1147,7 +1270,7 @@ export async function streamAgentChat(input: {
   let text = "";
   let failure: Error | null = null;
   let interrupted = false;
-  let intentionallyStopped = false;
+  let intentionallyStoppedAtConfirmation = false;
   // Per run: whether the server ended it (RUN_FINISHED or RUN_ERROR), and
   // whether this client gave up on its stream.
   let runTerminal = false;
@@ -1172,7 +1295,7 @@ export async function streamAgentChat(input: {
   // instead of watching a working state that nothing will ever settle. A run
   // this client stopped on purpose (confirmation, detach, cancel) is not lost.
   const loseStream = () => {
-    if (runTerminal || streamLost || failure || intentionallyStopped ||
+    if (runTerminal || streamLost || failure || intentionallyStoppedAtConfirmation ||
         detached || input.signal?.aborted) return;
     streamLost = true;
     failure = new AgentChatStreamLostError(threadId, startedAtMs);
@@ -1191,25 +1314,13 @@ export async function streamAgentChat(input: {
     if (!runTerminal) loseStream();
   };
   const stopAfterConfirmation = () => {
-    if (intentionallyStopped) return;
-    intentionallyStopped = true;
+    if (intentionallyStoppedAtConfirmation) return;
+    intentionallyStoppedAtConfirmation = true;
     interrupted = true;
     // A parked directive has no AG-UI interrupt to resume. The visible card
     // owns the next step, so leaving the model run alive would let it repeat
     // the action or append a second answer while the owner is deciding.
     handlers.onInterrupt?.({ conversationId: threadId });
-    finishTerminalRun();
-    agent.abortRun();
-  };
-  const stopAfterGmailInformationRequestDraft = () => {
-    if (intentionallyStopped) return;
-    intentionallyStopped = true;
-    interrupted = true;
-    // The model has already selected the source-bound tool and authored the
-    // editable reply. The browser has that body in the tool event and can
-    // immediately show the review card; a second model round only narrates
-    // that the draft exists.
-    handlers.onComplete?.({ conversationId: threadId });
     finishTerminalRun();
     agent.abortRun();
   };
@@ -1295,6 +1406,7 @@ export async function streamAgentChat(input: {
     onEvent: ({ event }) => {
       serverEvents += 1;
       if (event.type === "RUN_FINISHED" || event.type === "RUN_ERROR") serverTerminal = true;
+      if (isVisibleWorkEvent(String(event.type))) handlers.onStreamHealth?.({ kind: "activity" });
       if (event.type === "REASONING_MESSAGE_CONTENT") {
         const delta = (event as { delta?: unknown }).delta;
         const metadata = (event as { metadata?: unknown }).metadata;
@@ -1321,8 +1433,15 @@ export async function streamAgentChat(input: {
       text += event.delta;
       handlers.onToken?.(event.delta);
     },
+    onCustomEvent: ({ event }) => {
+      if (event.name !== QUEUED_INPUT_EVENT) return;
+      const notice = parseQueuedInputNotice(event.value);
+      if (notice) handlers.onQueuedInput?.(notice);
+    },
     onToolCallStartEvent: ({ event }) => {
       toolNames.set(event.toolCallId, event.toolCallName);
+      // Follow-ups are chips under the answer, not a step the person waits on.
+      if (event.toolCallName === FOLLOW_UP_TOOL_NAME) return;
       if (event.toolCallName === "adk_request_confirmation") confirmationArgs.set(event.toolCallId, "");
       handlers.onToolStart?.(toolPayload(event.toolCallId, event.toolCallName));
     },
@@ -1335,6 +1454,7 @@ export async function streamAgentChat(input: {
       else confirmationArgs.set(event.toolCallId, next);
     },
     onToolCallEndEvent: ({ event, toolCallName, toolCallArgs }) => {
+      if (toolCallName === FOLLOW_UP_TOOL_NAME) return;
       if (toolCallName === "adk_request_confirmation") {
         const streamed = confirmationArgs.get(event.toolCallId);
         confirmationArgs.delete(event.toolCallId);
@@ -1362,7 +1482,7 @@ export async function streamAgentChat(input: {
         toolCallName === "read_workspace_tool";
       const safeArgs = workspaceConnectorTool
         ? { provider: toolCallArgs.provider }
-        : toolCallName === "inspect_private_connectors"
+        : toolCallName === "inspect_private_connectors" || toolCallName === "probe_private_connector"
           ? {}
         : toolCallName === "ask_email_agent" || toolCallName === "ask_documents_agent" || toolCallName === "inspect_selected_drive_files" || toolCallName === "read_selected_drive_search_result"
           ? {}
@@ -1374,6 +1494,13 @@ export async function streamAgentChat(input: {
     },
     onToolCallResultEvent: ({ event }) => {
       const toolName = toolNames.get(event.toolCallId) || "";
+      if (toolName === FOLLOW_UP_TOOL_NAME) {
+        // Only the server's `shown` result renders; its text never enters
+        // generic tool payloads, diagnostics, or logs.
+        const suggestions = parseFollowUpSuggestions(event.content);
+        if (suggestions) handlers.onFollowUpSuggestions?.(suggestions);
+        return;
+      }
       if (/^mcp_[0-9a-f]{40}$/.test(toolName)) {
         // Connector content belongs to owner presentation/history, never the
         // generic debug payload or model-authored app-action parser. Approval
@@ -1418,6 +1545,19 @@ export async function streamAgentChat(input: {
             : "Drive file could not be checked.";
         payload.raw = { protocol: "ag-ui", toolName };
         handlers.onToolResult?.(payload);
+        return;
+      }
+      if (toolName === "probe_private_connector") {
+        // Server-authored names and descriptions reach only the parsed card,
+        // never the generic debug payload or the parked-directive parser.
+        const experience = parseAgentToolResultExperience(toolName, event.content);
+        const payload = toolPayload(event.toolCallId, toolName);
+        payload.execution = "server";
+        payload.message = experience?.type === "one.custom_connector_probe.v1" && experience.status !== "failed"
+          ? "One checked that server." : "That server could not be checked.";
+        payload.raw = { protocol: "ag-ui", toolName };
+        handlers.onToolResult?.(payload);
+        if (experience) handlers.onStructuredExperience?.(experience, event.toolCallId);
         return;
       }
       // External-read receipts are display-only, even if an invalid result attempts to
@@ -1481,13 +1621,6 @@ export async function streamAgentChat(input: {
       );
       payload.raw.result = event.content;
       handlers.onToolResult?.(payload);
-      if (
-        toolName === "open_gmail_information_request_reply" &&
-        parseRecord(event.content)?.status === "draft_opened"
-      ) {
-        stopAfterGmailInformationRequestDraft();
-        return;
-      }
       const pendingIds = parsePendingConsentRequestIds(toolName, event.content);
       if (pendingIds.length > 0) {
         handlers.onPendingConsentRequests?.(pendingIds);
@@ -1666,7 +1799,7 @@ export async function streamAgentChat(input: {
               return configuration;
             } : undefined,
             resume: async (approval, signal) => {
-              if (attempted || signal?.aborted || !mcpSessionCurrent() || Date.parse(reference.expiresAt) <= Date.now()) {
+              if (attempted || signal?.aborted || !mcpSessionCurrent() || Date.parse(reference.expiresAt) <= serverNow()) {
                 throw new Error("This connector review expired or was already used.");
               }
               if (approval && (
@@ -1723,11 +1856,13 @@ export async function streamAgentChat(input: {
     },
     onRunErrorEvent: ({ event }) => {
       runTerminal = true;
-      if (intentionallyStopped) {
+      if (intentionallyStoppedAtConfirmation) {
         finishTerminalRun();
         return;
       }
       const refusal = chatKeyRefusalCode(event.code || "");
+      const strain = classifyBackendStrain({ code: event.code });
+      if (strain) handlers.onStreamHealth?.({ kind: "backend_strain", strain });
       failure = refusal
         ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
         : new Error(formatAgentChatErrorMessage(event.message || "", event.code || undefined));
@@ -1738,12 +1873,16 @@ export async function streamAgentChat(input: {
       // Our own abort of a detached stream is not a failure of the turn, which
       // is still running server-side. A stream this client already gave up on
       // was reported once; its abort must not replace that with a second error.
-      if (intentionallyStopped || detached || streamLost) {
+      if (intentionallyStoppedAtConfirmation || detached || streamLost) {
         finishTerminalRun();
         return;
       }
       const refusal = chatKeyRefusalCode((error as Error & { payload?: unknown }).payload)
         ?? chatKeyRefusalCode(error.message || "");
+      // @ag-ui/client puts a refused request's HTTP status on the error.
+      const httpStatus = (error as Error & { status?: unknown }).status;
+      const strain = classifyBackendStrain({ httpStatus: typeof httpStatus === "number" ? httpStatus : null });
+      if (strain && !refusal) handlers.onStreamHealth?.({ kind: "backend_strain", strain });
       failure = refusal
         ? routeChatKeyRefusal(refusal, mcpVaultEpoch)
         : new Error(formatAgentChatErrorMessage(error.message || ""));
@@ -1783,6 +1922,7 @@ export async function streamAgentChat(input: {
         ...(input.pendingEmailDraft ? { pendingEmailDraft: input.pendingEmailDraft } : {}),
         screenContext: input.screenContext,
         ...(input.consentContinuation ? { consentContinuation: input.consentContinuation } : {}),
+        ...(input.feedAttention ? { feedAttention: { itemId: input.feedAttention.itemId } } : {}),
         // Only the native app asks the server for a "One replied" push when it
         // stops reading; a web tab's closed stream must not wake a phone.
         notifyOnDetach: Capacitor.isNativePlatform(),
@@ -1799,7 +1939,7 @@ export async function streamAgentChat(input: {
     input.signal?.removeEventListener("abort", abort);
     unregisterAttached();
   }
-  const leftTurn = detached && !serverTerminal && !intentionallyStopped;
+  const leftTurn = detached && !serverTerminal && !intentionallyStoppedAtConfirmation;
   // Watch only a turn the server had started (more than RUN_STARTED seen); a
   // detach before that has nothing to reattach to.
   if (leftTurn && serverEvents > 1) {
@@ -1892,6 +2032,60 @@ export async function streamAgentIntro(input: {
   return { conversationId: threadId, model: null, text };
 }
 
+/**
+ * The live-turn queue's transport. Owner-bound by the vault-owner token; no chat
+ * key, because nothing sealed is read. The text is sent once, to the running
+ * turn, and is never written to storage or logged on this device.
+ */
+export function createQueuedInputPorts(getVaultOwnerToken: () => string | null): QueuedInputPorts {
+  const call = async (path: string, init: RequestInit = {}): Promise<Record<string, unknown>> => {
+    const token = getVaultOwnerToken();
+    if (!token) throw new Error("Vault access expired.");
+    const response = await ApiService.apiFetch(path, {
+      ...init,
+      cache: "no-store",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+      },
+    });
+    if (!response.ok) throw new Error(await readError(response));
+    return ((await response.json()) ?? {}) as Record<string, unknown>;
+  };
+  const base = (conversationId: string) =>
+    `/api/one/agent-chat/runs/${encodeURIComponent(conversationId)}`;
+  return {
+    enqueue: async (conversationId, clientMessageId, text) =>
+      parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
+        method: "POST",
+        body: JSON.stringify({ client_message_id: clientMessageId, text }),
+      })).status),
+    withdraw: async (conversationId, clientMessageId) =>
+      parseQueuedInputStatus((await call(
+        `${base(conversationId)}/queue/${encodeURIComponent(clientMessageId)}`,
+        { method: "DELETE" },
+      )).status),
+    status: async (conversationId, clientMessageIds) => {
+      const query = clientMessageIds.map((id) => `ids=${encodeURIComponent(id)}`).join("&");
+      const payload = await call(`${base(conversationId)}/queue?${query}`);
+      const statuses: Record<string, QueuedInputStatus> = {};
+      for (const receipt of Array.isArray(payload.receipts) ? payload.receipts : []) {
+        const record = asRecord(receipt);
+        const id = record ? readString(record, "clientMessageId") : "";
+        if (id) statuses[id] = parseQueuedInputStatus(record?.status);
+      }
+      return statuses;
+    },
+    stop: async (conversationId) => {
+      const payload = await call(`${base(conversationId)}/stop`, { method: "POST" });
+      const returned = Array.isArray(payload.returned)
+        ? payload.returned.filter((id): id is string => typeof id === "string")
+        : [];
+      return { stopped: payload.stopped === true, returned };
+    },
+  };
+}
+
 export async function listAgentChatConversations(input: {
   userId: string;
   vaultOwnerToken: string;
@@ -1930,16 +2124,28 @@ export async function getAgentChatHistory(input: {
         specialist_read?: unknown;
         turnActivity?: { activityType?: string; content?: unknown } | null;
         attachments?: unknown;
+        consentBundleId?: unknown;
+        consentAccessEnded?: unknown;
+        consentAccess?: unknown;
       } | null;
     }>;
+    /** Shared requests whose access has ended: {bundle_id: "revoked" | "expired"}. */
+    consentAccessEnded?: unknown;
   };
   if (!Array.isArray(payload.messages)) return [];
+  const endedByBundle = payload.consentAccessEnded && typeof payload.consentAccessEnded === "object"
+    && !Array.isArray(payload.consentAccessEnded)
+    ? payload.consentAccessEnded as Record<string, unknown>
+    : {};
   return payload.messages
     .filter((message) => ["user", "assistant", "system", "tool"].includes(message.role))
     .map((message) => {
       const attachments = message.role === "user"
         ? parseStoredTextAttachments(message.metadata?.attachments)
         : [];
+      const consentAccess = message.role === "assistant"
+        ? parseConsentAccess(message.metadata?.consentAccess, endedByBundle)
+        : undefined;
       return {
         id: message.id,
         conversation_id: message.conversation_id,
@@ -1959,6 +2165,10 @@ export async function getAgentChatHistory(input: {
               ...(message.role === "assistant" && message.metadata.turnActivity
                 ? { turnActivity: message.metadata.turnActivity } : {}),
               ...(attachments.length ? { attachments } : {}),
+              ...(typeof message.metadata.consentBundleId === "string" && message.metadata.consentBundleId
+                ? { consentBundleId: message.metadata.consentBundleId } : {}),
+              ...(message.metadata.consentAccessEnded === true ? { consentAccessEnded: true } : {}),
+              ...(consentAccess ? { consentAccess } : {}),
               connectorRead:
                 message.role === "assistant"
                   ? parseConnectorReadReceipt(message.metadata.specialist_read)
@@ -2072,6 +2282,56 @@ export async function findInformationRequestConversation(input: {
   return typeof payload.conversationId === "string" ? payload.conversationId : null;
 }
 
+/** A receipt the server did not record, with the HTTP status when there was one. */
+export class InformationRequestReceiptError extends Error {
+  readonly status: number | null;
+  constructor(message: string, status: number | null) {
+    super(message);
+    this.name = "InformationRequestReceiptError";
+    this.status = status;
+  }
+}
+
+/**
+ * Whether recording the receipt again can help. The route is idempotent
+ * (`append_event_once` keyed by the source card, and the request's own
+ * idempotency key), so a repeat never makes a second receipt. A card sent
+ * while its turn is still streaming can race the session write (404); the
+ * network, a timeout, a rate limit or a server fault may pass. Any other
+ * refusal (403, 409 recipient mismatch, 422) is final.
+ */
+export function isRetryableReceiptStatus(status: number | null): boolean {
+  if (status === null) return true;
+  return status === 404 || status === 408 || status === 425 || status === 429 || status >= 500;
+}
+
+/** Waits between receipt attempts: three tries within about four seconds. */
+export const RECEIPT_RETRY_DELAYS_MS = [1_000, 3_000] as const;
+
+/**
+ * `recordAgentChatInformationRequest`, retried on the failures that can pass.
+ * The request itself already exists; this only makes the chat's history say so.
+ */
+export async function recordAgentChatInformationRequestWithRetry(
+  input: Parameters<typeof recordAgentChatInformationRequest>[0],
+  options: { delaysMs?: readonly number[]; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<AgentStructuredExperience> {
+  const delays = options.delaysMs ?? RECEIPT_RETRY_DELAYS_MS;
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await recordAgentChatInformationRequest(input);
+    } catch (error) {
+      const status = error instanceof InformationRequestReceiptError ? error.status : null;
+      const retryable = error instanceof InformationRequestReceiptError
+        ? isRetryableReceiptStatus(status)
+        : true;
+      if (!retryable || attempt >= delays.length) throw error;
+      await sleep(delays[attempt]!);
+    }
+  }
+}
+
 /** Record only a request locator; the Chat owner derives the history card from its ledger. */
 export async function recordAgentChatInformationRequest(input: {
   conversationId: string;
@@ -2096,14 +2356,14 @@ export async function recordAgentChatInformationRequest(input: {
       }),
     },
   ));
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw new InformationRequestReceiptError(await readError(response), response.status);
   const payload = (await response.json()) as { descriptor?: { activityType?: string; content?: unknown } };
   const descriptor = payload.descriptor;
   const experience = descriptor?.activityType === "one.information_request_review.v1"
     ? parseAgentActivityExperience(descriptor.activityType, descriptor.content) : null;
   if (!experience || experience.type !== "one.information_request_review.v1"
     || experience.phase !== "submitted" || experience.bundleId !== input.bundleId) {
-    throw new Error("The submitted request history could not be verified.");
+    throw new InformationRequestReceiptError("The submitted request history could not be verified.", response.status);
   }
   return experience;
 }

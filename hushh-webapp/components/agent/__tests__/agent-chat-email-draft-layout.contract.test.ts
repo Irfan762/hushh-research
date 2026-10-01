@@ -48,17 +48,7 @@ describe("Agent Chat email draft layout contract", () => {
     expect(source).toContain(
       "openGmailEmailDraftFromDirective(toolEvent, assistantMessageId);",
     );
-    expect(source).toContain("ownerSuppliedRequestedInformation");
-    expect(source).toContain("sourceBoundReply?.ownerSuppliedRequestedInformation");
-    expect(source).toContain("kycOwnerReplyContainsRequestedInformation: true");
-    expect(source).toContain("const explicitKycIdentitySaveRequest");
-    expect(source).toContain("!params.kycWorkflowActive &&");
-    expect(source).toContain("kycRequestedFieldLabels:");
-    expect(source).toContain("buildKycFollowUpPkmSource");
-    expect(source).toContain("forceRefresh: true");
-    expect(source).toContain("requireDecrypted: true");
-    expect(source).toContain("pkm_kyc_context_refresh_failed");
-    expect(source).not.toContain("so it hasn't drafted a reply");
+    expect(source).toContain("kycInformationSaveConfirmed:");
     expect(source).toContain("gmailInformationRequestWorkflowId:");
     expect(source).not.toContain(
       "current.filter((message) => message.id !== assistantMessageId)",
@@ -76,12 +66,9 @@ describe("Agent Chat email draft layout contract", () => {
       expect(from).toBeGreaterThan(-1);
       return source.slice(from, source.indexOf(end, from));
     };
-    // The composer, its textarea and its expand control stay usable.
+    // The composer and its textarea stay usable.
     expect(block("const canSend =", ";")).not.toContain("emailDraftOpen");
     expect(block('aria-label={composerExpanded ? "Expanded message One"', "placeholder=")).not.toContain(
-      "emailDraftOpen",
-    );
-    expect(block('aria-label={composerExpanded ? "Collapse message editor"', "onClick=")).not.toContain(
       "emailDraftOpen",
     );
     // Voice turns do not carry the draft, so voice still waits on the card.

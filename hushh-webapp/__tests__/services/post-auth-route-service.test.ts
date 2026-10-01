@@ -4,10 +4,25 @@ const {
   bootstrapStateMock,
   updatePreVaultStateMock,
   loadPendingOnboardingMock,
+  peekIdentityMock,
+  refreshIdentityMock,
 } = vi.hoisted(() => ({
   bootstrapStateMock: vi.fn(),
   updatePreVaultStateMock: vi.fn(),
   loadPendingOnboardingMock: vi.fn(),
+  peekIdentityMock: vi.fn(),
+  refreshIdentityMock: vi.fn(),
+}));
+
+vi.mock("@/lib/services/account-identity-service", () => ({
+  AccountIdentityService: {
+    peekCachedIdentity: peekIdentityMock,
+    refreshIdentityForSession: refreshIdentityMock,
+    hasVerifiedPhone: (identity: { phone_verified?: boolean } | null) => identity?.phone_verified === true,
+  },
+}));
+vi.mock("@/lib/services/auth-service", () => ({
+  AuthService: { getIdToken: vi.fn().mockResolvedValue("test-token") },
 }));
 
 vi.mock("@/lib/services/pre-vault-user-state-service", () => ({
@@ -38,6 +53,217 @@ import { OneSetupGateService } from "@/lib/services/one-setup-gate-service";
 import { PostAuthRouteService } from "@/lib/services/post-auth-route-service";
 
 describe("PostAuthRouteService", () => {
+  beforeEach(() => {
+    peekIdentityMock.mockReset();
+    refreshIdentityMock.mockReset();
+  });
+
+  it("initializes a missing fresh-account phone claim before requiring verification", async () => {
+    bootstrapStateMock.mockResolvedValue({ hasVault: false, setupCompleted: false, phoneVerified: null });
+    loadPendingOnboardingMock.mockResolvedValue(null);
+    refreshIdentityMock.mockResolvedValue({ phone_verified: false });
+    await expect(PostAuthRouteService.resolveAfterLogin({ userId: "new-user", idToken: "google-token", hostname: "one.hushh.ai" }))
+      .resolves.toBe(buildPhoneMandateRoute(ROUTES.ONE_SETUP_CONNECTIONS));
+    expect(refreshIdentityMock).toHaveBeenCalledWith("new-user", "google-token");
+  });
+
+  it("honors a newer verified identity over a negative bootstrap hint", async () => {
+    bootstrapStateMock.mockResolvedValue({ hasVault: false, setupCompleted: false, phoneVerified: false });
+    loadPendingOnboardingMock.mockResolvedValue(null);
+    peekIdentityMock.mockReturnValue({ data: { phone_verified: true } });
+    await expect(PostAuthRouteService.resolveAfterLogin({ userId: "user", hostname: "one.hushh.ai" }))
+      .resolves.toBe(ROUTES.ONE_SETUP_CONNECTIONS);
+    expect(refreshIdentityMock).not.toHaveBeenCalled();
+  });
+  it.each([
+    "/circle/join?code=23456789ABCD",
+    "/circle/join?invite=real_token",
+    "/one/location/invite/real_token",
+  ])(
+    "retains the invitation when reauthenticating during phone verification: %s",
+    async (destination) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: false,
+        setupCompleted: false,
+        phoneVerified: false,
+      });
+      const redirectPath = buildPhoneMandateRoute(destination);
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath,
+          hostname: "uat.one.hushh.ai",
+        }),
+      ).resolves.toBe(redirectPath);
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: false,
+        setupCompleted: false,
+        phoneVerified: true,
+      });
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath,
+        }),
+      ).resolves.toBe(buildOneSetupRoute({ returnTo: destination }));
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: true,
+        setupCompleted: true,
+        phoneVerified: true,
+      });
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath,
+        }),
+      ).resolves.toBe(destination);
+    },
+  );
+
+  it.each([
+    "https://evil.example/circle/join?code=23456789ABCD",
+    "//evil.example/circle/join",
+    "/register-phone?redirect=%2Fregister-phone",
+  ])(
+    "does not promote an unsafe or recursive phone return target: %s",
+    async (target) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: true,
+        setupCompleted: true,
+        phoneVerified: true,
+      });
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath: buildPhoneMandateRoute(target),
+        }),
+      ).resolves.toBe(ROUTES.HOME);
+    },
+  );
+  it.each([
+    "/one/setup",
+    "/one/setup/",
+    "/one/setup/connections",
+    "/one/setup/connections/",
+    "/one/setup/connections/index.html",
+  ])(
+    "preserves an unfinished setup invitation when a vault already exists: %s",
+    async (setupRoute) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: true,
+        setupCompleted: false,
+        phoneVerified: true,
+      });
+      const redirectPath =
+        setupRoute +
+        "?return_to=" +
+        encodeURIComponent("/circle/join?code=23456789ABCD");
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath,
+        }),
+      ).resolves.toBe(redirectPath);
+    },
+  );
+  it.each([
+    "/one/setup",
+    "/one/setup/",
+    "/one/setup/connections",
+    "/one/setup/connections/",
+    "/one/setup/connections/index.html",
+  ])(
+    "keeps invite context when reauthenticating inside %s",
+    async (setupRoute) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: false,
+        setupCompleted: false,
+        phoneVerified: true,
+      });
+      const destination = "/circle/join?code=23456789ABCD";
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "new-recipient",
+          redirectPath:
+            setupRoute + "?return_to=" + encodeURIComponent(destination),
+        }),
+      ).resolves.toBe(buildOneSetupRoute({ returnTo: destination }));
+    },
+  );
+  it.each([
+    "/circle/join?code=23456789ABCD",
+    "/circle/join/?invite=real_token",
+    "/one/location/invite/real_token",
+    "/one/connect?tab=circles&action=join-circle&code=23456789ABCD",
+    "/one/connect/?tab=circles&action=join-circle&code=23456789ABCD",
+  ])(
+    "preserves invitation intent through new-account setup: %s",
+    async (destination) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: false,
+        setupCompleted: false,
+        phoneVerified: true,
+      });
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "new-recipient",
+          redirectPath: destination,
+        }),
+      ).resolves.toBe(buildOneSetupRoute({ returnTo: destination }));
+    },
+  );
+
+  it.each(["/one/profile/security/", "/one/profile/security/index.html"])(
+    "retains a native token invitation during vault reauthentication: %s",
+    async (profileRoute) => {
+      bootstrapStateMock.mockResolvedValue({
+        hasVault: false,
+        setupCompleted: true,
+        phoneVerified: true,
+      });
+      const destination = "/circle/join?invite=real_token";
+      await expect(
+        PostAuthRouteService.resolveAfterLogin({
+          userId: "recipient",
+          redirectPath:
+            profileRoute +
+            "?unlock_vault=1&return_to=" +
+            encodeURIComponent(destination),
+        }),
+      ).resolves.toBe(buildProfileVaultRoute(destination));
+    },
+  );
+
+  it("keeps a Circle invitation through required phone verification", async () => {
+    bootstrapStateMock.mockResolvedValue({
+      hasVault: false,
+      setupCompleted: false,
+      phoneVerified: false,
+    });
+    const destination = "/circle/join?code=23456789ABCD";
+    await expect(
+      PostAuthRouteService.resolveAfterLogin({
+        userId: "new-recipient",
+        redirectPath: destination,
+        hostname: "uat.one.hushh.ai",
+      }),
+    ).resolves.toBe(buildPhoneMandateRoute(destination));
+  });
+
+  it("retains a Circle intent when setup is complete but the vault is absent", async () => {
+    bootstrapStateMock.mockResolvedValue({
+      hasVault: false,
+      setupCompleted: true,
+      phoneVerified: true,
+    });
+    const destination = "/circle/join?code=23456789ABCD";
+    await expect(
+      PostAuthRouteService.resolveAfterLogin({
+        userId: "recipient",
+        redirectPath: destination,
+      }),
+    ).resolves.toBe(buildProfileVaultRoute(destination));
+  });
   beforeEach(() => {
     vi.stubEnv("NEXT_PUBLIC_APP_ENV", "uat");
     bootstrapStateMock.mockReset();
@@ -333,6 +559,7 @@ describe("PostAuthRouteService", () => {
   it("routes no-vault users without a verified phone to the phone mandate before onboarding", async () => {
     bootstrapStateMock.mockResolvedValue({
       hasVault: false,
+      phoneVerified: false,
       setupCompleted: false,
       setupCompletedAt: null,
       setupSkipped: null,
@@ -347,7 +574,7 @@ describe("PostAuthRouteService", () => {
     ).resolves.toBe(buildPhoneMandateRoute(ROUTES.ONE_SETUP_CONNECTIONS));
   });
 
-  it("routes no-vault users without a verified phone to the phone mandate before home", async () => {
+  it("keeps completed no-vault accounts home without repeating phone onboarding", async () => {
     bootstrapStateMock.mockResolvedValue({
       hasVault: false,
       setupCompleted: true,
@@ -361,7 +588,7 @@ describe("PostAuthRouteService", () => {
         userId: "user_123",
         phoneNumber: "",
       }),
-    ).resolves.toBe(buildPhoneMandateRoute(ROUTES.HOME));
+    ).resolves.toBe(ROUTES.HOME);
   });
 
   it("does not route no-vault users with a verified phone through the phone mandate", async () => {
@@ -438,7 +665,7 @@ describe("PostAuthRouteService", () => {
     ).resolves.toBe(buildProfileVaultRoute(inviteRedirect));
   });
 
-  it("keeps the Invite to One token when a no-vault user must verify phone first", async () => {
+  it("keeps the Invite to One token for an established no-vault account", async () => {
     bootstrapStateMock.mockResolvedValue({
       hasVault: false,
       setupCompleted: true,
@@ -457,7 +684,7 @@ describe("PostAuthRouteService", () => {
         phoneVerified: false,
         hostname: "uat.one.hushh.ai",
       }),
-    ).resolves.toBe(buildPhoneMandateRoute(inviteRedirect));
+    ).resolves.toBe(buildProfileVaultRoute(inviteRedirect));
   });
 
   it("preserves Invite to One return targets that are already inside the profile vault handoff", async () => {
@@ -481,7 +708,7 @@ describe("PostAuthRouteService", () => {
     ).resolves.toBe(profileVaultRoute);
   });
 
-  it("routes Invite to One redirects through phone verification before claim", async () => {
+  it("keeps established vault accounts on the invitation without phone onboarding", async () => {
     bootstrapStateMock.mockResolvedValue({
       hasVault: true,
       setupCompleted: true,
@@ -498,7 +725,7 @@ describe("PostAuthRouteService", () => {
         phoneVerified: false,
         hostname: "uat.one.hushh.ai",
       }),
-    ).resolves.toBe(buildPhoneMandateRoute(inviteRedirect));
+    ).resolves.toBe(inviteRedirect);
   });
 
   it("skips the phone mandate for localhost development sessions", async () => {
@@ -650,4 +877,18 @@ describe("PostAuthRouteService", () => {
       ).resolves.toBe(ROUTES.ONE_SETUP_CONNECTIONS);
     });
   });
+  it.each([null, undefined])("does not interpret unknown phone status (%s) as a fresh-account challenge", async (phoneVerified) => {
+    bootstrapStateMock.mockResolvedValue({ hasVault: false, setupCompleted: false, phoneVerified });
+    loadPendingOnboardingMock.mockResolvedValue(null);
+    await expect(PostAuthRouteService.resolveAfterLogin({ userId: "user", hostname: "one.hushh.ai" }))
+      .rejects.toThrow("Unable to verify account onboarding");
+  });
+
+  it("does not interpret unknown vault ownership as a fresh account", async () => {
+    bootstrapStateMock.mockResolvedValue({ hasVault: null, setupCompleted: false, phoneVerified: false });
+    loadPendingOnboardingMock.mockResolvedValue(null);
+    await expect(PostAuthRouteService.resolveAfterLogin({ userId: "user", hostname: "one.hushh.ai" }))
+      .rejects.toThrow("Unable to verify account onboarding");
+  });
+
 });

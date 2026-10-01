@@ -33,6 +33,13 @@ def test_consent_routing_is_not_reauthored_by_runtime_instruction():
     assert 'ask_consent_agent with target "connections"' in authored
     assert "Do not hand consent questions to a specialist" in authored
     assert 'run_app_action("consent.cancel_request", {})' in authored
+    assert "Drive file and Drive question requests" in authored
+    assert "documentRequestsHasMore" in authored
+    assert "informationRequestsHasMore" in authored
+    assert "informationRequestsHaveUnknownPeople" in authored
+    assert "documentRequestsHaveUnknownPeople" in authored
+    assert "It lists information, Drive file and Drive question requests" in authored
+    assert "say X's status is unknown, never claim none" in authored
 
 
 def test_one_chat_receives_authored_cross_connector_semantic_policy():
@@ -152,30 +159,6 @@ def test_proposal_head_does_not_gain_search_or_intro_tools():
     ]
 
 
-def test_selected_gmail_information_request_head_has_only_its_source_bound_reply_tool():
-    assert agent_tree._one_roster_tools(tool_mode="gmail_information_request") == [
-        agent_tree.open_gmail_information_request_reply,
-    ]
-    agent = agent_tree.build_one_text_agent(
-        model="test-model", tool_mode="gmail_information_request"
-    )
-    assert agent.tools == [agent_tree.open_gmail_information_request_reply]
-
-
-def test_typed_chat_uses_the_browser_memory_packet_without_save_or_summary_tools():
-    typed_tools = agent_tree._one_roster_tools(
-        specialist_model="test-model", tool_mode="typed_chat"
-    )
-    full_tools = agent_tree._one_roster_tools(specialist_model="test-model")
-
-    assert agent_tree.read_my_pkm_domain_summary not in typed_tools
-    assert agent_tree.read_my_pkm_domain_summary in full_tools
-    # The legacy parked browser directive remains implemented for historical
-    # transcripts, but no current One roster can trigger a second model turn.
-    assert "add_to_pkm" not in {getattr(tool, "__name__", "") for tool in typed_tools}
-    assert "add_to_pkm" not in {getattr(tool, "__name__", "") for tool in full_tools}
-
-
 def test_drive_read_tools_are_only_in_admitted_chat_roster(monkeypatch):
     monkeypatch.setattr(agent_tree, "pod_mode", lambda: False)
     baseline = agent_tree._one_roster_tools(specialist_model="test-model")
@@ -202,3 +185,54 @@ def test_one_knows_a_question_needs_no_google_step():
     assert "Ask as a question gets an answer and file names only, with no Google step" in composed
     assert "carry on with the request they were making" in composed
     assert "The card sends only after a direct tap and fresh Google identity check" not in composed
+
+
+# One's root instruction is a contract, not prose: its priority order, its
+# memory honesty rule and its punctuation are what the founder reviewed.
+# Measured 2026-09-29 with Gemini countTokens: authored 5,833 -> 6,005 tokens,
+# composed (empty state) 12,133 -> 12,305 tokens.
+_COMPOSED_INSTRUCTION_CHAR_BUDGET = 60_000
+
+
+def test_one_states_its_operating_principles_in_priority_order():
+    authored = str(agent_tree._ONE_MANIFEST.system_instruction)
+    head = authored[: authored.index("# Who does what")]
+    assert "# Operating principles, in priority order" in head
+    assert "When two rules conflict, the earlier one wins." in head
+    order = [
+        head.index(f"{n}. {name}")
+        for n, name in enumerate(
+            [
+                "Consent and safety",
+                "Honesty about results",
+                "The person's request",
+                "Tool discipline",
+                "Voice",
+            ],
+            1,
+        )
+    ]
+    assert order == sorted(order)
+
+
+def test_one_never_claims_a_memory_save_the_device_has_not_confirmed():
+    authored = str(agent_tree._ONE_MANIFEST.system_instruction)
+    memory = authored[authored.index("# Memory") : authored.index("# Model choice")]
+    assert "whole_message=true" in memory
+    assert "Never say saved, queued, or submitted" in memory
+    assert "LATEST MEMORY SAVE RECEIPT" in memory
+    assert "claim nothing more" in memory
+    assert "never stored twice" in memory
+    assert "If the vault is locked" in memory
+    # The old rule sent every explicit save through "the exact passage", which
+    # made One copy a pasted document into a tool argument.
+    assert "with the exact passage to keep" not in authored
+
+
+def test_one_writes_without_em_dashes_and_within_its_prompt_budget():
+    authored = str(agent_tree._ONE_MANIFEST.system_instruction)
+    composed = agent_tree._one_runtime_instruction(SimpleNamespace(state={}))
+    assert "\u2014" not in composed and "\u2013" not in composed
+    assert "Never use an em dash or en dash as punctuation" in authored
+    assert "The company is Hussh" in authored
+    assert len(composed) <= _COMPOSED_INSTRUCTION_CHAR_BUDGET, len(composed)

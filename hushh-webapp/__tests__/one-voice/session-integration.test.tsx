@@ -34,6 +34,8 @@ const harness = vi.hoisted(() => ({
   releases: [] as string[],
   leases: 0,
   revoke: null as ((reason: string) => void) | null,
+  lifecycle: "active" as "active" | "background",
+  lifecycleListeners: new Set<() => void>(),
 }));
 
 vi.mock("next/navigation", () => ({ usePathname: () => harness.pathname }));
@@ -70,6 +72,11 @@ vi.mock("@/lib/navigation/profile-pane", () => ({
 }));
 vi.mock("@/lib/interaction/interaction-intent-coordinator", () => ({
   appInteractionCoordinator: {
+    getLifecycleSnapshot: () => ({ state: harness.lifecycle }),
+    subscribeLifecycle: (listener: () => void) => {
+      harness.lifecycleListeners.add(listener);
+      return () => harness.lifecycleListeners.delete(listener);
+    },
     acquireVoiceLease: ({
       owner,
       onRevoked,
@@ -195,9 +202,6 @@ function mount(
         }),
         getFirebaseIdToken: async () => "firebase-proof",
         afterPaint: (callback) => callback(),
-        // Long enough that a busy runner cannot expire it between a pause
-        // and the tap that resumes; short enough to observe the graced close.
-        backgroundGraceMs: 400,
         ...(options.clientStepTimeoutMs === null
           ? {}
           : { clientStepTimeoutMs: options.clientStepTimeoutMs ?? 40 }),
@@ -226,6 +230,8 @@ beforeEach(() => {
   harness.releases = [];
   harness.leases = 0;
   harness.revoke = null;
+  harness.lifecycle = "active";
+  harness.lifecycleListeners.clear();
   harness.navigate.mockClear();
   harness.pathname = "/one/location";
   Object.defineProperty(document, "hidden", {
@@ -801,15 +807,13 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     expect(auths[1]!.resume).toBe(false);
   });
 
-  it("backgrounding pauses: mic off, playback flushed, turn cancelled, then a graced close; a tap resumes", async () => {
+  it("backgrounding pauses capture and foreground resumes the same socket", async () => {
     const mounted = await startSession(mount());
     const { server, capture, playback } = mounted;
-    Object.defineProperty(document, "hidden", {
-      configurable: true,
-      value: true,
-    });
     await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
+      harness.lifecycle = "background";
+      for (const listener of harness.lifecycleListeners) listener();
+      harness.revoke?.("app_backgrounded");
     });
     expect(controller!.state.phase).toBe("paused");
     expect(capture.stopped).toBe(1);
@@ -817,35 +821,14 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     expect(server.frames("cancel_action")).toEqual([
       { type: "cancel_action", pending_action_id: null, scope: "turn" },
     ]);
-    // Coming back does not turn the mic on by itself.
-    Object.defineProperty(document, "hidden", {
-      configurable: true,
-      value: false,
-    });
     await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
+      harness.lifecycle = "active";
+      for (const listener of harness.lifecycleListeners) listener();
     });
-    expect(controller!.state.phase).toBe("paused");
-    expect(capture.started).toBe(1);
-    // A tap resumes the same session before the grace runs out.
-    await act(async () => {
-      await controller!.start();
-    });
+    await waitFor(() => expect(controller!.state.phase).toBe("listening"));
     expect(capture.started).toBe(2);
-    expect(controller!.state.phase).toBe("listening");
     expect(server.sockets).toHaveLength(1);
-    // Pause again and let the grace expire.
-    Object.defineProperty(document, "hidden", {
-      configurable: true,
-      value: true,
-    });
-    await act(async () => {
-      document.dispatchEvent(new Event("visibilitychange"));
-    });
-    await waitFor(() => expect(controller!.state.phase).toBe("idle"), {
-      timeout: 2_000,
-    });
-    expect(server.sequence().at(-1)).toBe("end");
+    expect(server.frames("auth")).toHaveLength(1);
     expect(controller!.state.error).toBeNull();
   });
 
@@ -874,15 +857,56 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     await act(async () => {
       controller!.sendText("share my location with Priya");
     });
-    expect(server.frames("text")).toEqual([
+    expect(server.frames("text")).toMatchObject([
       { type: "text", text: "share my location with Priya" },
     ]);
+    expect(server.frames("text")[0]?.request_id).toEqual(expect.any(String));
     const before = server.frames("audio").length;
     await act(async () => {
       playback.speak(true);
       capture.frame?.(new Uint8Array(640));
     });
     expect(server.frames("audio")).toHaveLength(before);
+  });
+
+  it("never plays an old mail narration after a newer typed question is accepted", async () => {
+    const { server, playback } = await startSession(mount());
+    await act(async () => {
+      server.push({
+        type: "transcript.input",
+        text: "Is Mail connected?",
+        final: true,
+        turn_id: "mail-turn",
+      });
+      controller!.sendText("What is my name?");
+    });
+    const requestId = server.frames("text")[0]?.request_id;
+    expect(requestId).toEqual(expect.any(String));
+    await act(async () => {
+      server.push({
+        type: "transcript.input",
+        text: "What is my name?",
+        final: true,
+        turn_id: "profile-turn",
+        request_id: requestId,
+      });
+      server.push({
+        type: "audio",
+        data: btoa("old"),
+        mime_type: "audio/pcm;rate=24000",
+        turn_id: "separate-narration-id",
+        origin_turn_id: "mail-turn",
+        narration: true,
+      });
+      server.push({
+        type: "audio",
+        data: btoa("new"),
+        mime_type: "audio/pcm;rate=24000",
+        turn_id: "profile-turn",
+        origin_turn_id: "profile-turn",
+      });
+    });
+    expect(playback.enqueued.map((row) => row.turnId)).toEqual(["profile-turn"]);
   });
 
   describe("client-step budget from the server's timeout_s", () => {
@@ -1050,5 +1074,92 @@ describe("VoiceSessionProvider with a scripted relay", () => {
       status: "on",
     });
     expect(controller!.state.phase).toBe("complete");
+  });
+});
+
+describe("the microphone while a narration plays", () => {
+  const CHUNK = "AAECAwQFBgc=";
+
+  const narrationFrame = (narration: boolean) =>
+    ({
+      type: "audio",
+      data: CHUNK,
+      mime_type: "audio/pcm;rate=24000",
+      turn_id: narration ? "narration-1" : "model-turn-1",
+      ...(narration ? { narration: true } : {}),
+    }) as never;
+
+  const micFramesSent = (mounted: Mounted) =>
+    mounted.server.sent.filter((frame) => frame.type === "audio").length;
+
+  async function speakMic(mounted: Mounted) {
+    await act(async () => {
+      mounted.capture.frame?.(new Uint8Array([1, 2, 3, 4]));
+    });
+  }
+
+  it("drops microphone frames while narration plays, even with echo cancellation", async () => {
+    const mounted = await startSession(mount());
+    // The device class that matters. `decideHalfDuplex` returns false here, so
+    // `session.gate` is null and the pre-existing guard is inert -- which is why
+    // the narration gate cannot be built on it.
+    expect(mounted.capture.echoCancellation).toBe(true);
+    expect(controller!.state.halfDuplex).toBe(false);
+
+    await speakMic(mounted);
+    const beforeNarration = micFramesSent(mounted);
+    expect(beforeNarration).toBeGreaterThan(0);
+
+    await act(async () => mounted.server.push(narrationFrame(true)));
+    await speakMic(mounted);
+    await speakMic(mounted);
+
+    // Nothing left the device. Were these queued instead of dropped, they would
+    // replay the narration into the model the moment the gate lifted, which is
+    // the leak the gate exists to close.
+    expect(micFramesSent(mounted)).toBe(beforeNarration);
+    expect(mounted.playback.enqueued.at(-1)?.turnId).toBe("narration-1");
+
+    // The player reports silence once the queue has drained, tail included.
+    await act(async () => mounted.playback.speak(false));
+    await speakMic(mounted);
+    expect(micFramesSent(mounted)).toBe(beforeNarration + 1);
+
+    mounted.unmount();
+  });
+
+  it("leaves the microphone open for the model's own speech", async () => {
+    const mounted = await startSession(mount());
+    await speakMic(mounted);
+    const before = micFramesSent(mounted);
+
+    await act(async () => mounted.server.push(narrationFrame(false)));
+    await speakMic(mounted);
+
+    // Ordinary model audio is already in the model's context, so its echo carries
+    // nothing new. Closing the mic for it would cost barge-in for no gain.
+    expect(micFramesSent(mounted)).toBe(before + 1);
+    mounted.unmount();
+  });
+
+  it("local Stop reopens the microphone without waiting for a drain", async () => {
+    const mounted = await startSession(mount());
+    await speakMic(mounted);
+    const before = micFramesSent(mounted);
+
+    await act(async () => mounted.server.push(narrationFrame(true)));
+    await speakMic(mounted);
+    expect(micFramesSent(mounted)).toBe(before);
+
+    // Stop cuts playback, so the drain callback that would otherwise reopen the
+    // mic never fires. Barge-in on the model's turn cannot reach a narration --
+    // its unseen turn id outranks the model's in the player's fence -- so this
+    // path is the one that has to clear the gate itself.
+    await act(async () => controller!.interrupt());
+    expect(mounted.playback.flushes).toBeGreaterThan(0);
+
+    await speakMic(mounted);
+    expect(micFramesSent(mounted)).toBe(before + 1);
+    mounted.unmount();
   });
 });

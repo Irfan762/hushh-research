@@ -8,7 +8,6 @@ from google.adk.events import Event, EventActions
 from google.adk.sessions import Session
 from google.genai import types
 
-from hushh_mcp.one_adk.agent_tree import STATE_PKM_CONTEXT
 from hushh_mcp.one_adk.encrypted_session_service import EncryptedAdkSessionService
 from hushh_mcp.one_adk.external_read_boundary import (
     STATE_EXECUTION_SURFACE,
@@ -182,29 +181,6 @@ def test_selected_gmail_reply_context_and_draft_body_are_not_durable():
         "content_redacted": True
     }
     assert session.events[0].content.parts[0].function_call.args == {"body": "PRIVATE_DRAFT_BODY"}
-
-
-def test_turn_pkm_context_reference_is_not_durable():
-    reference = "one_secret_ref:private-pkm-context"
-    session = Session(
-        id="thread",
-        app_name="one",
-        user_id="owner",
-        state={STATE_PKM_CONTEXT: reference, "other": "preserved"},
-        events=[
-            Event(
-                author="one",
-                actions=EventActions(state_delta={STATE_PKM_CONTEXT: reference}),
-            )
-        ],
-    )
-
-    projected = durable_external_read_projection(session)
-
-    assert STATE_PKM_CONTEXT not in projected.model_dump_json()
-    assert reference not in projected.model_dump_json()
-    assert projected.state["other"] == "preserved"
-    assert session.state[STATE_PKM_CONTEXT] == reference
 
 
 async def test_compare_and_swap_retry_preserves_live_guard_without_persisting_it(monkeypatch):

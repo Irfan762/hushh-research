@@ -10,18 +10,19 @@
     "cache_reference": "../docs/reference/architecture/cache-coherence.md"
   },
   "summary": {
-    "total_screens": 142,
-    "physical_page_count": 141,
-    "route_contract_count": 142,
-    "surface_map_count": 142,
+    "total_screens": 141,
+    "physical_page_count": 140,
+    "route_contract_count": 141,
+    "surface_map_count": 141,
     "class_counts": {
       "public/auth-split": 1,
-      "redirect/alias": 47,
-      "vault-backed": 54,
-      "hidden flow": 20,
+      "redirect/alias": 46,
+      "vault-backed": 53,
+      "hidden flow": 21,
       "auth/pre-vault": 5,
       "RIA/provider": 8,
-      "PKM-secure": 6,
+      "realtime/SSE": 1,
+      "PKM-secure": 5,
       "public/static": 1
     },
     "pages_missing_route_contract": [],
@@ -257,26 +258,29 @@
     {
       "route": "/circle/join",
       "page_file": "app/circle/join/page.tsx",
-      "route_contract_mode": "redirect",
-      "screen_class": "redirect/alias",
-      "cache_policy": "none",
+      "route_contract_mode": "hidden",
+      "screen_class": "hidden flow",
+      "cache_policy": "memory-only",
       "cache_keys": [],
       "resource_classes": [
         "unknown"
       ],
       "sensitivity_class": "app-metadata",
-      "ttl_class": "none",
-      "warm_source": "none",
-      "refresh_trigger": "none",
-      "mutation_invalidator": "none",
+      "ttl_class": "CACHE_TTL.MEDIUM",
+      "warm_source": "Route-local resource loader",
+      "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+      "mutation_invalidator": "CacheSyncService user/session invalidation",
       "best_available_ux_path": [
-        "static render"
+        "fresh memory",
+        "cold loader"
       ],
       "readiness_kpis": [
-        "route_readiness_completed"
+        "route_readiness_completed",
+        "cache_resource_resolved",
+        "route_refresh_completed"
       ],
       "realtime_policy": "not realtime",
-      "reviewer_fixture": "/circle/join",
+      "reviewer_fixture": "/circle/join?code=native-invitation-fixture",
       "surface_map_present": true,
       "route_contract_present": true,
       "evidence": {
@@ -288,11 +292,13 @@
         "resource_wrapper": false,
         "direct_fetch": false,
         "api_service": false,
-        "hushh_loader": false,
+        "hushh_loader": true,
         "sse_or_streaming": false,
-        "native_beacon": false
+        "native_beacon": true
       },
-      "findings": []
+      "findings": [
+        "no local cache primitive detected in page/contract source"
+      ]
     },
     {
       "route": "/connected-systems",
@@ -1498,27 +1504,29 @@
       "route": "/one/connect",
       "page_file": "app/one/connect/page.tsx",
       "route_contract_mode": "standard",
-      "screen_class": "vault-backed",
-      "cache_policy": "memory-only",
+      "screen_class": "realtime/SSE",
+      "cache_policy": "memory-only+sse-background",
       "cache_keys": [],
       "resource_classes": [
-        "unknown"
+        "realtime_stream"
       ],
       "sensitivity_class": "app-metadata",
-      "ttl_class": "CACHE_TTL.MEDIUM",
+      "ttl_class": "CACHE_TTL.SHORT with active stream patching",
       "warm_source": "Route-local resource loader",
-      "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+      "refresh_trigger": "SSE stream patch plus stale-aware background refresh",
       "mutation_invalidator": "CacheSyncService user/session invalidation",
       "best_available_ux_path": [
         "fresh memory",
-        "cold loader"
+        "background refresh",
+        "cold loader when missing"
       ],
       "readiness_kpis": [
         "route_readiness_completed",
         "cache_resource_resolved",
-        "route_refresh_completed"
+        "route_refresh_completed",
+        "stream patch latency through route_refresh_completed"
       ],
-      "realtime_policy": "not realtime",
+      "realtime_policy": "cached shell/data renders first; stream patches active view state and cache through service-layer adapters only",
       "reviewer_fixture": "/login?redirect=%2Fconnect",
       "surface_map_present": true,
       "route_contract_present": true,
@@ -1532,7 +1540,7 @@
         "direct_fetch": false,
         "api_service": false,
         "hushh_loader": false,
-        "sse_or_streaming": false,
+        "sse_or_streaming": true,
         "native_beacon": false
       },
       "findings": []
@@ -2585,56 +2593,6 @@
       "findings": [
         "no local cache primitive detected in page/contract source"
       ]
-    },
-    {
-      "route": "/one/kyc",
-      "page_file": "app/one/kyc/page.tsx",
-      "route_contract_mode": "standard",
-      "screen_class": "PKM-secure",
-      "cache_policy": "secure-resource",
-      "cache_keys": [
-        "PKM_DOMAIN_RESOURCE",
-        "KYC workflow client state"
-      ],
-      "resource_classes": [
-        "pkm_projection",
-        "consent_list"
-      ],
-      "sensitivity_class": "encrypted-user-data",
-      "ttl_class": "CACHE_TTL.SESSION for metadata; secure resource revision controls payload freshness",
-      "warm_source": "Vault unlock plus secure resource cache",
-      "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
-      "mutation_invalidator": "CacheSyncService PKM/portfolio/write-through hooks",
-      "best_available_ux_path": [
-        "fresh memory",
-        "secure device stale render",
-        "background refresh",
-        "cold loader when locked or missing"
-      ],
-      "readiness_kpis": [
-        "route_readiness_completed",
-        "cache_resource_resolved",
-        "route_refresh_completed",
-        "warmup_completed"
-      ],
-      "realtime_policy": "not realtime",
-      "reviewer_fixture": "/login?redirect=%2Fone%2Fkyc",
-      "surface_map_present": true,
-      "route_contract_present": true,
-      "evidence": {
-        "cache_service": false,
-        "use_stale_resource": false,
-        "device_cache": false,
-        "secure_cache": false,
-        "cache_sync": false,
-        "resource_wrapper": true,
-        "direct_fetch": false,
-        "api_service": false,
-        "hushh_loader": false,
-        "sse_or_streaming": false,
-        "native_beacon": true
-      },
-      "findings": []
     },
     {
       "route": "/one/location",
@@ -6377,5 +6335,5 @@
       ]
     }
   ],
-  "content_sha256": "124db450ae71d0a93e6c53afbb7ea50994f9b709eaf5055ab84841f5ffc05af7"
+  "content_sha256": "46ea93bb3480a4cdd5fb9cbd090d3b2dc7410fcda5d371954ea5faa40da0f8d1"
 }

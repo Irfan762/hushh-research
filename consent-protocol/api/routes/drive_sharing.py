@@ -152,6 +152,7 @@ class CreateRequest(StrictRequest):
     ownerPersonRef: UUID | None = None
     clientRequestId: UUID
     purpose: ShareRequestPurpose
+    timeZone: str | None = Field(default=None, min_length=1, max_length=64)
 
     @model_validator(mode="after")
     def one_owner_target(self):
@@ -238,6 +239,7 @@ class RequestSearchStart(StrictRequest):
 
 class RequestBulkPrepare(StrictRequest):
     excludedPositions: list[int] = Field(default_factory=list, max_length=10000)
+    positions: list[int] | None = Field(default=None, min_length=1, max_length=25)
 
 
 class ApprovalRequest(DecisionRequest):
@@ -321,6 +323,10 @@ def _error(error):
         "bulk_not_found": (404, "This share review is unavailable."),
         "bulk_expired": (410, "This share review expired. Start a new one."),
         "bulk_conflict": (409, "This share review changed. Refresh it."),
+        "source_not_shareable": (
+            409,
+            "Google Drive cannot share one of these files. Refresh the results.",
+        ),
         "bulk_changed": (409, "This share review changed. Refresh it."),
         "search_in_progress": (409, "Wait for the complete Drive search before sharing all files."),
         "search_incomplete": (409, "This Drive search is incomplete. Narrow or restart it."),
@@ -397,6 +403,11 @@ async def _person_target(owner: Owner, person_ref: UUID) -> str:
 async def create_request(
     body: CreateRequest, recipient=Depends(_recipient), owner: Owner = Depends(_owner)
 ):
+    if body.timeZone is not None:
+        try:
+            ZoneInfo(body.timeZone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise _error(DriveSharingError("invalid_argument")) from None
     owner_user_id = await _owner_target(owner, body)
     return await _call(
         "create",
@@ -405,6 +416,7 @@ async def create_request(
         owner_user_id=owner_user_id,
         client_request_id=str(body.clientRequestId),
         purpose=body.purpose,
+        request_time_zone=body.timeZone,
     )
 
 
@@ -500,6 +512,7 @@ async def prepare_request_bulk(
         factory=_request_bulk_service,
         request_id=str(request_id),
         excluded_positions=body.excludedPositions,
+        positions=body.positions,
     )
 
 
@@ -1162,6 +1175,22 @@ async def approve_bulk_share(
 ):
     return await _call(
         "approve",
+        owner=owner,
+        factory=_bulk_share_service,
+        share_id=str(share_id),
+        revision=body.revision,
+        review_digest=body.reviewDigest,
+    )
+
+
+@router.post("/bulk/{share_id}/retry", status_code=202)
+async def retry_bulk_share(
+    share_id: UUID,
+    body: BulkShareApprovalRequest,
+    owner: Owner = Depends(_owner),
+):
+    return await _call(
+        "retry",
         owner=owner,
         factory=_bulk_share_service,
         share_id=str(share_id),

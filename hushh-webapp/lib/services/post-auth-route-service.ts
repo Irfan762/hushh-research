@@ -1,5 +1,7 @@
 "use client";
 
+import { AccountIdentityService } from "@/lib/services/account-identity-service";
+import { AuthService } from "@/lib/services/auth-service";
 import { OneSetupGateService } from "@/lib/services/one-setup-gate-service";
 import { PreVaultOnboardingService } from "@/lib/services/pre-vault-onboarding-service";
 import { PreVaultUserStateService } from "@/lib/services/pre-vault-user-state-service";
@@ -8,7 +10,10 @@ import {
   buildPhoneMandateRoute,
   buildProfileVaultRoute,
   isFirebaseSessionOnlyRoute,
+  isInvitationPreviewRoute,
+  isOneSetupSurfaceRoute,
   normalizeInternalRouteHref,
+  normalizeStaticExportPathname,
   ROUTES,
 } from "@/lib/navigation/routes";
 import { shouldRequirePhoneMandate } from "@/lib/services/phone-mandate-service";
@@ -28,18 +33,24 @@ const NO_VAULT_DEFAULT_ROUTE = ROUTES.HOME;
 
 function normalizeRedirectPath(path: string | null | undefined): string {
   if (!path || !path.trim()) return DEFAULT_HOME_ROUTE;
-  // `/` is the dual-mode entry route: anonymous visitors see the welcome
-  // surface, while authenticated users enter the private-agent Chat workspace.
+  // `/` is the dual-mode entry route: invited guests see the introduction,
+  // while authenticated users enter the private-agent Chat workspace.
   // Organic authentication always enters that canonical home; explicit
   // internal deep links remain untouched.
   if (path === ROUTES.HOME) return DEFAULT_HOME_ROUTE;
-  if (
-    path === ROUTES.PHONE_MANDATE ||
-    path.startsWith(`${ROUTES.PHONE_MANDATE}?`)
-  ) {
-    return DEFAULT_HOME_ROUTE;
+  const safePath = normalizeInternalRouteHref(path);
+  if (!safePath) return DEFAULT_HOME_ROUTE;
+  const url = new URL(safePath, "https://one.local");
+  if (normalizeStaticExportPathname(url.pathname) === ROUTES.PHONE_MANDATE) {
+    // A session can expire during phone verification. Its login handoff wraps
+    // the invite in `redirect`; unwrap only a safe invitation target and let
+    // the normal phone/setup/vault rules re-evaluate the restored account.
+    const target = normalizeInternalRouteHref(url.searchParams.get("redirect"));
+    return target && inviteRedirectTargetFor(target)
+      ? target
+      : DEFAULT_HOME_ROUTE;
   }
-  return path;
+  return safePath;
 }
 
 function hasCompletePreVaultAnswers(
@@ -53,7 +64,12 @@ function hasCompletePreVaultAnswers(
 }
 
 function isOneLocationInviteRedirect(path: string): boolean {
+  const url = new URL(path, "https://one.local");
+  const pathname = normalizeStaticExportPathname(url.pathname);
   return (
+    isInvitationPreviewRoute(pathname) ||
+    (pathname === ROUTES.CONNECT &&
+      url.searchParams.get("action") === "join-circle") ||
     path === ROUTES.ONE_LOCATION ||
     path.startsWith(`${ROUTES.ONE_LOCATION}?`) ||
     path.startsWith(`${ROUTES.ONE_LOCATION}/invite/`)
@@ -64,13 +80,17 @@ function inviteRedirectTargetFor(path: string): string | null {
   if (isOneLocationInviteRedirect(path)) return path;
   try {
     const url = new URL(path, "https://one.local");
+    const pathname = normalizeStaticExportPathname(url.pathname);
     if (
-      url.pathname !== ROUTES.PROFILE &&
-      url.pathname !== ROUTES.PROFILE_SECURITY
+      pathname !== ROUTES.PROFILE &&
+      pathname !== ROUTES.PROFILE_SECURITY &&
+      !isOneSetupSurfaceRoute(pathname)
     ) {
       return null;
     }
-    const returnTo = url.searchParams.get("return_to");
+    const returnTo = normalizeInternalRouteHref(
+      url.searchParams.get("return_to"),
+    );
     return returnTo && isOneLocationInviteRedirect(returnTo) ? returnTo : null;
   } catch {
     return null;
@@ -131,6 +151,9 @@ export class PostAuthRouteService {
     );
     const fallbackRoute = safeExplicitRedirect ?? DEFAULT_HOME_ROUTE;
     const fallbackUrl = new URL(fallbackRoute, "https://one.local");
+    const fallbackPathname = normalizeStaticExportPathname(
+      fallbackUrl.pathname,
+    );
     if (
       hasExplicitRedirect &&
       safeExplicitRedirect &&
@@ -138,7 +161,7 @@ export class PostAuthRouteService {
     ) {
       return safeExplicitRedirect;
     }
-    const isSetupHubRedirect = fallbackUrl.pathname === ROUTES.ONE_SETUP;
+    const isSetupHubRedirect = fallbackPathname === ROUTES.ONE_SETUP;
     const setupReturnTo = normalizeInternalRouteHref(
       fallbackUrl.searchParams.get("return_to"),
     );
@@ -148,16 +171,22 @@ export class PostAuthRouteService {
     );
     // Native auth bridges can restore a valid Firebase session before their
     // local user object has hydrated `phoneNumber`. A positive backend claim
-    // is authoritative for this login decision; an unknown/false claim still
-    // follows the normal fail-closed phone mandate.
-    const phoneVerified =
-      params.phoneVerified === true || remoteState.phoneVerified === true;
+    // is authoritative for this login decision. Unknown claims must not be
+    // turned into a new-account phone challenge.
+    const cachedPhoneVerified = AccountIdentityService.hasVerifiedPhone(
+      AccountIdentityService.peekCachedIdentity(params.userId)?.data,
+    );
+    let phoneVerified = params.phoneVerified === true ||
+      remoteState.phoneVerified === true || cachedPhoneVerified;
     if (remoteState.hasVault) {
       const setupResolved =
         PreVaultUserStateService.isSetupResolved(remoteState);
-      const inviteRedirectTarget = inviteRedirectTargetFor(fallbackRoute);
       if (remoteState.setupCompleted === false && !setupResolved) {
-        if (hasExplicitRedirect && isSetupHubRedirect) return fallbackRoute;
+        if (
+          hasExplicitRedirect &&
+          (isSetupHubRedirect || fallbackPathname === PRE_VAULT_ROUTE)
+        )
+          return fallbackRoute;
         return hasExplicitRedirect && fallbackRoute !== PRE_VAULT_ROUTE
           ? buildOneSetupRoute({ returnTo: fallbackRoute })
           : PRE_VAULT_ROUTE;
@@ -171,20 +200,6 @@ export class PostAuthRouteService {
         setupResolved
       ) {
         return setupReturnTo || DEFAULT_HOME_ROUTE;
-      }
-      if (
-        inviteRedirectTarget &&
-        shouldRequirePhoneMandate({
-          phoneNumber: params.phoneNumber,
-          phoneVerified,
-          hasVault: true,
-          hostname:
-            params.hostname ??
-            (typeof window === "undefined" ? null : window.location.hostname),
-          pathname: fallbackRoute,
-        })
-      ) {
-        return buildPhoneMandateRoute(fallbackRoute);
       }
       if (setupResolved && fallbackRoute === DEFAULT_HOME_ROUTE) {
         return PostAuthRouteService.applyFirstRunSetupGate({
@@ -233,22 +248,58 @@ export class PostAuthRouteService {
     }
 
     const inviteRedirectTarget = inviteRedirectTargetFor(fallbackRoute);
+    const invitePathname = inviteRedirectTarget
+      ? normalizeStaticExportPathname(
+          new URL(inviteRedirectTarget, "https://one.local").pathname,
+        )
+      : null;
+    const invitationNeedsSetup = Boolean(
+      invitePathname &&
+      (isInvitationPreviewRoute(invitePathname) ||
+        invitePathname === ROUTES.CONNECT),
+    );
     const resolvedNoVaultRoute = inviteRedirectTarget
-      ? buildProfileVaultRoute(inviteRedirectTarget)
+      ? invitationNeedsSetup && !setupResolved
+        ? buildOneSetupRoute({ returnTo: inviteRedirectTarget })
+        : buildProfileVaultRoute(inviteRedirectTarget)
       : setupResolved
         ? NO_VAULT_DEFAULT_ROUTE
         : PRE_VAULT_ROUTE;
+
+    // Brand-new Google accounts may not have an identity shadow yet. Resolve
+    // that missing claim through the existing identity refresh before deciding;
+    // retrying bootstrap alone would keep returning unknown indefinitely.
+    let phoneStatusKnown = remoteState.phoneVerified != null || params.phoneVerified != null;
+    if (!phoneStatusKnown && shouldRequirePhoneMandate({
+      phoneNumber: params.phoneNumber,
+      phoneVerified,
+      hasVault: remoteState.hasVault,
+      setupResolved,
+      hostname: params.hostname ?? (typeof window === "undefined" ? null : window.location.hostname),
+    })) {
+      const idToken = params.idToken || await AuthService.getIdToken();
+      const identity = idToken
+        ? await AccountIdentityService.refreshIdentityForSession(params.userId, idToken)
+        : null;
+      phoneStatusKnown = typeof identity?.phone_verified === "boolean";
+      phoneVerified = AccountIdentityService.hasVerifiedPhone(identity);
+    }
 
     if (
       shouldRequirePhoneMandate({
         phoneNumber: params.phoneNumber,
         phoneVerified,
-        hasVault: false,
+        hasVault: remoteState.hasVault,
+        setupResolved,
         hostname:
           params.hostname ??
           (typeof window === "undefined" ? null : window.location.hostname),
       })
     ) {
+      if (remoteState.hasVault !== false ||
+          !phoneStatusKnown) {
+        throw new Error("Unable to verify account onboarding. Please try again.");
+      }
       return buildPhoneMandateRoute(
         inviteRedirectTarget ?? resolvedNoVaultRoute,
       );

@@ -1380,20 +1380,12 @@ export function SaveLocationModal({
               ) : null}
               <button
                 type="button"
-                onClick={onSkip}
-                disabled={interactionBusy}
-                className={secondaryActionClassName}
-              >
-                Skip saving this place
-              </button>
-              <button
-                type="button"
                 onClick={handleSave}
                 disabled={!unifiedCanSave}
-                aria-busy={saving || undefined}
-                className={primaryActionClassName(unifiedCanSave)}
+                aria-busy={saving || unifiedSaveInFlight || undefined}
+                className={primaryActionClassName(unifiedCanSave || saving || unifiedSaveInFlight)}
               >
-                {saving ? (
+                {saving || unifiedSaveInFlight ? (
                   <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
                 ) : (
                   <Check className="h-5 w-5" strokeWidth={2.6} aria-hidden />
@@ -1403,6 +1395,17 @@ export function SaveLocationModal({
                   : unifiedSaveError
                     ? "Try saving again"
                     : "Save & continue"}
+              </button>
+              <button
+                type="button"
+                onClick={onSkip}
+                disabled={interactionBusy}
+                className={cn(
+                  secondaryActionClassName,
+                  "mt-2 border-t border-border/60 pt-2",
+                )}
+              >
+                Skip saving this place
               </button>
             </div>
           </footer>
@@ -1745,10 +1748,10 @@ export function SaveLocationModal({
               type="button"
               onClick={handleSave}
               disabled={!canSave}
-              aria-busy={saving || undefined}
-              className={primaryActionClassName(canSave)}
+              aria-busy={saving || unifiedSaveInFlight || undefined}
+              className={primaryActionClassName(canSave || saving)}
             >
-              {saving ? (
+              {saving || unifiedSaveInFlight ? (
                 <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
               ) : (
                 <Check className="h-5 w-5" strokeWidth={2.6} aria-hidden />
@@ -1994,10 +1997,10 @@ export function SaveLocationModal({
               type="button"
               onClick={handleSave}
               disabled={!canSave}
-              aria-busy={saving || undefined}
-              className={primaryActionClassName(canSave)}
+              aria-busy={saving || unifiedSaveInFlight || undefined}
+              className={primaryActionClassName(canSave || saving)}
             >
-              {saving ? (
+              {saving || unifiedSaveInFlight ? (
                 <Loader2 className="h-5 w-5 animate-spin" aria-hidden />
               ) : (
                 <Check className="h-5 w-5" strokeWidth={2.6} aria-hidden />

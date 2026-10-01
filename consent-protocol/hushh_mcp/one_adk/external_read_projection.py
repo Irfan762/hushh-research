@@ -7,7 +7,6 @@ from typing import Any
 from google.adk.sessions import Session
 
 from hushh_mcp.adk_bridge.contract import SpecialistReadResult
-from hushh_mcp.one_adk.agent_tree import STATE_PKM_CONTEXT
 from hushh_mcp.one_adk.external_read_boundary import (
     READ_TOOLS,
     STATE_DRIVE_READ_OUTCOME,
@@ -35,11 +34,6 @@ _EPHEMERAL = frozenset(
         "temp:hussh:pending_email_draft",
         "hussh:gmail_information_request_context",
         "hussh:pending_directive:gmail_information_request_reply",
-        # The client sends a fresh PKM packet for every turn. Its opaque
-        # request-secret handle must never become durable session state: it
-        # expires in-process and could otherwise leave stale private context
-        # attached to a later conversation turn.
-        STATE_PKM_CONTEXT,
     }
 )
 _PRIVATE_DRAFT_TOOLS = frozenset({"open_gmail_email_draft", "open_gmail_information_request_reply"})

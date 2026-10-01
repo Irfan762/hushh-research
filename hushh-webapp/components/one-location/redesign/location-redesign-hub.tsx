@@ -2385,7 +2385,7 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
             data-voice-label={item.ariaLabel}
             aria-label={item.ariaLabel}
             onClick={item.onClick}
-            className="group flex h-[88px] min-h-[88px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-3 py-3 text-center shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            className="group flex h-[88px] min-h-[88px] min-w-0 flex-col items-center justify-center gap-1.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-3 py-3 text-center shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-secondary-surface)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
           >
             <span
               aria-hidden
@@ -2417,13 +2417,13 @@ function LocationActionGrid({ items }: { items: LocationActionGridItem[] }) {
           data-voice-label={emergencyItem.ariaLabel}
           aria-label={emergencyItem.ariaLabel}
           onClick={emergencyItem.onClick}
-          className="group mt-0 flex min-h-[68px] w-full items-center justify-between gap-3.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-4 py-2.5 text-left shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-tint)] active:scale-[0.99] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
+          className="group mt-0 flex min-h-[68px] w-full items-center justify-between gap-3.5 rounded-[14px] bg-[color:var(--app-primary-surface)] px-4 py-2.5 text-left shadow-none ring-1 ring-inset ring-[color:var(--app-separator)] transition-[background-color,transform] [-webkit-tap-highlight-color:transparent] hover:bg-[color:var(--app-destructive-tint)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-destructive-border)]"
         >
           <span className="flex min-w-0 items-center gap-2.5">
               <span
                 aria-hidden
                 data-one-location-action-icon=""
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive-tint)] text-[color:var(--app-destructive)] transition-transform group-active:scale-95"
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive-tint)] text-[color:var(--app-destructive)] transition-transform"
             >
               {emergencyItem.icon}
             </span>
@@ -3864,70 +3864,6 @@ function circleFlowErrorMessage(error: unknown, fallback: string): string {
     : fallback;
 }
 
-function CircleIdentityStack({
-  circles,
-}: {
-  circles: readonly OneLocationCircleSummary[];
-}) {
-  // Only two circle identities overlap; the remainder is a separate counter.
-  const MAX_VISIBLE_CIRCLE_IDENTITIES = 2;
-  const visible = circles.slice(0, MAX_VISIBLE_CIRCLE_IDENTITIES);
-  const overflowCount = Math.max(
-    0,
-    circles.length - MAX_VISIBLE_CIRCLE_IDENTITIES,
-  );
-  const fallback = visible.length
-    ? visible
-    : [
-        {
-          id: "circle-summary-fallback",
-          name: "Circles",
-          memberCount: 0,
-        } as OneLocationCircleSummary,
-      ];
-  return (
-    <span aria-hidden="true" className="inline-flex h-11 shrink-0 items-center">
-      <span className="inline-flex items-center" data-circle-identity-stack>
-        {fallback.map((circle, index) => {
-          const isSmsCircle = circle.systemKind === "sms";
-          const isTrustedCircle = circle.systemKind === "trusted";
-          const initials = circleInitials(circle.name);
-          return (
-            <span
-              key={`${circle.id}-${index}`}
-              className={cn(
-                "inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border-2 border-[color:var(--app-primary-surface)] text-[13px] font-semibold shadow-sm",
-                index > 0 && "-ml-6",
-                isSmsCircle
-                  ? "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]"
-                  : "bg-[#E5E5EA] text-[#6E6E73] dark:bg-[rgba(142,142,147,0.28)] dark:text-[#F2F2F7]",
-              )}
-            >
-              {isSmsCircle ? (
-                <SmsTextIcon className="text-[10px] font-bold tracking-[-0.2px]" />
-              ) : isTrustedCircle ? (
-                <ShieldCheck className="h-[17px] w-[17px]" />
-              ) : initials ? (
-                initials
-              ) : (
-                <UsersRound className="h-[17px] w-[17px]" />
-              )}
-            </span>
-          );
-        })}
-      </span>
-      {overflowCount > 0 ? (
-        <span
-          data-circle-overflow-count
-          className="ml-2 inline-flex shrink-0 items-center text-[13px] font-semibold leading-none text-[color:var(--app-accent)]"
-        >
-          +{overflowCount}
-        </span>
-      ) : null}
-    </span>
-  );
-}
-
 export function CircleSummaryGroup({
   circles,
   invitationCount,
@@ -3939,7 +3875,7 @@ export function CircleSummaryGroup({
   onOpenCircles: () => void;
   onOpenInvitations: () => void;
 }) {
-  const { personal, created, joined } = personalCircleSummary(circles);
+  const { created, joined } = personalCircleSummary(circles);
   const summary = personalCircleCountLabel({ created, joined });
   const invitationTitle =
     invitationCount === 1 ? "Circle invitation" : "Circle invitations";
@@ -3953,12 +3889,11 @@ export function CircleSummaryGroup({
         onClick={onOpenCircles}
         aria-label={`Circles, ${summary.replace(" · ", " and ")}`}
         className={cn(
-          "grid min-h-[68px] w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
+          "grid min-h-[68px] w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-4 py-3 text-left outline-none transition-colors motion-reduce:transition-none",
           "focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] focus-visible:ring-offset-2",
           "[@media(hover:hover)]:hover:bg-[color:var(--app-neutral-fill)]",
         )}
       >
-        <CircleIdentityStack circles={personal.length ? personal : circles} />
         <span className="min-w-0">
           <span className="block text-[17px] font-semibold leading-[22px] tracking-[-0.3px] text-foreground">
             Circles
@@ -5143,30 +5078,28 @@ function ShareFlow({
    * with three people looked exactly like one where you had shared with
    * nobody. Two things went wrong with that. The obvious one is that there was
    * no way to tell, and no way at all on a long list. The one that costs
-   * something is underneath: picking someone who already has an active grant
-   * does not extend it — the backend revokes the old grant and inserts a new
-   * one (`_create_enforced_grant_row`), so a re-pick silently restarts a timer
-   * that was already running. Showing the remaining time on the row is what
-   * makes that consequence visible before it is chosen.
+   * something is underneath: starting a second share would revoke the live
+   * grant and restart its timer. These rows stay visible with their remaining
+   * time, but cannot be selected again; changing a live share belongs in
+   * Active shares.
    */
   //
-  // The grant a row reports is the ORDINARY one when the person holds both.
-  // Building this straight from the grant list made it a last-one-wins map, so
-  // while an SMS (SOS) share was live with somebody, their row quoted the SOS
-  // grant's hours -- time that re-picking them would not have restarted, since
-  // replacement is lane-scoped and a plain share only ever supersedes a plain
-  // share. The number on the row has to be the one the tap would reset.
-  const activeGrantByRecipientId = new globalThis.Map(
-    groupGrantsByCounterpart(vm.activeOwnerGrants, "owner").map((group) => [
-      group.counterpartUserId,
-      group.ordinaryGrant ?? group.primaryGrant,
-    ]),
+  // A normal location share and an SMS alert are separate consent lanes. Only
+  // an ordinary active grant makes someone unavailable in this picker; an SMS
+  // alert must not prevent a person from being selected for a normal share.
+  const activeOrdinaryGrantByRecipientId = new globalThis.Map(
+    groupGrantsByCounterpart(vm.activeOwnerGrants, "owner")
+      .filter((group) => group.ordinaryGrant)
+      .map((group) => [
+        group.counterpartUserId,
+        group.ordinaryGrant as OneLocationGrant,
+      ]),
   );
   const alreadySharing = filtered.filter((recipient) =>
-    activeGrantByRecipientId.has(recipient.userId),
+    activeOrdinaryGrantByRecipientId.has(recipient.userId),
   );
   const notSharing = filtered.filter(
-    (recipient) => !activeGrantByRecipientId.has(recipient.userId),
+    (recipient) => !activeOrdinaryGrantByRecipientId.has(recipient.userId),
   );
   /**
    * One row shape for both groups. Two copies of this JSX would be two places
@@ -5180,21 +5113,26 @@ function ShareFlow({
     const selected = vm.selectedDirectRecipientIds.includes(r.userId);
     const includedThroughCircle = selectedCircleByRecipientId.get(r.userId);
     const ready = vm.isRecipientShareReady(r);
+    const alreadyHasLocationShare = Boolean(activeGrant);
     const label = vm.recipientLabel(r);
     return (
       <SettingsRow
         key={r.userId}
         density="compact"
         textOverflow="truncate"
-        disabled={!ready}
+        disabled={!ready || alreadyHasLocationShare}
         onClick={
-          ready
+          ready && !alreadyHasLocationShare
             ? () => vm.toggleShareRecipient(r.userId, "share_flow")
             : undefined
         }
-        ariaPressed={ready ? selected : undefined}
+        ariaPressed={
+          ready && !alreadyHasLocationShare ? selected : undefined
+        }
         ariaLabel={
-          ready
+          alreadyHasLocationShare
+            ? `${label} is already sharing your location`
+            : ready
             ? selected
               ? includedThroughCircle
                 ? `Remove ${label} as an individual contact; they will still be included through ${includedThroughCircle.circle.name}`
@@ -5239,7 +5177,7 @@ function ShareFlow({
           )
         }
         trailing={
-          ready ? (
+          ready && !alreadyHasLocationShare ? (
             selected ? (
               <SelectionDot selected />
             ) : includedThroughCircle ? (
@@ -5663,7 +5601,7 @@ function ShareFlow({
               {alreadySharing.map((r) =>
                 renderShareRecipientRow(
                   r,
-                  activeGrantByRecipientId.get(r.userId),
+                  activeOrdinaryGrantByRecipientId.get(r.userId),
                 ),
               )}
             </SettingsGroup>

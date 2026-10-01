@@ -136,8 +136,8 @@ To prevent CI check-sprawl, only these queue/PR checks are hard-blocking by defa
 Web validation is intentionally split:
 
 1. PRs run `web-core` for install, preflight, docs/design contracts, typecheck, lint, and the required Next production build.
-2. PRs run `web-targeted` for deterministic changed-path contract packs such as voice gateway, cache, analytics, routes/surface map, phone verification, and Capacitor static parity.
-3. PRs run `web-full-suite` (job `Web Full Suite (Vitest)`) for the whole Vitest suite (`npm run test:ci`, ~9,700 tests) plus the voice gateway, One Voice, surface-map, Capacitor static-parity and Capacitor plugin-contract checks. It runs in parallel with `web-core`, and `CI Status Gate` requires it to have **succeeded** (not merely not failed) whenever the frontend filter matches. Until 2026-09-26 this suite ran only in `Queue Validation`, which nothing merged through, so it gated no merge.
+2. PRs run `web-targeted` for deterministic changed-path contract packs such as voice gateway, cache, analytics, routes/surface map, phone verification, and Capacitor static parity. The job (`Web Targeted Contracts (node)` / `(browser)`) is a two-leg matrix: `WEB_TARGETED_PART=node` runs the Vitest and verifier packs without downloading a browser, and `WEB_TARGETED_PART=browser` runs the Playwright packs with `PLAYWRIGHT_WORKERS=3` (the Playwright config's CI worker count; one when unset). Each pack is classified by whether its npm script reaches `playwright`, so the legs partition the matched packs; a local run (`all`) still runs every pack. `scripts/ci/test_web_ci_lane_partition.py`, run by the governance check, proves the partition against the real script.
+3. PRs run `web-full-suite` (job `Web Full Suite (Vitest)`) for the whole Vitest suite (`npm run test:ci`, ~9,700 tests) plus the voice gateway, One Voice, surface-map, Capacitor static-parity and Capacitor plugin-contract checks. It runs in parallel with `web-core` as three Vitest shards (`WEB_FULL_SUITE_SHARD=<i>/3`, `vitest --shard`, jobs `Web Full Suite (Vitest) 1/3` to `3/3`); shard 1 also runs the contract verifiers, once. `CI Status Gate` reads the matrix's aggregate result, which is `success` only when every shard succeeded, and requires it to have **succeeded** (not merely not failed) whenever the frontend filter matches. Until 2026-09-26 this suite ran only in `Queue Validation`, which nothing merged through, so it gated no merge.
 4. `web-full` is `web-core` followed by `web-full-suite`, for local and exhaustive runs. The legacy `web` stage remains an alias for `web-full` so older local wrappers keep their exhaustive behavior.
 
 Fail-fast contract:
@@ -213,7 +213,7 @@ mandatory regardless of the expensive-lane selection.
 
 - **Frontend jobs** run when `hushh-webapp/**`, protected CI workflow files, `scripts/ci/orchestrate.sh`, or `scripts/ci/web-*.sh` change.
 - **Backend jobs** run when `consent-protocol/**`, `packages/hushh-mcp/**`, protected CI workflow files, or any `scripts/ci/**` file **except** `scripts/ci/web-*.sh` change.
-- **iOS native job** (`ios-native-check`) runs when the `ios` filter matches; that filter lists the web surfaces the XCUITests render alongside the native shell paths, and it is pinned by `consent-protocol/tests/test_ios_lane_path_filter_covers_native_test_surfaces.py`, so a native test that starts rendering a new web surface fails CI until the filter names it.
+- **iOS native job** (`ios-native-check`) runs when the `ios` filter matches; that filter lists the web surfaces the XCUITests render alongside the native shell paths, and it is pinned by `consent-protocol/tests/test_ios_lane_path_filter_covers_native_test_surfaces.py`, so a native test that starts rendering a new web surface fails CI until the filter names it. Inside the job, Swift package resolution is prefetched in the background while the native web export builds, the simulator boots in the background after the web export (not during it, so it never competes with `next build` for the runner's memory) while resolution and compilation run, and the authoritative `xcodebuild -resolvePackageDependencies` runs after `cap sync`. There is no Swift package `actions/cache`: pull-request caches are PR-scoped, so it never restored on a new PR, and each ~4.5GB save evicted the shared npm cache from the repository's 10GB budget.
 - **Integration job** runs when either frontend or backend paths change.
 
 **How `scripts/ci/` is split (2026-09-26).** Each file schedules the lanes that
@@ -316,7 +316,7 @@ Protected branches are expected to enforce the same CI contract documented here:
 - repository setting
   - auto-merge enabled so `gh pr merge` can hand green PRs to merge queue instead of failing before queue placement
 - `main`
-  - `0` blanket approving reviews
+- `1` independent approving review of the latest push (the governed bypass cohort is separate)
   - required status checks: `CI Status Gate`
   - strict/up-to-date checks enabled
   - conversation resolution required
@@ -639,6 +639,34 @@ Secret-scan note:
 ---
 
 ## Strict Launch Gate (Release Cut)
+
+One support/account-mail launch check (owner: `kushal@hushh.ai`): verify the
+Workspace domain-wide delegation grant for the configured service-account client
+ID includes `https://www.googleapis.com/auth/gmail.send`, then send synthetic
+`[TEST]` welcome, passkey-add/remove, passphrase-change, and each support type
+to the test inbox. Confirm a real Help & Feedback submission reaches
+`one@hushh.ai`, its internal BCC reaches the support lead, and no report body
+appears in application logs. Confirm one controlled UAT vault change produces
+one notice without changing the vault outcome if mail fails. The public privacy
+policy must explain support-message handling, the internal copy, and retention;
+the in-app account-deletion control must be exercised. Check the managed backend
+5xx and account-mail alert policies are enabled, target the verified
+`kushal@hushh.ai` notification channel, and deliver a test incident. Missing
+grant, policy wording, or alert delivery blocks public launch; source config
+alone is not proof.
+
+The first-welcome Firebase claim suppresses ordinary repeated sign-ins, but it
+is not a distributed exactly-once mail ledger: simultaneous first-sign-in
+requests or a failed claim update can duplicate an accepted welcome. Verify
+the expected first-login traffic pattern or add durable idempotency before
+claiming a strict at-most-once guarantee.
+
+During launch, the owner records a short daily readout from the existing Cloud
+Monitoring dashboard: backend 5xx/latency, support accepted versus failed or
+uncertain, security-mail failure events, and open support issues. Follow the
+existing production deploy traffic-rollback procedure for a bad application
+revision; do not roll back a completed vault transition because email failed,
+and do not blindly resend an uncertain Gmail submission.
 
 Before creating a release tag/public rollout, run strict gate commands from repo root:
 

@@ -14,10 +14,14 @@ import { useRouter } from "next/navigation";
 import {
   ArrowLeftIcon,
   ChevronRightIcon,
+  Loader2Icon,
   SearchIcon,
   XIcon,
 } from "@/components/icons";
+import { ConnectedSystemsAgentIcon } from "@/components/icons/agents";
 import { Button } from "@/components/ui/button";
+import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
+import { ConnectorConfirm } from "@/components/agent/connector-confirm";
 import { Switch } from "@/components/ui/switch";
 import { ShellActionSurface } from "@/components/app-ui/shell-action-surface";
 import { useAuth } from "@/hooks/use-auth";
@@ -48,6 +52,8 @@ import {
   waitForDrivePopup,
   waitForOAuthPopup,
 } from "@/lib/profile/drive-oauth-popup";
+import { connectCalendarInPlace } from "@/lib/connections/google-connect-in-place";
+import { OAUTH_WINDOW_BLOCKED_COPY } from "@/lib/connections/oauth-window";
 import {
   ExternalConnectorService,
   type ConnectorOverview,
@@ -60,7 +66,10 @@ import {
 } from "@/lib/services/google-drive-picker-service";
 import { GmailReceiptsService } from "@/lib/services/gmail-receipts-service";
 import { GoogleCalendarService } from "@/lib/services/google-calendar-service";
-import type { DriveChatRecoveryReason } from "@/lib/agent/drive-oauth-chat-recovery";
+import {
+  saveCuratedConnectorSettingsHandoff,
+  type DriveChatRecoveryReason,
+} from "@/lib/agent/drive-oauth-chat-recovery";
 import { TrustedDocumentRules } from "@/components/consent/trusted-document-rules";
 import { CustomConnectorsSettings } from "@/components/agent/custom-connectors-settings";
 
@@ -71,8 +80,20 @@ type Props = {
   /** Reports whether account-backed connector management is currently ready. */
   onAvailableChange?: (available: boolean) => void;
   onCatalogStateChange?: (state: "loading" | "loaded" | "unavailable-valid") => void;
-  surface?: "drawer" | "settings";
+  /**
+   * `drawer`: the chat's own Connectors sheet, with its own header and close.
+   * `profile`: a section inside Profile, whose pane header owns the title and
+   * Back, so the panel draws no header of its own.
+   */
+  surface?: "drawer" | "profile";
   initialConnector?: "google_drive" | "gmail" | null;
+  /**
+   * The open connector, when the host keeps it in its own address (Profile
+   * does, so Back and deep links behave like every other Profile detail).
+   * Leave undefined for the panel to hold it itself.
+   */
+  activeConnector?: string | null;
+  onActiveConnectorChange?: (connectorId: string | null) => void;
   onExternalModalChange?: (open: boolean) => void;
   onPrepareRecovery?: (input: {
     attemptId: string;
@@ -82,6 +103,8 @@ type Props = {
   onClearRecovery?: () => Promise<void>;
 };
 const touch = "min-h-11 min-w-11 whitespace-normal";
+// Operator-registered OAuth connectors that sign in through the generic flow.
+const CURATED_OAUTH_CONNECTORS: ReadonlySet<string> = new Set(["hubspot"]);
 const labels: Record<string, string> = {
   not_connected: "Not connected",
   revoked: "Not connected",
@@ -107,10 +130,72 @@ type ConnectorListEntry = {
   onOpen?: () => void;
   action?: { label: string; onClick: () => void; disabled?: boolean };
   trailingText?: string;
+  /** A change on this connector is in flight. */
+  pending?: "connect" | "disconnect";
+  /** The last disconnect did not finish; the row says so until it does. */
+  failure?: string;
 };
 
+/** The row's second line: in-flight and failed changes are always visible. */
+function connectorRowStatus(entry: ConnectorListEntry): string | undefined {
+  if (entry.pending === "disconnect") return "Disconnecting…";
+  if (entry.pending === "connect") return "Connecting…";
+  if (entry.failure) return entry.failure;
+  return undefined;
+}
+
+/**
+ * The row's action keeps one width whatever it says. Both verbs are laid in
+ * the same grid cell and only the live one is visible, so "Connect",
+ * "Disconnect" and the in-flight spinner occupy an identical box and nothing
+ * beside them moves when the state changes.
+ */
+function ConnectorActionLabel({ entry }: { entry: ConnectorListEntry }) {
+  const verb = entry.action?.label.split(" ")[0] ?? "";
+  return (
+    <span className="grid place-items-center">
+      <span aria-hidden="true" className="invisible [grid-area:1/1]">Disconnect</span>
+      <span aria-hidden="true" className="invisible [grid-area:1/1]">Connect</span>
+      {entry.pending ? (
+        <Loader2Icon
+          aria-hidden="true"
+          className="size-4 animate-spin [grid-area:1/1] motion-reduce:animate-none"
+        />
+      ) : (
+        <span className="[grid-area:1/1]">{verb}</span>
+      )}
+    </span>
+  );
+}
+
+const CONNECTOR_LOGOS: Record<string, string> = {
+  gmail: "gmail",
+  google_drive: "drive",
+  calendar: "calendar",
+  plaid: "plaid",
+};
+
+/**
+ * Profile's leading glyph: the connector's own mark, bare, in the same 28px
+ * well and 22px optical size as every other Profile row icon. No tile.
+ * A connector without a mark takes the registry's connections glyph.
+ */
+function ProfileConnectorGlyph({ id }: { id: string }) {
+  const logo = CONNECTOR_LOGOS[id];
+  return (
+    <span className="inline-flex size-7 shrink-0 items-center justify-center" aria-hidden="true">
+      {logo ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-[22px] object-contain${id === "plaid" ? " dark:invert" : ""}`} />
+      ) : (
+        <ConnectedSystemsAgentIcon size={22} />
+      )}
+    </span>
+  );
+}
+
 function ConnectorGlyph({ id }: { id: string }) {
-  const logo = ({ gmail: "gmail", google_drive: "drive", calendar: "calendar", plaid: "plaid" } as Record<string, string>)[id];
+  const logo = CONNECTOR_LOGOS[id];
   return (
     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-background text-foreground shadow-sm" aria-hidden="true">
       {logo ? (
@@ -125,8 +210,13 @@ function ConnectorGlyph({ id }: { id: string }) {
 
 function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
   const detailId = useId();
+  const status = connectorRowStatus(entry);
   return (
-    <li className="flex min-h-14 min-w-0 items-center gap-3 border-b border-foreground/10 px-4 last:border-b-0">
+    <li
+      data-connector-row={entry.id}
+      aria-busy={entry.pending ? true : undefined}
+      className="flex min-h-14 min-w-0 items-center gap-3 border-b border-foreground/10 px-4 last:border-b-0"
+    >
       <ConnectorGlyph id={entry.id} />
       {entry.onOpen ? (
         <button
@@ -138,14 +228,18 @@ function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
         >
           <span className="min-w-0 flex-1">
             <span className="block truncate text-sm font-medium">{entry.name}</span>
-            {entry.detail ? <span id={detailId} className="sr-only">{entry.detail}</span> : null}
+            {status ? (
+              <span id={detailId} role="status" className="block truncate text-xs text-muted-foreground">{status}</span>
+            ) : entry.detail ? <span id={detailId} className="sr-only">{entry.detail}</span> : null}
           </span>
           {!entry.action ? <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground" aria-hidden="true" /> : null}
         </button>
       ) : (
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{entry.name}</span>
-          {entry.detail ? <span className="sr-only">{entry.detail}</span> : null}
+          {status ? (
+            <span role="status" className="block truncate text-xs text-muted-foreground">{status}</span>
+          ) : entry.detail ? <span className="sr-only">{entry.detail}</span> : null}
         </span>
       )}
       {entry.action ? (
@@ -153,15 +247,61 @@ function ConnectorRow({ entry }: { entry: ConnectorListEntry }) {
           type="button"
           className="min-h-11 shrink-0 px-1 text-sm font-semibold text-primary disabled:cursor-not-allowed disabled:opacity-50 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
           aria-label={entry.action.label}
-          disabled={entry.action.disabled}
+          disabled={entry.action.disabled || Boolean(entry.pending)}
           onClick={entry.action.onClick}
         >
-          {entry.action.label.split(" ")[0]}
+          <ConnectorActionLabel entry={entry} />
         </button>
       ) : entry.trailingText ? (
         <span className="shrink-0 text-xs text-muted-foreground">{entry.trailingText}</span>
       ) : null}
     </li>
+  );
+}
+
+/**
+ * The same row every Profile section draws: title, one supporting line, and
+ * either a chevron into the connector or its connect/disconnect action.
+ */
+function ProfileConnectorRow({ entry }: { entry: ConnectorListEntry }) {
+  const status = connectorRowStatus(entry);
+  const description =
+    status ??
+    entry.detail ??
+    (entry.action || entry.onOpen
+      ? entry.connected
+        ? "Connected"
+        : "Not connected"
+      : undefined);
+  // No wrapper element: the group's first/last corners and hairlines are
+  // keyed to the row being a direct child of the group's list.
+  return (
+    <SettingsRow
+      leading={<ProfileConnectorGlyph id={entry.id} />}
+      title={entry.name}
+      description={description}
+      textOverflow="truncate"
+      onClick={entry.onOpen}
+      chevron={Boolean(entry.onOpen) && !entry.action && !entry.trailingText}
+      trailingInteractive={Boolean(entry.action)}
+      testId={`profile-connector-row-${entry.id}`}
+      trailing={
+        entry.action ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="compact"
+            className="px-3"
+            aria-label={entry.action.label}
+            aria-busy={entry.pending ? true : undefined}
+            disabled={entry.action.disabled || Boolean(entry.pending)}
+            onClick={entry.action.onClick}
+          >
+            <ConnectorActionLabel entry={entry} />
+          </Button>
+        ) : entry.trailingText
+      }
+    />
   );
 }
 
@@ -220,6 +360,8 @@ function OwnerConnectorsPanel({
   onClose = onBack,
   surface = "drawer",
   initialConnector = null,
+  activeConnector: hostActiveConnector,
+  onActiveConnectorChange,
   onAvailableChange,
   onCatalogStateChange,
   onExternalModalChange,
@@ -233,6 +375,8 @@ function OwnerConnectorsPanel({
   const [documents, setDocuments] = useState<DriveDocument[]>([]);
   const [allowBackground, setAllowBackground] = useState(false);
   const [liveBackground, setLiveBackground] = useState<boolean | null>(null);
+  const [liveBackgroundError, setLiveBackgroundError] = useState(false);
+  const [liveBackgroundRead, retryLiveBackground] = useState(0);
   const [loading, setLoading] = useState(false);
   const [statusChecked, setStatusChecked] = useState(false);
   const [driveMessage, setDriveMessage] = useState("");
@@ -244,19 +388,83 @@ function OwnerConnectorsPanel({
   const [mailPopupPending, setMailPopupPending] = useState(false);
   const [plaidBusy, setPlaidBusy] = useState(false);
   const [calendarBusy, setCalendarBusy] = useState(false);
+  const [calendarPopupPending, setCalendarPopupPending] = useState(false);
   const [calendarMessage, setCalendarMessage] = useState("");
+  const [curatedBusy, setCuratedBusy] = useState(false);
+  const [curatedMessage, setCuratedMessage] = useState("");
+  // Coming back from the provider's consent page with Back can restore this page
+  // from the bfcache with the in-flight flag still set; nothing is in flight then.
+  useEffect(() => {
+    const restored = (event: PageTransitionEvent) => {
+      if (event.persisted) setCuratedBusy(false);
+    };
+    window.addEventListener("pageshow", restored);
+    return () => window.removeEventListener("pageshow", restored);
+  }, []);
   const [pending, setPending] = useState<PendingDriveSelection | null>(null);
   const [confirm, setConfirm] = useState<string | null>(null);
-  const [activeConnector, setActiveConnector] = useState<string | null>(initialConnector);
+  const [ownActiveConnector, setOwnActiveConnector] = useState<string | null>(initialConnector);
+  const connectorHeldByHost = hostActiveConnector !== undefined;
+  const activeConnector = connectorHeldByHost ? hostActiveConnector : ownActiveConnector;
+  const activeConnectorRef = useRef(activeConnector);
+  useLayoutEffect(() => {
+    activeConnectorRef.current = activeConnector;
+  }, [activeConnector]);
+  // Idempotent: asking for the connector already open is not a navigation,
+  // so a double tap never stacks two identical history entries in Profile.
+  const setActiveConnector = useCallback(
+    (next: string | null) => {
+      if (!connectorHeldByHost) {
+        setOwnActiveConnector(next);
+        return;
+      }
+      if (activeConnectorRef.current === next) return;
+      activeConnectorRef.current = next;
+      onActiveConnectorChange?.(next);
+    },
+    [connectorHeldByHost, onActiveConnectorChange],
+  );
+  // A disconnect that did not finish, per connector, until it does.
+  const [disconnectFailures, setDisconnectFailures] = useState<Record<string, string>>({});
+  // Disconnects in flight, per connector: the row's pending state is this,
+  // not a shared busy flag that other Drive work also raises.
+  const [disconnecting, setDisconnecting] = useState<Record<string, boolean>>({});
+  // The section a row sat in when the person acted on it from the list. The
+  // row keeps that place while they stay on the list; it moves only when they
+  // next arrive at the list, never under their finger.
+  const [pinnedSections, setPinnedSections] = useState<Record<string, boolean>>({});
+  // Synchronous single flight per change target. React state is not yet
+  // committed between two taps in one frame; a ref is.
+  const changesInFlight = useRef(new Set<string>());
   const [search, setSearch] = useState("");
   const driveBackgroundId = useId();
   const previousActiveConnector = useRef<string | null>(null);
   const appliedInitialConnector = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const detailBackRef = useRef<HTMLButtonElement>(null);
+  const detailRegionRef = useRef<HTMLDivElement>(null);
+  const panelRootRef = useRef<HTMLDivElement>(null);
   const controller = useRef<AbortController | null>(null);
   const currentToken = useRef(vaultOwnerToken);
+  const curatedRequest = useRef(0);
+  const curatedDisconnectId = useRef<string | null>(null);
   useLayoutEffect(() => {
+    if (currentToken.current !== vaultOwnerToken) {
+      // A renewed owner token retires the old async request. The catalog is
+      // re-read below with the new token; do not leave an old row spinning.
+      curatedRequest.current++;
+      const id = curatedDisconnectId.current;
+      if (id) {
+        changesInFlight.current.delete(`curated:${id}`);
+        setDisconnecting((current) => {
+          const next = { ...current };
+          delete next[id];
+          return next;
+        });
+        curatedDisconnectId.current = null;
+      }
+      setCuratedBusy(false);
+    }
     currentToken.current = vaultOwnerToken;
   }, [vaultOwnerToken]);
   const driveLock = useRef(false);
@@ -276,6 +484,8 @@ function OwnerConnectorsPanel({
   const mailLock = useRef(false);
   const drivePopupCancel = useRef<AbortController | null>(null);
   const mailPopupCancel = useRef<AbortController | null>(null);
+  const calendarLock = useRef(false);
+  const calendarPopupCancel = useRef<AbortController | null>(null);
   const chooseRef = useRef<HTMLButtonElement>(null);
   const pendingRef = useRef<HTMLElement>(null);
   // A native app-url return and the browser bridge promise can both arrive for
@@ -391,7 +601,7 @@ function OwnerConnectorsPanel({
     if (!open || appliedInitialConnector.current === initialConnector) return;
     appliedInitialConnector.current = initialConnector;
     setActiveConnector(initialConnector);
-  }, [initialConnector, open]);
+  }, [initialConnector, open, setActiveConnector]);
   useEffect(() => {
     if (vaultOwnerToken) void refresh(controller.current?.signal);
     else onCatalogStateChange?.("unavailable-valid");
@@ -405,35 +615,61 @@ function OwnerConnectorsPanel({
       setActiveConnector(null);
       setSearch("");
       setConfirm(null);
+      setPinnedSections({});
     }
     if (open && vaultOwnerToken) void refresh(controller.current?.signal);
-  }, [open, vaultOwnerToken, refresh]);
+  }, [open, vaultOwnerToken, refresh, setActiveConnector]);
   useLayoutEffect(() => {
     const previous = previousActiveConnector.current;
     previousActiveConnector.current = activeConnector;
     if (!open || previous === activeConnector) return;
+    // Arriving at the list (or leaving it) is when rows may settle into their
+    // current sections; they never move while the person is on the list.
+    setPinnedSections({});
+    // A question asked about one connector never follows the person to
+    // another: Profile's Back and a native return both move the open
+    // connector without passing through the dialog's own Cancel.
+    setConfirm(null);
     // Picker review owns focus when a native return restores a pending choice.
     if (activeConnector === "google_drive" && pendingSelection.current) return;
     const frame = requestAnimationFrame(() => {
+      if (surface === "profile") {
+        // Profile's pane header owns Back. Land on the detail's content, and
+        // on return put focus back on the row the person opened: a search
+        // field would raise the keyboard on a phone for no reason.
+        if (activeConnector) {
+          detailRegionRef.current?.focus({ preventScroll: true });
+          return;
+        }
+        panelRootRef.current
+          ?.querySelector<HTMLElement>(
+            `[data-testid="profile-connector-row-${previous}"] button`,
+          )
+          ?.focus({ preventScroll: true });
+        return;
+      }
       if (activeConnector) detailBackRef.current?.focus();
       else searchRef.current?.focus();
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeConnector, open]);
+  }, [activeConnector, open, surface]);
   const drive = overview?.connectors.find(
     (item) => item.connectorId === "google_drive",
   );
   useEffect(() => {
     if (!open || !vaultOwnerToken || drive?.profile !== "live" || drive.status !== "connected") {
       setLiveBackground(null);
+      setLiveBackgroundError(false);
       return;
     }
     let active = true;
+    setLiveBackground(null);
+    setLiveBackgroundError(false);
     void ExternalConnectorService.liveBackground(vaultOwnerToken)
       .then((enabled) => { if (active) setLiveBackground(enabled); })
-      .catch(() => { if (active) setLiveBackground(null); });
+      .catch(() => { if (active) setLiveBackgroundError(true); });
     return () => { active = false; };
-  }, [open, vaultOwnerToken, drive?.profile, drive?.status]);
+  }, [open, vaultOwnerToken, drive?.profile, drive?.status, liveBackgroundRead]);
   const hasDriveGrant = Boolean(
     drive && !["not_connected", "revoked"].includes(drive.status),
   );
@@ -472,7 +708,7 @@ function OwnerConnectorsPanel({
       Math.max(0, pending.expiresAt - Date.now()),
     );
     return () => window.clearTimeout(timer);
-  }, [pending, updatePendingSelection]);
+  }, [pending, updatePendingSelection, setActiveConnector]);
   useEffect(() => {
     if (driveBusy || !restorePickerFocus.current) return;
     restorePickerFocus.current = false;
@@ -706,6 +942,10 @@ function OwnerConnectorsPanel({
 
   const startDrive = (profile: "selected" | "live" = "live") => {
     if (!vaultOwnerToken || driveLock.current) return;
+    if (!controller.current || controller.current.signal.aborted) {
+      setDriveMessage("Drive is still preparing. Try again.");
+      return;
+    }
     if (Capacitor.isNativePlatform()) {
       void runDrive(async (token, signal) => {
         const isEffectCurrent = () =>
@@ -718,6 +958,7 @@ function OwnerConnectorsPanel({
           flow: "native",
           profile,
           isEffectCurrent,
+          signal,
         });
         const expiresAt = Date.parse(start.expiresAt);
         if (
@@ -808,6 +1049,7 @@ function OwnerConnectorsPanel({
           redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
           flow: "web",
           profile,
+          signal,
         });
         if (signal.aborted || !start.attemptId || start.connectorId !== "google_drive") return;
         const authorizeUrl = new URL(start.authorizeUrl);
@@ -845,17 +1087,46 @@ function OwnerConnectorsPanel({
     drivePopupCancel.current = attemptCancel;
     setDrivePopupPending(true);
     void runDrive(async (token, signal) => {
-      const close = () => popup.close();
+      let popupClosed = false;
+      const close = () => {
+        if (popupClosed) return;
+        popupClosed = true;
+        popup.close();
+      };
       signal.addEventListener("abort", close, { once: true });
+      attemptCancel.signal.addEventListener("abort", close, { once: true });
+      const startController = new AbortController();
+      const abortStart = (source: AbortSignal) => {
+        if (!startController.signal.aborted)
+          startController.abort(source.reason);
+      };
+      const abortForDriveSession = () => abortStart(signal);
+      const abortForUserCancel = () => abortStart(attemptCancel.signal);
+      signal.addEventListener("abort", abortForDriveSession, { once: true });
+      attemptCancel.signal.addEventListener("abort", abortForUserCancel, { once: true });
+      if (signal.aborted) abortForDriveSession();
+      if (attemptCancel.signal.aborted) abortForUserCancel();
       try {
-        const start = await ExternalConnectorService.startOAuthConnect({
-          vaultOwnerToken: token,
-          connectorId: "google_drive",
-          redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
-          flow: "web",
-          profile,
-        });
-        if (signal.aborted) return;
+        let start: Awaited<ReturnType<typeof ExternalConnectorService.startOAuthConnect>>;
+        try {
+          start = await ExternalConnectorService.startOAuthConnect({
+            vaultOwnerToken: token,
+            connectorId: "google_drive",
+            redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
+            flow: "web",
+            profile,
+            signal: startController.signal,
+          });
+        } catch {
+          if (attemptCancel.signal.aborted) {
+            if (!signal.aborted) setDriveMessage("Drive connection cancelled.");
+            return;
+          }
+          if (signal.aborted) return;
+          setDriveMessage("Drive sign-in could not start. Check the connection and try again.");
+          return;
+        }
+        if (signal.aborted || attemptCancel.signal.aborted) return;
         if (!start.attemptId || start.connectorId !== "google_drive")
           throw new Error("invalid_start");
         const attempt = {
@@ -878,6 +1149,9 @@ function OwnerConnectorsPanel({
       } finally {
         if (drivePopupCancel.current === attemptCancel) drivePopupCancel.current = null;
         if (!signal.aborted) setDrivePopupPending(false);
+        signal.removeEventListener("abort", abortForDriveSession);
+        attemptCancel.signal.removeEventListener("abort", abortForUserCancel);
+        attemptCancel.signal.removeEventListener("abort", close);
         signal.removeEventListener("abort", close);
         popup.close();
       }
@@ -1039,7 +1313,7 @@ function OwnerConnectorsPanel({
     const popup = native ? null : openGmailOAuthPopup(attempt);
     if (!native && !popup) {
       setMailMessage(
-        "Allow popups, then retry. Your chat and draft stay here.",
+        OAUTH_WINDOW_BLOCKED_COPY,
       );
       return;
     }
@@ -1177,6 +1451,56 @@ function OwnerConnectorsPanel({
     })();
   };
 
+  /**
+   * Connects Calendar without leaving the drawer. Web opens Google's consent
+   * in a popup (a new tab if the popup is refused) through the same callback
+   * page and settlement contract as the Calendar workspace; native uses the
+   * platform Google sign-in sheet. The WebView never navigates, so the vault
+   * stays unlocked. A settlement is only a hint: the owner-authenticated
+   * status read decides what the drawer shows.
+   */
+  const connectCalendar = (accessLevel: "read" | "manage" = "read") => {
+    const signal = controller.current?.signal;
+    if (!user || !signal || signal.aborted || calendarLock.current) return;
+    const attemptCancel = new AbortController();
+    // Opens the consent window synchronously, inside this click.
+    const attempt = connectCalendarInPlace({
+      owner: user,
+      accessLevel,
+      signal,
+      cancelSignal: attemptCancel.signal,
+    });
+    if (attempt.surface === "blocked") {
+      setCalendarMessage(
+        OAUTH_WINDOW_BLOCKED_COPY,
+      );
+      return;
+    }
+    if (attempt.surface === "window") {
+      calendarPopupCancel.current = attemptCancel;
+      setCalendarPopupPending(true);
+    }
+    calendarLock.current = true;
+    setCalendarBusy(true);
+    setCalendarMessage("");
+    void attempt.result.then((outcome) => {
+      if (calendarPopupCancel.current === attemptCancel)
+        calendarPopupCancel.current = null;
+      calendarLock.current = false;
+      if (outcome === "stale" || signal.aborted) return;
+      setCalendarPopupPending(false);
+      setCalendarBusy(false);
+      if (outcome === "connected") calendar.refresh();
+      setCalendarMessage(
+        outcome === "connected"
+          ? "Calendar connected."
+          : outcome === "failed"
+            ? "Could not finish Calendar connection. Try again."
+            : "Calendar not connected.",
+      );
+    });
+  };
+
   const canConnectDrive =
     statusChecked &&
     drive?.available === true;
@@ -1187,10 +1511,126 @@ function OwnerConnectorsPanel({
     drive?.available !== false &&
     overview?.features.google_drive_picker === true &&
     ["connected", "verifying"].includes(drive?.status ?? "");
+  const DISCONNECT_FAILED = "Couldn't disconnect. Try again.";
+  const beginDisconnect = (id: string) => {
+    setDisconnectFailures((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setDisconnecting((current) => ({ ...current, [id]: true }));
+  };
+  const endDisconnect = (id: string, failure?: string) => {
+    setDisconnecting((current) => {
+      if (!current[id]) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    if (failure) setDisconnectFailures((current) => ({ ...current, [id]: failure }));
+  };
+  /**
+   * Ask before a connection changes, without leaving where the person is. From
+   * the list the row also keeps its section until they next arrive at the list.
+   */
+  const askToDisconnect = (id: string, target: string, fromList: boolean) => {
+    if (fromList) setPinnedSections((current) => ({ ...current, [id]: true }));
+    setConfirm(target);
+  };
+  const curatedRolloutEnabled = overview?.features.curated_mcp_connectors === true;
+  const connectCurated = (connectorId: string, name: string) => {
+    if (!vaultOwnerToken || !user?.uid || curatedBusy) return;
+    const connector = overview?.connectors.find((item) => item.connectorId === connectorId);
+    if (
+      !connector ||
+      !CURATED_OAUTH_CONNECTORS.has(connectorId) ||
+      !curatedRolloutEnabled ||
+      connector.available === false
+    ) {
+      setCuratedMessage(name + " is unavailable here.");
+      return;
+    }
+    if (Capacitor.isNativePlatform()) {
+      setCuratedMessage(`Connect ${name} on the web. It works here once connected.`);
+      return;
+    }
+    const ownerId = user.uid;
+    const token = vaultOwnerToken;
+    const signal = controller.current?.signal;
+    const request = ++curatedRequest.current;
+    setCuratedBusy(true);
+    setCuratedMessage("");
+    void ExternalConnectorService.startOAuthConnect({
+      vaultOwnerToken: token,
+      connectorId,
+      redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
+      flow: "web",
+    })
+      .then((start) => {
+        if (signal?.aborted || currentToken.current !== token || curatedRequest.current !== request) return;
+        const authorizeUrl = new URL(start.authorizeUrl);
+        if (
+          authorizeUrl.protocol !== "https:" ||
+          !start.attemptId ||
+          start.connectorId !== connectorId
+        ) throw new Error("invalid_start");
+        saveCuratedConnectorSettingsHandoff({
+          ownerUserId: ownerId,
+          attemptId: start.attemptId,
+          curatedConnector: { connectorId },
+        });
+        window.location.assign(authorizeUrl.href);
+      })
+      .catch(() => {
+        if (signal?.aborted || curatedRequest.current !== request) return;
+        setCuratedMessage(`Could not start ${name}. Try again.`);
+        setCuratedBusy(false);
+      });
+  };
   const confirmAction = () => {
     const target = confirm;
+    // One change per target at a time: a second tap in the same frame reads
+    // the same `confirm`, so the guard has to be synchronous.
+    if (!target || changesInFlight.current.has(target)) return;
     setConfirm(null);
-    if (target?.startsWith("plaid:") && activeConnector === "plaid") {
+    if (target.startsWith("curated:")) {
+      const connectorId = target.slice("curated:".length);
+      const token = vaultOwnerToken;
+      const signal = controller.current?.signal;
+      if (
+        !overview?.connectors.some((item) => item.connectorId === connectorId) ||
+        !CURATED_OAUTH_CONNECTORS.has(connectorId) ||
+        !token || !signal || signal.aborted || curatedBusy
+      ) return;
+      changesInFlight.current.add(target);
+      const request = ++curatedRequest.current;
+      curatedDisconnectId.current = connectorId;
+      beginDisconnect(connectorId);
+      setCuratedBusy(true);
+      void ExternalConnectorService.disconnect({ vaultOwnerToken: token, connectorId })
+        .then(async () => {
+          if (signal.aborted || currentToken.current !== token || curatedRequest.current !== request) return;
+          setCuratedMessage("Disconnected.");
+          await refresh(signal);
+          if (signal.aborted || curatedRequest.current !== request) return;
+          endDisconnect(connectorId);
+        })
+        .catch(() => {
+          if (!signal.aborted && currentToken.current === token && curatedRequest.current === request) {
+            setCuratedMessage("Could not disconnect. Try again.");
+            endDisconnect(connectorId, DISCONNECT_FAILED);
+          }
+        })
+        .finally(() => {
+          if (curatedRequest.current !== request) return;
+          changesInFlight.current.delete(target);
+          curatedDisconnectId.current = null;
+          if (!signal.aborted) setCuratedBusy(false);
+        });
+      return;
+    }
+    if (target.startsWith("plaid:") && activeConnector === "plaid") {
       const itemId = target.slice("plaid:".length);
       const financialData = financial.data?.data;
       const ownerId = user?.uid;
@@ -1199,26 +1639,35 @@ function OwnerConnectorsPanel({
       const signal = controller.current?.signal;
       if (!itemId || !financialData || !ownerId || !ownerToken || !key || !signal || signal.aborted || plaidBusy) return;
       if (!vaultConnections(financialData)[itemId]) return;
+      changesInFlight.current.add(target);
+      beginDisconnect("plaid");
       setPlaidBusy(true);
       void disconnectVaultPlaid({ userId: ownerId, vaultKey: key, vaultOwnerToken: ownerToken, itemId, financial: financialData, surface: Capacitor.getPlatform() === "ios" ? "ios" : Capacitor.getPlatform() === "android" ? "android" : "web" })
         .then(async (disconnected) => {
           if (signal.aborted || currentToken.current !== ownerToken) return;
           setPlaidMessage(disconnected ? "Bank disconnected." : "Could not disconnect this bank. Retry.");
+          endDisconnect("plaid", disconnected ? undefined : DISCONNECT_FAILED);
           if (disconnected) await financial.refresh({ force: true });
         })
         .catch(() => {
-          if (!signal.aborted && currentToken.current === ownerToken) setPlaidMessage("Could not disconnect this bank. Retry.");
+          if (!signal.aborted && currentToken.current === ownerToken) {
+            setPlaidMessage("Could not disconnect this bank. Retry.");
+            endDisconnect("plaid", DISCONNECT_FAILED);
+          }
         })
         .finally(() => {
+          changesInFlight.current.delete(target);
           if (!signal.aborted && currentToken.current === ownerToken) setPlaidBusy(false);
         });
       return;
     }
-    if (target === "calendar" && activeConnector === "calendar") {
+    if (target === "calendar") {
       const ownerId = user?.uid;
       const ownerToken = vaultOwnerToken;
       const signal = controller.current?.signal;
       if (!ownerId || !ownerToken || !user || !signal || signal.aborted || calendarBusy) return;
+      changesInFlight.current.add(target);
+      beginDisconnect("calendar");
       setCalendarBusy(true);
       void user.getIdToken()
         .then((idToken) => {
@@ -1228,63 +1677,102 @@ function OwnerConnectorsPanel({
         .then((result) => {
           if (!result || signal.aborted || user.uid !== ownerId || currentToken.current !== ownerToken) return;
           setCalendarMessage("Calendar disconnected.");
+          endDisconnect("calendar");
           calendar.refresh();
         })
         .catch(() => {
-          if (!signal.aborted && currentToken.current === ownerToken) setCalendarMessage("Could not disconnect Calendar. Try again.");
+          if (!signal.aborted && currentToken.current === ownerToken) {
+            setCalendarMessage("Could not disconnect Calendar. Try again.");
+            endDisconnect("calendar", DISCONNECT_FAILED);
+          }
         })
         .finally(() => {
-          if (!signal.aborted) setCalendarBusy(false);
+          changesInFlight.current.delete(target);
+          if (!signal.aborted) {
+            setCalendarBusy(false);
+            endDisconnect("calendar");
+          }
         });
       return;
     }
-    if (
-      !target ||
-      (target === "mail" && activeConnector !== "gmail") ||
-      (target !== "mail" && activeConnector !== "google_drive")
-    ) return;
     updatePendingSelection(null);
     if (target === "mail") {
       const signal = controller.current?.signal;
       if (mailLock.current || !signal || signal.aborted) return;
       mailLock.current = true;
+      changesInFlight.current.add(target);
+      beginDisconnect("gmail");
       setMailBusy(true);
       void gmail
         .disconnectGmail()
         .then(() => {
-          if (!signal.aborted)
-            setMailMessage("Mail disconnected. Drive is unchanged.");
+          if (signal.aborted) return;
+          setMailMessage("Mail disconnected. Drive is unchanged.");
+          endDisconnect("gmail");
         })
         .catch(() => {
-          if (!signal.aborted)
-            setMailMessage("Could not disconnect Mail. Check and retry.");
+          if (signal.aborted) return;
+          setMailMessage("Could not disconnect Mail. Check and retry.");
+          endDisconnect("gmail", DISCONNECT_FAILED);
         })
         .finally(() => {
           mailLock.current = false;
+          changesInFlight.current.delete(target);
           if (!signal.aborted) setMailBusy(false);
         });
-    } else if (target)
+      return;
+    }
+    if (target === "drive") {
+      if (driveLock.current) return;
+      changesInFlight.current.add(target);
+      beginDisconnect("google_drive");
       void runDrive(async (token, signal) => {
-        if (target === "drive") {
-          const result = await ExternalConnectorService.disconnect({
+        let result: Awaited<ReturnType<typeof ExternalConnectorService.disconnect>>;
+        try {
+          result = await ExternalConnectorService.disconnect({
             vaultOwnerToken: token,
             connectorId: "google_drive",
           });
-          if (signal.aborted) return;
-          setDocuments([]);
-          setDriveMessage(
-            result.revocationOutcome === "revoked"
-              ? "Drive disconnected. Mail is unchanged."
-              : "Drive is disabled in One. Google revocation was not confirmed; remove access in your Google account if needed.",
-          );
-        } else await ExternalConnectorService.removeDocument(token, target);
-        if (!signal.aborted) {
-          await refresh(signal);
-          await refreshDocuments(signal);
+        } catch (error) {
+          if (!signal.aborted) endDisconnect("google_drive", DISCONNECT_FAILED);
+          throw error;
         }
+        if (signal.aborted) return;
+        setDocuments([]);
+        setDriveMessage(
+          result.revocationOutcome === "revoked"
+            ? "Drive disconnected. Mail is unchanged."
+            : "Drive is disabled in One. Google revocation was not confirmed; remove access in your Google account if needed.",
+        );
+        endDisconnect("google_drive");
+        await refresh(signal);
+        await refreshDocuments(signal);
+      }).finally(() => {
+        changesInFlight.current.delete(target);
+        endDisconnect("google_drive");
       });
+      return;
+    }
+    // A selected Drive file, offered only from the Drive detail.
+    if (activeConnector !== "google_drive") return;
+    void runDrive(async (token, signal) => {
+      await ExternalConnectorService.removeDocument(token, target);
+      if (!signal.aborted) {
+        await refresh(signal);
+        await refreshDocuments(signal);
+      }
+    });
   };
-
+  const confirmBusy =
+    confirm === "mail"
+      ? mailBusy
+      : confirm === "calendar"
+        ? calendarBusy
+        : confirm?.startsWith("curated:")
+          ? curatedBusy
+        : confirm?.startsWith("plaid:")
+          ? plaidBusy
+          : driveBusy;
   const mailConnected = Boolean(gmail.status?.connected && !gmail.status?.needs_reauth);
   const driveConnected = ["connected", "verifying"].includes(drive?.status ?? "");
   const showConnector = (id: string) => {
@@ -1298,8 +1786,10 @@ function OwnerConnectorsPanel({
       detail: gmail.status?.needs_reauth ? "Sign-in needed" : undefined,
       connected: mailConnected,
       onOpen: () => showConnector("gmail"),
+      pending: disconnecting.gmail ? "disconnect" : mailPopupPending ? "connect" : undefined,
+      failure: disconnectFailures.gmail,
       action: mailConnected
-        ? { label: "Disconnect Gmail", onClick: () => { showConnector("gmail"); setConfirm("mail"); }, disabled: mailBusy }
+        ? { label: "Disconnect Gmail", onClick: () => askToDisconnect("gmail", "mail", true), disabled: mailBusy }
         : {
             label: "Connect Gmail",
             onClick: () => {
@@ -1319,15 +1809,17 @@ function OwnerConnectorsPanel({
           : undefined,
       connected: driveConnected,
       onOpen: () => showConnector("google_drive"),
+      pending: disconnecting.google_drive ? "disconnect" : drivePopupPending ? "connect" : undefined,
+      failure: disconnectFailures.google_drive,
       action: driveConnected
-        ? { label: "Disconnect Google Drive", onClick: () => { showConnector("google_drive"); setConfirm("drive"); }, disabled: driveBusy }
+        ? { label: "Disconnect Google Drive", onClick: () => askToDisconnect("google_drive", "drive", true), disabled: driveBusy }
         : !canConnectDrive
           ? undefined
         : {
-            label: "Connect Google Drive",
+            label: driveConnectionProfile === "live" ? "Review Google Drive access" : "Connect Google Drive",
             onClick: () => {
               showConnector("google_drive");
-              startDrive(driveConnectionProfile);
+              if (driveConnectionProfile !== "live") startDrive(driveConnectionProfile);
             },
             disabled: driveBusy || loading || !canConnectDrive,
           },
@@ -1340,6 +1832,8 @@ function OwnerConnectorsPanel({
       name: "Calendar",
       connected: calendar.connected,
       onOpen: () => showConnector("calendar"),
+      pending: disconnecting.calendar ? "disconnect" : calendarPopupPending ? "connect" : undefined,
+      failure: disconnectFailures.calendar,
       detail: calendar.error
         ? "Status unavailable"
         : !calendar.loaded
@@ -1351,13 +1845,13 @@ function OwnerConnectorsPanel({
         label: calendar.connected ? "Disconnect Calendar" : "Connect Calendar",
         onClick: () => {
           if (calendar.connected) {
-            showConnector("calendar");
-            setConfirm("calendar");
+            askToDisconnect("calendar", "calendar", true);
             return;
           }
-          onBack();
-          router.push(ROUTES.CALENDAR);
+          showConnector("calendar");
+          connectCalendar();
         },
+        disabled: calendarBusy,
       },
       trailingText: !calendar.loaded ? "Checking…" : undefined,
     },
@@ -1366,6 +1860,8 @@ function OwnerConnectorsPanel({
       name: "Plaid",
       connected: plaidConnections.length > 0,
       onOpen: () => showConnector("plaid"),
+      pending: disconnecting.plaid ? "disconnect" : undefined,
+      failure: disconnectFailures.plaid,
       detail: financial.error
         ? "Status unavailable"
         : financial.loading
@@ -1375,23 +1871,58 @@ function OwnerConnectorsPanel({
             : undefined,
     },
     ...(overview?.connectors ?? [])
-      .filter((item, index, items) =>
-        !["hubspot", "notion"].includes(item.connectorId) &&
-        !["google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId) &&
-        items.findIndex((candidate) => candidate.connectorId === item.connectorId) === index,
-      )
-      .map((item): ConnectorListEntry => ({
-        id: item.connectorId,
-        name: item.displayName,
-        detail: item.status === "needs_reauth" ? "Sign-in needed" : undefined,
-        connected: !["not_connected", "revoked"].includes(item.status),
-        onOpen: !["not_connected", "revoked"].includes(item.status)
-          ? () => showConnector(item.connectorId)
-          : undefined,
-        trailingText: ["not_connected", "revoked"].includes(item.status)
-          ? labels[item.status]
-          : undefined,
-      })),
+      .filter((item, index, items) => {
+        if (["notion", "google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
+        if (items.findIndex((candidate) => candidate.connectorId === item.connectorId) !== index) return false;
+        // A curated connector shows when it can accept a new grant, or while
+        // an existing owner grant still needs a Disconnect/recovery path.
+        if (CURATED_OAUTH_CONNECTORS.has(item.connectorId)) {
+          const hasExistingGrant = !["not_connected", "revoked"].includes(item.status);
+          return (curatedRolloutEnabled && item.available !== false) || hasExistingGrant;
+        }
+        return true;
+      })
+      .map((item): ConnectorListEntry => {
+        const storedGrant = !["not_connected", "revoked"].includes(item.status);
+        const curated = CURATED_OAUTH_CONNECTORS.has(item.connectorId);
+        const canStartCurated =
+          curated && curatedRolloutEnabled && item.available !== false;
+        // A curated connection stuck before verification cannot be used by Kai,
+        // so it reads as needing sign-in rather than as connected.
+        const signInNeeded =
+          item.status === "needs_reauth" || (curated && item.status === "verifying");
+        return {
+          id: item.connectorId,
+          name: item.displayName,
+          detail:
+            signInNeeded && canStartCurated
+              ? "Sign-in needed"
+              : curated && storedGrant && !canStartCurated
+                ? "Unavailable"
+                : undefined,
+          connected: curated ? item.status === "connected" : storedGrant,
+          onOpen: storedGrant || curated ? () => showConnector(item.connectorId) : undefined,
+          pending: disconnecting[item.connectorId] ? "disconnect" : undefined,
+          failure: disconnectFailures[item.connectorId],
+          action: !curated
+            ? undefined
+            : canStartCurated && (signInNeeded || !storedGrant)
+              ? {
+                  label: `${signInNeeded ? "Reconnect" : "Connect"} ${item.displayName}`,
+                  onClick: () => {
+                    showConnector(item.connectorId);
+                    connectCurated(item.connectorId, item.displayName);
+                  },
+                  disabled: curatedBusy || loading,
+                }
+              : {
+                  label: `Disconnect ${item.displayName}`,
+                  onClick: () => askToDisconnect(item.connectorId, `curated:${item.connectorId}`, true),
+                  disabled: curatedBusy,
+                },
+          trailingText: !storedGrant && !curated ? labels[item.status] : undefined,
+        };
+      }),
   ];
   const query = search.trim().toLocaleLowerCase();
   const matchingEntries = entries.filter(
@@ -1399,30 +1930,49 @@ function OwnerConnectorsPanel({
       !query ||
       `${entry.name} ${entry.detail ?? ""}`.toLocaleLowerCase().includes(query),
   );
-  const connectedEntries = matchingEntries.filter((entry) => entry.connected);
-  const availableEntries = matchingEntries.filter((entry) => !entry.connected);
+  // A row the person acted on from the list keeps its section until they next
+  // arrive at the list: the list never re-sorts under their finger.
+  const sitsInConnected = (entry: ConnectorListEntry) =>
+    pinnedSections[entry.id] ?? entry.connected;
+  const connectedEntries = matchingEntries.filter(sitsInConnected);
+  const availableEntries = matchingEntries.filter((entry) => !sitsInConnected(entry));
   const selectedCatalog = overview?.connectors.find(
     (item) => item.connectorId === activeConnector,
   );
+  const canStartSelectedCurated = Boolean(
+    selectedCatalog &&
+      CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+      curatedRolloutEnabled &&
+      selectedCatalog.available !== false,
+  );
 
+  const inProfile = surface === "profile";
+  const listSections = [
+    ["Connected", connectedEntries],
+    ["Available", availableEntries],
+  ] as const;
   return (
     <div
-      className="flex h-full min-h-0 flex-col bg-background text-foreground"
+      ref={panelRootRef}
+      className={
+        inProfile
+          ? "flex min-w-0 flex-col text-foreground"
+          : "flex h-full min-h-0 flex-col bg-background text-foreground"
+      }
       data-connections-panel
       data-connection-compact={activeConnector === "google_drive" && statusChecked && !loading && drive?.status === "connected" && !pending ? "" : undefined}
       data-surface={surface}
     >
-      <header className="flex shrink-0 items-center gap-2 px-4 pb-3 pt-4">
-        {activeConnector || surface === "settings" ? (
+      {inProfile ? null : <header className="flex shrink-0 items-center gap-2 px-4 pb-3 pt-4">
+        {activeConnector ? (
           <ShellActionSurface
             ref={detailBackRef}
             className="size-11"
             onClick={() => {
               setConfirm(null);
-              if (activeConnector) setActiveConnector(null);
-              else onBack();
+              setActiveConnector(null);
             }}
-            aria-label={activeConnector ? "Back to connectors" : "Back to profile"}
+            aria-label="Back to connectors"
           >
             <ArrowLeftIcon className="h-5 w-5" aria-hidden="true" />
           </ShellActionSurface>
@@ -1433,24 +1983,43 @@ function OwnerConnectorsPanel({
             ? entries.find((entry) => entry.id === activeConnector)?.name || "Connector"
             : "Connectors"}
         </h2>
-        {surface === "drawer" ? (
-          <ShellActionSurface
-            className="size-11"
-            onClick={() => {
-              setConfirm(null);
-              onClose();
-            }}
-            aria-label="Close connectors"
-          >
-            <XIcon className="size-4" aria-hidden="true" />
-          </ShellActionSurface>
-        ) : null}
-      </header>
-      <div className="min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]">
+        <ShellActionSurface
+          className="size-11"
+          onClick={() => {
+            setConfirm(null);
+            onClose();
+          }}
+          aria-label="Close connectors"
+        >
+          <XIcon className="size-4" aria-hidden="true" />
+        </ShellActionSurface>
+      </header>}
+      <div
+        className={
+          inProfile
+            ? "min-w-0 space-y-5"
+            : "min-h-0 flex-1 space-y-5 overflow-x-hidden overflow-y-auto overscroll-contain px-4 pb-[max(1.5rem,env(safe-area-inset-bottom))]"
+        }
+      >
         {!vaultOwnerToken ? (
           <p role="status" className="text-sm text-muted-foreground">
             Unlock your vault to manage connectors.
           </p>
+        ) : !activeConnector && inProfile ? (
+          <>
+            {listSections.map(([heading, items]) =>
+              items.length === 0 ? null : (
+                <SettingsGroup key={heading} title={heading} testId={`profile-connectors-${heading.toLowerCase()}`}>
+                  {items.map((entry) => <ProfileConnectorRow key={entry.id} entry={entry} />)}
+                </SettingsGroup>
+              ),
+            )}
+            {open && user?.uid && vaultKey && vaultOwnerToken ? <CustomConnectorsSettings
+              key={user.uid}
+              access={{ userId: user.uid, vaultKey, vaultOwnerToken }}
+              onPrepareRecovery={onPrepareRecovery}
+            /> : null}
+          </>
         ) : !activeConnector ? (
           <>
             <label className="flex min-h-11 items-center gap-2 rounded-full bg-foreground/10 px-4 text-muted-foreground focus-within:ring-2 focus-within:ring-inset focus-within:ring-ring">
@@ -1465,13 +2034,7 @@ function OwnerConnectorsPanel({
                 className="min-h-11 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
             </label>
-            {([[
-              "Connected",
-              connectedEntries,
-            ], [
-              "Available",
-              availableEntries,
-            ]] as const).map(([heading, items]) =>
+            {listSections.map(([heading, items]) =>
               query && items.length === 0 ? null : (
                 <section key={heading} aria-label={heading} className="space-y-2">
                   <h3 className="text-sm font-medium text-muted-foreground">{heading}</h3>
@@ -1495,7 +2058,13 @@ function OwnerConnectorsPanel({
             /> : null}
           </>
         ) : (
-          <>
+          <div
+            key={activeConnector}
+            ref={detailRegionRef}
+            tabIndex={-1}
+            data-connector-detail={activeConnector}
+            className="min-w-0 space-y-5 focus:outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-150"
+          >
             {activeConnector === "gmail" && <section
               aria-labelledby="connection-mail-title"
               className="space-y-3 rounded-xl border border-border p-3"
@@ -1602,6 +2171,12 @@ function OwnerConnectorsPanel({
                   </p>
                 </>
               )}
+              {overview?.features.google_drive_live === true &&
+                (drive?.status !== "connected" || drive?.profile !== "live") && (
+                <p className="text-sm text-muted-foreground">
+                  Full Drive access turns on background reads by default unless you turned them off. While you’re away, One may search Drive, send excerpts to Gemini, and share matching originals for document requests from accepted Trusted Circle members without asking again. The requester can open a file only after Google confirms access. Turn background access off anytime; your choice is saved.
+                </p>
+              )}
               <div className="flex flex-wrap gap-2">
                 {canConnectDrive && (!hasDriveGrant ||
                   drive?.status === "needs_reauth" ||
@@ -1652,11 +2227,6 @@ function OwnerConnectorsPanel({
                 </Button>}
               </div>
               {drivePopupPending && <Button size="compact" variant="outline" onClick={() => drivePopupCancel.current?.abort()}>Cancel sign-in</Button>}
-              {overview?.features.google_drive_live === true && drive?.profile !== "live" && (
-                <p className="text-sm text-muted-foreground">
-                  Full access lets One search Drive when needed. Sharing still needs your approval or a permission you set.
-                </p>
-              )}
               {canConnectDrive && driveConnectionProfile === "selected" && !hasDriveGrant && (
                 <p className="text-sm text-muted-foreground">
                   You can choose files after connecting. One cannot search your entire Drive with this access.
@@ -1664,20 +2234,27 @@ function OwnerConnectorsPanel({
               )}
               {drive?.profile === "live" && drive.status === "connected" && (
                 <div className="rounded-2xl bg-foreground/5 px-4 py-3">
-                  <label htmlFor={driveBackgroundId} className="flex min-h-11 cursor-pointer items-center justify-between gap-4">
+                  <label htmlFor={driveBackgroundId} className={`flex min-h-11 items-center justify-between gap-4${liveBackground === null ? "" : " cursor-pointer"}`}>
                     <span className="min-w-0">
-                      <span className="block text-sm font-medium">Background preparation</span>
-                      <span className="block text-xs text-muted-foreground">One may read relevant files and send excerpts to Gemini while you’re away.</span>
+                      <span className="block text-sm font-medium">Background Drive access</span>
+                      <span className="block text-xs text-muted-foreground">On by default. One may read Drive files, send excerpts to Gemini, and share matching originals for requests from accepted Trusted Circle members while you’re away. Turn off anytime.</span>
                     </span>
-                    <Switch id={driveBackgroundId} size="ios" aria-label="Background preparation" checked={liveBackground ?? false}
-                      disabled={driveBusy || liveBackground === null}
+                    {liveBackground !== null ? <Switch id={driveBackgroundId} size="ios" aria-label="Background Drive access" checked={liveBackground}
+                      disabled={driveBusy}
                       onCheckedChange={(next) => void runDrive(async (token) => {
-                        await ExternalConnectorService.setLiveBackground(token, next);
-                        setLiveBackground(next);
-                        setDriveMessage(next ? "Background preparation enabled." : "Background preparation disabled.");
+                        const confirmed = await ExternalConnectorService.setLiveBackground(token, next);
+                        setLiveBackground(confirmed);
+                        setDriveMessage(confirmed ? "Background Drive access is on." : "Background Drive access is off. New automatic document requests will wait.");
                       })}
-                    />
+                    /> : null}
                   </label>
+                  {liveBackground === null ? <div className="mt-2 text-xs text-muted-foreground">
+                    {liveBackgroundError ? <>
+                      Couldn’t check background Drive access. <Button size="compact" variant="ghost" onClick={() => retryLiveBackground((attempt) => attempt + 1)}>Retry setting</Button>
+                    </> : "Checking background Drive access…"}
+                  </div> : <p className="mt-2 text-xs text-muted-foreground">
+                    {liveBackground ? "On. Relevant work can continue while you’re away." : "Off. New automatic document requests wait until you turn this on."}
+                  </p>}
                 </div>
               )}
               {drive?.profile === "live" && drive.status === "connected" && (
@@ -1687,7 +2264,7 @@ function OwnerConnectorsPanel({
                     <ChevronRightIcon className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
                   </summary>
                   <p className="px-4 pb-4 text-muted-foreground">
-                    Sharing a file needs your approval or a document trust rule.
+                    Sharing a file needs your approval, document trust, or an accepted connection in your Trusted Circle while background Drive access is on. Google Drive confirms each file’s access before the requester can open it.
                   </p>
                 </details>
               )}
@@ -1706,7 +2283,11 @@ function OwnerConnectorsPanel({
                 aria-live="polite"
                 className="text-sm text-muted-foreground"
               >
-                {driveBusy ? "Updating Drive…" : driveMessage}
+                {drivePopupPending
+                  ? "Preparing secure Google sign-in…"
+                  : driveBusy
+                    ? "Updating Drive…"
+                    : driveMessage}
               </p>
               {pending && (
                 <section
@@ -1906,10 +2487,11 @@ function OwnerConnectorsPanel({
                 {calendar.connected ? (
                   <Button size="compact" variant="outline" disabled={calendarBusy} onClick={() => setConfirm("calendar")}>Disconnect Calendar</Button>
                 ) : (
-                  <Button size="compact" disabled={calendarBusy} onClick={() => { onBack(); router.push(ROUTES.CALENDAR); }}>Connect Calendar</Button>
+                  <Button size="compact" disabled={calendarBusy} onClick={() => connectCalendar()}>Connect Calendar</Button>
                 )}
+                {calendarPopupPending && <Button size="compact" variant="outline" onClick={() => calendarPopupCancel.current?.abort()}>Cancel sign-in</Button>}
                 {calendar.error ? <Button size="compact" variant="ghost" onClick={() => calendar.refresh()}>Retry</Button> : null}
-                {calendarMessage ? <p role="status" className="text-sm text-muted-foreground">{calendarMessage}</p> : null}
+                {calendarBusy || calendarMessage ? <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{calendarPopupPending ? "Finish signing in with Google in the window that opened." : calendarBusy ? "Updating Calendar…" : calendarMessage}</p> : null}
               </section>
             )}
             {activeConnector === "plaid" && (
@@ -1941,46 +2523,56 @@ function OwnerConnectorsPanel({
                 <h3 className="font-semibold">{selectedCatalog.displayName}</h3>
                 <p className="text-sm text-muted-foreground">{selectedCatalog.description}</p>
                 {selectedCatalog.accountLabel ? <p className="break-all text-sm">{selectedCatalog.accountLabel}</p> : null}
-                <p role="status" className="text-sm">{labels[selectedCatalog.status] ?? "Status unavailable"}</p>
-              </section>
-            )}
-            {confirm && (
-              <section
-                className="space-y-3 rounded-xl border border-border p-3"
-                aria-label="Confirm connection change"
-              >
-                <p className="text-sm">
-                  {confirm === "mail"
-                    ? "Disconnect Mail? Drive stays connected."
-                    : confirm === "drive"
-                      ? "Disconnect Drive and remove its selected files from One? Existing Google sharing stays active until you revoke it. Mail stays connected."
-                      : confirm === "calendar"
-                        ? "Disconnect Calendar from One? Other connections stay active."
-                      : confirm.startsWith("plaid:")
-                        ? "Disconnect this bank and remove its connected financial records from your vault? Other banks stay connected."
-                      : "Remove this file from One? The original in Google Drive is unchanged."}
+                <p role="status" className="text-sm">
+                  {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                  !canStartSelectedCurated &&
+                  !["not_connected", "revoked"].includes(selectedCatalog.status)
+                    ? "Unavailable"
+                    : CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) &&
+                        selectedCatalog.status === "verifying"
+                      ? "Sign-in needed"
+                    : (labels[selectedCatalog.status] ?? "Status unavailable")}
                 </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    className={touch}
-                    disabled={mailBusy || driveBusy || plaidBusy || calendarBusy}
-                    onClick={confirmAction}
-                  >
-                    Confirm
-                  </Button>
-                  <Button
-                    className={touch}
-                    variant="outline"
-                    onClick={() => setConfirm(null)}
-                  >
-                    Cancel
-                  </Button>
-                </div>
+                {CURATED_OAUTH_CONNECTORS.has(selectedCatalog.connectorId) ? (
+                  <>
+                    <div className="flex flex-wrap gap-2">
+                      {canStartSelectedCurated &&
+                      ["not_connected", "revoked", "needs_reauth", "verifying"].includes(selectedCatalog.status) ? (
+                        <Button
+                          className={touch}
+                          disabled={curatedBusy || loading}
+                          onClick={() => connectCurated(selectedCatalog.connectorId, selectedCatalog.displayName)}
+                        >
+                          {["needs_reauth", "verifying"].includes(selectedCatalog.status) ? "Reconnect" : "Connect"}
+                        </Button>
+                      ) : null}
+                      {!["not_connected", "revoked"].includes(selectedCatalog.status) ? (
+                        <Button
+                          className={touch}
+                          variant="outline"
+                          disabled={curatedBusy}
+                          onClick={() => setConfirm(`curated:${selectedCatalog.connectorId}`)}
+                        >
+                          Disconnect
+                        </Button>
+                      ) : null}
+                    </div>
+                    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+                      {curatedBusy ? "Working…" : curatedMessage}
+                    </p>
+                  </>
+                ) : null}
               </section>
             )}
-          </>
+          </div>
         )}
       </div>
+      <ConnectorConfirm
+        target={confirm}
+        busy={confirmBusy}
+        onConfirm={confirmAction}
+        onCancel={() => setConfirm(null)}
+      />
     </div>
   );
 }

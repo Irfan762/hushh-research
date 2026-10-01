@@ -1,5 +1,4 @@
 import type { User } from "firebase/auth";
-import { ApiService } from "@/lib/services/api-service";
 
 const NOTIFICATION_CLEANUP_BUDGET_MS = 2_000;
 
@@ -18,7 +17,6 @@ export async function settleSignOutNotifications(user: User): Promise<void> {
   const cleanup = async () => {
     const idToken = await user.getIdToken();
     if (controller.signal.aborted) return;
-    void ApiService.notifyAuthMail("signed_out", { idToken }).catch(() => undefined);
     const { deleteFCMToken } = await import("@/lib/notifications/fcm-service");
     if (controller.signal.aborted) return;
     await deleteFCMToken(user.uid, idToken, { signal: controller.signal });

@@ -880,7 +880,7 @@
         "requires_trusted_tap": false,
         "surface": null
       },
-      "description": "Opens the inline Terms document on the Login screen without leaving sign-in.",
+      "description": "Opens the full Terms of Use page. Back returns to sign-in.",
       "execution": {
         "binding_ref": "semantic_action:auth.open_terms",
         "executor": {
@@ -1018,7 +1018,7 @@
         "requires_trusted_tap": false,
         "surface": null
       },
-      "description": "Opens the inline Privacy Policy document on the Login screen without leaving sign-in.",
+      "description": "Opens the full Privacy Policy page. Back returns to sign-in.",
       "execution": {
         "binding_ref": "semantic_action:auth.open_privacy",
         "executor": {
@@ -1108,145 +1108,6 @@
       "search_keywords": [
         "privacy",
         "policy",
-        "legal"
-      ],
-      "settlement_proof": "directive_ledger_settlement",
-      "side_effect": {
-        "classification": "client_semantic_action"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Close legal document",
-        "close terms",
-        "close privacy policy",
-        "close legal document"
-      ],
-      "authorization": {
-        "guard_ids": [],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "auth.close_legal",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Closes the inline legal document and returns to the Login screen.",
-      "execution": {
-        "binding_ref": "semantic_action:auth.close_legal",
-        "executor": {
-          "kind": "existing_ui_semantic_action",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "EXECUTE",
-        "target": {
-          "path": "local_handler",
-          "status": "wired",
-          "target": "auth.close_legal"
-        }
-      },
-      "goal_id": "goal.auth.close_legal",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Close legal document",
-      "navigation": {
-        "fallback": "auth.close_legal",
-        "routes": [
-          "/login"
-        ],
-        "screens": [
-          "login"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": null,
-      "required_entities": [],
-      "search_keywords": [
-        "close",
-        "terms",
-        "privacy",
         "legal"
       ],
       "settlement_proof": "directive_ledger_settlement",
@@ -4202,1075 +4063,6 @@
       "search_keywords": [
         "cancel",
         "stop analysis"
-      ],
-      "settlement_proof": "approved_render_acknowledgement",
-      "side_effect": {
-        "classification": "render_or_guidance"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Open KYC",
-        "open kyc",
-        "open email",
-        "open email helper",
-        "show email requests",
-        "show requests"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required",
-          "vault_unlocked"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          },
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "vault_unlocked"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "route.one_kyc",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Navigates to One's approval-gated request review.",
-      "execution": {
-        "binding_ref": "route:/one/kyc",
-        "executor": {
-          "kind": "existing_route",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "NAVIGATE",
-        "target": {
-          "path": "route",
-          "status": "wired",
-          "target": "/one/kyc"
-        }
-      },
-      "goal_id": "goal.route.one_kyc",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Open KYC",
-      "navigation": {
-        "fallback": "/one/kyc",
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required",
-          "vault_unlocked"
-        ],
-        "mounted_surface_required": false,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": null,
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "one",
-        "request"
-      ],
-      "settlement_proof": "validated_route_settlement",
-      "side_effect": {
-        "classification": "navigation"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Manage verified addresses",
-        "manage verified addresses",
-        "manage verified emails",
-        "add email address",
-        "show matching emails"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.aliases.manage",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Opens the verified address panel used to match incoming requests.",
-      "execution": {
-        "binding_ref": "render:kyc.aliases.manage",
-        "executor": {
-          "kind": "typed_render",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "RENDER",
-        "target": {
-          "path": "",
-          "status": "unwired",
-          "target": ""
-        }
-      },
-      "goal_id": "goal.kyc.aliases.manage",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Manage verified addresses",
-      "navigation": {
-        "fallback": null,
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.data_card",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "address",
-        "match"
-      ],
-      "settlement_proof": "approved_render_acknowledgement",
-      "side_effect": {
-        "classification": "render_or_guidance"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Sync request status",
-        "sync email",
-        "refresh request status"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.workflow.sync_status",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Refreshes the selected request status after consent approval.",
-      "execution": {
-        "binding_ref": "render:kyc.workflow.sync_status",
-        "executor": {
-          "kind": "typed_render",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "RENDER",
-        "target": {
-          "path": "",
-          "status": "unwired",
-          "target": ""
-        }
-      },
-      "goal_id": "goal.kyc.workflow.sync_status",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Sync request status",
-      "navigation": {
-        "fallback": null,
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.data_card",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "sync",
-        "consent"
-      ],
-      "settlement_proof": "approved_render_acknowledgement",
-      "side_effect": {
-        "classification": "render_or_guidance"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Review response draft",
-        "review email draft",
-        "show email draft"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.draft.review",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Reads or focuses the current approval-gated response draft.",
-      "execution": {
-        "binding_ref": "render:kyc.draft.review",
-        "executor": {
-          "kind": "typed_render",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "RENDER",
-        "target": {
-          "path": "",
-          "status": "unwired",
-          "target": ""
-        }
-      },
-      "goal_id": "goal.kyc.draft.review",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Review response draft",
-      "navigation": {
-        "fallback": null,
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.data_card",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "draft",
-        "review"
-      ],
-      "settlement_proof": "approved_render_acknowledgement",
-      "side_effect": {
-        "classification": "render_or_guidance"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Request response revision",
-        "redraft email",
-        "revise email draft"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required",
-          "vault_unlocked"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          },
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "vault_unlocked"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.draft.request_redraft",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Requests a new response draft revision from typed or spoken user instructions.",
-      "execution": {
-        "binding_ref": "semantic_action:one_kyc_redraft",
-        "executor": {
-          "kind": "existing_ui_semantic_action",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "EXECUTE",
-        "target": {
-          "path": "local_handler",
-          "status": "wired",
-          "target": "one_kyc_redraft"
-        }
-      },
-      "goal_id": "goal.kyc.draft.request_redraft",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "instruction": {
-            "description": "How should I revise the current response draft?",
-            "type": "string"
-          }
-        },
-        "required": [
-          "instruction"
-        ],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "instruction": {
-            "description": "How should I revise the current response draft?",
-            "type": "string"
-          }
-        },
-        "required": [
-          "instruction"
-        ],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Request response revision",
-      "navigation": {
-        "fallback": "one_kyc_redraft",
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required",
-          "vault_unlocked"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.form",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "redraft",
-        "revise"
-      ],
-      "settlement_proof": "directive_ledger_settlement",
-      "side_effect": {
-        "classification": "client_semantic_action"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Approve response",
-        "approve email send",
-        "send email reply"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required",
-          "explicit_confirmation_required"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          },
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "explicit_confirmation_required"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.draft.approve_send",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Sends the response draft only after explicit user approval.",
-      "execution": {
-        "binding_ref": "render:kyc.draft.approve_send",
-        "executor": {
-          "kind": "typed_render",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "RENDER",
-        "target": {
-          "path": "",
-          "status": "unwired",
-          "target": ""
-        }
-      },
-      "goal_id": "goal.kyc.draft.approve_send",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Approve response",
-      "navigation": {
-        "fallback": null,
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required",
-          "explicit_confirmation_required"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.data_card",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "send",
-        "approve"
-      ],
-      "settlement_proof": "approved_render_acknowledgement",
-      "side_effect": {
-        "classification": "render_or_guidance"
-      },
-      "supported_entrypoints": [
-        "voice",
-        "chat",
-        "typed_search",
-        "command_bar",
-        "ui"
-      ],
-      "technical_interaction": {
-        "allowed_types": [
-          "oauth",
-          "native_permission"
-        ],
-        "policy": "platform_required_only",
-        "requires_user_interaction": false
-      },
-      "telemetry_event": "app_intelligence.action",
-      "version": 1
-    },
-    {
-      "aliases": [
-        "Reject response draft",
-        "reject email draft",
-        "block email request"
-      ],
-      "authorization": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "ownership": "server_resolved_for_target_entity",
-        "predicates": [
-          {
-            "authority": "server",
-            "effect": "required",
-            "id": "auth_required"
-          }
-        ],
-        "server_revalidation": "identity_consent_and_domain_service"
-      },
-      "availability": {
-        "feature_flags": [],
-        "product_available": true
-      },
-      "capability_id": "kyc.draft.reject",
-      "confirmation": {
-        "mode": "none",
-        "required": false,
-        "requires_trusted_tap": false,
-        "surface": null
-      },
-      "description": "Rejects the current response draft and blocks the workflow.",
-      "execution": {
-        "binding_ref": "render:kyc.draft.reject",
-        "executor": {
-          "kind": "typed_render",
-          "settlement": "directive_ledger_settlement"
-        },
-        "mode": "client_directive",
-        "outcome": "EXECUTE",
-        "target": {
-          "path": "",
-          "status": "unwired",
-          "target": ""
-        }
-      },
-      "goal_id": "goal.kyc.draft.reject",
-      "idempotency": {
-        "scope": "action_and_normalized_slots",
-        "strategy": "action_directive_ledger"
-      },
-      "inputSchema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "input_schema": {
-        "additionalProperties": false,
-        "properties": {},
-        "required": [],
-        "type": "object"
-      },
-      "kind": "action",
-      "label": "Reject response draft",
-      "navigation": {
-        "fallback": null,
-        "routes": [
-          "/one/kyc"
-        ],
-        "screens": [
-          "one_kyc"
-        ]
-      },
-      "outputSchema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "output_schema": {
-        "additionalProperties": false,
-        "properties": {
-          "action_id": {
-            "type": "string"
-          },
-          "message": {
-            "type": "string"
-          },
-          "status": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "status"
-        ],
-        "type": "object"
-      },
-      "preconditions": {
-        "guard_ids": [
-          "auth_required"
-        ],
-        "mounted_surface_required": true,
-        "requires_signed_in": false,
-        "requires_vault": false
-      },
-      "render_surface": "render.data_card",
-      "required_entities": [],
-      "search_keywords": [
-        "email",
-        "reject",
-        "block"
       ],
       "settlement_proof": "approved_render_acknowledgement",
       "side_effect": {
@@ -29516,7 +28308,7 @@
     },
     {
       "aliases": [
-        "Revoke a grant",
+        "Stop sharing access",
         "revoke that access",
         "stop sharing that",
         "take back access"
@@ -29576,7 +28368,7 @@
         "additionalProperties": false,
         "properties": {
           "request_id": {
-            "description": "Which grant should I revoke?",
+            "description": "Which shared access should I end?",
             "type": "string",
             "x-hushh-resolver": "opaque_request_id"
           }
@@ -29590,7 +28382,7 @@
         "additionalProperties": false,
         "properties": {
           "request_id": {
-            "description": "Which grant should I revoke?",
+            "description": "Which shared access should I end?",
             "type": "string",
             "x-hushh-resolver": "opaque_request_id"
           }
@@ -29601,7 +28393,7 @@
         "type": "object"
       },
       "kind": "action",
-      "label": "Revoke a grant",
+      "label": "Stop sharing access",
       "navigation": {
         "fallback": "consent.revoke",
         "routes": [
@@ -38242,7 +37034,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "d3fd2dffed1ed57074d13b47cbb7b9a1e1e73f9c10c6c65137d2fa1dcc86d0b1",
+      "projection_digest": "7b01423d18dd6a2df410fe2820d46887e49044562896ff2cba21300f62ee1c90",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -38252,7 +37044,7 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+        "capability_graph_evolution": "46ef51500f679427001b34ed111efc260b878327742c8f15036030782321271b",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
         "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
@@ -38261,7 +37053,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "d4b2dd7b65a583c6",
+      "source_revision": "a2886808e61bf4cb",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -39779,7 +38571,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "d4b2dd7b65a583c6",
+    "source_revision": "a2886808e61bf4cb",
     "web": {
       "actions": [
         {
@@ -39822,7 +38614,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "9a4eafd171006fd91af56a7bf383c565fb9addad3db0fccb7cfcbe50e5a4f541",
+      "projection_digest": "dd38bba84119ae174e27694c7381847aa615176649898fd43b9edd3614fd84d8",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -39832,7 +38624,7 @@
       ],
       "schema_version": "one.capability_platform_projection.v1",
       "source_digests": {
-        "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+        "capability_graph_evolution": "46ef51500f679427001b34ed111efc260b878327742c8f15036030782321271b",
         "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
         "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
         "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
@@ -39841,7 +38633,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "d4b2dd7b65a583c6",
+      "source_revision": "a2886808e61bf4cb",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -41398,7 +40190,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "d4b2dd7b65a583c6",
+  "revision": "a2886808e61bf4cb",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -41629,7 +40421,6 @@
     },
     {
       "action_ids": [
-        "auth.close_legal",
         "auth.open_privacy",
         "auth.open_terms",
         "auth.sign_in_apple",
@@ -42071,18 +40862,6 @@
       "kind": "screen",
       "label": "kai_portfolio_dashboard",
       "route_pattern": "/one/kai?tab=portfolio",
-      "telemetry_event": "app_intelligence.navigation",
-      "version": 1
-    },
-    {
-      "action_ids": [
-        "kyc.draft.request_redraft",
-        "route.one_kyc"
-      ],
-      "capability_id": "screen:/one/kyc",
-      "kind": "screen",
-      "label": "one_kyc",
-      "route_pattern": "/one/kyc",
       "telemetry_event": "app_intelligence.navigation",
       "version": 1
     },
@@ -43105,17 +41884,36 @@
     }
   ],
   "semantic_diff": {
-    "added": [
-      "screens:screen:/privacy",
-      "screens:screen:/terms"
-    ],
+    "added": [],
     "breaking": [],
-    "changed": [],
+    "changed": [
+      "services:service.email",
+      "services:service.kyc",
+      "workflows:workflow.setup.email"
+    ],
     "compatible": [],
-    "deprecated": [],
-    "from_revision": "5dd50f009b116724",
+    "deprecated": [
+      "actions:kyc.aliases.manage",
+      "actions:kyc.draft.approve_send",
+      "actions:kyc.draft.reject",
+      "actions:kyc.draft.request_redraft",
+      "actions:kyc.draft.review",
+      "actions:kyc.workflow.sync_status",
+      "actions:route.one_kyc",
+      "workflows:workflow.setup.email"
+    ],
+    "from_revision": "94e751d14ffa29a9",
     "migrated": [],
-    "removed": []
+    "removed": [
+      "actions:kyc.aliases.manage",
+      "actions:kyc.draft.approve_send",
+      "actions:kyc.draft.reject",
+      "actions:kyc.draft.request_redraft",
+      "actions:kyc.draft.review",
+      "actions:kyc.workflow.sync_status",
+      "actions:route.one_kyc",
+      "screens:screen:/one/kyc"
+    ]
   },
   "services": [
     {
@@ -43588,248 +42386,7 @@
         "setup.open_email",
         "setup.skip_email"
       ],
-      "api_endpoints": [
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_sync_recent",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_sync_recent",
-          "path": "/api/one/email/sync/recent",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_watch_renew",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_watch_renew",
-          "path": "/api/one/email/watch/renew",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_webhook",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_webhook",
-          "path": "/api/one/email/webhook",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_client_connector",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_client_connector",
-          "path": "/api/one/kyc/client-connector",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_register_client_connector",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_register_client_connector",
-          "path": "/api/one/kyc/client-connector",
-          "service_id": "email"
-        },
-        {
-          "authorization": "firebase_auth",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_automatic_response_preparation_preference",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_automatic_response_preparation_preference",
-          "path": "/api/one/kyc/preferences/automatic-response-preparation",
-          "service_id": "email"
-        },
-        {
-          "authorization": "firebase_auth",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.patch.one_kyc_set_automatic_response_preparation_preference",
-          "kind": "backend_api_endpoint",
-          "method": "PATCH",
-          "operation_name": "one_kyc_set_automatic_response_preparation_preference",
-          "path": "/api/one/kyc/preferences/automatic-response-preparation",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_retention_purge",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_retention_purge",
-          "path": "/api/one/kyc/retention/purge",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_list_workflows",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_list_workflows",
-          "path": "/api/one/kyc/workflows",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.delete.one_kyc_archive_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "DELETE",
-          "operation_name": "one_kyc_archive_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_approve_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_approve_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/approve-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_confirm_proposal",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_confirm_proposal",
-          "path": "/api/one/kyc/workflows/{workflow_id}/confirm-proposal",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow_consent_export",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow_consent_export",
-          "path": "/api/one/kyc/workflows/{workflow_id}/consent-export",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow_consent_exports",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow_consent_exports",
-          "path": "/api/one/kyc/workflows/{workflow_id}/consent-exports",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_extract_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_extract_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/extract-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft_full",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft_full",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft-full",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft_llm",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft_llm",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft-llm",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_refresh_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_refresh_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}/refresh",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_reject_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_reject_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/reject-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_select_scopes",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_select_scopes",
-          "path": "/api/one/kyc/workflows/{workflow_id}/scope-selection",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_send_approved_reply",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_send_approved_reply",
-          "path": "/api/one/kyc/workflows/{workflow_id}/send-approved-reply",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_writeback_complete",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_writeback_complete",
-          "path": "/api/one/kyc/workflows/{workflow_id}/writeback-complete",
-          "service_id": "email"
-        }
-      ],
+      "api_endpoints": [],
       "capability_id": "service.email",
       "completion": {
         "claim_policy": "verified_persisted_state_only",
@@ -43840,7 +42397,7 @@
       "executor_hierarchy": [
         {
           "action_ids": [],
-          "discovered_endpoint_count": 24,
+          "discovered_endpoint_count": 0,
           "kind": "backend_api",
           "reason": "Discovered endpoints are intentionally unbound until an audited action adapter registers one.",
           "status": "adapter_required"
@@ -44026,14 +42583,7 @@
       "version": 1
     },
     {
-      "action_ids": [
-        "kyc.aliases.manage",
-        "kyc.draft.approve_send",
-        "kyc.draft.reject",
-        "kyc.draft.request_redraft",
-        "kyc.draft.review",
-        "kyc.workflow.sync_status"
-      ],
+      "action_ids": [],
       "api_endpoints": [],
       "capability_id": "service.kyc",
       "completion": {},
@@ -45587,26 +44137,28 @@
     }
   ],
   "source_digests": {
-    "capability_graph_evolution": "0a9b96bfc6b080a4e6d0922e7b91cbd5edc6bcf55b7a6301c6184e89df23c09a",
+    "capability_graph_evolution": "46ef51500f679427001b34ed111efc260b878327742c8f15036030782321271b",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "5522c5d7849d2e9fcd743cba4310723afe18391038741c86770bb2820c1b8528",
+    "kai_action_gateway": "7e6fc3787daf322e97c1d546bbfe62856d51db9088944dbbbb43482ef3a917c0",
     "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "054141b4aaf04ef13ce9bd139a1044287be8703c1e65015cc338a970d4fa51ed",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-    "product_agent_registry": "6e434745750011b05c34dab34fcd39acbf23d13602ddd184246c7312ebaa73f5",
-    "route_orchestration_index": "a93ea81cfafed91dd93fbe0a51399a988a8ed2a7014d0b93cb8efdf777ddc35d",
+    "product_agent_registry": "c653d4ef1de5052b109b7688ee2483b8698ed888ae325702e9ccf9bcff407ac3",
+    "route_orchestration_index": "2c0a80ce5bfb82c804a7561ad751d0ee59cc2280ed6cdec670a27baf34b81697",
     "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
   },
-  "source_revision": "d4b2dd7b65a583c6",
+  "source_revision": "a2886808e61bf4cb",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "d4b2dd7b65a583c6",
+    "current_graph_revision": "a2886808e61bf4cb",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45617,6 +44169,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45625,30 +44178,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45664,7 +44229,9 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45675,6 +44242,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45683,30 +44251,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45721,8 +44301,12 @@
         "workflow_version": 1
       },
       {
-        "compatible_graph_revisions": [
+        "compatible_graph_revisions": [],
+        "migration_required_graph_revisions": [],
+        "rejected_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45733,6 +44317,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45741,30 +44326,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45772,15 +44369,15 @@
           "fb7a6340d119acec",
           "fbac9497545a7c39"
         ],
-        "migration_required_graph_revisions": [],
-        "rejected_graph_revisions": [],
-        "workflow_digest": "3aad956b5319e02af4a1471a9f0ab9962c216ac95f460cb9af97bcdefb25eed4",
+        "workflow_digest": "198ffc18d301a5de4ff00465e8d22a74ed40107b10dc268f94c1d44583de2e90",
         "workflow_id": "workflow.setup.email",
         "workflow_version": 1
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45791,6 +44388,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45799,30 +44397,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45838,7 +44448,9 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45849,6 +44461,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45857,30 +44470,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45896,7 +44521,9 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45907,6 +44534,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45915,30 +44543,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -45954,7 +44594,9 @@
       },
       {
         "compatible_graph_revisions": [
+          "04ed9dcd1e9c89ae",
           "0d62d7eee4a25fa1",
+          "0e6a579ea26b2b2f",
           "1016f2f0efc0cbd7",
           "114ef930def0cdbb",
           "12f82fc1dec40c31",
@@ -45965,6 +44607,7 @@
           "32eb22648d57ca04",
           "37cb394043f0f125",
           "41fcabe47a6c84ca",
+          "44b7ceb2261dee51",
           "4d1bf6b5a6a45c65",
           "511758965444c3bb",
           "525e1bea6e22f1da",
@@ -45973,30 +44616,42 @@
           "5dd50f009b116724",
           "5fe7cf2eaf8964c8",
           "6448b901792d40a4",
+          "6a2a7c280f69e9e0",
           "6be9b0c2414cdb98",
           "715bed22457a573a",
           "72155688eff9b624",
           "771cbd282b3b3c1a",
+          "804a8fd643783c90",
           "82e741080f6a22ff",
           "8e37ce83397a3ac7",
           "9195b95c1e25685f",
+          "94e751d14ffa29a9",
           "982f6c71300d5430",
           "99f8c9ff56a09d49",
           "9c797354f3ce3b52",
+          "9e0e176fc7891c1d",
           "9f73e84abaa708e0",
+          "a470a69ce2ec2250",
           "a4e4c3976f85ab29",
           "aaec9bce8ec29c93",
           "af42538767aa6642",
           "af57e85f060b7a4e",
           "bda0bffda4ed0335",
+          "be22fe6e0fa3f322",
+          "c118b9582508fec4",
           "c1df11d262f16eea",
           "c2e7e299b49c5228",
           "cb4b4f653c99fc16",
+          "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
           "cf08fb61503832fb",
+          "d1893c1a136dc255",
           "d3e820220dacdce1",
+          "d4b2dd7b65a583c6",
+          "e2bea9d9173fd56a",
           "e59793b27ab57818",
           "e957417b1eacbe4b",
+          "ea183f0f5321f862",
           "f0d84e300bb39de3",
           "f159d8b097f5456c",
           "f37e6638e90db246",
@@ -46591,248 +45246,7 @@
         "resume Email onboarding",
         "Email onboarding"
       ],
-      "api_endpoints": [
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_sync_recent",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_sync_recent",
-          "path": "/api/one/email/sync/recent",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_watch_renew",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_watch_renew",
-          "path": "/api/one/email/watch/renew",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_email_webhook",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_email_webhook",
-          "path": "/api/one/email/webhook",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_client_connector",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_client_connector",
-          "path": "/api/one/kyc/client-connector",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_register_client_connector",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_register_client_connector",
-          "path": "/api/one/kyc/client-connector",
-          "service_id": "email"
-        },
-        {
-          "authorization": "firebase_auth",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_automatic_response_preparation_preference",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_automatic_response_preparation_preference",
-          "path": "/api/one/kyc/preferences/automatic-response-preparation",
-          "service_id": "email"
-        },
-        {
-          "authorization": "firebase_auth",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.patch.one_kyc_set_automatic_response_preparation_preference",
-          "kind": "backend_api_endpoint",
-          "method": "PATCH",
-          "operation_name": "one_kyc_set_automatic_response_preparation_preference",
-          "path": "/api/one/kyc/preferences/automatic-response-preparation",
-          "service_id": "email"
-        },
-        {
-          "authorization": "not_declared",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_retention_purge",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_retention_purge",
-          "path": "/api/one/kyc/retention/purge",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_list_workflows",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_list_workflows",
-          "path": "/api/one/kyc/workflows",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.delete.one_kyc_archive_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "DELETE",
-          "operation_name": "one_kyc_archive_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_approve_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_approve_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/approve-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_confirm_proposal",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_confirm_proposal",
-          "path": "/api/one/kyc/workflows/{workflow_id}/confirm-proposal",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow_consent_export",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow_consent_export",
-          "path": "/api/one/kyc/workflows/{workflow_id}/consent-export",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.get.one_kyc_get_workflow_consent_exports",
-          "kind": "backend_api_endpoint",
-          "method": "GET",
-          "operation_name": "one_kyc_get_workflow_consent_exports",
-          "path": "/api/one/kyc/workflows/{workflow_id}/consent-exports",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_extract_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_extract_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/extract-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft_full",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft_full",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft-full",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_redraft_llm",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_redraft_llm",
-          "path": "/api/one/kyc/workflows/{workflow_id}/redraft-llm",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_refresh_workflow",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_refresh_workflow",
-          "path": "/api/one/kyc/workflows/{workflow_id}/refresh",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_reject_draft",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_reject_draft",
-          "path": "/api/one/kyc/workflows/{workflow_id}/reject-draft",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_select_scopes",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_select_scopes",
-          "path": "/api/one/kyc/workflows/{workflow_id}/scope-selection",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_send_approved_reply",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_send_approved_reply",
-          "path": "/api/one/kyc/workflows/{workflow_id}/send-approved-reply",
-          "service_id": "email"
-        },
-        {
-          "authorization": "vault_owner",
-          "binding_status": "discovered_unbound",
-          "capability_id": "api.email.post.one_kyc_writeback_complete",
-          "kind": "backend_api_endpoint",
-          "method": "POST",
-          "operation_name": "one_kyc_writeback_complete",
-          "path": "/api/one/kyc/workflows/{workflow_id}/writeback-complete",
-          "service_id": "email"
-        }
-      ],
+      "api_endpoints": [],
       "authorization": {
         "server_revalidation": "identity_and_persisted_onboarding_state"
       },
@@ -46872,7 +45286,7 @@
         "executor_hierarchy": [
           {
             "action_ids": [],
-            "discovered_endpoint_count": 24,
+            "discovered_endpoint_count": 0,
             "kind": "backend_api",
             "reason": "Discovered endpoints are intentionally unbound until an audited action adapter registers one.",
             "status": "adapter_required"

@@ -1,5 +1,6 @@
 "use client";
 
+import { SUPERSEDED_KEY } from "@/lib/pkm/pkm-supersede-merge";
 import {
   LINKED_ACCOUNTS_BRANCH,
   PLAID_VAULT_RECORD_BRANCHES,
@@ -84,10 +85,8 @@ const INTERNAL_KEYS = new Set([
 ]);
 const SECRET_KEY_PATTERN =
   /(?:^|[_-])(secret|secrets|password|passphrase|token|api[_-]?key|private[_-]?key|encryption[_-]?key|recovery[_-]?key|vault[_-]?key|credential|credentials|authorization|mnemonic)(?:$|[_-])/i;
-const AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN =
-  /(?:^|[_-])(account[_-]?(?:number|no)|routing[_-]?(?:number|no)|iban|swift|ssn|social[_-]?security|tax[_-]?(?:id|number)|passport(?:[_-]?(?:number|no))?|driver(?:s)?[_-]?licen[cs]e(?:[_-]?(?:number|no))?|licen[cs]e[_-]?(?:number|no)|identity[_-]?document|document[_-]?(?:number|no)|card[_-]?number|pan|aadhaar|aadhar|national[_-]?id|government[_-]?id)(?:$|[_-])/i;
-const AGENT_CONTEXT_NEVER_CONTEXT_KEY_PATTERN =
-  /(?:^|[_-])(cvv|cvc|pin|otp|one[_-]?time[_-]?(?:password|code))(?:$|[_-])/i;
+const AGENT_CONTEXT_SENSITIVE_KEY_PATTERN =
+  /(?:^|[_-])(account[_-]?(?:number|no)|routing[_-]?(?:number|no)|iban|swift|ssn|social[_-]?security|tax[_-]?(?:id|number)|passport(?:[_-]?(?:number|no))?|driver(?:s)?[_-]?licen[cs]e(?:[_-]?(?:number|no))?|licen[cs]e[_-]?(?:number|no)|identity[_-]?document|document[_-]?(?:number|no)|card[_-]?number|pan|cvv|cvc|pin|otp|one[_-]?time[_-]?(?:password|code)|aadhaar|aadhar|national[_-]?id|government[_-]?id)(?:$|[_-])/i;
 const AGENT_CONTEXT_SOURCE_KEY_PATTERN =
   /(?:^|[_-])(source[_-]?(?:text|document|file|artifact|extract|content)|document[_-]?(?:text|content|file)|raw[_-]?(?:text|content|document)|transcript|provenance)(?:$|[_-])/i;
 /**
@@ -172,14 +171,11 @@ function isInternalPkmKey(key: string): boolean {
   const normalized = normalizeKey(key);
   if (!normalized) return true;
   if (INTERNAL_KEYS.has(normalized)) return true;
+  // Earlier values of a changed detail are the owner's history, never a
+  // current fact for a Memory card or One's context packet.
+  if (normalized === SUPERSEDED_KEY) return true;
   if (INTERNAL_PKM_DOMAINS.has(normalized) || SECRET_KEY_PATTERN.test(normalized)) return true;
-  if (
-    normalized.endsWith("_id") &&
-    normalized !== "student_id" &&
-    !AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN.test(normalized)
-  ) {
-    return true;
-  }
+  if (normalized.endsWith("_id") && normalized !== "student_id") return true;
   if (normalized.includes("cipher") || normalized.includes("token")) return true;
   return false;
 }
@@ -214,17 +210,9 @@ export function shouldSkipPkmAgentContextKey(key: string): boolean {
     isInternalPkmKey(key) ||
     normalized === LINKED_ACCOUNTS_BRANCH ||
     normalized === "source_library" ||
-    AGENT_CONTEXT_NEVER_CONTEXT_KEY_PATTERN.test(normalized) ||
+    AGENT_CONTEXT_SENSITIVE_KEY_PATTERN.test(normalized) ||
     AGENT_CONTEXT_SOURCE_KEY_PATTERN.test(normalized)
   );
-}
-
-/**
- * Marks owner records that One may use in this unlocked session only when the
- * owner directly asks for them or asks One to prepare the relevant disclosure.
- */
-export function isPkmAgentRestrictedDisclosureKey(key: string): boolean {
-  return AGENT_CONTEXT_RESTRICTED_DISCLOSURE_KEY_PATTERN.test(normalizeKey(key));
 }
 
 /**

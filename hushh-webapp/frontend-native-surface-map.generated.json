@@ -36,10 +36,6 @@
       "file": "app/api/app-config/review-mode/session/route.ts"
     },
     {
-      "template": "/api/auth/mail",
-      "file": "app/api/auth/mail/route.ts"
-    },
-    {
       "template": "/api/auth/session",
       "file": "app/api/auth/session/route.ts"
     },
@@ -631,8 +627,8 @@
       "page_file": "app/circle/join/page.tsx",
       "physical_page_exists": true,
       "route_contract": {
-        "mode": "redirect",
-        "exemption_reason": "Public Circle join landing route reads the invite code from the query string and redirects into the in-app Join-with-code flow; it owns no signed-in app shell of its own.",
+        "mode": "hidden",
+        "exemption_reason": "Public three-screen Circle invitation preview owns its navigation; account-based joining continues through the protected Connect flow.",
         "shell_verification_file": null,
         "shell_verification_includes": [],
         "interaction_layer_policy": {
@@ -663,14 +659,22 @@
       },
       "native": {
         "route": "/circle/join",
-        "classification": "excluded-web-only",
-        "reason": "Invite landing opened from a shared link. The link arrives in a browser, and the flow hands off to the app rather than being rendered by it."
+        "classification": "native-required-functional",
+        "initialRoute": "/circle/join?code=native-invitation-fixture",
+        "expectedMarker": "native-route-circle-join",
+        "expectedRoute": "/circle/join",
+        "autoReviewerLogin": false,
+        "expectedAuth": "anonymous",
+        "allowedDataStates": [
+          "loaded",
+          "unavailable-valid"
+        ]
       },
       "shell": {
         "app_page_shell": true,
         "page_header": true,
         "settings_ui": false,
-        "shared_loader": false,
+        "shared_loader": true,
         "back_button_pattern": "shared-shell"
       },
       "voice_action_contract_file": null,
@@ -1795,9 +1799,7 @@
         "shell_verification_file": null,
         "shell_verification_includes": [],
         "interaction_layer_policy": {
-          "allowed_families": [
-            "legal_document"
-          ]
+          "allowed_families": []
         },
         "voice_playbook": {
           "playbook_id": "route.login",
@@ -1845,7 +1847,6 @@
       },
       "voice_action_contract_file": "app/login/page.voice-action-contract.json",
       "voice_action_contract_ids": [
-        "auth.close_legal",
         "auth.open_privacy",
         "auth.open_terms",
         "auth.sign_in_apple",
@@ -5134,23 +5135,20 @@
         "route": "/one/profile/connectors",
         "classification": "native-required-functional",
         "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fconnectors",
-        "expectedMarker": "native-route-profile-connectors",
+        "expectedMarker": "native-route-profile",
         "expectedRoute": "/one/profile/connectors",
         "autoReviewerLogin": true,
         "expectedAuth": "authenticated",
         "allowedDataStates": [
-          "loading",
-          "loaded",
-          "empty-valid",
-          "unavailable-valid"
+          "loaded"
         ]
       },
       "shell": {
-        "app_page_shell": true,
-        "page_header": true,
+        "app_page_shell": false,
+        "page_header": false,
         "settings_ui": false,
         "shared_loader": false,
-        "back_button_pattern": "route-local-check-required"
+        "back_button_pattern": "shared-shell"
       },
       "voice_action_contract_file": null,
       "voice_action_contract_ids": [],
@@ -9492,5 +9490,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "d7345e3fbf53e46df01904a17db18499736da2175bcc5096c4f5d9d26be12f29"
+  "content_sha256": "64ba9b4b34624d8c7bcc9d1dc04b56a358aa5c750a5bfdcf8239ee9bf9a40771"
 }

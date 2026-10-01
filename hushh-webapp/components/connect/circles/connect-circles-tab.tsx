@@ -10,7 +10,8 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
-import { Briefcase, ChevronRight, Heart, KeyRound, MapPin, MessageCircle, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
+import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
+import { InviteCodeRowIcon, PeopleRowIcon } from "@/components/icons/agents";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
@@ -205,15 +206,6 @@ function CircleCluster({
           )}
         </span>
       )}
-      {kind === "sms" ? (
-        <span className="ml-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]">
-          <SmsTextIcon className="text-[8px]" />
-        </span>
-      ) : kind === "trusted" ? (
-        <span className="ml-2 inline-flex size-7 shrink-0 items-center justify-center rounded-full bg-[color:var(--app-secondary-fill)] text-[color:var(--app-secondary-label)]">
-          <ShieldCheck className="size-4" />
-        </span>
-      ) : null}
     </span>
   );
 }
@@ -230,11 +222,15 @@ function systemKindOf(circle: OneLocationCircleSummary): string | null {
   return circle.isSystem ? "sms" : null;
 }
 
+function SmsCircleMainIcon() {
+  return <SmsTextIcon className="text-[10px] font-bold" />;
+}
+
 /** Decorative category cues only; an arbitrary user-named circle stays generic. */
 function circleVisual(circle: OneLocationCircleSummary) {
   const kind = systemKindOf(circle);
   if (kind === "trusted") return { Icon: ShieldCheck, tone: "text-[color:var(--app-accent)] bg-[color:var(--app-accent-ring)]" };
-  if (kind === "sms") return { Icon: MessageCircle, tone: "text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950/40" };
+  if (kind === "sms") return { Icon: SmsCircleMainIcon, tone: "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]" };
   const name = circle.name.trim().toLowerCase();
   if (name === "family" || name === "family circle") return { Icon: Heart, tone: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-950/40" };
   if (name === "finance" || name === "finance circle") return { Icon: Wallet, tone: "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40" };
@@ -313,6 +309,7 @@ export function orderCircles(circles: readonly OneLocationCircleSummary[]): {
 export function ConnectCirclesTab({
   onStateChange,
   currentUserId = null,
+  isActive = true,
   onRequestConnection,
   onCancelConnectionRequest,
   refreshToken = 0,
@@ -321,6 +318,8 @@ export function ConnectCirclesTab({
    *  hoisting circle state into a 2,400-line component. */
   onStateChange?: (state: ConnectCirclesSnapshot) => void;
   currentUserId?: string | null;
+  /** The swipe pane stays mounted when Connections is selected. */
+  isActive?: boolean;
   /**
    * Opens the SAME capability review the Connect directory opens.
    *
@@ -527,6 +526,8 @@ export function ConnectCirclesTab({
     },
     [router, searchParams],
   );
+  const goRef = useRef(go);
+  goRef.current = go;
 
   /** Publish a successful local mutation through the same account-scoped
    *  channel remote notifications use. That updates this tab and every other
@@ -574,6 +575,38 @@ export function ConnectCirclesTab({
       setReloadToken((token) => token + 1);
     });
   }, [circleIdParam, currentUserId, go]);
+
+  useEffect(() => {
+    if (!currentUserId || !vaultOwnerToken || !isActive) return;
+    // Push/SSE is the fast path. A visible-only read repairs a dropped push
+    // without requiring a user to blur the app or manually refresh the tab.
+    let cancelled = false;
+    let inFlight = false;
+    const timer = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || inFlight) return;
+      inFlight = true;
+      void OneLocationService.listCircles(vaultOwnerToken)
+        .then((next) => {
+          if (cancelled) return;
+          setLoaded({ token: vaultOwnerToken, ownerId: currentUserId, circles: next });
+          setError(null);
+          setLoading(false);
+          if (circleIdParam && !next.some((circle) => circle.id === circleIdParam)) {
+            goRef.current({ action: null, circleId: null, code: null }, "replace");
+            return;
+          }
+          if (circleIdParam) setDetailReloadToken((token) => token + 1);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          inFlight = false;
+        });
+    }, 30_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [circleIdParam, currentUserId, isActive, vaultOwnerToken]);
 
   const closeFlow = useCallback((refreshList = true) => {
     // `replace`, not push. This runs after leaving and after deleting, so the
@@ -966,8 +999,8 @@ export function ConnectCirclesTab({
       {vaultOwnerToken && !showingStarter ? (
         <SettingsGroup separatorInset>
           <SettingsRow
-            icon={Plus}
-            iconTone="indigo"
+            icon={PeopleRowIcon}
+            iconTone="capability"
             title="New circle"
             description="Create a group for your connections."
             density="compact"
@@ -977,8 +1010,8 @@ export function ConnectCirclesTab({
             testId="connect-circle-create"
           />
           <SettingsRow
-            icon={KeyRound}
-            iconTone="gray"
+            icon={InviteCodeRowIcon}
+            iconTone="capability"
             title="Join with code"
             description="Enter a shared 12-character code."
             density="compact"

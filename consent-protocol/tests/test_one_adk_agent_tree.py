@@ -39,6 +39,7 @@ from hushh_mcp.one_adk.action_tools import (
     _is_journey_startable,
     _journey_slots,
     _navigation_journey_definition,
+    add_to_pkm,
     continue_app_goal,
     discover_person_information,
     get_location_circle_members,
@@ -88,6 +89,7 @@ from hushh_mcp.one_adk.pending_email_draft import (
     STATE_PENDING_EMAIL_DRAFT,
     admit_pending_email_draft,
 )
+from hushh_mcp.one_adk.queued_input import club_queued_input
 from hushh_mcp.services.action_gateway import get_action_gateway_action, list_action_gateway_actions
 from hushh_mcp.services.connections_service import ConnectionsError, ConnectionsService
 from hushh_mcp.services.live_voice_context import (
@@ -146,7 +148,14 @@ class TestAgentTreeShape:
     def test_root_agent_is_one_with_full_roster(self):
         agent = build_one_root_agent()
         assert agent.name == "one"
-        assert agent.before_model_callback is timed_one_before_model
+        # Consent redaction runs first, so timing measures the request actually sent.
+        # Queued input joins last: the timing callback can still answer for the
+        # model (the read barrier), and a message must never be drained into a
+        # call that is not made.
+        callbacks = agent.canonical_before_model_callbacks
+        assert callbacks[0].__name__ == "_one_consent_before_model"
+        assert callbacks[1] is timed_one_before_model
+        assert callbacks[-1] is club_queued_input
         assert agent.after_model_callback is timed_one_after_model
         tool_names = {
             getattr(t, "name", getattr(t, "__name__", type(t).__name__)) for t in agent.tools
@@ -479,23 +488,23 @@ class TestAgentTreeShape:
                 state={
                     STATE_VOICE_CONTEXT: {
                         "route_playbook": {
-                            "purpose": "Sign in with a verified provider.",
-                            "primary_action_id": "auth.sign_in_apple",
+                            "purpose": "Verify a phone number.",
+                            "primary_action_id": "phone_mandate.submit_number",
                         },
                         "available_action_ids": [
-                            "auth.sign_in_apple",
-                            "auth.sign_in_google",
-                            "auth.close_legal",
+                            "phone_mandate.submit_number",
+                            "phone_mandate.submit_code",
+                            "phone_mandate.close_country_picker",
                         ],
                         "ui": {
                             "interaction_layer": {
-                                "layer_id": "login_terms",
-                                "kind": "legal",
+                                "layer_id": "phone_country_picker",
+                                "kind": "country_picker",
                                 "modality": "modal",
                                 "lifecycle_state": "open",
-                                "dismiss_action_id": "auth.close_legal",
-                                "visible_action_ids": ["auth.close_legal"],
-                                "visible_control_ids": ["auth_close_legal"],
+                                "dismiss_action_id": "phone_mandate.close_country_picker",
+                                "visible_action_ids": ["phone_mandate.close_country_picker"],
+                                "visible_control_ids": ["phone-flow-country"],
                                 "options": [],
                                 "underlying_actions_available": False,
                                 "agent_continuity": "interactive",
@@ -508,10 +517,10 @@ class TestAgentTreeShape:
 
         assert "ACTIVE INTERACTION LAYER" in instruction
         assert "strongest current context" in instruction
-        assert "Close legal document => auth.close_legal" in instruction
+        assert "Close Country Picker => phone_mandate.close_country_picker" in instruction
         assert "Do not offer or execute controls behind this layer" in instruction
-        assert "Continue with Apple => auth.sign_in_apple" not in instruction
-        assert "Continue with Google => auth.sign_in_google" not in instruction
+        assert "Submit Phone Number => phone_mandate.submit_number" not in instruction
+        assert "Submit Verification Code => phone_mandate.submit_code" not in instruction
         assert "Never claim success until the correlated browser settlement" in instruction
 
     def test_runtime_instruction_keeps_exact_provider_actions_intelligence_driven(self):
@@ -1017,7 +1026,6 @@ class TestGmailEmailDraftDirective:
         assert "do not draft a refusal" in instruction
         assert "ask the owner plainly for exactly the missing information" in instruction
         assert "save the details privately and prepare the email" in instruction
-        assert "owner_supplied_requested_information=true" in instruction
 
     def test_memory_in_the_persons_words_means_their_pkm(self):
         # People say "memory" or "what you know about me"; the tools say PKM.
@@ -1219,9 +1227,7 @@ class TestGmailEmailDraftDirective:
         }
 
         result = await open_gmail_information_request_reply(
-            "Here are the requested details.",
-            _tool_context(state),
-            owner_supplied_requested_information=False,
+            "Here are the requested details.", _tool_context(state)
         )
 
         assert result["status"] == "draft_opened"
@@ -1232,39 +1238,6 @@ class TestGmailEmailDraftDirective:
                 "workflow_id": "workflow-1",
             },
         }
-
-    @pytest.mark.asyncio
-    async def test_selected_request_reply_accepts_the_owner_answer_signal_without_persisting_it(
-        self,
-    ):
-        state = {
-            STATE_USER_ID: "u1",
-            STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID: "workflow-1",
-        }
-
-        result = await open_gmail_information_request_reply(
-            "Here are the requested details.",
-            _tool_context(state),
-            owner_supplied_requested_information=True,
-        )
-
-        assert result["status"] == "draft_opened"
-        assert state[f"{STATE_PENDING_DIRECTIVE}:gmail_information_request_reply"]["payload"] == {
-            "kind": "gmail_information_request_reply",
-            "workflow_id": "workflow-1",
-        }
-
-    def test_selected_request_reply_requires_one_to_classify_the_owner_answer(self):
-        from google.adk.tools import FunctionTool
-
-        parameters = (
-            FunctionTool(open_gmail_information_request_reply)
-            ._get_declaration()
-            .parameters_json_schema
-        )
-
-        assert "owner_supplied_requested_information" in parameters["properties"]
-        assert "owner_supplied_requested_information" in parameters["required"]
 
 
 class TestRunAppAction:
@@ -4528,6 +4501,44 @@ class TestReadMyPkmDomainSummary:
             result = await read_my_pkm_domain_summary("financial", _tool_context(state))
         assert result["status"] == "failed"
         assert "try again" in result["message"].lower()
+
+
+class TestAddToPkmNeverClaimsASave:
+    """add_to_pkm hands work to the device; it must never read as a completed save.
+
+    Production 2026-09-29: the tool returned "Saving eligible details
+    privately." and One told the person their document had been "queued and
+    submitted" to memory. Nothing had been saved.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_result_says_nothing_is_saved_yet(self) -> None:
+        ctx = SimpleNamespace(state={})
+        result = await add_to_pkm("I prefer window seats", "owner asked", ctx)
+        assert result["saved"] is False
+        assert result["status"] == "handed_to_device"
+        assert "Nothing is saved yet" in result["message"]
+        assert "Do not say it is saved" in result["message"]
+        directive = ctx.state[f"{_STATE_PENDING_DIRECTIVE}:pkm_add"]
+        assert directive["payload"] == {
+            "actionId": "pkm.add",
+            "slots": {"source_text": "I prefer window seats"},
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_pasted_document_is_read_from_the_turn_not_copied(self) -> None:
+        ctx = SimpleNamespace(state={})
+        result = await add_to_pkm("", "owner pasted context", ctx, whole_message=True)
+        assert result["saved"] is False
+        slots = ctx.state[f"{_STATE_PENDING_DIRECTIVE}:pkm_add"]["payload"]["slots"]
+        assert slots["source_scope"] == "turn"
+
+    @pytest.mark.asyncio
+    async def test_an_empty_single_detail_is_refused(self) -> None:
+        ctx = SimpleNamespace(state={})
+        result = await add_to_pkm("  ", "none", ctx)
+        assert result["status"] == "missing_text"
+        assert not ctx.state
 
 
 class TestSettledActionJourneys:

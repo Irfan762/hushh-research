@@ -1,8 +1,8 @@
 {
   "generated_at": "2026-09-20",
   "total_routes": 123,
-  "native_required_routes": 102,
-  "excluded_routes": 21,
+  "native_required_routes": 103,
+  "excluded_routes": 20,
   "routes": [
     {
       "route": "/",
@@ -32,8 +32,13 @@
     },
     {
       "route": "/circle/join",
-      "classification": "excluded-web-only",
-      "reason": "Invite landing opened from a shared link. The link arrives in a browser, and the flow hands off to the app rather than being rendered by it."
+      "classification": "native-required-functional",
+      "initialRoute": "/circle/join?code=native-invitation-fixture",
+      "expectedMarker": "native-route-circle-join",
+      "expectedRoute": "/circle/join",
+      "autoReviewerLogin": false,
+      "expectedAuth": "anonymous",
+      "allowedDataStates": ["loaded", "unavailable-valid"]
     },
     {
       "route": "/connected-systems",
@@ -745,15 +750,12 @@
       "route": "/one/profile/connectors",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fconnectors",
-      "expectedMarker": "native-route-profile-connectors",
+      "expectedMarker": "native-route-profile",
       "expectedRoute": "/one/profile/connectors",
       "autoReviewerLogin": true,
       "expectedAuth": "authenticated",
       "allowedDataStates": [
-        "loading",
-        "loaded",
-        "empty-valid",
-        "unavailable-valid"
+        "loaded"
       ]
     },
     {

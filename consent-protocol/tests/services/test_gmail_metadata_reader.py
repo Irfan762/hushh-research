@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from copy import deepcopy
@@ -113,6 +114,21 @@ async def test_search_is_one_page_metadata_only_and_drops_provider_ids_and_bodie
     assert len(calls) == 2
     assert result["truncated"] and result["metadata_only"] and result["one_page_only"]
     assert result["untrusted_external_content"][0]["subject"] == "Project plan"
+    # Counted here, where the reader knows what it fetched and what survived.
+    # Anything downstream would be counting a model's citations instead.
+    assert result["coverage"] == {
+        "operation": "search_inbox",
+        "mailbox": "inbox",
+        "scope": "search",
+        "unit": "messages",
+        "assessed": 1,
+        "returned": 1,
+        "matches_beyond_page": True,
+        "items_omitted": False,
+        "content_shortened": False,
+        "content_depth": "metadata",
+        "one_page_only": True,
+    }
     serialized = json.dumps(result)
     assert all(
         secret not in serialized
@@ -143,6 +159,12 @@ async def test_needs_reply_does_not_fetch_invites_or_full_messages():
     result = await _reader(_Gmail(), respond).read("list_needs_reply", {})
     assert len(calls) == 2
     assert result["untrusted_external_content"][0]["sender"] == "Alice"
+    # One row is one conversation here, not one message, so a spoken count built
+    # on this must not say "messages". `assessed` is the number of threads the
+    # nudge rule evaluated -- a floor, since the listing itself is capped at 25.
+    assert result["coverage"]["unit"] == "threads"
+    assert result["coverage"]["returned"] == 1
+    assert result["coverage"]["assessed"] == 1
 
 
 async def test_list_recent_reads_newest_inbox_page_without_a_search_expression():
@@ -176,6 +198,57 @@ async def test_list_recent_reads_newest_inbox_page_without_a_search_expression()
     serialized = json.dumps(result)
     assert "UNEXPECTED_BODY_MUST_NOT_LEAVE" not in serialized
     assert "message-1" not in serialized
+
+
+async def test_analysis_reads_twelve_bodies_with_bounded_coverage_and_local_thread_refs():
+    identities = [f"m-{index}" for index in range(1, 13)]
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if request.url.path.endswith("/messages"):
+            assert request.url.params["maxResults"] == "12"
+            assert request.url.params["q"] == "after:1790395200"
+            assert request.url.params["includeSpamTrash"] == "false"
+            return _response(
+                {
+                    "messages": [{"id": identity} for identity in identities],
+                    "nextPageToken": "PRIVATE-NEXT-PAGE",
+                }
+            )
+        assert request.url.params["format"] == "full"
+        identity = request.url.path.rsplit("/", 1)[-1]
+        item = _message(identity)
+        item["threadId"] = (
+            "private-same-thread" if identity in {"m-1", "m-2"} else f"private-thread-{identity}"
+        )
+        item["payload"] = {
+            "headers": item["payload"]["headers"],
+            "mimeType": "text/plain",
+            "body": {"data": base64.urlsafe_b64encode(f"Body of {identity}".encode()).decode()},
+        }
+        return _response(item)
+
+    reader = _reader(_Gmail(), respond)
+    result = await reader.read("analyze_mail", {"query": "after:1790395200", "limit": 12})
+    rows = result["untrusted_external_content"]
+    assert len(calls) == 13
+    assert len(rows) == 12
+    assert [row["source_ref"] for row in rows] == [f"mail:{n}" for n in range(1, 13)]
+    assert rows[0]["body"] == "Body of m-1"
+    assert rows[0]["thread_ref"] == rows[1]["thread_ref"] == "thread:1"
+    assert rows[2]["thread_ref"] == "thread:2"
+    assert reader.offered_message_ids() == tuple(identities)
+    assert result["coverage"]["assessed"] == 12
+    assert result["coverage"]["returned"] == 12
+    assert result["coverage"]["matches_beyond_page"] is True
+    assert result["coverage"]["content_depth"] == "message"
+    assert result["metadata_only"] is False
+    assert result["one_page_only"] is True
+    assert "private-same-thread" not in json.dumps(result)
+    assert "PRIVATE-NEXT-PAGE" not in json.dumps(result)
+    with pytest.raises(GmailMetadataError, match="invalid_argument"):
+        await _reader(_Gmail(), respond).read("analyze_mail", {"limit": 13})
 
 
 async def test_unread_flag_comes_from_labels_without_widening_metadata():
@@ -517,6 +590,14 @@ async def test_body_read_falls_back_to_html_text_and_caps_size():
     assert result["untrusted_external_content"][0]["body_truncated"] is True
     assert result["truncated"] is True
     assert len(json.dumps(result).encode("utf-8")) <= 24000
+    # `truncated` collapsed six different causes into one bool, so a clipped
+    # body made One say matches might be missing when none were. Nothing was
+    # left out here; one message was shortened.
+    assert result["coverage"]["content_shortened"] is True
+    assert result["coverage"]["matches_beyond_page"] is False
+    assert result["coverage"]["items_omitted"] is False
+    assert result["coverage"]["content_depth"] == "message"
+    assert result["coverage"]["returned"] == 1
 
 
 async def test_thread_read_returns_each_message_body_in_thread_order():

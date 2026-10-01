@@ -5,6 +5,8 @@ import {
   aggregateAgentPkmCaptures,
   createAgentPkmCaptureGuard,
   describeAgentPkmCapture,
+  shouldPresentAgentPkmCapture,
+  shouldPublishAgentPkmCapture,
 } from "../agent-pkm-capture-runtime";
 
 describe("Memory capture session boundary", () => {
@@ -90,5 +92,27 @@ describe("Memory capture session boundary", () => {
     expect(describeAgentPkmCapture({ phase: "partial", saved: 1 })).toContain(
       "some details still need attention",
     );
+  });
+  it("always settles an explicit save status even after the session lapsed", () => {
+    // 2026-09-29: the vault token expired by the clock mid-capture, the guard
+    // turned false, the final status was dropped, and "Checking for details
+    // worth remembering…" stayed on screen for good.
+    expect(shouldPublishAgentPkmCapture({ phase: "failed", saved: 0 }, false)).toBe(true);
+    expect(shouldPublishAgentPkmCapture({ phase: "canceled", saved: 0 }, false)).toBe(true);
+    expect(shouldPublishAgentPkmCapture({ phase: "saved", saved: 3 }, false)).toBe(true);
+    expect(shouldPublishAgentPkmCapture({ phase: "preparing", saved: 0 }, false)).toBe(false);
+    expect(shouldPublishAgentPkmCapture({ phase: "preparing", saved: 0 }, true)).toBe(true);
+    expect(describeAgentPkmCapture({ phase: "failed", saved: 0, reason: "timeout" }))
+      .toBe("Memory capture timed out. Nothing was saved.");
+    expect(describeAgentPkmCapture({ phase: "needs_unlock", saved: 0 }))
+      .toBe("Unlock your vault to save this. Nothing was saved.");
+    expect(describeAgentPkmCapture({ phase: "preparing", saved: 0, progress: { stage: "reading", done: 3, total: 12 } }))
+      .toBe("Reading section 3 of 12…");
+  });
+  it("keeps ordinary questions free of automatic Memory progress or failure", () => {
+    expect(shouldPresentAgentPkmCapture({ phase: "preparing", saved: 0 }, false)).toBe(false);
+    expect(shouldPresentAgentPkmCapture({ phase: "failed", saved: 0 }, false)).toBe(false);
+    expect(shouldPresentAgentPkmCapture({ phase: "saved", saved: 1 }, false)).toBe(true);
+    expect(shouldPresentAgentPkmCapture({ phase: "failed", saved: 0 }, true)).toBe(true);
   });
 });

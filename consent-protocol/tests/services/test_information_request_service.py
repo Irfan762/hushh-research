@@ -1,11 +1,16 @@
+# ruff: noqa: F811 -- imported PostgreSQL fixture is a pytest test parameter
+
 import base64
 import hashlib
 import time
 import uuid
+from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
+from sqlalchemy import create_engine, text
 
 from hushh_mcp.consent.export_envelope import (
     connector_key_fingerprint,
@@ -17,6 +22,9 @@ from hushh_mcp.services.consent_db import ConsentDBService
 from hushh_mcp.services.information_request_service import (
     InformationRequestError,
     InformationRequestService,
+)
+from tests.services.test_external_connector_lifecycle_postgres import (
+    connector_postgres_url,  # noqa: F401
 )
 
 
@@ -67,12 +75,22 @@ class _Consent:
         self.events: dict[str, dict[str, Any]] = {}
         self.ledger: list[dict[str, Any]] = []
         self.exports: dict[str, dict[str, Any]] = {}
+        self.notifications: list[dict[str, Any]] = []
 
     async def get_request_status(self, _user_id: str, request_id: str):
         return self.events.get(request_id)
 
     async def get_consent_export(self, token_id: str):
         return self.exports.get(token_id)
+
+    async def list_internal_request_events(self, request_ids, *, actions=None, user_id=None):
+        return [
+            row
+            for row in self.notifications
+            if row["request_id"] in request_ids
+            and (not actions or row["action"] in actions)
+            and (user_id is None or row.get("user_id") == user_id)
+        ]
 
     async def record_export_read_once(self, **event):
         now = int(time.time() * 1000)
@@ -155,6 +173,14 @@ class _Service(InformationRequestService):
                     }
                 )
             return [{"request_id": params["request"]}]
+        if "FROM consent_audit" in sql and "request_id = ANY(:request_ids)" in sql:
+            return [
+                row
+                for row in self.consent.ledger
+                if row.get("request_id") in params["request_ids"]
+                and row.get("user_id") == params["subject"]
+                and row["action"] != "EXPORT_READ"
+            ]
         return []
 
     async def _bundle(self, requester_user_id: str, _bundle_id: str):
@@ -214,7 +240,11 @@ async def _granted_service() -> tuple[_Service, str, str]:
         "token_id": "tok_granted",
         # Approval replaces the request deadline with the grant's access expiry.
         "expires_at": 1_900_000_000_000,
+        "poll_timeout_at": None,
     }
+    # The ledger holds every row, as the real one does: the requester's poll
+    # reads each item's state from its latest transition there.
+    service.consent.ledger.append(service.consent.events[request_id])
     metadata = service.consent.events[request_id]["metadata"]
     service.consent.exports["tok_granted"] = {
         **_CURRENT_STRICT_EXPORT,
@@ -335,6 +365,140 @@ async def test_cancel_writes_cancelled_and_requester_reads_cancelled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_does_not_claim_success_after_approval_or_request_expiry() -> None:
+    service, bundle_id, request_id = await _granted_service()
+    before = list(service.consent.ledger)
+    with pytest.raises(InformationRequestError) as approved:
+        await service.cancel(requester_user_id="viewer", bundle_id=bundle_id)
+    assert approved.value.status_code == 409
+    assert service.consent.ledger == before
+    assert service.consent.events[request_id]["action"] == "CONSENT_GRANTED"
+
+    pending = _Service()
+    created = await pending.create(**_CREATE)
+    expired_id = created["items"][0]["requestId"]
+    pending.consent.events[expired_id]["poll_timeout_at"] = int(time.time() * 1000) - 1
+    with pytest.raises(InformationRequestError) as expired:
+        await pending.cancel(requester_user_id="viewer", bundle_id=created["bundleId"])
+    assert expired.value.status_code == 409
+    assert pending.consent.events[expired_id]["action"] == "REQUESTED"
+
+
+@pytest.mark.asyncio
+async def test_outgoing_page_filters_latest_consent_state_before_limit(
+    connector_postgres_url, monkeypatch
+) -> None:
+    """Older pending asks survive a page full of resolved requests."""
+    schema = f"information_request_test_{uuid.uuid4().hex}"
+    admin = create_engine(connector_postgres_url)
+    with admin.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{schema}"')
+    engine = create_engine(
+        connector_postgres_url,
+        connect_args={"options": f"-csearch_path={schema},public"},
+    )
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE actor_profiles(user_id TEXT PRIMARY KEY, public_person_ref TEXT)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE actor_identity_cache(user_id TEXT PRIMARY KEY, display_name TEXT)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE one_information_request_bundles("
+                "bundle_id UUID PRIMARY KEY, requester_user_id TEXT, subject_user_id TEXT, "
+                "purpose TEXT, created_at TIMESTAMPTZ, cancelled_at TIMESTAMPTZ)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE one_information_request_items(bundle_id UUID, request_id TEXT)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE consent_audit("
+                "id BIGSERIAL PRIMARY KEY, user_id TEXT, request_id TEXT, action TEXT, "
+                "issued_at BIGINT, poll_timeout_at BIGINT, expires_at BIGINT)"
+            )
+            connection.execute(text("INSERT INTO actor_profiles VALUES ('manish','manish-ref')"))
+            connection.execute(
+                text("INSERT INTO actor_identity_cache VALUES ('manish','Manish Sainani')")
+            )
+            now_ms = int(time.time() * 1000)
+            base = datetime(2026, 9, 1, tzinfo=UTC)
+
+            def add_bundle(purpose, minute, fields, *, requester="chris"):
+                bundle_id = uuid.uuid4()
+                connection.execute(
+                    text("""INSERT INTO one_information_request_bundles
+                        (bundle_id,requester_user_id,subject_user_id,purpose,created_at)
+                        VALUES (:bundle,:requester,'manish',:purpose,:created)"""),
+                    {
+                        "bundle": bundle_id,
+                        "requester": requester,
+                        "purpose": purpose,
+                        "created": base + timedelta(minutes=minute),
+                    },
+                )
+                for index, events in enumerate(fields):
+                    request_id = f"{purpose}_{index}"
+                    connection.execute(
+                        text("INSERT INTO one_information_request_items VALUES (:bundle,:request)"),
+                        {"bundle": bundle_id, "request": request_id},
+                    )
+                    for action, deadline in events:
+                        connection.execute(
+                            text("""INSERT INTO consent_audit
+                                (user_id,request_id,action,issued_at,poll_timeout_at,expires_at)
+                                VALUES ('manish',:request,:action,:issued,:deadline,:deadline)"""),
+                            {
+                                "request": request_id,
+                                "action": action,
+                                "issued": minute * 10,
+                                "deadline": deadline,
+                            },
+                        )
+
+            future = now_ms + 60_000
+            add_bundle("pending", 0, [[("REQUESTED", future), ("EXPORT_READ", None)]])
+            for index in range(12):
+                # A same-millisecond decision must win by audit id.
+                add_bundle(
+                    f"resolved_{index}",
+                    index + 1,
+                    [[("REQUESTED", future), ("CONSENT_GRANTED", future)]],
+                )
+            add_bundle("expired", 20, [[("REQUESTED", now_ms)]])
+            add_bundle("someone_else", 21, [[("REQUESTED", future)]], requester="grace")
+            add_bundle(
+                "mixed",
+                22,
+                [
+                    [("REQUESTED", future), ("CONSENT_DENIED", None)],
+                    [("REQUESTED", future)],
+                ],
+            )
+
+        class _Db:
+            def execute_raw(self, query, params):
+                with engine.connect() as connection:
+                    rows = connection.execute(text(query), params).mappings().all()
+                return SimpleNamespace(data=[dict(row) for row in rows])
+
+        monkeypatch.setattr(information_request_module, "get_db", lambda: _Db())
+        service = InformationRequestService()
+        page = await service.list_outgoing(requester_user_id="chris", limit=11)
+        assert [row["purpose"] for row in page] == ["mixed", "pending"]
+        assert [
+            row["purpose"]
+            for row in await service.list_outgoing(requester_user_id="chris", limit=1)
+        ] == ["mixed"]
+    finally:
+        engine.dispose()
+        with admin.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA "{schema}" CASCADE')
+        admin.dispose()
+
+
+@pytest.mark.asyncio
 async def test_idempotency_key_cannot_be_replayed_for_different_request() -> None:
     service = _Service()
     create = dict(
@@ -400,6 +564,124 @@ async def test_expired_grant_is_not_reported_as_current_access() -> None:
     service.consent.events[request_id].update({"action": "CONSENT_GRANTED", "expires_at": 1})
     refreshed = await service.get(requester_user_id="viewer", bundle_id=created["bundleId"])
     assert refreshed["items"][0]["status"] == "expired"
+
+
+@pytest.mark.asyncio
+async def test_progress_reports_each_stage_and_keeps_revoked_apart_from_expired() -> None:
+    """CONTRACT C1: delivered and seen from the delivery records, never collapsed states."""
+    service = _Service()
+    created = await service.create(**_CREATE)
+    bundle_id = created["bundleId"]
+    request_id = created["items"][0]["requestId"]
+    assert created["progress"]["outcome"] == "pending"
+    assert created["progress"]["delivered_at"] is None
+    assert created["progress"]["fields"] == [
+        {
+            "scope": "attr.identity.legal_name",
+            "label": "Legal name",
+            # C7: identity is a deny-by-default sensitive domain.
+            "sensitivity": "sensitive",
+            "status": "pending",
+        }
+    ]
+
+    service.consent.notifications += [
+        {
+            "request_id": request_id,
+            "user_id": "subject",
+            "action": "NOTIFICATION_SENT",
+            "issued_at": 1_000,
+        },
+        {
+            "request_id": request_id,
+            "user_id": "subject",
+            "action": "NOTIFICATION_SENT",
+            "issued_at": 5_000,
+        },
+        {
+            "request_id": request_id,
+            "user_id": "subject",
+            "action": "NOTIFICATION_OPENED",
+            "issued_at": 9_000,
+        },
+        # Another owner's record for the same id never counts.
+        {
+            "request_id": request_id,
+            "user_id": "someone-else",
+            "action": "NOTIFICATION_OPENED",
+            "issued_at": 1,
+        },
+    ]
+    far = int(time.time() * 1000) + 3_600_000
+    await service.consent.insert_event(
+        user_id="subject", request_id=request_id, action="CONSENT_GRANTED", expires_at=far
+    )
+    granted = (await service.get(requester_user_id="viewer", bundle_id=bundle_id))["progress"]
+    assert granted["outcome"] == "granted"
+    assert granted["delivered_at"] == "1970-01-01T00:00:01+00:00"
+    assert granted["seen_at"] == "1970-01-01T00:00:09+00:00"
+    assert granted["decided_at"] is not None and granted["access_ends_at"] is not None
+    assert granted["ended_at"] is None
+
+    await service.consent.insert_event(user_id="subject", request_id=request_id, action="REVOKED")
+    revoked = await service.get(requester_user_id="viewer", bundle_id=bundle_id)
+    assert revoked["progress"]["outcome"] == "revoked"
+    assert revoked["progress"]["fields"][0]["status"] == "revoked"
+    assert revoked["progress"]["ended_at"] is not None
+    assert revoked["progress"]["access_ends_at"] is None
+    # Existing fields stay for older clients.
+    assert revoked["items"][0]["status"] == "revoked"
+
+
+@pytest.mark.asyncio
+async def test_a_request_that_ran_out_before_a_decision_is_expired_with_no_ended_access() -> None:
+    service = _Service()
+    created = await service.create(**_CREATE)
+    request_id = created["items"][0]["requestId"]
+    await service.consent.insert_event(user_id="subject", request_id=request_id, action="TIMEOUT")
+    progress = (await service.get(requester_user_id="viewer", bundle_id=created["bundleId"]))[
+        "progress"
+    ]
+    assert (progress["outcome"], progress["ended_at"], progress["decided_at"]) == (
+        "expired",
+        None,
+        None,
+    )
+
+
+def test_bundle_outcome_names_partial_answers() -> None:
+    outcome = information_request_module.bundle_outcome_from_statuses
+    assert outcome(["granted", "denied"]) == "partially_granted"
+    assert outcome(["granted", "revoked"]) == "partially_granted"
+    assert outcome(["granted", "pending"]) == "pending"
+    assert outcome(["denied", "expired"]) == "denied"
+    assert outcome(["revoked", "expired"]) == "revoked"
+    assert outcome(["granted"], cancelled=True) == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_credential_scopes_are_refused_at_creation_even_past_the_catalog() -> None:
+    """P0 deny-list, second enforcement point: no catalog adapter can nominate a secret."""
+
+    class _SecretResolvingProfiles:
+        def resolve_scope_refs(self, **_kwargs):
+            return {"user_id": "subject"}, [
+                {
+                    "scopeRef": "psr_secret",
+                    "scope": "attr.runtime_secrets.*",
+                    "label": "Runtime Secrets",
+                }
+            ]
+
+    service = _Service()
+    service._profiles = _SecretResolvingProfiles()
+    with pytest.raises(InformationRequestError) as refused:
+        await service.create(**{**_CREATE, "scope_refs": ["psr_secret"]})
+    assert refused.value.status_code == 403
+    assert service.consent.ledger == [] and service.items == []
+    # Negative control: the same path with an ordinary field creates the request.
+    service._profiles = _Profiles()
+    assert (await service.create(**_CREATE))["items"]
 
 
 @pytest.mark.asyncio
@@ -744,7 +1026,10 @@ async def test_export_read_notify_is_not_pushed_to_the_owner(monkeypatch) -> Non
     dispatch = AsyncMock()
     monkeypatch.setattr(consent_listener, "_enrich_notify_payload", enrich)
     monkeypatch.setattr(consent_listener, "_push_to_developer_consent_queues", developer_queue)
-    monkeypatch.setattr(consent_listener, "_dispatch_notification_for_user", dispatch)
+    monkeypatch.setattr(consent_listener, "_push_to_consent_queue", dispatch)
+    monkeypatch.setattr(consent_listener, "_send_fcm_for_user", AsyncMock())
+    monkeypatch.setattr(consent_listener, "_information_requester_doorbell", AsyncMock())
+    monkeypatch.setattr(consent_listener, "claim_delivery", AsyncMock(return_value=True))
 
     base = {"user_id": "subject", "request_id": "req_1", "scope": "attr.identity.legal_name"}
     await consent_listener._handle_notify(json.dumps({**base, "action": "EXPORT_READ"}))

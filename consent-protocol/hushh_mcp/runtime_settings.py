@@ -106,6 +106,7 @@ _BACKEND_RUNTIME_ENV_MAP: dict[str, str] = {
     "drive_document_sharing": "DRIVE_DOCUMENT_SHARING",
     "gmail_chat_reads": "GMAIL_CHAT_READS",
     "google_drive_chat_reads": "GOOGLE_DRIVE_CHAT_READS",
+    "curated_mcp_connectors": "CURATED_MCP_CONNECTORS",
     "connector_internal_owner_cohort": "CONNECTOR_INTERNAL_OWNER_COHORT",
     "connector_uat_all_users": "CONNECTOR_UAT_ALL_USERS",
     # Nearby check-in admission. Both are required to open the flow in
@@ -158,6 +159,17 @@ _BACKEND_RUNTIME_ENV_MAP: dict[str, str] = {
     # nearby-presence mode: that flag governs co-presence, and closing
     # co-presence in production must not also close a business directory.
     "one_places_directory_enabled": "ONE_PLACES_DIRECTORY_ENABLED",
+    # Withdraws One Live Voice mail reads and nothing else. Its own key rather
+    # than GMAIL_CHAT_READS, which is owner-available by construction and so has
+    # no runtime effect; making that one effective would close typed-chat mail
+    # reads, mailbox-change proposals, the Workspace MCP Gmail lane and the
+    # first-connect card, in production, with no value able to reopen them.
+    # Absent leaves the code default (on), so it is a switch, not a rollout gate.
+    "one_voice_mail_reads_enabled": "ONE_VOICE_MAIL_READS_ENABLED",
+    # Speaking a mail digest aloud. Its own key and OFF by default: it is the
+    # one path here that sends mail-derived text to a second model, so it is
+    # enabled deliberately rather than inherited from the read switch.
+    "one_voice_mail_narration_enabled": "ONE_VOICE_MAIL_NARRATION_ENABLED",
 }
 
 

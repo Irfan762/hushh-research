@@ -10,6 +10,7 @@ import { getOneSetupCapability } from "@/lib/onboarding/one-capabilities";
 import { resolvePublicKnowledgeTopShellTabSet } from "@/lib/navigation/top-shell-tabs";
 import {
   buildProfileRoute,
+  connectorDetailTitle,
   resolveProfileRouteState,
   type ProfilePanel,
 } from "@/lib/navigation/profile-routes";
@@ -163,6 +164,7 @@ function profilePanelLabel(panel: ProfilePanel | null): string | null {
   if (panel === "account") return "Account";
   if (panel === "my-data") return "Memory";
   if (panel === "connected-systems") return "Connected Systems";
+  if (panel === "connectors") return "Connectors";
   if (panel === "preferences") return "Preferences";
   if (panel === "security") return "Security";
   if (panel === "referrals") return "Invite friends";
@@ -227,6 +229,7 @@ function profileDetailLabel(detail: string | null): string | null {
   if (!detail) return null;
   if (detail.startsWith("domain:")) return "Domain detail";
   if (detail.startsWith("connection:")) return "Connection detail";
+  if (detail.startsWith("connector:")) return connectorDetailTitle(detail);
   if (detail === "sharing") return "Sharing";
   if (detail === "appearance") return "Appearance";
   if (detail === "kai-preferences") return "Finance preferences";
@@ -983,7 +986,8 @@ function resolveTopShellBreadcrumbInner(
         resolveCapabilitySetupBackHref(pathname, originHref) || ROUTES.ONE_HOME,
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: ROUTES.ONE_HOME }, { label: "Mail" }],
+      // Mail has an agent heading in the page, matching Location.
+      items: [{ label: "One" }],
     };
   }
 

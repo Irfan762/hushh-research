@@ -19,10 +19,12 @@ export type AuthFrame = {
   firebase_id_token?: string | null;
   conversation_id: string;
   client?: Record<string, unknown>;
+  /** The owner's IANA zone, so "today" resolves on their clock, not the server's. */
+  timezone?: string | null;
   resume?: boolean;
 };
 export type AudioFrame = { type: "audio"; data: string; mime_type?: string; seq?: number };
-export type TextFrame = { type: "text"; text: string };
+export type TextFrame = { type: "text"; text: string; request_id?: string };
 export type AppContextFrame = {
   type: "app_context";
   screen_id?: string | null;
@@ -103,6 +105,7 @@ export type VoiceState =
 
 export type PendingActionPublic = {
   pending_action_id: string;
+  origin_turn_id?: string | null;
   tool: string;
   gateway_action_id: string;
   tier: "voice" | "tap";
@@ -162,19 +165,40 @@ export type SessionReadyFrame = {
   setup_progress: Record<string, unknown> | null;
   output_mime_type: typeof OUTPUT_MIME;
 };
-export type AudioOutFrame = { type: "audio"; data: string; mime_type: string; turn_id: string };
+export type AudioOutFrame = {
+  type: "audio";
+  data: string;
+  mime_type: string;
+  turn_id: string;
+  /** The user turn that owns this audio; narration has its own playback ID. */
+  origin_turn_id?: string;
+  /**
+   * Audio this server synthesized, not audio the Live model produced.
+   *
+   * While it plays the microphone is closed on every device: the speaker is
+   * carrying mail-derived text, and the Live session transcribes what the
+   * microphone hears straight into the context that text must stay out of.
+   * Ordinary model speech needs no such gate -- it is already in that context --
+   * and closing the mic for it would cost barge-in.
+   */
+  narration?: boolean;
+};
 export type TranscriptFrame = {
   type: "transcript.input" | "transcript.output";
   text: string;
   final: boolean;
   turn_id: string;
+  /** Present only for a typed request echoed by the relay. */
+  request_id?: string;
 };
 export type TurnFrame = { type: "turn"; state: "model_start" | "model_end" | "interrupted"; turn_id: string };
 export type StateFrame = { type: "state"; state: VoiceState; turn_id?: string | null };
-export type ToolStartedFrame = { type: "tool.started"; call_id: string; tool: string; args_public: Record<string, unknown> };
+export type ToolStartedFrame = { type: "tool.started"; call_id: string; tool: string; args_public: Record<string, unknown>; turn_id?: string };
 export type ToolResultFrame = {
   type: "tool.result";
   call_id: string | null;
+  /** Immutable origin captured before the tool began. */
+  turn_id?: string;
   /** Exact pending confirmation this terminal result settles, when there is one. */
   pending_action_id?: string | null;
   tool: string;
@@ -184,6 +208,7 @@ export type ToolResultFrame = {
 };
 export type PendingActionFrame = PendingActionPublic & {
   type: "pending_action";
+  turn_id?: string;
   risk_level: "low" | "medium" | "high";
   requires_tap: boolean;
   entities: EntityCardPayload[];
@@ -195,9 +220,10 @@ export type PendingResolvedFrame = {
   status: "executed" | "failed" | "cancelled" | "expired" | "not_pending";
   result_public: ToolResultPublic | null;
 };
-export type EntityCardFrame = EntityCardPayload & { type: "entity_card" };
+export type EntityCardFrame = EntityCardPayload & { type: "entity_card"; turn_id?: string };
 export type CandidatePickerFrame = {
   type: "candidate_picker";
+  turn_id?: string;
   kind: "person" | "circle";
   question: string;
   candidates: CandidatePublic[];
@@ -208,15 +234,20 @@ export type UiDirectiveKind =
   | "publish_location_envelopes"
   | "request_os_permission"
   | "open_share_sheet"
-  | "focus_pending_action";
+  | "focus_pending_action"
+  /** Open the original message at a position already on screen. */
+  | "open_mail";
 export type UiDirectiveFrame = {
   type: "ui_directive";
+  turn_id?: string;
   directive_id: string;
   kind: UiDirectiveKind;
   payload: Record<string, unknown>;
 };
 export type ClientStepRequestFrame = {
   type: "client_step.request";
+  turn_id?: string;
+  confirmed_pending_action_id?: string;
   step_id: string;
   kind: string;
   payload: Record<string, unknown>;
@@ -340,6 +371,9 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   // The scope-review screen is open; nothing has been accepted yet.
   "scope_review_required",
   "navigation_dispatched",
+  // A dispatch asks the surface to do something; it reports no outcome, so it
+  // must never render as a success even if it reaches a card.
+  "mail_open_dispatched",
   "grant_created",
   "check_in_created",
   "sos_grants_created",

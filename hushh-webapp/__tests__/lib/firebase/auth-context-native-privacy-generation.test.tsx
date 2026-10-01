@@ -96,7 +96,6 @@ vi.mock("@/lib/services/api-service", () => ({
   ApiService: {
     getAccountSessionStatus: mocks.apiGetAccountSessionStatus,
     deleteSession: vi.fn().mockResolvedValue(undefined),
-    notifyAuthMail: vi.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -209,6 +208,58 @@ describe("AuthProvider native privacy generations", () => {
 
   afterEach(() => vi.useRealTimers());
 
+  it("automatically recovers a transient native restore failure before a UID is known", async () => {
+    vi.useFakeTimers();
+    mocks.restoreNativeSession
+      .mockRejectedValueOnce(new Error("bridge temporarily unavailable"))
+      .mockResolvedValueOnce(makeUser());
+    mocks.apiGetAccountSessionStatus.mockResolvedValue(activeSessionResponse());
+    const view = render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("Verification required")).toBeInTheDocument();
+    expect(screen.getByTestId("published-user")).toHaveTextContent("anonymous");
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_001); });
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Verification required")).not.toBeInTheDocument();
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(1);
+    expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
+    view.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(2);
+  });
+
+  it("cancels anonymous native recovery when unmounted before the retry", async () => {
+    vi.useFakeTimers();
+    mocks.restoreNativeSession.mockRejectedValue(new Error("bridge unavailable"));
+    const view = render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByText("Verification required")).toBeInTheDocument();
+    view.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not overlap automatic native restoration with manual retries", async () => {
+    vi.useFakeTimers();
+    const restoration = deferred<User | null>();
+    mocks.restoreNativeSession.mockRejectedValueOnce(new Error("bridge unavailable"))
+      .mockReturnValueOnce(restoration.promise);
+    mocks.apiGetAccountSessionStatus.mockResolvedValue(activeSessionResponse());
+    render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_001); });
+    await act(async () => {
+      screen.getByRole("button", { name: "Retry session" }).click();
+      screen.getByRole("button", { name: "Retry session" }).click();
+    });
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId("published-user")).toHaveTextContent("anonymous");
+    expect(mocks.apiGetAccountSessionStatus).not.toHaveBeenCalled();
+    await act(async () => { restoration.resolve(makeUser()); });
+    expect(mocks.apiGetAccountSessionStatus).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText("Verification required")).not.toBeInTheDocument();
+  });
+
   it("exits a stalled native restore and retries without publishing its late result", async () => {
     vi.useFakeTimers();
     const stalledRestore = deferred<User | null>();
@@ -260,6 +311,59 @@ describe("AuthProvider native privacy generations", () => {
     expect(screen.queryByText("Verification required")).not.toBeInTheDocument();
     expect(mocks.authServiceSignOut).not.toHaveBeenCalled();
     expect(mocks.routerReplace).not.toHaveBeenCalled();
+  });
+
+  it("catches up after a foreground transition whose native privacy event was missed", async () => {
+    mocks.restoreNativeSession.mockResolvedValue(null);
+    render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await screen.findByText("Signed out");
+
+    mocks.getPrivacyState.mockClear();
+    mocks.completePrivacyValidation.mockClear();
+    mocks.privacyState = {
+      shielded: true, generation: 7, cause: "background", appIsActive: true,
+    };
+    act(() => document.dispatchEvent(new Event("visibilitychange")));
+
+    await waitFor(() => expect(mocks.completePrivacyValidation).toHaveBeenCalledWith(7));
+    expect(mocks.getPrivacyState).toHaveBeenCalled();
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Signed out")).toBeInTheDocument();
+  });
+
+  it("catches up when foreground precedes native restoration and the privacy event is missed", async () => {
+    const restore = deferred<User | null>();
+    mocks.restoreNativeSession.mockReturnValue(restore.promise);
+    render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await waitFor(() => expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1));
+    mocks.privacyState = {
+      shielded: true, generation: 8, cause: "background", appIsActive: false,
+    };
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(mocks.completePrivacyValidation).not.toHaveBeenCalled();
+
+    await act(async () => { restore.resolve(null); });
+    await screen.findByText("Signed out");
+    mocks.privacyState.appIsActive = true;
+    await waitFor(() => expect(mocks.completePrivacyValidation).toHaveBeenCalledWith(8));
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks an initially inactive foreground state without a native event", async () => {
+    mocks.restoreNativeSession.mockResolvedValue(null);
+    render(<AuthProvider><SessionProbe /></AuthProvider>);
+    await screen.findByText("Signed out");
+
+    mocks.getPrivacyState.mockClear();
+    mocks.privacyState = {
+      shielded: true, generation: 9, cause: "background", appIsActive: false,
+    };
+    act(() => window.dispatchEvent(new Event("focus")));
+    await waitFor(() => expect(mocks.getPrivacyState).toHaveBeenCalled());
+    expect(mocks.completePrivacyValidation).not.toHaveBeenCalled();
+    mocks.privacyState.appIsActive = true;
+    await waitFor(() => expect(mocks.completePrivacyValidation).toHaveBeenCalledWith(9));
+    expect(mocks.restoreNativeSession).toHaveBeenCalledTimes(1);
   });
 
   it("releases successive native privacy generations without account checks", async () => {

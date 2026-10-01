@@ -9,6 +9,7 @@ import {
   type McpCallApproval, type McpCallPreview, type McpCallReviewReference,
 } from "@/lib/agent/mcp-call-review";
 import { ONE_CHAT_KEY_HEADER } from "@/lib/vault/one-chat-key";
+import { observeServerDate, serverNow } from "@/lib/agent/server-clock";
 
 export type ExternalConnectorAuthStyle = "api_key" | "oauth";
 
@@ -44,7 +45,8 @@ export type ConnectorFeatures = Partial<
     | "drive_document_indexing"
     | "drive_document_sharing"
     | "gmail_chat_reads"
-    | "google_drive_chat_reads",
+    | "google_drive_chat_reads"
+    | "curated_mcp_connectors",
     boolean
   >
 >;
@@ -188,6 +190,66 @@ async function readJsonOrThrow<T>(response: Response): Promise<T> {
   throw new Error(message || `Request failed (${response.status}).`);
 }
 
+/**
+ * `fetch()` resolves when headers arrive, so its transport timeout does not
+ * cover a response whose JSON body never finishes. Keep OAuth launch bounded:
+ * callers must either receive the validated start payload or regain control to
+ * close their pre-opened popup. This does not change the server-side PKCE,
+ * state, redirect, or owner-authority checks.
+ */
+export const CONNECTOR_OAUTH_START_TIMEOUT_MS = 30_000;
+
+function oauthStartTimeoutError(): Error {
+  return new Error("OAuth sign-in took too long. Check the connection and try again.");
+}
+
+async function withOAuthStartDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  callerSignal?: AbortSignal,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortForCaller = () => controller.abort(callerSignal?.reason);
+  if (callerSignal) {
+    callerSignal.addEventListener("abort", abortForCaller, { once: true });
+    if (callerSignal.aborted) abortForCaller();
+  }
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(oauthStartTimeoutError());
+  }, CONNECTOR_OAUTH_START_TIMEOUT_MS);
+
+  const pending = operation(controller.signal);
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const onAbort = () => {
+        cleanup();
+        reject(controller.signal.reason ?? new Error("OAuth sign-in was cancelled."));
+      };
+      const cleanup = () =>
+        controller.signal.removeEventListener("abort", onAbort);
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+      pending.then(
+        (value) => {
+          cleanup();
+          resolve(value);
+        },
+        (error: unknown) => {
+          cleanup();
+          reject(error);
+        },
+      );
+      if (controller.signal.aborted) onAbort();
+    });
+  } catch (error) {
+    if (timedOut) throw oauthStartTimeoutError();
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    callerSignal?.removeEventListener("abort", abortForCaller);
+  }
+}
+
 /** Typed transport for /api/connectors. Components never call fetch directly. */
 export class ExternalConnectorService {
   /** Explicit connection only. Never used as an automatic tool-call retry. */
@@ -214,7 +276,7 @@ export class ExternalConnectorService {
   static async refreshMcpCatalog(input: {
     vaultOwnerToken: string; configuration: CustomConnectorConfiguration;
     signal: AbortSignal; isEffectCurrent: ConnectorEffectGuard;
-  }): Promise<Array<{ id: string; name: string; revision: string; fingerprint: string; permission: "ask_first" | "blocked"; review: "required" | "not_required" }>> {
+  }): Promise<Array<{ id: string; name: string; revision: string; fingerprint: string; permission: "ask_first" | "blocked"; review: "required" | "not_required"; access: "read" | "write" }>> {
     const current = () => !input.signal.aborted && input.isEffectCurrent();
     if (!current()) throw new Error("Your vault session changed.");
     const configuration = projectCustomConnectorTurnConfigurations([input.configuration])[0];
@@ -246,12 +308,15 @@ export class ExternalConnectorService {
           tool.revision.length > 256 || typeof tool.fingerprint !== "string" ||
           !/^[a-f0-9]{64}$/.test(tool.fingerprint) ||
           !["ask_first", "blocked"].includes(String(tool.permission)) ||
-          (tool.review !== undefined && !["required", "not_required"].includes(String(tool.review))))
+          (tool.review !== undefined && !["required", "not_required"].includes(String(tool.review))) ||
+          (tool.access !== undefined && !["read", "write"].includes(String(tool.access))))
         throw new Error("Invalid connector tools.");
       // An older server omits `review`; that means every call is reviewed.
       return { id: tool.id, name: tool.name, revision: tool.revision,
         fingerprint: tool.fingerprint as string, permission: tool.permission as "ask_first" | "blocked",
-        review: tool.review === "not_required" ? "not_required" : "required" };
+        review: tool.review === "not_required" ? "not_required" : "required",
+        // An older server omits `access`; treat every tool as one that may change.
+        access: tool.access === "read" ? "read" : "write" };
     });
   }
 
@@ -298,7 +363,7 @@ export class ExternalConnectorService {
     isEffectCurrent: ConnectorEffectGuard;
   }, operation: "review" | "confirm", args: Record<string, unknown>): Promise<unknown> {
     const current = () => !input.signal.aborted && input.isEffectCurrent() &&
-      Date.parse(input.reference.expiresAt) > Date.now();
+      Date.parse(input.reference.expiresAt) > serverNow();
     if (!current()) throw new Error("This review expired or your vault session changed.");
     const configuration = input.configuration === undefined ? undefined :
       projectCustomConnectorTurnConfigurations([input.configuration])[0];
@@ -325,6 +390,8 @@ export class ExternalConnectorService {
         }),
       },
     );
+    // Learn the server's clock so the time left is the server's, not this device's.
+    observeServerDate(response.headers.get("date"));
     // Never echo response bodies: they may contain private arguments or provider text.
     if (!response.ok) throw new Error("Connector review is unavailable. No automatic retry was made.");
     const payload: unknown = await response.json().catch(() => null);
@@ -391,29 +458,33 @@ export class ExternalConnectorService {
     flow?: "web" | "native";
     profile?: "selected" | "live";
     isEffectCurrent?: ConnectorEffectGuard;
+    signal?: AbortSignal;
   }): Promise<{
     authorizeUrl: string;
     expiresAt: string;
     attemptId?: string;
     connectorId?: string;
   }> {
-    const response = await ApiService.apiFetch(
-      `/api/connectors/${encodeURIComponent(input.connectorId)}/connect/oauth/start`,
-      {
-        method: "POST",
-        headers: {
-          ...authHeaders(input.vaultOwnerToken),
-          "Content-Type": "application/json",
+    return withOAuthStartDeadline(async (signal) => {
+      const response = await ApiService.apiFetch(
+        `/api/connectors/${encodeURIComponent(input.connectorId)}/connect/oauth/start`,
+        {
+          method: "POST",
+          headers: {
+            ...authHeaders(input.vaultOwnerToken),
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            redirectUri: input.redirectUri,
+            flow: input.flow ?? "web",
+            profile: input.profile ?? "selected",
+          }),
+          signal,
+          isEffectCurrent: input.isEffectCurrent,
         },
-        body: JSON.stringify({
-          redirectUri: input.redirectUri,
-          flow: input.flow ?? "web",
-          profile: input.profile ?? "selected",
-        }),
-        isEffectCurrent: input.isEffectCurrent,
-      },
-    );
-    return readJsonOrThrow(response);
+      );
+      return readJsonOrThrow(response);
+    }, input.signal);
   }
 
   static async pendingNative(input: {
@@ -661,21 +732,23 @@ export class ExternalConnectorService {
   }
 
   static async liveBackground(vaultOwnerToken: string): Promise<boolean> {
-    const result = await readJsonOrThrow<{ enabled: boolean }>(
+    const result = await readJsonOrThrow<{ enabled: unknown }>(
       await ApiService.apiFetch("/api/connectors/google_drive/live/background", {
         method: "GET",
         headers: authHeaders(vaultOwnerToken),
         cache: "no-store",
       }),
     );
-    return result.enabled === true;
+    if (typeof result.enabled !== "boolean")
+      throw new Error("Invalid background Drive access state");
+    return result.enabled;
   }
 
   static async setLiveBackground(
     vaultOwnerToken: string,
     enabled: boolean,
-  ): Promise<void> {
-    await readJsonOrThrow(
+  ): Promise<boolean> {
+    const result = await readJsonOrThrow<{ enabled: unknown }>(
       await ApiService.apiFetch("/api/connectors/google_drive/live/background", {
         method: "POST",
         headers: {
@@ -685,6 +758,9 @@ export class ExternalConnectorService {
         body: JSON.stringify({ enabled, confirmed: true }),
       }),
     );
+    if (result.enabled !== enabled)
+      throw new Error("Background Drive access state was not confirmed");
+    return enabled;
   }
 
   static async removeDocument(

@@ -55,11 +55,9 @@ import type {
   ConsentPendingLoadSurface,
 } from "@/lib/observability/events";
 import { resolveRouteId } from "@/lib/observability/route-map";
-import {
-  resolveRuntimeBackendUrl,
-  resolveRuntimeFrontendUrl,
-} from "@/lib/runtime/settings";
-import { shouldSkipAuthMailForAutomation } from "@/lib/testing/native-test";
+import { resolveAppEnvironment } from "@/lib/app-env";
+import { resolveRuntimeBackendUrl } from "@/lib/runtime/settings";
+import { shouldSkipFirstWelcomeForAutomation } from "@/lib/testing/native-test";
 import { sanitizeErrorMessage } from "@/lib/services/error-sanitizer";
 import {
   AUTH_ACCOUNT_NOT_FOUND_BACKEND_CODE,
@@ -1483,8 +1481,13 @@ export class ApiService {
    *
    * Web: hits Next.js proxy route `/api/app-config/review-mode`
    * Native: hits backend directly (API_BASE points at backend)
+   *
+   * A production build never asks. Review mode on production is backend-only:
+   * the App Store reviewer signs in like anyone else with a dedicated account,
+   * so no reviewer affordance may render and the backend refuses regardless.
    */
   static async getAppReviewModeConfig(): Promise<{ enabled: boolean }> {
+    if (resolveAppEnvironment() === "production") return { enabled: false };
     try {
       const response = await apiFetch("/api/app-config/review-mode", {
         method: "GET",
@@ -1664,12 +1667,16 @@ export class ApiService {
 
   /**
    * Request a backend-minted Firebase custom token for reviewer login.
-   * Only available when app-review mode is enabled server-side.
+   * Only available when app-review mode is enabled server-side, and never
+   * from a production build (the backend refuses there too).
    */
   static async createAppReviewModeSession(
     subject: "reviewer" = "reviewer",
     options?: { smokePassphrase?: string | null; reviewerUid?: string | null },
   ): Promise<{ token: string }> {
+    if (resolveAppEnvironment() === "production") {
+      throw new Error("Reviewer login unavailable");
+    }
     const identityKey = `${subject}:${options?.reviewerUid ?? "default"}`;
     const existing = this.appReviewModeSessions.get(identityKey);
     if (existing) return existing;
@@ -1741,49 +1748,21 @@ export class ApiService {
     });
   }
 
-  /**
-   * Ask the server to send a lifecycle mail through `hushh-mail-api`.
-   *
-   * Fire and forget by contract: the caller is a sign-in or a phone step, and
-   * neither may be delayed or failed by a mail. Every error resolves to `false`.
-   *
-   * `/api/auth/mail` is a Next.js route, so a native build — where `apiFetch`
-   * resolves against the Python backend — targets the web origin explicitly.
-   */
-  static async notifyAuthMail(
-    event:
-      "signed_in" | "signed_out" | "phone_conflict" | "capabilities_linked",
-    options?: {
-      phoneNumber?: string;
-      /** Currently connected capability ids; the server diffs these. */
-      capabilities?: string[];
-      /** Ids whose state was resolvable this pass. Absent ids are unknown, not absent. */
-      observed?: string[];
-      idToken?: string;
-    },
-  ): Promise<boolean> {
-    if (shouldSkipAuthMailForAutomation()) return false;
+  /** Ask the account authority for the first-account welcome; routine sign-ins skip. */
+  static async notifyFirstWelcome(options?: { idToken?: string }): Promise<boolean> {
+    if (shouldSkipFirstWelcomeForAutomation()) return false;
 
     try {
       const idToken = options?.idToken || (await this.getFirebaseToken());
       if (!idToken) return false;
 
-      const origin = Capacitor.isNativePlatform()
-        ? resolveRuntimeFrontendUrl()
-        : "";
-      const response = await apiFetch(`${origin}/api/auth/mail`, {
+      const response = await apiFetch("/api/account/welcome", {
         method: "POST",
         headers: { Authorization: `Bearer ${idToken}` },
-        body: JSON.stringify({
-          event,
-          ...(options?.phoneNumber ? { phoneNumber: options.phoneNumber } : {}),
-          ...(options?.capabilities
-            ? { capabilities: options.capabilities }
-            : {}),
-          ...(options?.observed ? { observed: options.observed } : {}),
-        }),
       });
-      return response.ok;
+      if (!response.ok) return false;
+      const result = (await response.json().catch(() => null)) as { status?: string } | null;
+      return result?.status === "sent";
     } catch {
       return false;
     }

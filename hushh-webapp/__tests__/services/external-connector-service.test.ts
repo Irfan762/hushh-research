@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const apiFetch = vi.hoisted(() => vi.fn());
 
@@ -9,10 +9,14 @@ vi.mock("@/lib/services/api-service", () => ({
   },
 }));
 
-import { ExternalConnectorService } from "@/lib/services/external-connector-service";
+import {
+  CONNECTOR_OAUTH_START_TIMEOUT_MS,
+  ExternalConnectorService,
+} from "@/lib/services/external-connector-service";
 
 describe("ExternalConnectorService native Drive OAuth", () => {
   beforeEach(() => apiFetch.mockReset());
+  afterEach(() => vi.useRealTimers());
 
   it("discards private OAuth delivery after vault authority changes", async () => {
     let current = true;
@@ -71,6 +75,52 @@ describe("ExternalConnectorService native Drive OAuth", () => {
         }),
       }),
     );
+  });
+
+  it("forwards cancellation to the web OAuth-start request", async () => {
+    const ownerAbort = new AbortController();
+    let resolveFetch!: (response: Response) => void;
+    apiFetch.mockImplementationOnce(
+      () => new Promise<Response>((resolve) => { resolveFetch = resolve; }),
+    );
+
+    const pending = ExternalConnectorService.startOAuthConnect({
+      vaultOwnerToken: "owner-token",
+      connectorId: "google_drive",
+      redirectUri: "https://app.test/one/profile/connectors/oauth/return",
+      flow: "web",
+      signal: ownerAbort.signal,
+    });
+    await vi.waitFor(() => expect(apiFetch).toHaveBeenCalledOnce());
+    const requestSignal = (apiFetch.mock.calls[0][1] as { signal: AbortSignal })
+      .signal;
+    ownerAbort.abort(new DOMException("Aborted", "AbortError"));
+
+    await expect(pending).rejects.toThrow("Aborted");
+    expect(requestSignal).not.toBe(ownerAbort.signal);
+    expect(requestSignal.aborted).toBe(true);
+    resolveFetch(Response.json({}));
+  });
+
+  it("bounds a stalled OAuth-start JSON response after headers arrive", async () => {
+    vi.useFakeTimers();
+    apiFetch.mockResolvedValue(
+      new Response(new ReadableStream({ start() {} }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const pending = ExternalConnectorService.startOAuthConnect({
+      vaultOwnerToken: "owner-token",
+      connectorId: "google_drive",
+      redirectUri: "https://app.test/one/profile/connectors/oauth/return",
+      flow: "web",
+    });
+    const assertion = expect(pending).rejects.toThrow(
+      "OAuth sign-in took too long. Check the connection and try again.",
+    );
+    await vi.advanceTimersByTimeAsync(CONNECTOR_OAUTH_START_TIMEOUT_MS);
+    await assertion;
   });
 
   it("reconciles only the opaque pending reference before finalization", async () => {
@@ -211,14 +261,14 @@ describe("ExternalConnectorService live Drive background preparation", () => {
       }),
     );
 
-    // Anything other than an explicit true reads as off.
+    // An invalid response must not masquerade as a user choice to turn it off.
     apiFetch.mockResolvedValueOnce(Response.json({ enabled: "true" }));
-    await expect(ExternalConnectorService.liveBackground("owner-token")).resolves.toBe(false);
+    await expect(ExternalConnectorService.liveBackground("owner-token")).rejects.toThrow("Invalid background Drive access state");
     apiFetch.mockResolvedValueOnce(Response.json({}));
-    await expect(ExternalConnectorService.liveBackground("owner-token")).resolves.toBe(false);
+    await expect(ExternalConnectorService.liveBackground("owner-token")).rejects.toThrow("Invalid background Drive access state");
 
     apiFetch.mockResolvedValueOnce(Response.json({ enabled: true }));
-    await ExternalConnectorService.setLiveBackground("owner-token", true);
+    await expect(ExternalConnectorService.setLiveBackground("owner-token", true)).resolves.toBe(true);
     const [path, init] = apiFetch.mock.calls.at(-1)!;
     expect(path).toBe("/api/connectors/google_drive/live/background");
     expect(init.method).toBe("POST");
@@ -227,5 +277,10 @@ describe("ExternalConnectorService live Drive background preparation", () => {
       Authorization: "Bearer owner-token",
       "Content-Type": "application/json",
     });
+
+    apiFetch.mockResolvedValueOnce(Response.json({ enabled: false }));
+    await expect(ExternalConnectorService.setLiveBackground("owner-token", false)).resolves.toBe(false);
+    apiFetch.mockResolvedValueOnce(Response.json({ enabled: true }));
+    await expect(ExternalConnectorService.setLiveBackground("owner-token", false)).rejects.toThrow("Background Drive access state was not confirmed");
   });
 });

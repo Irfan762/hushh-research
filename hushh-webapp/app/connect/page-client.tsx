@@ -4,17 +4,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import {
-  BadgeCheck,
   BookUser,
   Check,
   ChevronDown,
   Loader2,
-  Lock,
   RefreshCw,
   Search as SearchIcon,
-  Share2,
   X,
 } from "@/components/icons";
+import {
+  InviteFriendsProfileIcon,
+  LockedRowIcon,
+  QualifiedRowIcon,
+} from "@/components/icons/agents";
 
 import {
   AppPageContentRegion,
@@ -128,6 +130,9 @@ import { ContactSourceBadge } from "@/components/connections/contact-source-badg
 import {
   CONNECT_CONNECTION_LIST_CLASSNAME,
   CONNECT_PAGE_CONTENT_CLASSNAME,
+  CONNECT_ROW_TRAILING_CLASSNAME,
+  CONNECT_SECTION_HEADING_CLASSNAME,
+  CONNECT_SECTION_TITLE_CONTROL_CLASSNAME,
   CONNECT_SWIPE_CLIP_GUARD_CLASSNAME,
   CONNECT_SWIPE_PANE_INSET_CLASSNAME,
   CONNECT_WRAPPING_TEXT_CLASSNAME,
@@ -1044,6 +1049,18 @@ export default function ConnectPageClient() {
       removeLifecycleListener();
     };
   }, [reconcileConnectionSurfaces, user?.uid]);
+
+  useEffect(() => {
+    if (!user?.uid || surface === "circles") return;
+    // A remote graph push is the immediate path. Keep a bounded repair read
+    // while Connect remains visible, since FCM and SSE are best-effort.
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") {
+        void reconcileConnectionSurfaces({ ensureAfterCurrent: true });
+      }
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [reconcileConnectionSurfaces, surface, user?.uid]);
 
   // Push is the primary "your request was accepted" signal, but native has no
   // SSE fallback. While a sent request is pending and this screen is visible,
@@ -2762,7 +2779,7 @@ export default function ConnectPageClient() {
               aria-haspopup="menu"
               aria-expanded={directoryMenuOpen}
               aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-              className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+              className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
             >
               <SectionLabel
                 as="span"
@@ -2796,7 +2813,7 @@ export default function ConnectPageClient() {
             aria-haspopup="menu"
             aria-expanded={directoryMenuOpen}
             aria-label={`Current directory: ${CONNECT_TAB_LABEL[tab]}`}
-            className="inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
+            className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-full text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)]"
             onClick={() => setDirectoryMenuOpen((current) => !current)}
           >
             <SectionLabel
@@ -2869,6 +2886,7 @@ export default function ConnectPageClient() {
               <ConnectCirclesTab
                 onStateChange={setCirclesState}
                 currentUserId={user?.uid ?? null}
+                isActive={surface === "circles"}
                 onRequestConnection={sendConnectRequest}
                 onCancelConnectionRequest={cancelConnectionRequest}
                 refreshToken={circleRefreshToken}
@@ -2974,9 +2992,12 @@ export default function ConnectPageClient() {
                                   )
                                 }
                                 data-testid="connect-my-connections-toggle"
+                                // A bare title, like "People" below it: no
+                                // border, fill or padding box of its own, so
+                                // the label starts on the page's column.
                                 className={cn(
                                   CONNECT_SECTION_CONTROL_LABEL_CLASSNAME,
-                                  "group max-w-full rounded-full border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-secondary-fill)] px-3 text-[color:var(--app-label)] shadow-none hover:bg-[color:var(--app-tertiary-fill)] focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent)] focus-visible:ring-offset-2",
+                                  CONNECT_SECTION_TITLE_CONTROL_CLASSNAME,
                                 )}
                               >
                                 <span
@@ -2987,7 +3008,7 @@ export default function ConnectPageClient() {
                                 <ChevronDown
                                   aria-hidden="true"
                                   className={cn(
-                                    "ml-1.5 h-4 w-4 shrink-0 transition-transform duration-150",
+                                    "ml-2 h-4 w-4 shrink-0 text-[color:var(--app-secondary-label)] transition-transform duration-150 motion-reduce:transition-none",
                                     connectionsExpanded && "rotate-180",
                                   )}
                                 />
@@ -3020,6 +3041,7 @@ export default function ConnectPageClient() {
                               </Button>
                             }
                             separatorInset
+                            headingClassName={CONNECT_SECTION_HEADING_CLASSNAME}
                             contentId="connect-my-connections-panel"
                             shellClassName={cn(
                               !connectionsExpanded && "hidden",
@@ -3131,7 +3153,12 @@ export default function ConnectPageClient() {
                                       : undefined
                                   }
                                   trailing={
-                                    <span className="flex shrink-0 items-center justify-end gap-1 whitespace-nowrap">
+                                    <span
+                                      className={cn(
+                                        "flex shrink-0 items-center justify-end gap-1 whitespace-nowrap",
+                                        CONNECT_ROW_TRAILING_CLASSNAME,
+                                      )}
+                                    >
                                       {pendingRemoveId ===
                                       connection.connectionId ? (
                                         <>
@@ -3226,6 +3253,8 @@ export default function ConnectPageClient() {
 
                           <div className="space-y-4">
                             <SettingsGroup
+                              testId="connect-directory-group"
+                              headingClassName={CONNECT_SECTION_HEADING_CLASSNAME}
                               titleControl={directorySelector}
                               // People only. This one JSX node also renders the RIAs
                               // tab, where an address book has nothing to offer --
@@ -3381,10 +3410,7 @@ export default function ConnectPageClient() {
                                         }}
                                         className="press-scale absolute inset-y-0 right-0 flex w-11 items-center justify-center text-[#1d1d1f] transition-colors hover:text-black dark:text-white"
                                       >
-                                        <X
-                                          className="h-5 w-5"
-                                          strokeWidth={2.4}
-                                        />
+                                        <X className="h-5 w-5" />
                                       </button>
                                     ) : null}
                                   </div>
@@ -3449,8 +3475,8 @@ export default function ConnectPageClient() {
                           spell it out, or bring them here. */}
                                     {canInviteToOne ? (
                                       <SettingsRow
-                                        icon={Share2}
-                                        iconTone="blue"
+                                        icon={InviteFriendsProfileIcon}
+                                        iconTone="capability"
                                         title="Invite them to One"
                                         description="Share an invite link with them."
                                         density="compact"
@@ -3630,6 +3656,7 @@ export default function ConnectPageClient() {
                                             // reflows mid-tap. `loading` also sets aria-busy.
                                             className={cn(
                                               CONNECT_ROW_ACTION_CLASSNAME,
+                                              CONNECT_ROW_TRAILING_CLASSNAME,
                                               "w-[72px] px-0",
                                             )}
                                             loading={busyId === person.userId}
@@ -3658,6 +3685,7 @@ export default function ConnectPageClient() {
                                             size="compact"
                                             className={cn(
                                               CONNECT_ROW_ACTION_CLASSNAME,
+                                              CONNECT_ROW_TRAILING_CLASSNAME,
                                               "min-w-[72px]",
                                             )}
                                             disabled={
@@ -3752,6 +3780,7 @@ export default function ConnectPageClient() {
                     <ConnectCirclesTab
                       onStateChange={setCirclesState}
                       currentUserId={user?.uid ?? null}
+                      isActive={surface === "circles"}
                       // The roster's Connect opens the SAME capability review the
                       // directory opens, rather than sending outright.
                       onRequestConnection={sendConnectRequest}
@@ -3884,8 +3913,8 @@ export default function ConnectPageClient() {
                     {batchRequestableRows.map((row) => (
                       <SettingsRow
                         key={`batch-request-${row.userId}-${row.item.handle}`}
-                        icon={BadgeCheck}
-                        iconTone="green"
+                        icon={QualifiedRowIcon}
+                        iconTone="capability"
                         title={
                           <span className={CONNECT_WRAPPING_TEXT_CLASSNAME}>
                             {row.title}
@@ -3957,8 +3986,8 @@ export default function ConnectPageClient() {
                 batchOfferableItems.length === 0 ? (
                   <SettingsGroup title="Connection access" separatorInset>
                     <SettingsRow
-                      icon={Lock}
-                      iconTone="gray"
+                      icon={LockedRowIcon}
+                      iconTone="capability"
                       title="No access yet"
                       description="These only send requests."
                       density="compact"

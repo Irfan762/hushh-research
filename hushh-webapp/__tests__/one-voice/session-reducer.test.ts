@@ -31,6 +31,131 @@ import {
 
 import { pendingActionFrame, readyFrame } from "./fixtures/scripted-server";
 
+describe("turn ownership", () => {
+  const input = (turn_id: string, text: string): ServerFrame => ({
+    type: "transcript.input", turn_id, text, final: true,
+  });
+  const output = (turn_id: string, text: string): ServerFrame => ({
+    type: "transcript.output", turn_id, text, final: true,
+  });
+
+  it("clears a completed input without letting its late frames replace the next answer", () => {
+    let state = run([server(input("a", "first")), server(output("a", "first answer"))], connected());
+    state = run([server(input("b", "second"))], state);
+    expect(state.activeInputTurnId).toBe("b");
+    expect(state.fencedTurnIds).toContain("a");
+
+    state = run([
+      server({ type: "turn", state: "model_end", turn_id: "a" }),
+      server(output("a", "late first answer")),
+      server(toolResult({ turn_id: "a", result_public: { status: "ok", echoed: "old" } })),
+    ], state);
+    expect(state.activeInputTurnId).toBe("b");
+    expect(state.lastResult).toBeNull();
+    expect(state.transcript.some((item) => item.text.includes("late first answer"))).toBe(false);
+
+    state = run([
+      server({ type: "turn", state: "model_end", turn_id: "b" }),
+      server({ type: "state", state: "listening" }),
+      server(output("c", "autonomous update")),
+    ], state);
+    expect(state.activeInputTurnId).toBeNull();
+    expect(state.transcript.at(-1)?.text).toBe("autonomous update");
+    expect(state.fencedTurnIds).toContain("a");
+  });
+
+  it("uses the call ledger for an untagged deferred result, and fails closed when origin is unknown", () => {
+    const state = run([
+      server(input("a", "first")),
+      server({ type: "tool.started", call_id: "call-a", tool: "echo", args_public: {}, turn_id: "a" }),
+      server(input("b", "second")),
+      server(toolResult({ call_id: "call-a", turn_id: undefined, result_public: { status: "ok", echoed: "old" } })),
+      server(toolResult({ call_id: "unknown", turn_id: undefined, result_public: { status: "ok", echoed: "unknown" } })),
+    ], connected());
+    expect(state.activeInputTurnId).toBe("b");
+    expect(state.lastResult).toBeNull();
+    expect(state.toolTimeline.find((item) => item.callId === "call-a")?.turnId).toBe("a");
+    expect(state.toolTimeline.some((item) => item.result?.echoed === "old")).toBe(true);
+  });
+
+  it("rejects fenced narration origins but accepts new autonomous audio after completion", () => {
+    const state = run([
+      server(input("a", "first")),
+      server(input("b", "second")),
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "narration-a", origin_turn_id: "a" }),
+      server({ type: "turn", state: "model_end", turn_id: "b" }),
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "c", origin_turn_id: "c" }),
+    ], connected());
+    expect(state.turnId).toBe("c");
+    expect(state.activeResponseTurnId).toBe("c");
+  });
+
+  it("retires a completed origin before any late audio can reclaim a newer response", () => {
+    let state = run([
+      server(input("a", "First")),
+      server({ type: "turn", state: "model_end", turn_id: "a" }),
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "c", origin_turn_id: "c" }),
+    ], connected());
+    expect(state.fencedTurnIds).toContain("a");
+    state = run([
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "a", origin_turn_id: "a" }),
+      server(output("a", "Late old answer")),
+    ], state);
+    expect(state.activeResponseTurnId).toBe("c");
+    expect(state.transcript.some((item) => item.text === "Late old answer")).toBe(false);
+  });
+
+  it("keeps a fresh name answer after a delayed Mail result and speech", () => {
+    const state = run([
+      server(input("mail-turn", "Is Gmail connected?")),
+      server({ type: "tool.started", call_id: "mail-call", tool: "get_mail_access", args_public: {}, turn_id: "mail-turn" }),
+      server(input("name-turn", "What is my name?")),
+      server(toolResult({ call_id: "mail-call", tool: "get_mail_access", turn_id: "mail-turn", result_public: { status: "connected", account: "mail" } })),
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "mail-audio", origin_turn_id: "mail-turn" }),
+      server(output("mail-turn", "Your Gmail is connected.")),
+      server({ type: "tool.started", call_id: "name-call", tool: "get_profile", args_public: {}, turn_id: "name-turn" }),
+      server(toolResult({ call_id: "name-call", tool: "get_profile", turn_id: "name-turn", result_public: { status: "ok", display_name: "Ankit" } })),
+      server(output("name-turn", "Your name is Ankit.")),
+    ], connected());
+    expect(state.lastResult?.display_name).toBe("Ankit");
+    expect(state.turnId).toBe("name-turn");
+    expect(state.transcript.some((item) => item.text === "Your Gmail is connected.")).toBe(false);
+    expect(state.toolTimeline.find((item) => item.callId === "mail-call")?.result?.account).toBe("mail");
+  });
+
+  it("fences a restored pending origin after a newer question completes", () => {
+    const oldCard = pendingActionFrame({ origin_turn_id: "old-turn" });
+    const state = run([
+      server(readyFrame({ pending_actions: [oldCard], resumed: true })),
+      server(input("new-turn", "New question")),
+      server({ type: "turn", state: "model_end", turn_id: "new-turn" }),
+      server(toolResult({
+        call_id: null,
+        pending_action_id: oldCard.pending_action_id,
+        turn_id: "old-turn",
+        result_public: { status: "deleted", spoken_facts: ["Deleted."] },
+      })),
+    ], connected());
+    expect(state.fencedTurnIds).toContain("old-turn");
+    expect(state.activeInputTurnId).toBeNull();
+    expect(state.lastResult).toBeNull();
+    expect(state.pendingAction?.pending_action_id).toBe(oldCard.pending_action_id);
+  });
+
+  it("does not give an unowned result the answer slot after completion", () => {
+    const state = run([
+      server(input("a", "First question")),
+      server({ type: "turn", turn_id: "a", state: "model_end" }),
+      server(toolResult({
+        call_id: null,
+        turn_id: undefined,
+        result_public: { status: "ok", echoed: "unowned" },
+      })),
+    ], connected());
+    expect(state.lastResult).toBeNull();
+  });
+});
+
 const NOW = 1_700_000_000_000;
 
 function server(frame: ServerFrame, now = NOW): VoiceSessionEvent {
@@ -170,7 +295,7 @@ describe("reduceVoiceSession: lifecycle", () => {
     );
   });
 
-  it("only idle (4009) and a clean end (1000) are recoverable closes", () => {
+  it("reports an abnormal network close as recoverable", () => {
     for (const code of [CLOSE_CODES.idle, CLOSE_CODES.ended]) {
       expect(voiceErrorForClose(code, "")).toBeNull();
       const state = run(
@@ -184,7 +309,6 @@ describe("reduceVoiceSession: lifecycle", () => {
       CLOSE_CODES.auth,
       CLOSE_CODES.capacity,
       CLOSE_CODES.replaced,
-      1006,
     ]) {
       const state = run(
         [{ type: "closed", code, reason: "", now: NOW }],
@@ -192,6 +316,12 @@ describe("reduceVoiceSession: lifecycle", () => {
       );
       expect(state.error?.recoverable).toBe(false);
     }
+    const networkLost = run(
+      [{ type: "closed", code: 1006, reason: "", now: NOW }],
+      connected(),
+    );
+    expect(networkLost.error?.code).toBe("network_lost");
+    expect(networkLost.error?.recoverable).toBe(true);
   });
 
   it("reconnect_required then a server close keeps the conversation and goes back to connecting", () => {
@@ -270,6 +400,52 @@ describe("reduceVoiceSession: lifecycle", () => {
   });
 });
 
+describe("reduceVoiceSession: answer ownership", () => {
+  it("keeps late read receipts in the timeline without replacing a newer answer", () => {
+    const afterNewQuestion = run(
+      [
+        server({ type: "transcript.input", text: "Is Mail connected?", final: true, turn_id: "mail" }),
+        server(toolResult({ call_id: "mail-call", turn_id: "mail", result_public: { status: "mail_ready" } })),
+        server({ type: "transcript.input", text: "What is my name?", final: true, turn_id: "profile" }),
+      ],
+      connected(),
+    );
+    expect(afterNewQuestion.lastResult).toBeNull();
+
+    const settled = run(
+      [
+        server(toolResult({ call_id: "late-mail", turn_id: "mail", result_public: { status: "mail_ready" } })),
+        server(toolResult({ call_id: "profile-call", turn_id: "profile", result_public: { status: "profile_ready" } })),
+      ],
+      afterNewQuestion,
+    );
+    expect(settled.lastResult?.status).toBe("profile_ready");
+    expect(settled.toolTimeline.map((item) => item.callId)).toEqual([
+      "mail-call", "late-mail", "profile-call",
+    ]);
+  });
+
+  it("settles an older confirmed action by exact pending ID without showing it as the new answer", () => {
+    const pending = pendingActionFrame();
+    const state = run(
+      [
+        server({ type: "transcript.input", text: "Share", final: true, turn_id: "old" }),
+        server(pending),
+        server({ type: "transcript.input", text: "What is my name?", final: true, turn_id: "new" }),
+        server(toolResult({
+          call_id: "old-action",
+          turn_id: "old",
+          pending_action_id: pending.pending_action_id,
+          result_public: { status: "share_created" },
+        })),
+      ],
+      connected(),
+    );
+    expect(state.pendingAction?.resolvedStatus).toBe("executed");
+    expect(state.lastResult).toBeNull();
+  });
+});
+
 describe("reduceVoiceSession: transcript", () => {
   it("appends and replaces partial lines by turn and role; 'You said' is role you", () => {
     const state = run(
@@ -343,7 +519,9 @@ describe("reduceVoiceSession: transcript", () => {
             connected(),
           );
           expect(SUCCESS_LOOKING.has(state.phase)).toBe(false);
-          expect(state.phase).toBe("listening");
+          expect(state.phase).toBe(
+            type === "transcript.input" ? "understanding" : "listening",
+          );
           expect(state.lastResult).toBeNull();
           expect(state.pendingAction).toBeNull();
           expect(selectSuccessReceipt(state)).toBeNull();

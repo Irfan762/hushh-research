@@ -8,7 +8,9 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      data-no-route-swipe
+      data-swipe-views-horizontal-scroll
+      className="relative w-full min-w-0 max-w-full overflow-x-auto overscroll-x-contain [-webkit-overflow-scrolling:touch]"
     >
       <table
         data-slot="table"

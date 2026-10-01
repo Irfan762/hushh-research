@@ -198,10 +198,12 @@ It checks that:
    - UAT: `CONSENT_SSE_ENABLED=true`
    - production: `CONSENT_SSE_ENABLED=false` unless there is an explicit incident-response or rollout reason to enable it
 6. App-review toggles, reviewer identity secrets, bypass flags, and rehearsal keys are maintainer-only overlays and are intentionally excluded from the canonical contributor runtime contract.
-7. UAT backend revisions still mount `REVIEWER_UID` and `REVIEWER_VAULT_PASSPHRASE` from Secret Manager so reviewer-mode smoke can mint the Firebase custom token after deploy.
+7. UAT backend revisions still mount `REVIEWER_UID` and `REVIEWER_VAULT_PASSPHRASE` from Secret Manager so reviewer-mode smoke can mint the Firebase custom token after deploy. The passphrase is the mint credential: the session route refuses a request that does not carry it, whatever `APP_REVIEW_MODE` says.
+   Production never mounts either one, and never advertises review mode or mints a review session, whatever `APP_REVIEW_MODE` says. The production App Store reviewer is a dedicated account that signs in normally. Its `REVIEWER_UID` and `REVIEWER_VAULT_PASSPHRASE` live in `hushh-pda` Secret Manager for operator tooling only (the App Store review notes and the iPhone device gate). See `consent-protocol/docs/app-review-mode-config.md` § *Production: backend-only review*.
+   **UAT and production share one Firebase authority.** Both `FIREBASE_ADMIN_CREDENTIALS_JSON` secrets carry `project_id` `hushh-pda`, so an ID token issued on one lane verifies on the other. What keeps a review session on the lane that minted it is the `hushh_review_mint: "<ENVIRONMENT>"` developer claim every review-mode mint carries, which every backend verifier refuses outside that lane and always refuses on production (`api/utils/firebase_auth.py`). A review session also cannot approve a trusted device or authorize a Hussh Tech launch, because both mint fresh tokens that could not carry the claim. `ENVIRONMENT` is therefore part of the auth boundary: a lane must never report another lane's value. See `consent-protocol/docs/app-review-mode-config.md` § *Lane containment: one Firebase authority*.
 8. The canonical non-production reviewer fixture is `REVIEWER_UID` plus `REVIEWER_VAULT_PASSPHRASE`; `UAT_SMOKE_*` and `KAI_TEST_*` are deprecated migration aliases, and no `NEXT_PUBLIC_*` passphrase is allowed.
-   The second non-production fixture for two-person proofs is `REVIEWER_COUNTERPART_UID` plus `REVIEWER_COUNTERPART_VAULT_PASSPHRASE`, Secret-Manager-only like the first, with no aliases: the review-mode session route mints the counterpart uid when the supplied passphrase matches the counterpart pair and otherwise behaves exactly as before the pair existed (the primary is minted; no passphrase, a backend holding no passphrase, and production are unchanged). Nothing mounts the counterpart yet (`deploy/backend.cloudbuild.yaml`, `scripts/ops/sync_backend_runtime_secrets.py`, `scripts/ops/verify-env-secrets-parity.py`, `config/deploy-env-coverage.json` and the deploy workflow substitutions carry only the primary pair), so until a maintainer adds it there a counterpart passphrase on dev or uat mints the primary, and the two-person proof detects that through the client-side expected-uid check.
-9. Localhost private-agent review: the local backend loads `consent-protocol/.env.local` as a maintainer overlay (`hushh_mcp/runtime_settings.py`; the file is absent in deployed environments, so this is a no-op there, and `override=False` keeps the canonical `.env` authoritative). Use `bash scripts/env/reviewer_mode.sh enable`, restart the backend, and run the reviewer preflight with `REVIEWER_SECRET_PROJECT=hushh-pda-uat`; it resolves `REVIEWER_UID` and `REVIEWER_VAULT_PASSPHRASE` from Secret Manager only into the test process. The overlay holds only `APP_REVIEW_MODE=true`; it never holds reviewer secrets. The preflight proves the localhost custom-token minter is enabled before Chromium launches, and the standard rehearsal blocks unapproved state-changing HTTP. Afterward, disable the mode and restart the backend. The overlay never ships.
+   The second non-production fixture for two-person proofs is `REVIEWER_COUNTERPART_UID` plus `REVIEWER_COUNTERPART_VAULT_PASSPHRASE`, Secret-Manager-only like the first, with no aliases: the review-mode session route mints the counterpart uid when the supplied passphrase matches the counterpart pair, mints the primary when it matches the primary pair, and refuses everything else (no passphrase, a passphrase matching no pair, a named `reviewer_uid` without its own pair's passphrase, a backend holding no passphrase, and production). Nothing mounts the counterpart yet (`deploy/backend.cloudbuild.yaml`, `scripts/ops/sync_backend_runtime_secrets.py`, `scripts/ops/verify-env-secrets-parity.py`, `config/deploy-env-coverage.json` and the deploy workflow substitutions carry only the primary pair), so until a maintainer adds it there a counterpart passphrase on dev or uat mints the primary, and the two-person proof detects that through the client-side expected-uid check.
+9. Localhost private-agent review: the local backend loads `consent-protocol/.env.local` as a maintainer overlay (`hushh_mcp/runtime_settings.py`; the file is absent in deployed environments, so this is a no-op there, and `override=False` keeps the canonical `.env` authoritative). Use `bash scripts/env/reviewer_mode.sh enable`, restart the backend, and run the reviewer preflight with `REVIEWER_SECRET_PROJECT=hushh-pda-uat`; it resolves `REVIEWER_UID` and `REVIEWER_VAULT_PASSPHRASE` from Secret Manager only into the test process. The overlay holds only `APP_REVIEW_MODE=true`; it never holds reviewer secrets. Because the session route now requires the passphrase, a custom-token rehearsal also needs the backend started from a shell that evaluated `node hushh-webapp/scripts/testing/export-reviewer-test-env.mjs`, which puts `REVIEWER_VAULT_PASSPHRASE` in the backend's process env only. The preflight proves the localhost custom-token minter is enabled before Chromium launches, and the standard rehearsal blocks unapproved state-changing HTTP. Afterward, disable the mode and restart the backend. The overlay never ships.
 
 ### Environment divergence note (current)
 
@@ -243,12 +245,26 @@ Live head keeps an explicit pin.
   complete, the frontend flag was a build-time constant that duplicated the
   backend's authority, and the manifest's `HUSHH_WALLET_AGENT_DISABLED` kill switch
   was never wired to anything. Nothing gates the Wallet now, in any lane.
-- Support, invite, and capability mail: every `SUPPORT_EMAIL_*` address defaults to
-  `ONE_EMAIL_ADDRESS` (`one@hushh.ai`). UAT and production carry no overrides; the
-  dev project's `SUPPORT_EMAIL_*` secrets point at `one@hushh.ai` in test mode. The
+- One support and account notices use the delegated `one@hushh.ai` mailbox. Support
+  reports go to One with a fixed internal BCC to the support lead; account notices
+  have no BCC. `SUPPORT_EMAIL_TEST_TO` redirects account notices in test mode. The
+  sender and delegated user must both be One for these routes. Production uses
+  the One defaults; UAT mounts explicit `SUPPORT_EMAIL_DELEGATED_USER` and
+  `SUPPORT_EMAIL_FROM` secrets, which the deploy preflight requires to equal
+  `one@hushh.ai`. Rotate stale UAT versions before a backend release, then
+  verify the new serving revision. The dev project's `SUPPORT_EMAIL_*` secrets
+  point at `one@hushh.ai` in test mode. The
   mailbox credential is never stored in the repo or Secret Manager; sending rides
   the delegated service identity. Forwarding from `one@hushh.ai` to a person is a
   Google Workspace admin setting, not a repo concern.
+- Automatic account mail is limited to the first-account welcome and confirmed
+  passkey-add, passkey-remove, and existing-vault passphrase-change notices.
+  Routine welcome-back, sign-out, phone-conflict, and client-inferred connector
+  emails are retired. The separate `hushh-mail-api` frontend binding remains
+  only for user-requested Save my Soul email; it must not send account notices.
+  A green branch check or local commit does not publish this policy: verify the
+  landed source SHA, serving web/backend revisions, sender secrets, and live
+  event behavior at each authorized release gate.
 
 ### Deploy-step env plumbing and the Cloud Build arg cap (2026-09-02)
 
@@ -327,8 +343,8 @@ Used by:
 | `ONE_LOCATION_NEARBY_PRESENCE_MODE` | `api/routes/one/location.py` | Optional non-production override | `disabled` or `uat_simulation`. Development/UAT/staging default to the simulation; production remains disabled even if misconfigured. |
 | `ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED` | `hushh_mcp/services/one_email_kyc_service.py` | Optional | Defaults to `true`. Backend orchestrates consent/send/writeback metadata only; it must not decrypt exports or persist review draft plaintext. |
 | `ONE_EMAIL_KYC_DEFAULT_SCOPE` | `hushh_mcp/services/one_email_kyc_service.py` | Optional | Must be on the service allowlist. Current approved value: `attr.identity.*`. |
-| `SUPPORT_EMAIL_DELEGATED_USER` | `hushh_mcp/services/support_email_service.py` | Optional override | Real Workspace mailbox to impersonate for support/invite send. Defaults to `ONE_EMAIL_ADDRESS`. |
-| `SUPPORT_EMAIL_FROM` | `hushh_mcp/services/support_email_service.py` | Optional | Visible From address for support/invite send. Defaults to delegated user. |
+| `SUPPORT_EMAIL_DELEGATED_USER` | `hushh_mcp/services/support_email_service.py` | Optional | Support/account notices require `one@hushh.ai`; unrelated invite callers retain their own contract. |
+| `SUPPORT_EMAIL_FROM` | `hushh_mcp/services/support_email_service.py` | Optional | Support/account notices require `one@hushh.ai`. |
 | `SUPPORT_EMAIL_TO` | `hushh_mcp/services/support_email_service.py` | Optional | Support recipient. Defaults to `ONE_EMAIL_ADDRESS`. |
 | `SUPPORT_EMAIL_TEST_TO` | `hushh_mcp/services/support_email_service.py` | Optional | Test recipient for non-production email verification. |
 | `SUPPORT_EMAIL_MODE` | `hushh_mcp/services/support_email_service.py` | Optional | `live` or `test`. Non-production defaults to `test` when `SUPPORT_EMAIL_TEST_TO` exists. |
@@ -397,8 +413,8 @@ Used by:
 | `BACKEND_URL` | Server-side api routes | Hosted runtime required | Canonical runtime backend origin for Next.js route handlers |
 | `SESSION_SECRET` | `lib/auth/session.ts` | If session API | Server-only |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | `lib/firebase/admin.ts` | Server-side Firebase | Server-only |
-| `MAIL_API_ENDPOINT` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For lifecycle mail | `hushh-mail-api` origin. Plain env var, set from `_MAIL_API_ENDPOINT` in `deploy/frontend.cloudbuild.yaml` |
-| `MAIL_API_KEY` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For lifecycle mail | Server-only. Bound from Secret Manager only when the secret exists; absent means welcome/sign-in/phone-conflict mail stays off and sign-in is unaffected |
+| `MAIL_API_ENDPOINT` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For user-requested SOS mail | `hushh-mail-api` origin. Plain env var, set from `_MAIL_API_ENDPOINT` in `deploy/frontend.cloudbuild.yaml`; not used for account notices. |
+| `MAIL_API_KEY` | `lib/runtime/settings.ts` → `lib/mail/mail-client.ts` | For user-requested SOS mail | Server-only. This is not used for One support or account notices. |
 
 ---
 
@@ -547,8 +563,8 @@ These are used by MCP modules (`mcp_modules/`) for MCP server functionality, not
 | `BACKEND_URL` | Server-side | Hosted runtime required | Cloud Run runtime env or local profile value; do not leave unset in hosted environments | |
 | `SESSION_SECRET` | If using session API | Yes | Server env only | Not in client |
 | `FIREBASE_ADMIN_CREDENTIALS_JSON` | Server-side Firebase | Yes | Server env only | |
-| `MAIL_API_ENDPOINT` | For lifecycle mail | No | Cloud Run runtime env from `_MAIL_API_ENDPOINT` | Public `hushh-mail-api` URL |
-| `MAIL_API_KEY` | For lifecycle mail | Yes | Secret Manager `MAIL_API_KEY`, bound only when present | Never `NEXT_PUBLIC_`; a browser-reachable key would be an open relay under the Hussh Workspace SPF/DKIM identity |
+| `MAIL_API_ENDPOINT` | For user-requested SOS mail | No | Cloud Run runtime env from `_MAIL_API_ENDPOINT` | Public `hushh-mail-api` URL |
+| `MAIL_API_KEY` | For user-requested SOS mail | Yes | Secret Manager `MAIL_API_KEY`, bound only when present | Never `NEXT_PUBLIC_`; a browser-reachable key would be an open relay under the Hussh Workspace SPF/DKIM identity |
 | `NEXT_PUBLIC_CONSENT_TIMEOUT_SECONDS` | No | No | Optional; sync with backend | |
 
 **CI:** Frontend build uses dummy Firebase vars and `NEXT_PUBLIC_BACKEND_URL=https://api.example.com`; no `.env.local` required.

@@ -101,7 +101,10 @@ import {
   parseRestoredTurnActivity,
   getAgentChatHistory,
   listAgentChatConversations,
+  InformationRequestReceiptError,
+  isRetryableReceiptStatus,
   recordAgentChatInformationRequest,
+  recordAgentChatInformationRequestWithRetry,
   streamAgentChat,
   streamAgentIntro,
   type SpecialistDirectiveEvent,
@@ -296,42 +299,6 @@ describe("AG-UI Agent One client", () => {
     })).rejects.toThrow("Synthetic unavailable");
     expect(mockTransport.runAgent).not.toHaveBeenCalled();
   });
-  it("settles a selected Gmail reply as soon as the model-authored editable draft is ready", async () => {
-    publishValidatedAuthSessionOwner("user-1");
-    const onToolResult = vi.fn();
-    const onComplete = vi.fn();
-    const body = "Here are the requested details.";
-    mockTransport.emitEvents = subscriber => {
-      subscriber.onToolCallStartEvent?.({ event: {
-        toolCallId: "gmail-reply", toolCallName: "open_gmail_information_request_reply",
-      } });
-      subscriber.onToolCallEndEvent?.({
-        event: { toolCallId: "gmail-reply" },
-        toolCallName: "open_gmail_information_request_reply",
-        toolCallArgs: { body, owner_supplied_requested_information: true },
-      });
-      subscriber.onToolCallResultEvent?.({ event: {
-        toolCallId: "gmail-reply", content: JSON.stringify({ status: "draft_opened" }),
-      } });
-    };
-
-    const result = await streamAgentChat({
-      vaultKey: TEST_VAULT_KEY,
-      userId: "user-1",
-      message: "My requested detail is ready.",
-      vaultOwnerToken: "owner-token",
-      gmailInformationRequestWorkflowId: "workflow-1",
-      handlers: { onToolResult, onComplete },
-    });
-
-    expect(onToolResult).toHaveBeenCalledWith(expect.objectContaining({
-      raw: expect.objectContaining({ toolName: "open_gmail_information_request_reply" }),
-      slots: expect.objectContaining({ body }),
-    }));
-    expect(onComplete).toHaveBeenCalledOnce();
-    expect(mockTransport.aborted).toBe(true);
-    expect(result).toMatchObject({ interrupted: true, text: "" });
-  });
   it("never treats native connector content as a debug payload or app directive", async () => {
     mockTransport.emitEvents = subscriber => {
       subscriber.onToolCallStartEvent?.({ event: { toolCallId: "mcp-call", toolCallName: `mcp_${"a".repeat(40)}` } });
@@ -449,6 +416,65 @@ describe("AG-UI Agent One client", () => {
       conversationId: "thread-1", sourceActivityId: "discover-call",
       bundleId, idempotencyKey: "synthetic-receipt-key", vaultOwnerToken: "owner-token",
     })).rejects.toThrow();
+  });
+  // Regression (localhost run 2026-09-28): Send on the new ask card got 404
+  // "Discovery card not found." twice, then the continuation got 409.
+  it("sends the ask card's live tool call id as the receipt source, retries the race, and stops on a refusal", async () => {
+    const bundleId = "11111111-1111-1111-1111-111111111111";
+    const PERSON_REF = "11111111-1111-4111-8111-111111111111";
+    const onStructuredExperience = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "propose-call", toolCallName: "propose_information_request" } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "propose-call", content: JSON.stringify({
+        status: "proposal_ready",
+        person: { displayName: "Sarah Chen", personRef: PERSON_REF, profilePath: `/people/${PERSON_REF}` },
+        fields: ["Food preferences"], purpose: "dinner planning", durationHours: 168,
+        proposed: [{ scope: "psr_food", label: "Food preferences", why: null }],
+        duration_default: "7d", reason_suggestion: "dinner planning",
+      }) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Where should we eat?",
+      vaultOwnerToken: "fixture", handlers: { onStructuredExperience } });
+    expect(onStructuredExperience).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "one.scope_discovery.v1", proposal: expect.any(Object) }), "propose-call");
+    const activityId = onStructuredExperience.mock.calls[0][1] as string;
+
+    const descriptor = { activityType: "one.information_request_review.v1", content: {
+      direction: "outgoing", phase: "submitted", status: "pending", personName: "Sarah Chen",
+      purpose: "dinner planning", durationLabel: "7 days", subjectRef: PERSON_REF, bundleId,
+      fields: [{ requestId: "request_12345678", label: "Food preferences",
+        domain: "Information", sensitivity: "standard", status: "pending" }],
+    } };
+    const input = { vaultKey: TEST_VAULT_KEY, conversationId: "thread-1", sourceActivityId: activityId,
+      bundleId, idempotencyKey: "synthetic-receipt-key", vaultOwnerToken: "owner-token" };
+    const sleep = vi.fn(async () => undefined);
+    vi.mocked(ApiService.apiFetch).mockClear();
+    vi.mocked(ApiService.apiFetch)
+      .mockResolvedValueOnce(new Response(JSON.stringify({ detail: "Discovery card not found." }), { status: 404 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ descriptor }), { status: 200 }));
+    await expect(recordAgentChatInformationRequestWithRetry(input, { sleep })).resolves.toMatchObject({
+      phase: "submitted", bundleId, subjectRef: PERSON_REF,
+    });
+    expect(ApiService.apiFetch).toHaveBeenCalledTimes(2);
+    for (const call of vi.mocked(ApiService.apiFetch).mock.calls) {
+      expect(call[0]).toBe("/api/one/agent-chat/history/thread-1/information-requests");
+      // Locators only: the card id the server matches, the bundle and the key. Never a card body.
+      expect(JSON.parse(String((call[1] as RequestInit).body))).toEqual({
+        source_activity_id: "propose-call", bundle_id: bundleId, idempotency_key: "synthetic-receipt-key",
+      });
+    }
+
+    // A final refusal is not retried, and reports its status for the log.
+    vi.mocked(ApiService.apiFetch).mockClear();
+    vi.mocked(ApiService.apiFetch).mockResolvedValueOnce(
+      new Response(JSON.stringify({ detail: "Request recipient did not match discovery." }), { status: 409 }));
+    const refused = await recordAgentChatInformationRequestWithRetry(input, { sleep }).catch((error: unknown) => error);
+    expect(refused).toBeInstanceOf(InformationRequestReceiptError);
+    expect((refused as InformationRequestReceiptError).status).toBe(409);
+    expect(ApiService.apiFetch).toHaveBeenCalledTimes(1);
+    expect(isRetryableReceiptStatus(404)).toBe(true);
+    expect(isRetryableReceiptStatus(null)).toBe(true);
+    expect(isRetryableReceiptStatus(403)).toBe(false);
   });
   it("shows Drive search progress without exposing the private tool request", async () => {
     const onToolStart = vi.fn();
@@ -602,6 +628,33 @@ describe("AG-UI Agent One client", () => {
     expect(JSON.stringify(onToolWaiting.mock.calls)).not.toContain("PRIVATE CONNECTOR NAME");
   });
 
+  it("routes an MCP server probe only to its card, never to Activity or directive parsing", async () => {
+    const onStructuredExperience = vi.fn();
+    const onToolResult = vi.fn();
+    const onToolWaiting = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "probe", toolCallName: "probe_private_connector" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "probe" }, toolCallName: "probe_private_connector",
+        toolCallArgs: { endpoint: "https://mcp.example.com/mcp" } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "probe", content: JSON.stringify({
+        status: "ok", provider: "custom",
+        probe: { status: "ready", endpoint: "https://mcp.example.com/mcp", host: "mcp.example.com",
+          server: { name: "Example" }, tools: [{ name: "search", description: "UNTRUSTED SERVER TEXT", access: "write" }],
+          toolCount: 1, auth: { kind: "none" }, app_action: { action_id: "nav.profile" } },
+      }) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Add https://mcp.example.com/mcp",
+      vaultOwnerToken: "fixture", handlers: { onStructuredExperience, onToolResult, onToolWaiting } });
+    expect(onStructuredExperience.mock.calls[0][0]).toMatchObject({
+      type: "one.custom_connector_probe.v1", status: "ready", serverName: "Example",
+    });
+    expect(onToolResult.mock.calls[0][0].message).toBe("One checked that server.");
+    expect(JSON.stringify(onToolResult.mock.calls)).not.toContain("UNTRUSTED SERVER TEXT");
+    expect(JSON.stringify(onToolWaiting.mock.calls)).not.toContain("UNTRUSTED SERVER TEXT");
+    // A smuggled app_action in server text never becomes a parked directive.
+    expect(onToolWaiting.mock.calls.filter(([payload]) => String(payload.callId).endsWith(":directive"))).toEqual([]);
+  });
+
   it.each(["blocked", "unavailable"])("reports a %s Drive status check without claiming disconnection", async (status) => {
     const onToolResult = vi.fn();
     mockTransport.emitEvents = (subscriber) => {
@@ -656,6 +709,34 @@ describe("AG-UI Agent One client", () => {
     await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "Find my file", vaultOwnerToken: "fixture",
       handlers: { onToolResult } });
     expect(onToolResult.mock.calls[0][0].message).toBe(expected);
+  });
+
+  it.each([
+    [{ status: "shown", suggestions: ["Find a free hour after 2pm", "Move standup to 9:30"] },
+      ["Find a free hour after 2pm", "Move standup to 9:30"]],
+    // Negative controls: only a valid server-shown result becomes chips.
+    [{ status: "ignored", reason: "call_alone_after_your_answer" }, null],
+    [{ status: "shown", suggestions: ["Only one"] }, null],
+    [{ status: "shown", suggestions: ["Fine", "x".repeat(81)] }, null],
+  ])("renders follow-ups only from a shown result, never as an Activity step", async (result, expected) => {
+    const onFollowUpSuggestions = vi.fn();
+    const onToolStart = vi.fn();
+    const onToolWaiting = vi.fn();
+    const onToolResult = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "follow-ups", toolCallName: "suggest_follow_ups" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "follow-ups" }, toolCallName: "suggest_follow_ups",
+        toolCallArgs: { suggestions: ["Find a free hour after 2pm"] } });
+      subscriber.onToolCallResultEvent({ event: { toolCallId: "follow-ups", content: JSON.stringify(result) } });
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "What is on tomorrow?",
+      vaultOwnerToken: "fixture", handlers: { onFollowUpSuggestions, onToolStart, onToolWaiting, onToolResult } });
+    if (expected) expect(onFollowUpSuggestions).toHaveBeenCalledExactlyOnceWith(expected);
+    else expect(onFollowUpSuggestions).not.toHaveBeenCalled();
+    expect([onToolStart, onToolWaiting, onToolResult].map((spy) => spy.mock.calls.length)).toEqual([0, 0, 0]);
+    expect(parseRestoredTurnActivity({ activityType: "one.turn_activity.v1", content: { steps: [
+      { id: "follow-ups", tool: "suggest_follow_ups", status: "done" },
+    ] } })).toEqual([]);
   });
 
   it.each([
@@ -1029,6 +1110,20 @@ describe("AG-UI Agent One client", () => {
     expect(visible).toBe("One is temporarily at capacity. Please try again in a moment.");
     expect(visible).not.toContain("RESOURCE_EXHAUSTED");
     expect(visible).not.toContain("429");
+  });
+
+  // The server authors these (hushh_mcp/one_adk/run_errors.py) for the person;
+  // they used to fall through to the generic line because only text was read.
+  it("shows the server's authored retryable errors by code, never by message text", () => {
+    expect(formatAgentChatErrorMessage("One is temporarily at capacity. Please try again in a moment.", "RESOURCE_EXHAUSTED"))
+      .toBe("One is temporarily at capacity. Please try again in a moment.");
+    expect(formatAgentChatErrorMessage("anything", "MODEL_UNAVAILABLE"))
+      .toBe("One's model service was briefly unavailable. Please try again.");
+    expect(formatAgentChatErrorMessage("anything", "SERVER_RESTARTING"))
+      .toBe("One was interrupted because the service restarted. Please send that again.");
+    // Negative control: the same text under another code is not trusted.
+    expect(formatAgentChatErrorMessage("One's model service was briefly unavailable. Please try again.", "MODEL_ERROR"))
+      .toBe("One couldn't complete that response. Please try again.");
   });
 
   it("settles an interrupted HITL turn while preserving its resumable boundary", async () => {
@@ -1518,5 +1613,89 @@ describe("a chat turn never waits forever", () => {
     await expect(turn).rejects.toThrow(AGENT_CHAT_STREAM_LOST_ERROR);
     expect(onError).toHaveBeenCalledTimes(1); // the abort that follows is not a second error
     expect(mockTransport.aborted).toBe(true);
+  });
+});
+
+// The slow-reply notice is fed only by the transport: bytes, the first visible
+// work, and typed server strain. Bookkeeping events are not work, and message
+// text never classifies anything.
+describe("stream health for the slow-reply notice", () => {
+  beforeEach(() => {
+    publishValidatedAuthSessionOwner("user-1");
+    noteChatKeyAccepted();
+    mockTransport.aborted = false;
+    mockTransport.outcome = "success";
+    mockTransport.emitEvents = null;
+    mockTransport.failWith = null;
+  });
+
+  afterEach(() => {
+    mockTransport.emitEvents = null;
+    mockTransport.failWith = null;
+    mockTransport.readBody = false;
+    mockTransport.aborted = false;
+  });
+
+  const run = (onStreamHealth: NonNullable<AgentChatStreamHandlers["onStreamHealth"]>) =>
+    streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Plan my week",
+      conversationId: "thread-health", vaultOwnerToken: "owner-token", handlers: { onStreamHealth } });
+
+  it("counts a tool step as activity and run bookkeeping as nothing", async () => {
+    const signals: string[] = [];
+    mockTransport.emitEvents = (subscriber) => {
+      for (const type of ["RUN_STARTED", "STATE_SNAPSHOT", "MESSAGES_SNAPSHOT", "STATE_DELTA"]) {
+        subscriber.onEvent({ event: { type } });
+      }
+      expect(signals).toEqual([]); // negative control: bookkeeping is not work
+      subscriber.onEvent({ event: { type: "TOOL_CALL_START", toolCallId: "t1", toolCallName: "google_search" } });
+    };
+    await run((signal) => signals.push(signal.kind));
+    expect(signals).toEqual(["activity"]);
+  });
+
+  it("reports capacity from a typed RUN_ERROR and shows the authored line", async () => {
+    const signals: unknown[] = [];
+    const shown: string[] = [];
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onRunErrorEvent({ event: { type: "RUN_ERROR", code: "RESOURCE_EXHAUSTED",
+        message: "One is temporarily at capacity. Please try again in a moment." } });
+      mockTransport.aborted = true; // the server ended the run
+    };
+    const error = await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "user-1", message: "Plan my week",
+      conversationId: "thread-capacity", vaultOwnerToken: "owner-token",
+      handlers: { onStreamHealth: (signal) => signals.push(signal), onError: (message) => shown.push(message) },
+    }).catch((caught) => caught);
+    expect(signals).toEqual([{ kind: "backend_strain", strain: "busy" }]);
+    expect(shown).toEqual(["One is temporarily at capacity. Please try again in a moment."]);
+    expect(error.message).toBe(shown[0]);
+  });
+
+  it("reports a refused 503 as unavailable, and a 500 as nothing", async () => {
+    const refused = (status: number) => Object.assign(new Error(`HTTP ${status}: {"detail":"x"}`), { status, payload: { detail: "x" } });
+    const signals: unknown[] = [];
+    mockTransport.failWith = refused(503);
+    await run((signal) => signals.push(signal)).catch(() => undefined);
+    expect(signals).toEqual([{ kind: "backend_strain", strain: "unavailable" }]);
+
+    signals.length = 0;
+    mockTransport.failWith = refused(500);
+    await run((signal) => signals.push(signal)).catch(() => undefined);
+    expect(signals).toEqual([]);
+  });
+
+  it("reports body bytes, keep-alive pings included", async () => {
+    const encoder = new TextEncoder();
+    vi.mocked(ApiService.apiFetchStream).mockResolvedValueOnce(new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(": ping\n\n"));
+        controller.enqueue(encoder.encode(": ping\n\n"));
+        controller.close();
+      },
+    }), { status: 200, headers: { "Content-Type": "text/event-stream" } }));
+    mockTransport.readBody = true;
+    const signals: string[] = [];
+    await run((signal) => signals.push(signal.kind));
+    // Headers, then each chunk.
+    expect(signals.filter((kind) => kind === "bytes")).toHaveLength(3);
   });
 });

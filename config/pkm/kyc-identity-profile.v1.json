@@ -19,7 +19,6 @@
     { "id": "identity.identity_profile.education.programme", "domain": "identity", "path": "identity_profile.education.programme", "aliases": ["programme", "program", "degree", "course"] },
     { "id": "identity.identity_profile.education.academic_status", "domain": "identity", "path": "identity_profile.education.academic_status", "aliases": ["academic status", "student status", "year of study", "student"] },
     { "id": "identity.identity_profile.education.roll_number", "domain": "identity", "path": "identity_profile.education.roll_number", "aliases": ["roll number", "roll no", "student roll number", "college roll number", "student id"] },
-    { "id": "identity.identity_profile.education.email", "domain": "identity", "path": "identity_profile.education.email", "aliases": ["college email", "college email address", "university email", "university email address", "student email", "academic email", "institutional email"] },
     { "id": "professional.profile.employer", "domain": "professional", "path": "profile.employer", "aliases": ["employer", "company", "organization", "organisation", "workplace"] },
     { "id": "professional.profile.role", "domain": "professional", "path": "profile.role", "aliases": ["role", "job title", "designation", "position"] },
     { "id": "professional.profile.employment_status", "domain": "professional", "path": "profile.employment_status", "aliases": ["employment status", "work status", "profession"] }

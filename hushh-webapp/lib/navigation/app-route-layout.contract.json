@@ -199,8 +199,9 @@
   },
   {
     "route": "/circle/join",
-    "mode": "redirect",
-    "exemptionReason": "Public Circle join landing route reads the invite code from the query string and redirects into the in-app Join-with-code flow; it owns no signed-in app shell of its own.",
+    "mode": "hidden",
+    "persistentChrome": "none",
+    "exemptionReason": "Public three-screen Circle invitation preview owns its navigation; account-based joining continues through the protected Connect flow.",
     "voicePlaybook": {
       "playbookId": "route.circle.join",
       "purpose": "Help the person understand and use the circle join screen through its generated controls.",
@@ -256,9 +257,7 @@
     "mode": "hidden",
     "persistentChrome": "none",
     "interactionLayerPolicy": {
-      "allowedFamilies": [
-        "legal_document"
-      ]
+      "allowedFamilies": []
     },
     "exemptionReason": "Auth-only route intentionally bypasses the signed-in app shell.",
     "voicePlaybook": {
@@ -637,6 +636,7 @@
   {
     "route": "/one/location/invite/[token]",
     "mode": "hidden",
+    "persistentChrome": "none",
     "exemptionReason": "Public one-location circle invite route is a standalone external-acceptance form outside the signed-in app shell.",
     "voicePlaybook": {
       "playbookId": "route.one.location.invite.token",
@@ -691,6 +691,7 @@
   {
     "route": "/one/gmail",
     "mode": "standard",
+    "pageTopLocalOffset": "-24px",
     "shellVerification": {
       "file": "components/gmail/gmail-receipts-page.tsx",
       "includes": [

@@ -29,12 +29,15 @@ class DriveSharingService:
             raise DriveSharingError("reconnect_required")
         return row["connection_generation"]
 
-    async def create(self, *, recipient, owner_user_id, client_request_id, purpose):
+    async def create(
+        self, *, recipient, owner_user_id, client_request_id, purpose, request_time_zone=None
+    ):
         result = await self.store.create_request(
             recipient=recipient,
             owner_user_id=owner_user_id,
             client_request_id=client_request_id,
             purpose=purpose,
+            request_time_zone=request_time_zone,
         )
         await wake_drive_work("suggestions")
         await wake_drive_work("sharing")
@@ -79,14 +82,25 @@ class DriveSharingService:
             raise DriveSharingError("bulk_not_found")
         from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 
-        page = await DriveBulkShareStore(db=self.store.db).recipient_files(
-            recipient_user_id=user_id,
-            recipient_subject=recipient["subject"],
-            recipient_email=recipient["email"],
-            share_id=share_id,
-            cursor=cursor,
-            limit=25,
-        )
+        bulk = DriveBulkShareStore(db=self.store.db)
+        if current["result"].get("progressiveBatch"):
+            page = await bulk.recipient_request_files(
+                recipient_user_id=user_id,
+                recipient_subject=recipient["subject"],
+                recipient_email=recipient["email"],
+                request_id=request_id,
+                cursor=cursor,
+                limit=25,
+            )
+        else:
+            page = await bulk.recipient_files(
+                recipient_user_id=user_id,
+                recipient_subject=recipient["subject"],
+                recipient_email=recipient["email"],
+                share_id=share_id,
+                cursor=cursor,
+                limit=25,
+            )
         return {"requestId": request_id, **page}
 
     async def approve(self, *, user_id, **kwargs):
