@@ -2,6 +2,8 @@
 -- Existing requests remain free. Provider references contain no document data.
 BEGIN;
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_attribute

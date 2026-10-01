@@ -403,7 +403,11 @@ async def test_queue_grants_refuses_a_plan_that_names_other_files(sharing):
     )
     with pytest.raises(DriveSharingError, match="invalid_selection"):
         sharing._queue_grants(
-            None, request=None, approval=approval, sources=[{"document_id": "one"}], batch="b"
+            None,
+            request={"payment_required": False},
+            approval=approval,
+            sources=[{"document_id": "one"}],
+            batch="b",
         )
 
 
