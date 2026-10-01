@@ -880,11 +880,9 @@ export function ConnectCirclesTab({
           </span>
         </span>
         {!canInviteToEmptyCircle ? (
-          <span className="col-span-3 flex min-w-0 items-center gap-3 sm:col-auto sm:gap-5">
+          <span className="col-span-3 flex min-w-0 items-center sm:col-auto sm:ml-auto sm:w-40 sm:shrink-0 sm:justify-end">
             <CircleCluster circle={circle} vaultOwnerToken={vaultOwnerToken ?? ""} reloadToken={reloadToken + refreshToken} />
-            <span className={`ml-auto inline-flex min-h-9 items-center justify-center rounded-full px-4 text-xs font-semibold [.native-ios_&]:hidden ${circle.role === "owner" ? "bg-[color:var(--app-accent-soft)] text-[color:var(--app-accent)]" : "bg-[color:var(--app-secondary-fill)] text-[color:var(--app-secondary-label)]"}`}>
-              {circle.role !== "owner" ? "View" : "Manage"}
-            </span>
+
           </span>
         ) : null}
         {canInviteToEmptyCircle ? (
