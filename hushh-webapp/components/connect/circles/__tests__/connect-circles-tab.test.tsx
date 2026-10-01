@@ -181,7 +181,7 @@ describe("circleRowDescription", () => {
     // never asked. These lines answer the question a Circle you did not create
     // actually raises.
     expect(circleRowDescription(circle("t", "Trusted", 8, "trusted"))).toBe(
-      "Your connections · 8 people",
+      "People you add yourself · 8 people",
     );
     expect(circleRowDescription(circle("s", "SMS Circle", 4, "sms"))).toBe(
       "Gets your SMS · 4 people",
@@ -190,7 +190,7 @@ describe("circleRowDescription", () => {
 
   it("reads honestly when a system Circle is still empty", () => {
     expect(circleRowDescription(circle("t", "Trusted", 1, "trusted"))).toBe(
-      "Your connections",
+      "People you add yourself",
     );
     expect(circleRowDescription(circle("s", "SMS Circle", 1, "sms"))).toBe(
       "Gets your SMS · no one yet",
@@ -505,14 +505,12 @@ describe("ConnectCirclesTab", () => {
     expect(await screen.findByText("Roommates")).toBeTruthy();
   });
 
-  it("reconciles Trusted before it reads the list", async () => {
-    // The accept hook covers a NEW connection. It cannot cover the ones a
-    // person already had -- without this call they open the tab to no Trusted
-    // Circle at all, and after their next accept to one holding a single name
-    // under the words "Your connections".
+  it("provisions an empty Trusted Circle before it reads the list", async () => {
+    // Provisioning makes the default manual destination available without
+    // deriving a roster from either new or existing connections.
     const order: string[] = [];
     mocks.ensureTrusted.mockImplementation(async () => {
-      order.push("reconcile");
+      order.push("provision");
       return {};
     });
     mocks.listCircles.mockImplementation(async () => {
@@ -522,15 +520,15 @@ describe("ConnectCirclesTab", () => {
 
     render(<ConnectCirclesTab />);
 
-    await waitFor(() => expect(order).toEqual(["reconcile", "list"]));
+    await waitFor(() => expect(order).toEqual(["provision", "list"]));
     expect(mocks.ensureTrusted).toHaveBeenCalledWith({
       vaultOwnerToken: "vault-token",
       summaryOnly: true,
     });
   });
 
-  it("still shows the circles when the reconcile fails", async () => {
-    // A reconcile that fails must not cost the list. An older server with no
+  it("still shows the circles when provisioning Trusted fails", async () => {
+    // Provisioning that fails must not cost the list. An older server with no
     // such route, a rate limit, a dropped request -- the Circles they already
     // have are still worth showing, and the next open tries again.
     mocks.ensureTrusted.mockRejectedValue(new Error("404"));
