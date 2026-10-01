@@ -42,6 +42,12 @@ final class AppUITests: XCTestCase {
         let open = webView.buttons.matching(NSPredicate(
             format: "label BEGINSWITH %@", "Open chat history"
         )).firstMatch
+        // A prior local rehearsal may leave the same session on Finance or
+        // another tab. Navigate through the visible bottom bar, not a test
+        // launch URL, before asserting the Chat drawer.
+        if !open.exists && !webView.buttons["Unlock"].exists {
+            perfTapNav(app, label: "Chat")
+        }
         // The existing XCUI vault helper types into a secure field. Its secret
         // arrives through the documented TEST_RUNNER_ process environment,
         // never a launch argument, source file, or test diagnostic.
@@ -53,6 +59,7 @@ final class AppUITests: XCTestCase {
                 throw XCTSkip("Live-session vault is locked and no process-only reviewer credential was supplied")
             }
             _ = attemptVaultPassphraseUnlock(app: app)
+            if !open.exists { perfTapNav(app, label: "Chat") }
         }
         if !open.waitForExistence(timeout: 120) {
             let vaultLockVisible = webView.buttons["Unlock"].exists
