@@ -11,11 +11,11 @@ import {
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
 import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
-import { InviteCodeRowIcon, PeopleRowIcon } from "@/components/icons/agents";
+import { InviteCodeRowIcon } from "@/components/icons/agents";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
-import { SurfaceCard, SurfaceCardContent, SurfaceCardHeader } from "@/components/app-ui/surfaces";
+import { SurfaceCard } from "@/components/app-ui/surfaces";
 import { SectionTitle, RowDescription } from "@/components/app-ui/typography";
 import { Button } from "@/lib/morphy-ux/button";
 import {
@@ -104,7 +104,7 @@ import {
 const SYSTEM_CIRCLE_COPY = {
   trusted: {
     title: "Trusted",
-    description: "Everyone you're connected to",
+    description: "Your connections",
   },
   sms: {
     title: "SMS Circle",
@@ -230,7 +230,7 @@ function SmsCircleMainIcon() {
 function circleVisual(circle: OneLocationCircleSummary) {
   const kind = systemKindOf(circle);
   if (kind === "trusted") return { Icon: ShieldCheck, tone: "text-[color:var(--app-accent)] bg-[color:var(--app-accent-ring)]" };
-  if (kind === "sms") return { Icon: SmsCircleMainIcon, tone: "bg-[color:var(--app-destructive)] text-[color:var(--app-destructive-fg)]" };
+  if (kind === "sms") return { Icon: SmsCircleMainIcon, tone: "bg-orange-50 text-orange-600 dark:bg-orange-950/40 dark:text-orange-300" };
   const name = circle.name.trim().toLowerCase();
   if (name === "family" || name === "family circle") return { Icon: Heart, tone: "text-rose-700 bg-rose-50 dark:text-rose-300 dark:bg-rose-950/40" };
   if (name === "finance" || name === "finance circle") return { Icon: Wallet, tone: "text-amber-700 bg-amber-50 dark:text-amber-300 dark:bg-amber-950/40" };
@@ -846,6 +846,7 @@ export function ConnectCirclesTab({
   const renderCircleRow = (circle: OneLocationCircleSummary) => {
     const kind = systemKindOf(circle);
     const { Icon, tone } = circleVisual(circle);
+    const canInviteToEmptyCircle = circle.role === "owner" && circle.memberCount <= 1 && kind !== "trusted";
     const testId = kind
       ? `connect-circle-${kind}`
       : circle.role === "owner"
@@ -867,27 +868,54 @@ export function ConnectCirclesTab({
         data-testid={testId}
         aria-label={`Open ${title} circle, ${circleRowDescription(circle)}`}
       >
-        <span className="flex w-full min-w-0 items-center justify-between gap-2">
-          <span aria-hidden="true" className={`flex size-10 shrink-0 items-center justify-center rounded-full ${tone}`}>
-            <Icon className="size-5" />
+        <span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-2xl border border-current/10 ${tone}`}>
+          <Icon className="size-6" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-base font-semibold [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">
+            {title}
           </span>
-          <span className="ml-auto min-w-0 scale-90 origin-right sm:scale-100">
+          <span className="ui-text-row-description mt-1 block text-[color:var(--app-secondary-label)]">
+            {circleRowDescription(circle)}
+          </span>
+        </span>
+        {!canInviteToEmptyCircle ? (
+          <span className="col-span-3 flex min-w-0 items-center sm:col-auto sm:ml-auto sm:w-40 sm:shrink-0 sm:justify-end">
             <CircleCluster circle={circle} vaultOwnerToken={vaultOwnerToken ?? ""} reloadToken={reloadToken + refreshToken} />
+
           </span>
-          <ChevronRight aria-hidden="true" className="size-4 shrink-0 text-[color:var(--app-secondary-label)] transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" />
-        </span>
-        <span className="ui-text-card-title mt-3 max-w-full [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">
-          {title}
-        </span>
-        <span className="ui-text-row-description mt-1 max-w-full text-[color:var(--app-secondary-label)]">
-          {circleRowDescription(circle)}
-        </span>
+        ) : null}
+        {canInviteToEmptyCircle ? (
+          <span aria-hidden="true" data-testid="connect-circle-empty-add" className="col-start-3 row-start-1 inline-flex size-11 shrink-0 items-center justify-center rounded-full border border-dashed border-[color:var(--app-card-border-standard)] text-[color:var(--app-secondary-label)] sm:col-auto">
+            <Plus className="size-5" />
+          </span>
+        ) : (
+          <ChevronRight aria-hidden="true" className="col-start-3 row-start-1 size-5 shrink-0 justify-self-end text-[color:var(--app-secondary-label)] sm:col-auto" />
+        )}
       </button>
     );
   };
 
   return (
-    <div className="space-y-4 sm:space-y-5" data-testid="connect-circles-tab">
+    <div className="space-y-8" data-testid="connect-circles-tab">
+      {vaultOwnerToken && !showingStarter ? (
+        <div className="flex flex-col justify-between gap-4 lg:flex-row lg:items-center">
+          <div>
+            <SectionTitle as="h2">Your circles</SectionTitle>
+            <RowDescription className="mt-1">Bring people together for the things you share.</RowDescription>
+          </div>
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Button type="button" variant="none" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full !border !border-[color:var(--app-card-border-standard)] !bg-[color:var(--app-card-surface-default-solid)]" onClick={() => go({ action: "join-circle" })} data-testid="connect-circle-join">
+              <InviteCodeRowIcon aria-hidden="true" className="mr-2 size-4" />
+              Join with code
+            </Button>
+            <Button type="button" variant="blue" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full" onClick={() => go({ action: "create-circle" })} data-testid="connect-circle-create">
+              <Plus aria-hidden="true" className="mr-2 size-4" />
+              Create circle
+            </Button>
+          </div>
+        </div>
+      ) : null}
       {vaultOwnerToken === null ? (
         <SettingsGroup title="Your circles">
           {/* Whose screen this actually is.
@@ -950,7 +978,7 @@ export function ConnectCirclesTab({
               <div className="mt-5 flex flex-col justify-center gap-2.5 min-[440px]:flex-row">
                 <Button type="button" variant="blue" effect="fill" size="standard" showRipple={false} className="!h-11 !rounded-[var(--app-card-radius-compact)]" onClick={() => go({ action: "create-circle" })} data-testid="connect-circle-create">
                   <Plus aria-hidden="true" className="mr-1.5 size-4" />
-                  New circle
+                  Create circle
                 </Button>
                 <Button type="button" variant="blue" effect="fade" size="standard" showRipple={false} className="!h-11 !rounded-[var(--app-card-radius-compact)] !bg-[color:var(--app-secondary-surface)]" onClick={() => router.push(`${ROUTES.CONNECT}?tab=all`, { scroll: false })}>
                   Find people
@@ -963,65 +991,29 @@ export function ConnectCirclesTab({
           ) : null}
           {owned.length ? (
             <section data-testid="connect-circle-group-owned">
-              <SurfaceCard>
-                <SurfaceCardHeader className="space-y-1 pb-4">
-                  <SectionTitle as="h2">Your circles</SectionTitle>
-                  <RowDescription>Bring people together for the things you share.</RowDescription>
-                </SurfaceCardHeader>
-                <SurfaceCardContent>
-                  <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
-                    {owned.map(renderCircleRow)}
-                  </div>
-                </SurfaceCardContent>
+              <SurfaceCard className="!overflow-hidden !p-0">
+                <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
+                  {owned.map(renderCircleRow)}
+                </div>
               </SurfaceCard>
             </section>
           ) : null}
           {joined.length ? (
             <section data-testid="connect-circle-group-joined">
-              <SurfaceCard>
-                <SurfaceCardHeader className="pb-4">
-                  <SectionTitle as="h2">Joined circles</SectionTitle>
-                </SurfaceCardHeader>
-                <SurfaceCardContent>
-                  <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
-                    {joined.map(renderCircleRow)}
-                  </div>
-                </SurfaceCardContent>
+              <div className="mb-4">
+                <SectionTitle as="h2">Joined circles</SectionTitle>
+                <RowDescription className="mt-1">Circles created by others that you are part of.</RowDescription>
+              </div>
+              <SurfaceCard className="!overflow-hidden !p-0">
+                <div className={CONNECT_CIRCLE_GRID_CLASSNAME}>
+                  {joined.map(renderCircleRow)}
+                </div>
               </SurfaceCard>
             </section>
           ) : null}
         </>
       )}
 
-      {/* Its own group, below the list, so it does not move as the list grows
-          -- and 56px rows rather than the 16px header links Location uses,
-          which shift with the heading when it wraps. */}
-      {vaultOwnerToken && !showingStarter ? (
-        <SettingsGroup separatorInset>
-          <SettingsRow
-            icon={PeopleRowIcon}
-            iconTone="capability"
-            title="New circle"
-            description="Create a group for your connections."
-            density="compact"
-            textOverflow="truncate"
-            chevron
-            onClick={() => go({ action: "create-circle" })}
-            testId="connect-circle-create"
-          />
-          <SettingsRow
-            icon={InviteCodeRowIcon}
-            iconTone="capability"
-            title="Join with code"
-            description="Enter a shared 12-character code."
-            density="compact"
-            textOverflow="truncate"
-            chevron
-            onClick={() => go({ action: "join-circle" })}
-            testId="connect-circle-join"
-          />
-        </SettingsGroup>
-      ) : null}
     </div>
   );
 }
