@@ -24,9 +24,9 @@
 
 @media (min-width: 1024px) {
   .stack {
-    --card-step: 80px;
+    --card-step: 66px;
     --card-tilt: 2deg;
-    height: 232px;
+    height: 200px;
   }
 }
 

@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { MailConnectedAccount, MailOverview } from "../../components/gmail/mail-overview";
 import { GmailWorkspaceNavigation } from "../../components/gmail/gmail-workspace-navigation";
 import { AppPageShell, AppPageHeaderRegion, AppPageContentRegion } from "../../components/app-ui/app-page-shell";
+import { PageHeader } from "../../components/app-ui/page-sections";
 import { SurfaceStack } from "../../components/app-ui/surfaces";
 
 function Fixture() {
@@ -10,19 +11,21 @@ function Fixture() {
   const [action, setAction] = useState("");
   const [issue, setIssue] = useState(false);
   return <><AppPageShell width="agent" className="bg-background py-8 text-foreground lg:pt-[104px]">
-    <AppPageHeaderRegion className="hidden lg:block">
-      <p className="text-sm text-muted-foreground">Connected to your Mail</p>
+    <AppPageHeaderRegion className="mx-auto max-w-[820px]">
+      <PageHeader title="Mail" titleRole="agent" className="flex min-h-[53px] items-center" />
     </AppPageHeaderRegion>
-    <AppPageContentRegion>
+    <AppPageContentRegion className="mx-auto !mt-3.5 max-w-[820px]">
     <SurfaceStack compact>
-    <div className="hidden lg:block"><GmailWorkspaceNavigation value="overview" onValueChange={() => {}} /></div>
+    <GmailWorkspaceNavigation value="overview" onValueChange={() => {}} />
     <MailConnectedAccount onReconnect={() => setAction("reconnect")} onDisconnect={() => setAction("disconnect")} />
     <output data-testid="mail-action" className="sr-only">{action}</output>
     <MailOverview fetching={fetching} receiptIssue={issue} receiptCount={34} receiptDetail={issue ? "Sync failed. Please try again in a moment." : fetching ? "Fetching your latest purchases…" : "Your latest receipts are ready."} receiptUpdated="Last updated just now." onOpenChat={() => {}} />
     </SurfaceStack>
     </AppPageContentRegion>
+    <div className="fixed left-0 top-0 z-50">
     <button onClick={() => setFetching(false)}>Finish sync</button>
     <button onClick={() => { setFetching(false); setIssue(true); }}>Fail sync</button>
+    </div>
   </AppPageShell>
   <aside data-testid="desktop-bottom-clearance" aria-hidden="true" className="fixed inset-x-0 bottom-0 hidden h-32 bg-background/90 lg:block">Reserved voice and navigation space</aside>
   </>;

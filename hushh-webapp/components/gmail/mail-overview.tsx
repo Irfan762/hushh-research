@@ -104,8 +104,8 @@ export function MailOverview({
   onOpenChat: () => void;
 }) {
   return (
-    <section aria-label="Mail overview" className="w-full pb-4 pt-5 sm:pt-8 lg:pb-0 lg:pt-3">
-      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:pb-8 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:gap-6 lg:pb-3">
+    <section aria-label="Mail overview" className="w-full pb-4 pt-5 sm:pt-8 lg:pb-0 lg:pt-0">
+      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:pb-8 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:gap-6 lg:pb-2">
         <div className="relative z-10 min-w-0">
           <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-[color:var(--app-accent-tint)] bg-[color:var(--app-accent-surface)] px-3 py-1 text-xs font-semibold text-[color:var(--app-accent)]">
             <Star aria-hidden="true" className="size-3.5" />
@@ -132,7 +132,7 @@ export function MailOverview({
               { label: "Follow up", icon: FileText, width: "w-2/3" },
               { label: "Write", icon: PenLine, width: "w-1/2" },
             ].map(({ label, icon: Icon, width }, index) => (
-              <div key={label} data-testid="mail-draft-card" style={{ "--card-index": index } as CSSProperties} className={`${styles.card} rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4 lg:py-2.5`}>
+              <div key={label} data-testid="mail-draft-card" style={{ "--card-index": index } as CSSProperties} className={`${styles.card} rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4 lg:py-2`}>
                 <div className="flex items-center gap-2 text-xs font-semibold text-foreground sm:text-sm">
                   <Icon className="size-3.5 shrink-0 text-[color:var(--app-accent)] sm:size-4" />
                   {label}

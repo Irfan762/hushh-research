@@ -1896,17 +1896,12 @@ export default function GmailReceiptsPage({
               : "empty-valid",
       }}
     >
-      <AppPageHeaderRegion>
+      <AppPageHeaderRegion className={journeyVariant === "workspace" ? "mx-auto max-w-[820px]" : undefined}>
         <PageHeader
-          // Named for the source, not the artefact: the breadcrumb on both
-          // routes that render this page says "Gmail", and the setup checklist
-          // row that leads here says "Connect Gmail".
           title="Mail"
-          // On /one/gmail the top bar's trail already says "Mail" beside the
-          // back arrow, so the workspace does not draw it again. The setup
-          // step keeps its visible title: setup has no trail.
-          titleVisuallyHidden={journeyVariant === "workspace"}
-          description={pageTitle}
+          titleRole={journeyVariant === "workspace" ? "agent" : "page"}
+          className={journeyVariant === "workspace" ? "flex min-h-[53px] items-center" : undefined}
+          description={journeyVariant === "workspace" ? undefined : pageTitle}
           actions={
             isConnected && journeyVariant === "onboarding" ? (
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -1944,7 +1939,7 @@ export default function GmailReceiptsPage({
         />
       </AppPageHeaderRegion>
 
-      <AppPageContentRegion>
+      <AppPageContentRegion className={journeyVariant === "workspace" ? "mx-auto !mt-3.5 max-w-[820px]" : undefined}>
         <SurfaceStack compact>
           {journeyVariant === "workspace" ? (
             <GmailWorkspaceNavigation
