@@ -1875,7 +1875,7 @@ export default function GmailReceiptsPage({
   return (
     <AppPageShell
       as="div"
-      width="reading"
+      width={journeyVariant === "workspace" ? "agent" : "reading"}
       className="pb-[calc(var(--app-bottom-fixed-ui,96px)+1.5rem)]"
       nativeTest={{
         routeId:
@@ -1896,17 +1896,16 @@ export default function GmailReceiptsPage({
               : "empty-valid",
       }}
     >
-      <AppPageHeaderRegion>
+      <AppPageHeaderRegion className={journeyVariant === "workspace" ? "mx-auto max-w-[820px]" : undefined}>
         <PageHeader
-          // Named for the source, not the artefact: the breadcrumb on both
-          // routes that render this page says "Gmail", and the setup checklist
-          // row that leads here says "Connect Gmail".
           title="Mail"
-          // On /one/gmail the top bar's trail already says "Mail" beside the
-          // back arrow, so the workspace does not draw it again. The setup
-          // step keeps its visible title: setup has no trail.
-          titleVisuallyHidden={journeyVariant === "workspace"}
+          titleRole={journeyVariant === "workspace" ? "agent" : "page"}
           description={pageTitle}
+          className={
+            journeyVariant === "workspace"
+              ? "[&_[data-slot=page-header-copy]]:!space-y-3"
+              : undefined
+          }
           actions={
             isConnected && journeyVariant === "onboarding" ? (
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
@@ -1944,7 +1943,7 @@ export default function GmailReceiptsPage({
         />
       </AppPageHeaderRegion>
 
-      <AppPageContentRegion>
+      <AppPageContentRegion className={journeyVariant === "workspace" ? "mx-auto !mt-0 max-w-[820px]" : undefined}>
         <SurfaceStack compact>
           {journeyVariant === "workspace" ? (
             <GmailWorkspaceNavigation
@@ -2120,7 +2119,7 @@ export default function GmailReceiptsPage({
             <MailOverview
               fetching={overviewReceiptsFetching}
               receiptIssue={overviewReceiptIssue}
-              receiptCount={total}
+              receiptCount={receiptListReady ? total : undefined}
               receiptDetail={overviewReceiptDetail}
               receiptUpdated={resolveGmailLastUpdatedLabel(gmail.status, gmail.syncRun)}
               onOpenChat={handleOpenOneChat}
@@ -2409,6 +2408,7 @@ export default function GmailReceiptsPage({
                 "order_id",
               ]}
               searchPlaceholder="Search receipts"
+              preserveMobilePaginationPosition
               initialPageSize={8}
               pageSizeOptions={[8, 16, 24]}
               density="compact"
