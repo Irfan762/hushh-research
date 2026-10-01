@@ -1,7 +1,8 @@
 "use client";
 
-import { Check, FileText, Loader2, Mail, PenLine, Star, Undo2 } from "@/components/icons";
-import { useRef } from "react";
+import { AlertCircle, Check, FileText, Loader2, Mail, PenLine, Star, Undo2 } from "@/components/icons";
+import { useRef, type CSSProperties } from "react";
+import styles from "./mail-overview.module.css";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -91,11 +92,15 @@ export function MailOverview({
   fetching,
   receiptDetail,
   receiptUpdated,
+  receiptIssue = false,
+  receiptCount,
   onOpenChat,
 }: {
   fetching: boolean;
   receiptDetail: string;
   receiptUpdated: string | null;
+  receiptIssue?: boolean;
+  receiptCount?: number;
   onOpenChat: () => void;
 }) {
   return (
@@ -120,14 +125,14 @@ export function MailOverview({
             ))}
           </ul>
         </div>
-        <div aria-hidden="true" className="pointer-events-none min-w-0 pr-1 sm:pr-3">
-          <div className="ml-auto w-full max-w-[154px] rotate-[5deg] -skew-x-2 space-y-2.5 sm:max-w-[220px] sm:space-y-3">
+        <div aria-hidden="true" className="min-w-0 pr-1 sm:pr-3">
+          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px]`}>
             {[
               { label: "Reply", icon: Undo2, width: "w-3/4" },
               { label: "Follow up", icon: FileText, width: "w-2/3" },
               { label: "Write", icon: PenLine, width: "w-1/2" },
-            ].map(({ label, icon: Icon, width }) => (
-              <div key={label} className="rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4">
+            ].map(({ label, icon: Icon, width }, index) => (
+              <div key={label} data-testid="mail-draft-card" style={{ "--card-index": index } as CSSProperties} className={`${styles.card} rounded-[12px] border border-border/40 bg-card p-2.5 shadow-[0_8px_20px_-6px_color-mix(in_srgb,var(--app-accent)_18%,transparent)] sm:rounded-[16px] sm:p-4`}>
                 <div className="flex items-center gap-2 text-xs font-semibold text-foreground sm:text-sm">
                   <Icon className="size-3.5 shrink-0 text-[color:var(--app-accent)] sm:size-4" />
                   {label}
@@ -144,11 +149,11 @@ export function MailOverview({
       <div className="border-t border-border/50 py-3 sm:py-4">
         <SettingsRow
           title="Receipt sync"
-          leading={<span aria-hidden="true" className="flex size-12 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"><FileText className="size-6" /></span>}
-          description={<span className="block space-y-0.5"><span className="block text-[13px] leading-snug">{receiptDetail}</span>{receiptUpdated ? <span className="block text-xs leading-snug text-muted-foreground/75">{receiptUpdated}</span> : null}</span>}
+          leading={<span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-full ${receiptIssue ? "bg-destructive/10 text-destructive" : "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"}`}>{receiptIssue ? <AlertCircle className="size-6" /> : <FileText className="size-6" />}</span>}
+          description={<span className="block space-y-0.5"><span className="block text-[13px] leading-snug">{receiptDetail}</span>{receiptUpdated || receiptCount !== undefined ? <span className="block text-xs leading-snug text-muted-foreground/75">{[receiptCount !== undefined ? `${receiptCount} receipt${receiptCount === 1 ? "" : "s"}` : null, receiptUpdated].filter(Boolean).join(" · ")}</span> : null}</span>}
           trailing={fetching ? <span role="status" aria-label="Fetching receipts"><Loader2 aria-hidden="true" className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none" /></span> : undefined}
           testId="mail-receipt-sync"
-          className="!rounded-[20px] border border-emerald-500/15 bg-emerald-500/[0.06] dark:bg-emerald-500/10"
+          className={`!rounded-[20px] border ${receiptIssue ? "border-destructive/20 bg-destructive/[0.06] dark:bg-destructive/10" : "border-emerald-500/15 bg-emerald-500/[0.06] dark:bg-emerald-500/10"}`}
         />
       </div>
       <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="mt-3 h-[54px] w-full justify-center text-base sm:w-full">

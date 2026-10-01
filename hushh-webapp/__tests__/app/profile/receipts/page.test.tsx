@@ -966,6 +966,24 @@ describe("ProfileReceiptsPage", () => {
     expect(mocks.gmailReceiptsService.syncNow).not.toHaveBeenCalled();
   });
 
+  it("shows a connected sync failure only in the lower receipt status card", async () => {
+    const connected = buildGmailView();
+    mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
+      status: { ...connected.status, last_sync_status: "failed" },
+      presentation: { ...connected.presentation, state: "sync_failed" },
+    }));
+    render(<ProfileReceiptsPage />);
+
+    const receiptStatus = await screen.findByTestId("mail-receipt-sync");
+    expect(receiptStatus).toHaveTextContent("Sync failed.");
+    expect(receiptStatus).toHaveClass("border-destructive/20");
+    expect(screen.queryByText("Status", { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Draft with One." })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Manage" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "Fetching receipts" })).not.toBeInTheDocument();
+    expect(mocks.gmailReceiptsService.syncNow).not.toHaveBeenCalled();
+  });
+
   it("waits until Gmail sync settles before building the receipt-memory preview", async () => {
     mocks.useGmailConnectorStatus.mockReturnValue(
       makeGmailView({
