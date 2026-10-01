@@ -192,6 +192,10 @@ class DrivePermissionStore(DriveSharingStore):
         try:
             return cast(dict | None, await self._transaction(operation))
         except DriveReadError as error:
+            # An unpaid request cannot dispatch yet, but a later signed payment
+            # may make this same queued grant eligible. Keep the operation queued.
+            if isinstance(error, DriveSharingError) and str(error) == "payment_required":
+                raise
             await self.retire_undispatched(
                 user_id=user_id,
                 operation_id=operation_id,

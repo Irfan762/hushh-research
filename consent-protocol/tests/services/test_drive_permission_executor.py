@@ -134,6 +134,7 @@ async def test_per_file_grant_claim_rechecks_request_payment(permission_setup):
     with pytest.raises(DriveSharingError, match="payment_required"):
         await store.claim_grant(user_id="owner", operation_id=ids[0])
     adapter.create_reader.assert_not_awaited()
+    assert outcome(store, ids[0])["state"] == "queued"
     with store.db.engine.begin() as connection:
         connection.execute(
             text("""UPDATE drive_request_payment_orders

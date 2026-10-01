@@ -2,8 +2,6 @@
 -- Existing requests remain free. Provider references contain no document data.
 BEGIN;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_attribute
@@ -74,7 +72,8 @@ BEGIN
     (request_id,payer_ref,amount_cents,currency,status,checkout_attempt_id,
      stripe_checkout_session_id,stripe_payment_intent_id,paid_at,reconciliation_required)
   VALUES (NEW.request_id,
-    encode(digest(NEW.request_id::text || ':' || NEW.requester_user_id,'sha256'),'hex'),
+    pg_catalog.encode(pg_catalog.sha256(pg_catalog.convert_to(
+      NEW.request_id::text || ':' || NEW.requester_user_id,'UTF8')),'hex'),
     NEW.amount_cents,NEW.currency,NEW.status,NEW.checkout_attempt_id,
     NEW.stripe_checkout_session_id,NEW.stripe_payment_intent_id,NEW.paid_at,
     NEW.reconciliation_required)
