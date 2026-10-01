@@ -711,6 +711,10 @@ function OwnerConnectorsPanel({
 
   const startDrive = (profile: "selected" | "live" = "live") => {
     if (!vaultOwnerToken || driveLock.current) return;
+    if (!controller.current || controller.current.signal.aborted) {
+      setDriveMessage("Drive is still preparing. Try again.");
+      return;
+    }
     if (Capacitor.isNativePlatform()) {
       void runDrive(async (token, signal) => {
         const isEffectCurrent = () =>
@@ -723,6 +727,7 @@ function OwnerConnectorsPanel({
           flow: "native",
           profile,
           isEffectCurrent,
+          signal,
         });
         const expiresAt = Date.parse(start.expiresAt);
         if (
@@ -813,6 +818,7 @@ function OwnerConnectorsPanel({
           redirectUri: `${window.location.origin}${ROUTES.PROFILE_CONNECTOR_OAUTH_RETURN}`,
           flow: "web",
           profile,
+          signal,
         });
         if (signal.aborted || !start.attemptId || start.connectorId !== "google_drive") return;
         const authorizeUrl = new URL(start.authorizeUrl);
