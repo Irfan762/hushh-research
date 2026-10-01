@@ -204,7 +204,13 @@ async def main() -> dict[str, object]:
             (f"one_voice_live:{live_config.model_id}@{live_config.location}", probe_live_connect())
         )
 
-    outcomes = await asyncio.gather(*(coro for _, coro in labelled), return_exceptions=True)
+    # Bound every adapter await while preserving completed sibling outcomes.
+    # In particular, a stalled Live handshake must not discard all completed
+    # probe results by leaving gather pending until the container is killed.
+    outcomes = await asyncio.gather(
+        *(asyncio.wait_for(coro, timeout=PROBE_TIMEOUT_SECONDS) for _, coro in labelled),
+        return_exceptions=True,
+    )
 
     probes: list[dict[str, object]] = []
     for (name, _), outcome in zip(labelled, outcomes, strict=True):
