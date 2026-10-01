@@ -19,6 +19,8 @@ const orbitClass = "relative mx-auto size-[14rem] sm:size-[17rem]";
 const growthCardClass = "overflow-hidden rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-4 py-6 sm:px-6";
 const candidateGridClass = "mt-4 grid grid-cols-1 gap-2 min-[430px]:grid-cols-2";
 const fixtureClasses = [
+  ...Array.from(fs.readFileSync(path.join(process.cwd(), "components/connect/circles/connect-circles-tab.tsx"), "utf8").matchAll(/className="([^"]+)"/g), (match) => match[1]),
+  "ml-auto inline-flex min-h-9 items-center justify-center rounded-full px-4 text-xs font-semibold",
   orbitClass,
   CONNECT_CIRCLE_GRID_CLASSNAME,
   CONNECT_CIRCLE_TILE_CLASSNAME,
@@ -106,7 +108,8 @@ test.beforeAll(async () => {
       <section class="rounded-[var(--app-card-radius-standard)] bg-[color:var(--app-card-surface-default-solid)] px-[var(--surface-card-content-px)] py-4">
         <h2>Your circles</h2>
         <div data-test="grid" class="${CONNECT_CIRCLE_GRID_CLASSNAME}">
-        ${[1, 2, 3].map((i) => `<button data-test="tile" class="${CONNECT_CIRCLE_TILE_CLASSNAME}"><span class="flex w-full min-w-0 items-start justify-between gap-3"><span data-test="circle-preview" class="flex h-11 min-w-0 items-center"><span class="flex items-center -space-x-2">${[1, 2, 3, 4].map(() => `<span data-test="circle-avatar" class="relative inline-flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-[color:var(--app-card-surface-default-solid)] bg-[color:var(--app-card-surface-default-solid)]"></span>`).join("")}</span>${i === 1 ? '<span class="ml-2 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full" style="background:#ec3c40;color:white;font-size:8px">SMS</span>' : ""}</span><span aria-hidden="true">›</span></span><span class="ui-text-card-title mt-4 max-w-full [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">${i === 2 ? "Superlongunbrokencirclenameforfriendsandfamily" : "A very long circle name that needs room to wrap"}</span><span class="ui-text-row-description mt-1 max-w-full text-[color:var(--app-secondary-label)]">17 people</span></button>`).join("")}
+        ${[1, 2, 3].map((i) => `<button data-test="tile" class="${CONNECT_CIRCLE_TILE_CLASSNAME}"><span class="flex size-12 shrink-0 items-center justify-center rounded-2xl">${i === 1 ? "SMS" : "◎"}</span><span class="min-w-0 flex-1"><span class="block text-base font-semibold [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">${i === 2 ? "Superlongunbrokencirclenameforfriendsandfamily" : "A very long circle name that needs room to wrap"}</span><span class="ui-text-row-description mt-1 block text-[color:var(--app-secondary-label)]">17 people</span></span><span class="col-span-3 flex min-w-0 items-center gap-3 sm:col-auto sm:gap-5"><span data-test="circle-preview" class="flex h-11 min-w-0 items-center"><span class="flex items-center -space-x-2">${[1, 2, 3, 4].map(() => `<span data-test="circle-avatar" class="relative inline-flex size-11 shrink-0 items-center justify-center rounded-full border-2 border-[color:var(--app-card-surface-default-solid)] bg-[color:var(--app-card-surface-default-solid)]"></span>`).join("")}</span></span><span class="ml-auto inline-flex min-h-9 items-center justify-center rounded-full px-4 text-xs font-semibold">Manage</span></span><span class="col-start-3 row-start-1 size-5 shrink-0 text-[color:var(--app-secondary-label)] sm:col-auto">›</span></button>`).join("")}
+
         </div>
       </section>
       <section data-test="growth" class="${growthCardClass}">
@@ -199,11 +202,7 @@ for (const width of widths) {
       expect(candidate.left).toBeGreaterThanOrEqual(geometry.growth.left - 1);
       expect(candidate.right).toBeLessThanOrEqual(geometry.growth.right + 1);
     }
-    if (width < 640) {
-      expect(geometry.tiles[0].bottom).toBeLessThanOrEqual(geometry.tiles[1].top);
-    } else {
-      expect(geometry.tiles[0].top).toBeCloseTo(geometry.tiles[1].top, 0);
-    }
+    expect(geometry.tiles[0].bottom).toBeLessThanOrEqual(geometry.tiles[1].top);
   });
 }
 

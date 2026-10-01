@@ -252,7 +252,7 @@ describe("ConnectCirclesTab", () => {
     const owned = await screen.findByTestId("connect-circle-group-owned");
     const joined = screen.getByTestId("connect-circle-group-joined");
 
-    expect(within(owned).getByText("Your circles")).toBeTruthy();
+    expect(screen.getByText("Your circles")).toBeTruthy();
     expect(within(owned).getByText("Trusted")).toBeTruthy();
     expect(within(owned).getByText("SMS Circle")).toBeTruthy();
     expect(within(owned).getByText("Roommates")).toBeTruthy();
@@ -268,17 +268,7 @@ describe("ConnectCirclesTab", () => {
     expect(smsCircle.querySelector("[data-one-sms-text-icon]")).toBeTruthy();
   });
 
-  it("gives the SMS Circle the same red mark Location's People tab gives it", async () => {
-    // Reported: the same Circle looked like two different things depending on
-    // which tab you opened. Location's People tab draws a filled red disc
-    // reading "SMS"; this list drew a `Siren` glyph in the same indigo well it
-    // gives Trusted and every user-made Circle, so the one row whose whole
-    // point is that it behaves differently in an emergency read as another
-    // ordinary group.
-    //
-    // Upstream landed the same fix while this branch was in review, with a
-    // shared `SmsTextIcon` and the destructive token instead of a literal hex.
-    // The claim is unchanged, so it is asserted against what ships.
+  it("keeps the SMS mark in the reference orange icon tile", async () => {
     mocks.listCircles.mockResolvedValue([
       circle("trusted", "Trusted", 20, "trusted"),
       circle("sms", "SMS Circle", 4, "sms"),
@@ -289,10 +279,10 @@ describe("ConnectCirclesTab", () => {
     const smsRow = await screen.findByTestId("connect-circle-sms");
     const mark = within(smsRow).getByText("SMS");
     const disc = mark.parentElement!;
-    // Red, round and filled -- the identity as the main circle icon.
-    expect(disc.className).toContain("bg-[color:var(--app-destructive)]");
-    expect(disc.className).toContain("rounded-full");
-    expect(disc.className).toContain("size-10");
+    // SMS identity remains explicit within the pastel reference tile.
+    expect(disc.className).toContain("bg-orange-50");
+    expect(disc.className).toContain("rounded-2xl");
+    expect(disc.className).toContain("size-12");
 
     // The SMS identity remains distinct within the new circle tile layout.
     expect(smsRow.querySelector('[data-slot="settings-row-icon"]')).toBeNull();
@@ -341,7 +331,7 @@ describe("ConnectCirclesTab", () => {
     await waitFor(() => expect(card.querySelectorAll("[data-photo-url]")).toHaveLength(3));
     expect(card.querySelector('[data-photo-url="https://example.com/asha.png"]')).toBeTruthy();
     expect(within(card).getByText("+4")).toBeTruthy();
-    expect(card.className).toContain("items-start");
+    expect(card.className).toContain("items-center");
     expect(within(card).getByTestId("connect-circle-cluster").className).toContain("h-11");
     expect(within(card).getByTestId("connect-circle-cluster").className).not.toContain("size-28");
     expect(mocks.listCircleMembersPage).toHaveBeenCalledWith(expect.objectContaining({
@@ -442,7 +432,7 @@ describe("ConnectCirclesTab", () => {
     render(<ConnectCirclesTab />);
 
     expect(screen.getByText("Loading circles…")).toBeTruthy();
-    fireEvent.click(screen.getByText("New circle"));
+    fireEvent.click(screen.getByText("Create circle"));
     await waitFor(() => expect(mocks.routerPush).toHaveBeenCalled());
     expect(String(mocks.routerPush.mock.calls[0][0])).toContain(
       "action=create-circle",
@@ -653,7 +643,7 @@ describe("ConnectCirclesTab", () => {
     render(<ConnectCirclesTab />);
 
     const starter = await screen.findByTestId("connect-circle-starter");
-    const actions = within(starter).getByText("New circle").parentElement?.parentElement;
+    const actions = within(starter).getByText("Create circle").parentElement?.parentElement;
     expect(actions?.className).toContain("flex-col");
     expect(actions?.className).toContain("min-[440px]:flex-row");
   });
