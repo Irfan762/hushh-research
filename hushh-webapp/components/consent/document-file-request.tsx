@@ -11,6 +11,7 @@ import {
   DriveSharingError,
   DriveSharingService,
   validDocumentRequestPeriod,
+  validDocumentRequestTerms,
 } from "@/lib/services/drive-sharing-service";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
 import { CONSENT_ACTION_COMPLETE_EVENT } from "@/lib/consent/consent-events";
@@ -44,10 +45,10 @@ const IDENTITY_REQUIRED = new Set([
 ]);
 
 export function validFileRequest(terms: FileRequestTerms): boolean {
-  return (
-    terms.purpose.trim().length > 0 &&
-    terms.purpose.length <= 2000 &&
-    validDocumentRequestPeriod(terms.periodStart || null, terms.periodEnd || null)
+  return validDocumentRequestTerms(
+    terms.purpose,
+    terms.periodStart || null,
+    terms.periodEnd || null,
   );
 }
 
@@ -78,6 +79,8 @@ function fileRequestError(code: string): string {
       return "You need an active connection with this person.";
     case "request_changed":
       return "This request was already sent with different details. Start a new request.";
+    case "date_range_required":
+      return "Choose exact start and end dates before sending this request.";
     default:
       return "Couldn't confirm it was sent. Send again. It won't be sent twice.";
   }
@@ -328,7 +331,7 @@ export function RequestFilesButton({
                 className="grid min-w-0 gap-3 sm:grid-cols-2"
                 disabled={busy}
               >
-                <legend className="mb-2">Period (optional)</legend>
+                <legend className="mb-2">Period (required)</legend>
                 <div className="min-w-0 space-y-2">
                   <Label htmlFor="document-period-start">Start date</Label>
                   <Input
@@ -336,6 +339,7 @@ export function RequestFilesButton({
                     type="date"
                     value={start}
                     onChange={(event) => setStart(event.target.value)}
+                    required
                   />
                 </div>
                 <div className="min-w-0 space-y-2">
@@ -345,9 +349,15 @@ export function RequestFilesButton({
                     type="date"
                     value={end}
                     onChange={(event) => setEnd(event.target.value)}
+                    required
                   />
                 </div>
               </fieldset>
+              {!start || !end ? (
+                <HelperText role="status">
+                  Choose exact start and end dates before sending this request.
+                </HelperText>
+              ) : null}
               {!validDocumentRequestPeriod(start || null, end || null) ? (
                 <HelperText role="status">
                   Choose both dates, with the end on or after the start.

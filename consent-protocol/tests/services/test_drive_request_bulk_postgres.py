@@ -114,13 +114,18 @@ def request_bulk(sharing, monkeypatch):
 
 
 async def _request(sharing):
+    today = datetime.now(UTC).date()
     return await sharing.create_request(
         recipient=VerifiedGoogleRecipient(
             "recipient", "1234567", "b@example.invalid", datetime.now(UTC)
         ),
         owner_user_id="owner",
         client_request_id=str(uuid4()),
-        purpose=ShareRequestPurpose(purpose="Standup notes from last 3 months"),
+        purpose=ShareRequestPurpose(
+            purpose="Standup notes from last 3 months",
+            periodStart=(today - timedelta(days=90)).isoformat(),
+            periodEnd=today.isoformat(),
+        ),
     )
 
 
@@ -189,13 +194,226 @@ def _search(bulk, *, request_id, count=525, incomplete=False, shareability=None,
                 ),
             },
         )
-        connection.execute(
-            text("""INSERT INTO drive_owner_search_results(
-              job_id,user_id,position,file_digest,metadata_envelope)
-              VALUES(:job,:user,:position,:digest,CAST(:envelope AS jsonb))"""),
-            rows,
-        )
+        if rows:
+            connection.execute(
+                text("""INSERT INTO drive_owner_search_results(
+                  job_id,user_id,position,file_digest,metadata_envelope)
+                  VALUES(:job,:user,:position,:digest,CAST(:envelope AS jsonb))"""),
+                rows,
+            )
     return job
+
+
+@pytest.mark.asyncio
+async def test_completed_search_without_matches_has_no_permission_attempt(request_bulk, sharing):
+    request = await _request(sharing)
+    _search(request_bulk, request_id=request["requestId"], count=0)
+
+    await request_bulk.refresh_request(user_id="owner", request_id=request["requestId"])
+
+    owner = await sharing.request_status(user_id="owner", request_id=request["requestId"])
+    recipient = await sharing.request_status(user_id="recipient", request_id=request["requestId"])
+    assert owner["status"] == "no_match"
+    assert recipient["status"] == "no_files_shared"
+    delivery = DriveSharingService(
+        oauth=SimpleNamespace(lifecycle=SimpleNamespace(db=sharing.db)),
+        store=DriveSuggestionStore(db=sharing.db),
+        verify_recipient=AsyncMock(),
+    )
+    result = await delivery.delivery(user_id="recipient", request_id=request["requestId"])
+    assert result["status"] == "no_files_shared"
+    assert result["files"] == []
+    assert "bulkShareId" not in result
+    with request_bulk.db.engine.begin() as connection:
+        for query in (
+            "SELECT count(*) FROM drive_bulk_shares WHERE origin_request_id=:request",
+            "SELECT count(*) FROM drive_share_permission_operations WHERE request_id=:request",
+        ):
+            assert (
+                connection.execute(text(query), {"request": request["requestId"]}).scalar_one() == 0
+            )
+        events = (
+            connection.execute(
+                text("""SELECT user_id FROM drive_share_events
+            WHERE request_id=:request AND event_type='document_share_outcome'"""),
+                {"request": request["requestId"]},
+            )
+            .scalars()
+            .all()
+        )
+    assert set(events) == {"owner", "recipient"}
+
+
+@pytest.mark.asyncio
+async def test_no_match_migration_repairs_only_empty_historical_outcomes(request_bulk, sharing):
+    empty = await _request(sharing)
+    found = await _request(sharing)
+    _search(request_bulk, request_id=empty["requestId"], count=0)
+    _search(request_bulk, request_id=found["requestId"], count=1)
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_share_requests SET status='partial'
+            WHERE request_id IN (:empty,:found)"""),
+            {"empty": empty["requestId"], "found": found["requestId"]},
+        )
+        connection.execute(
+            text("""CREATE TABLE IF NOT EXISTS feed_events (
+            source_domain TEXT, event_type TEXT, metadata JSONB NOT NULL)""")
+        )
+        for request, audience in ((empty, "owner"), (empty, "recipient"), (found, "owner")):
+            connection.execute(
+                text("""INSERT INTO feed_events(source_domain,event_type,metadata)
+                VALUES ('connected_systems','document_share_outcome',CAST(:metadata AS jsonb))"""),
+                {
+                    "metadata": json.dumps(
+                        {
+                            "request_id": request["requestId"],
+                            "feed_audience": audience,
+                            "user_facing_status": "partial",
+                        }
+                    )
+                },
+            )
+
+    with request_bulk.db.engine.connect() as connection:
+        connection.exec_driver_sql(
+            (MIGRATIONS / "263_drive_request_no_match.sql").read_text().replace("%", "%%")
+        )
+        connection.commit()
+
+    with request_bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO feed_events(source_domain,event_type,metadata)
+            VALUES ('connected_systems','document_share_outcome',CAST(:metadata AS jsonb))"""),
+            {
+                "metadata": json.dumps(
+                    {
+                        "request_id": empty["requestId"],
+                        "feed_audience": "recipient",
+                        "user_facing_status": "no_match",
+                    }
+                )
+            },
+        )
+        statuses = dict(
+            connection.execute(
+                text("""SELECT request_id::text,status FROM drive_share_requests
+            WHERE request_id IN (:empty,:found)"""),
+                {"empty": empty["requestId"], "found": found["requestId"]},
+            ).all()
+        )
+        feed = {
+            (request_id, audience): status
+            for request_id, audience, status in connection.execute(
+                text("""SELECT metadata->>'request_id',metadata->>'feed_audience',
+              metadata->>'user_facing_status' FROM feed_events""")
+            ).all()
+        }
+    assert statuses == {empty["requestId"]: "no_match", found["requestId"]: "partial"}
+    assert feed == {
+        (empty["requestId"], "owner"): "no_match",
+        (empty["requestId"], "recipient"): "no_files_shared",
+        (found["requestId"], "owner"): "partial",
+    }
+
+
+def _make_frozen_request_undated(
+    sharing, request_id, *, purpose="Standup notes from the last 3 days"
+):
+    """Model a pre-upgrade request whose date period was never frozen."""
+    with sharing.db.engine.begin() as connection:
+        row = (
+            connection.execute(
+                text("SELECT request_envelope FROM drive_share_requests WHERE request_id=:request"),
+                {"request": request_id},
+            )
+            .mappings()
+            .one()
+        )
+        private = sharing.sharing_cipher.open(
+            row["request_envelope"],
+            user_id="owner",
+            resource_id=request_id,
+            purpose="request",
+        )
+        private["purpose"] = {
+            "purpose": purpose,
+            "periodStart": None,
+            "periodEnd": None,
+        }
+        connection.execute(
+            text("""UPDATE drive_share_requests SET request_envelope=CAST(:envelope AS jsonb)
+            WHERE request_id=:request"""),
+            {
+                "request": request_id,
+                "envelope": json.dumps(
+                    sharing.sharing_cipher.seal(
+                        private,
+                        user_id="owner",
+                        resource_id=request_id,
+                        purpose="request",
+                    )
+                ),
+            },
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("purpose", ["Standup notes from the last 3 days", "Financial plan"])
+async def test_undated_frozen_request_cannot_approve(request_bulk, sharing, purpose):
+    unapproved = await _request(sharing)
+    review = await request_bulk.create_review(
+        user_id="owner",
+        search_job_id=_search(request_bulk, request_id=unapproved["requestId"], count=1),
+        client_request_id=str(uuid4()),
+        recipients=[_recipient("recipient", "b@example.invalid")],
+        excluded=[],
+        origin_request_id=unapproved["requestId"],
+    )
+    _make_frozen_request_undated(sharing, unapproved["requestId"], purpose=purpose)
+    with pytest.raises(DriveSharingError, match="date_range_required"):
+        await request_bulk.approve(
+            user_id="owner",
+            share_id=review["shareId"],
+            revision=review["revision"],
+            review_digest=review["reviewDigest"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_undated_approved_effect_skipped_before_dispatch(request_bulk, sharing):
+    queued = await _request(sharing)
+    queued_review = await request_bulk.create_review(
+        user_id="owner",
+        search_job_id=_search(request_bulk, request_id=queued["requestId"], count=1),
+        client_request_id=str(uuid4()),
+        recipients=[_recipient("recipient", "b@example.invalid")],
+        excluded=[],
+        origin_request_id=queued["requestId"],
+    )
+    await request_bulk.approve(
+        user_id="owner",
+        share_id=queued_review["shareId"],
+        revision=queued_review["revision"],
+        review_digest=queued_review["reviewDigest"],
+    )
+    _make_frozen_request_undated(sharing, queued["requestId"])
+    assert (
+        await request_bulk.claim(
+            user_id="owner",
+            share_id=queued_review["shareId"],
+            position=1,
+            recipient_user_id="recipient",
+        )
+        is None
+    )
+    with request_bulk.db.engine.begin() as connection:
+        effect = connection.execute(
+            text("""SELECT state,safe_error_code FROM drive_bulk_share_effects
+            WHERE share_id=:share AND position=1"""),
+            {"share": queued_review["shareId"]},
+        ).one()
+    assert effect == ("skipped", "date_range_required")
 
 
 async def _complete_shared_drive_search(bulk, sharing, *, request_id):
@@ -327,6 +545,7 @@ def _recipient(user_id, email):
 
 
 async def _trusted_request(sharing):
+    today = datetime.now(UTC).date()
     return await sharing.create_request(
         recipient=VerifiedGoogleRecipient(
             "trusted-member",
@@ -337,7 +556,11 @@ async def _trusted_request(sharing):
         ),
         owner_user_id="owner",
         client_request_id=str(uuid4()),
-        purpose=ShareRequestPurpose(purpose="Standup notes from last 3 months"),
+        purpose=ShareRequestPurpose(
+            purpose="Standup notes from last 3 months",
+            periodStart=(today - timedelta(days=90)).isoformat(),
+            periodEnd=today.isoformat(),
+        ),
     )
 
 
