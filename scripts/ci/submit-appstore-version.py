@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+from pathlib import Path
 import re
 import sys
 import time
@@ -538,6 +539,41 @@ def submit_for_review(
     return submission_id
 
 
+def verify_release_state(
+    token: str, version_id: str, build_id: str, release_type: str,
+    whats_new: str | None, submission_id: str | None,
+) -> dict:
+    """Read back only release identifiers/states; a successful write is not proof."""
+    version = asc_get(f"{ASC_API_ROOT}/v1/appStoreVersions/{version_id}", token).get("data") or {}
+    attrs = version.get("attributes") or {}
+    attached = asc_get(
+        f"{ASC_API_ROOT}/v1/appStoreVersions/{version_id}/relationships/build", token
+    ).get("data") or {}
+    if version.get("id") != version_id or attrs.get("releaseType") != release_type or attached.get("id") != build_id:
+        die("release readback does not confirm the expected version, release type, and attached build")
+    if whats_new and whats_new.strip():
+        localizations = asc_get(
+            f"{ASC_API_ROOT}/v1/appStoreVersions/{version_id}/appStoreVersionLocalizations", token
+        ).get("data") or []
+        expected = _clamp_whats_new(whats_new)
+        if not localizations or any((loc.get("attributes") or {}).get("whatsNew") != expected for loc in localizations):
+            die("release notes readback does not match the requested notes")
+    submission_state = None
+    if submission_id:
+        submission = asc_get(f"{ASC_API_ROOT}/v1/reviewSubmissions/{submission_id}", token).get("data") or {}
+        submission_state = (submission.get("attributes") or {}).get("state")
+        if submission.get("id") != submission_id or submission_state not in {"WAITING_FOR_REVIEW", "IN_REVIEW", "COMPLETING", "COMPLETE"}:
+            die("submission readback has not confirmed acceptance into Apple review; inspect before retrying")
+        if not review_submission_has_version(token, submission_id, version_id):
+            die("review submission does not contain the expected App Store version")
+    return {
+        "version_id": version_id, "build_id": build_id,
+        "version_state": attrs.get("appStoreState") or attrs.get("appVersionState"),
+        "release_type": attrs.get("releaseType"),
+        "submission_id": submission_id, "submission_state": submission_state,
+    }
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -609,6 +645,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "submission for public App Store release. Omit to stop before the "
             "final Apple review action."
         ),
+    )
+    parser.add_argument(
+        "--evidence-path",
+        help="Write sanitized, read-back App Store release state to this JSON file.",
     )
     parser.add_argument(
         "--self-test",
@@ -733,8 +773,11 @@ def main(argv: list[str]) -> int:
     )
     attach_build(token, version_id, build["id"])
 
+    submission_id = submit_for_review(token, app_id, version_id, args.platform) if args.submit else None
+    evidence = verify_release_state(token, version_id, build["id"], args.release_type, args.whats_new, submission_id)
+    if args.evidence_path:
+        Path(args.evidence_path).write_text(json.dumps(evidence), encoding="utf-8")
     if args.submit:
-        submit_for_review(token, app_id, version_id, args.platform)
         log(
             f"DONE: version {marketing_version} ({args.build_number}) submitted for "
             "public App Store review."
