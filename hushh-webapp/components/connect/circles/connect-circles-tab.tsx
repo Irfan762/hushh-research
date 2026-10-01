@@ -104,7 +104,7 @@ import {
 const SYSTEM_CIRCLE_COPY = {
   trusted: {
     title: "Trusted",
-    description: "Your connections",
+    description: "People you add yourself",
   },
   sms: {
     title: "SMS Circle",
@@ -243,7 +243,7 @@ function circleVisual(circle: OneLocationCircleSummary) {
 /**
  * The second line.
  *
- * A member count, and for a product-managed Circle the rule that fills it.
+ * A member count, and for the SMS Circle the delivery rule it carries.
  * Never the `kind` -- "Family" was removed from this row once already, because
  * the Circle onboarding creates is filed under Family by default and the
  * person was never asked, so the row opened by naming a category they had not
@@ -258,9 +258,8 @@ export function circleRowDescription(circle: OneLocationCircleSummary): string {
   const owns = circle.role === "owner";
   const people = count === 1 ? "1 person" : `${count} people`;
 
-  // Trusted is owner-scoped by the server, so the only viewer who can reach
-  // this line is its owner. Guarded anyway: "Everyone you're connected to" on
-  // somebody else's roster would be a false statement about the reader.
+  // Trusted is provisioned for its owner. Its members are manually curated,
+  // so the description is no longer inferred from the connection graph.
   if (kind === "trusted" && owns) {
     return count <= 1
       ? SYSTEM_CIRCLE_COPY.trusted.description
@@ -366,8 +365,8 @@ export function ConnectCirclesTab({
   const [busy, setBusy] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
   const [detailReloadToken, setDetailReloadToken] = useState(0);
-  /** Which vault session has already had its Trusted Circle reconciled. */
-  const reconciledForTokenRef = useRef<string | null>(null);
+  /** Which vault session has already provisioned its empty Trusted Circle. */
+  const provisionedForTokenRef = useRef<string | null>(null);
 
   const action = readConnectCircleAction(
     searchParams.get(CONNECT_CIRCLE_ACTION_PARAM),
@@ -412,39 +411,21 @@ export function ConnectCirclesTab({
     // the native beacon claim the surface was still fetching.
     if (circles.length === 0) setLoading(true);
     setError(null);
-    // Reconcile, then read.
-    //
-    // The accept hook writes both sides of a NEW connection, so a pair that
-    // connects from here on needs nothing else. It cannot account for the
-    // connections a person already had -- without this, somebody with forty of
-    // them opens this tab to no Trusted Circle at all, and after their next
-    // accept to one holding a single name under the words "Everyone you're
-    // connected to", which is worse than not showing it.
-    //
-    // A reconcile that fails must not cost the list: the Circles they already
-    // have are still worth showing, and the next open tries again.
-    // Reconciled once per unlocked session, not once per bump.
-    //
-    // This is a write that opens a transaction over the caller's whole
-    // accepted-connection graph, and it sits on a 6-per-minute limiter. Ten
-    // things bump the token -- a create, a join, a rename, an add, a remove, a
-    // sent request, a cancel, an inbound notification -- so a busy minute
-    // spent the budget on re-deriving a roster that had not changed. The list
-    // still re-reads every time; only the reconcile is held.
-    // An automated reviewer session must not start this ambient write; the list
-    // read below still runs.
-    const alreadyReconciled =
-      reconciledForTokenRef.current === vaultOwnerToken ||
+    // Provision the empty Trusted container once per unlocked session, then
+    // read normally. This does not look at Connections or change membership;
+    // the manual picker is the only way a person enters Trusted.
+    const alreadyProvisioned =
+      provisionedForTokenRef.current === vaultOwnerToken ||
       shouldSkipReviewerBackgroundWritesForAutomation();
-    const reconcile = alreadyReconciled
+    const provision = alreadyProvisioned
       ? Promise.resolve()
       : OneLocationService.ensureTrustedSystemCircle({
           vaultOwnerToken,
           summaryOnly: true,
         }).then(() => {
-          reconciledForTokenRef.current = vaultOwnerToken;
+          provisionedForTokenRef.current = vaultOwnerToken;
         });
-    void reconcile
+    void provision
       .catch(() => undefined)
       .then(() => OneLocationService.listCircles(vaultOwnerToken))
       .then((next) => {
