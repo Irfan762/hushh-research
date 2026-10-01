@@ -147,6 +147,36 @@
       "created_at",
       "completed_at"
     ],
+    "circle_chat_messages": [
+      "id",
+      "sequence",
+      "circle_id",
+      "sender_user_id",
+      "client_message_id",
+      "ciphertext",
+      "iv",
+      "image_ciphertext",
+      "image_iv",
+      "request_digest",
+      "created_at"
+    ],
+    "circle_chat_preferences": [
+      "circle_id",
+      "user_id",
+      "muted"
+    ],
+    "circle_chat_recipients": [
+      "message_id",
+      "recipient_user_id",
+      "membership_joined_at",
+      "key_id",
+      "envelope",
+      "read_at",
+      "feed_event_id",
+      "push_status",
+      "push_attempts",
+      "push_due_at"
+    ],
     "connected_documents": [
       "document_id",
       "user_id",
@@ -1713,36 +1743,6 @@
       "one_chat_onboarding",
       "created_at",
       "updated_at"
-    ],
-    "circle_chat_messages": [
-      "id",
-      "sequence",
-      "circle_id",
-      "sender_user_id",
-      "client_message_id",
-      "ciphertext",
-      "iv",
-      "image_ciphertext",
-      "image_iv",
-      "request_digest",
-      "created_at"
-    ],
-    "circle_chat_recipients": [
-      "message_id",
-      "recipient_user_id",
-      "membership_joined_at",
-      "key_id",
-      "envelope",
-      "read_at",
-      "feed_event_id",
-      "push_status",
-      "push_attempts",
-      "push_due_at"
-    ],
-    "circle_chat_preferences": [
-      "circle_id",
-      "user_id",
-      "muted"
     ]
   }
 }
