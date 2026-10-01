@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState, type ReactNode } from "react";
+import { FormEvent, useMemo, useState, type ReactNode } from "react";
 import {
   Unplug as PlugIcon,
   CheckIcon as Check,

@@ -42,8 +42,18 @@ final class AppUITests: XCTestCase {
         let open = webView.buttons.matching(NSPredicate(
             format: "label BEGINSWITH %@", "Open chat history"
         )).firstMatch
-        // The owner may unlock manually while automation waits; no passphrase
-        // is read from a file, argument, or test log.
+        // The existing XCUI vault helper types into a secure field. Its secret
+        // arrives through the documented TEST_RUNNER_ process environment,
+        // never a launch argument, source file, or test diagnostic.
+        if !open.waitForExistence(timeout: 10), webView.buttons["Unlock"].exists {
+            let environment = ProcessInfo.processInfo.environment
+            let hasReviewerSecret = !(environment["HUSHH_UI_TEST_REVIEWER_VAULT_PASSPHRASE"]
+                ?? environment["REVIEWER_VAULT_PASSPHRASE"] ?? "").isEmpty
+            guard hasReviewerSecret else {
+                throw XCTSkip("Live-session vault is locked and no process-only reviewer credential was supplied")
+            }
+            _ = attemptVaultPassphraseUnlock(app: app)
+        }
         if !open.waitForExistence(timeout: 120) {
             let vaultLockVisible = webView.buttons["Unlock"].exists
             XCTFail("Signed-in Chat did not load from the local build. Vault lock visible: \(vaultLockVisible)")
