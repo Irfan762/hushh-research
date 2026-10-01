@@ -8135,7 +8135,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       onGetApp={offerGetApp ? openGetApp : undefined}
       getAppOpen={getAppOpen}
       driveActivity={!isPuppySurface
-        ? <DriveRecentSharing presentation="sidebar" onNeedsReviewChange={onDriveNeedsReviewChange} /> : null}
+        ? <DriveRecentSharing presentation="sidebar" active={isHistoryDrawerOpen && drawerMode === "chats"} onNeedsReviewChange={onDriveNeedsReviewChange} /> : null}
       onCreateNew={handleSidebarCreateNewChat}
       onSelectConversation={handleSidebarSelectConversation}
       onRenameConversation={isPuppySurface ? handleRenamePuppyConversation : handleRenameConversation}
