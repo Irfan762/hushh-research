@@ -93,7 +93,6 @@ import {
   CONNECT_SEARCH_QUERY_PARAM,
   CONNECT_REVIEW_PERSON_PARAM,
   CONNECT_SURFACE_PARAM,
-  CONNECT_CIRCLES_LIST_HREF,
   connectCircleTaskTitle,
   isFocusedConnectCircleTask,
   readConnectCircleAction,
@@ -549,6 +548,7 @@ export default function ConnectPageClient() {
   const circleFlowAction = readConnectCircleAction(
     searchParams.get(CONNECT_CIRCLE_ACTION_PARAM),
   );
+  const [createCircleDialogOpen, setCreateCircleDialogOpen] = useState(false);
   const circleFlowId = searchParams.get(CONNECT_CIRCLE_ID_PARAM) ?? "";
   const isFocusedCircleTask = isFocusedConnectCircleTask(
     surface,
@@ -3000,14 +3000,7 @@ export default function ConnectPageClient() {
                                   preventScroll: true,
                                 });
                               }}
-                              onCreateCircle={() =>
-                                router.push(
-                                  `${CONNECT_CIRCLES_LIST_HREF}&${CONNECT_CIRCLE_ACTION_PARAM}=create-circle`,
-                                  {
-                                    scroll: false,
-                                  },
-                                )
-                              }
+                              onCreateCircle={() => setCreateCircleDialogOpen(true)}
                               onRetry={handleRefreshConnections}
                               onRetryCircles={() =>
                                 setCircleRefreshToken((value) => value + 1)
@@ -3797,6 +3790,8 @@ export default function ConnectPageClient() {
                       className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}
                     >
                       <ConnectCirclesTab
+                        createDialogOpen={createCircleDialogOpen}
+                        onCreateDialogOpenChange={setCreateCircleDialogOpen}
                         onStateChange={setCirclesState}
                         currentUserId={user?.uid ?? null}
                         isActive={surface === "circles"}

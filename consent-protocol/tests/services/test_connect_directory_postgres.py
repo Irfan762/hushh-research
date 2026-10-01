@@ -332,6 +332,47 @@ def test_mutuals_use_active_edges_in_both_directions_and_exclude_blocks(connecti
     assert connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all() == []
 
 
+@pytest.mark.parametrize(
+    ("viewer_status", "candidate_status", "expected_count"),
+    [
+        (None, "active", 0),
+        ("active", None, 0),
+        ("revoked", "active", 0),
+        ("active", "revoked", 0),
+        ("active", "active", 1),
+    ],
+)
+def test_mutual_requires_both_active_connections(
+    connection, viewer_status, candidate_status, expected_count
+):
+    from hushh_mcp.services.connection_mutuals import MUTUAL_CONNECTIONS_SQL
+
+    for person, status in [("owner", viewer_status), ("candidate", candidate_status)]:
+        if status is not None:
+            connection.execute(
+                text("INSERT INTO connections VALUES (:person, 'peer', :status)"),
+                {"person": person, "status": status},
+            )
+        else:
+            connection.execute(
+                text(
+                    "INSERT INTO connection_requests VALUES (:person, 'peer', 'pending', '{}'::jsonb)"
+                ),
+                {"person": person},
+            )
+    rows = (
+        connection.execute(
+            text(MUTUAL_CONNECTIONS_SQL),
+            {"user_id": "owner", "page_user_ids": ["candidate"]},
+        )
+        .mappings()
+        .all()
+    )
+    assert sum(row["mutual_count"] for row in rows) == expected_count
+    if expected_count:
+        assert rows[0]["preview_user_id"] == "peer"
+
+
 def test_bounded_directory_profile_lookup_keeps_visibility_and_empty_list_boundary(connection):
     _person(connection, OWNER, "Owner")
     _person(connection, "visible", "Visible Peer")

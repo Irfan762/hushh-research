@@ -24,7 +24,8 @@ describe("directory card", () => {
     const view = render(<DirectoryPersonCard {...props} />);
     expect(screen.getByTestId("mutual-connection")).toHaveTextContent("3 mutual connections");
     view.rerender(<DirectoryPersonCard {...props} person={{ ...props.person, mutualConnectionPreview: { displayName: "Alex", photoUrl: null } }} />);
-    expect(screen.getByTestId("mutual-connection")).toHaveTextContent("Alex3 mutual connections");
+    expect(screen.getByTestId("mutual-connection")).toHaveTextContent("3 mutual connections");
+    expect(screen.queryByText("Alex")).toBeNull();
   });
   it("opens the mutual profile independently of the candidate profile", () => {
     const openMutual = vi.fn();

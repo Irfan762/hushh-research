@@ -629,12 +629,8 @@ describe("Connect — People", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Create your own circle" }),
     );
-    expect(mocks.routerPush).toHaveBeenCalledWith(
-      "/one/connect?tab=circles&action=create-circle",
-      {
-        scroll: false,
-      },
-    );
+    expect(await screen.findByRole("dialog", { name: "Create a Circle" })).toBeTruthy();
+    expect(mocks.routerPush).not.toHaveBeenCalled();
   });
 
   it("places one directory selector below connections and keeps every directory reachable", async () => {

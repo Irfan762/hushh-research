@@ -277,11 +277,11 @@ export function CircleDiscoveryCard({
             data-circle-discovery-trusted=""
             disabled={Boolean(creating)}
             onClick={() => onOpenCircle(trusted.id)}
-            className="ml-auto inline-flex min-h-11 items-center gap-1.5 text-xs font-normal text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] disabled:opacity-50"
+            className="ml-auto inline-flex min-h-11 items-center gap-1.5 text-xs md:gap-2 md:text-sm font-normal text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] disabled:opacity-50"
           >
-            <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0" />
+            <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0 md:size-4" />
             <span>Your Trusted Circle</span>
-            <ArrowRight aria-hidden="true" className="size-3.5 shrink-0" />
+            <ArrowRight aria-hidden="true" className="size-3.5 shrink-0 md:size-4" />
           </button>
         ) : null}
       </div>

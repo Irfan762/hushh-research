@@ -174,13 +174,23 @@ for (const dark of [false, true]) {
       const cards = page.getByTestId("directory-person-card");
       await expect(cards).toHaveCount(3);
       await expect(cards.first()).toContainText("p***0@example.com");
-      await expect(cards.first()).toContainText("Alex Chen");
+      await expect(cards.first().getByText("Alex Chen", { exact: true })).toHaveCount(0);
       await expect(cards.first()).toContainText("2 mutual connections");
       const mutual = cards.first().getByRole("button", { name: "Open mutual connection Alex Chen's profile" });
       await mutual.click();
       await expect(page.locator("body")).toHaveAttribute("data-last-navigation", /^\/people\/person_alex\?/);
       await expect(cards.nth(1).getByTestId("mutual-connection")).toHaveCount(0);
-      await expect(page.getByRole("button", { name: "Create your own circle" })).toBeEnabled();
+      await page.getByRole("button", { name: "Create your own circle" }).click();
+      const createDialog = page.getByRole("dialog", { name: "Create a Circle" });
+      await expect(createDialog).toBeVisible();
+      await expect(createDialog.getByRole("textbox")).toBeVisible();
+      const createBounds = await createDialog.boundingBox();
+      expect(createBounds).not.toBeNull();
+      expect(Math.abs(createBounds!.x + createBounds!.width / 2 - width / 2)).toBeLessThan(2);
+      expect(createBounds!.x).toBeGreaterThanOrEqual(0);
+      expect(createBounds!.x + createBounds!.width).toBeLessThanOrEqual(width);
+      await createDialog.getByRole("button", { name: "Close", exact: true }).click();
+      await expect(createDialog).toHaveCount(0);
       await expect(page.getByRole("button", { name: /Message .*coming soon/ })).toHaveCount(6);
       await expect(page.getByRole("button", { name: /Message .*coming soon/ }).first()).toBeDisabled();
       const geometry = await cards.evaluateAll((nodes) => nodes.map((node) => {

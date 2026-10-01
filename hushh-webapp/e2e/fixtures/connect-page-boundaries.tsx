@@ -5,6 +5,7 @@
 // through <html data-*> attributes, so the page loads in the same order it
 // does for a person: shell first, then connections, then circles.
 import React, { createContext, useEffect } from "react";
+import { ConnectCirclesTab as ProductionCirclesTab } from "../../components/connect/circles/connect-circles-tab";
 
 const noop = () => {};
 const dataset = () => document.documentElement.dataset;
@@ -122,8 +123,12 @@ export const CacheSyncService = new Proxy({}, { get: () => noop });
 /** The Circles tab owns the circles read; its answer arrives on its own clock. */
 export function ConnectCirclesTab({
   onStateChange,
+  createDialogOpen,
+  onCreateDialogOpenChange,
 }: {
   onStateChange?: (state: unknown) => void;
+  createDialogOpen?: boolean;
+  onCreateDialogOpenChange?: (open: boolean) => void;
 }) {
   useEffect(() => {
     onStateChange?.({
@@ -158,10 +163,12 @@ export function ConnectCirclesTab({
     );
     return () => window.clearTimeout(timer);
   }, [onStateChange]);
-  return <div data-fixture-circles-tab="">Circles</div>;
+  return createDialogOpen ? <ProductionCirclesTab createDialogOpen onCreateDialogOpenChange={onCreateDialogOpenChange} /> : <div data-fixture-circles-tab="">Circles</div>;
 }
 export const NearbyDirectories = () => null;
 export const OneLocationService = {
+  ensureTrustedSystemCircle: async () => ({}),
+  listCircles: async () => [],
   listCircleMembersPage: async () => ({ items: [] }),
 };
 

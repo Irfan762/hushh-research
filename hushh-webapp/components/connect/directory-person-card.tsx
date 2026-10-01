@@ -30,12 +30,11 @@ export function DirectoryPersonCard({
     <>
       <ConnectionPersonAvatar
         size="compact"
-        className="!size-5 shrink-0"
+        className="!size-6 shrink-0"
         photoUrl={mutual.photoUrl}
         label={mutual.displayName}
       />
       <span className="min-w-0">
-        <span className="block truncate font-medium">{mutual.displayName}</span>
         <span className="block text-[10px] leading-4">
           {mutualCount === 1 ? "Mutual connection" : `${mutualCount} mutual connections`}
         </span>
