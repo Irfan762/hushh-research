@@ -34,6 +34,7 @@ from hushh_mcp.services.connection_graph_service import (
     ensure_connection_origin,
     lock_connection_graph_users,
 )
+from hushh_mcp.services.connection_mutuals import MUTUAL_CONNECTIONS_SQL
 from hushh_mcp.services.contact_sync_contract import (
     CONTACT_SYNC_MATCH_POLICY_VERSION,
     CONTACT_SYNC_PREFERENCE_DEFAULT,
@@ -3390,6 +3391,33 @@ class ConnectionsService:
         ria_user_ids = self._verified_ria_user_ids([str(p.get("userId") or "") for p in people])
         public_person_refs = self._public_person_refs([str(p.get("userId") or "") for p in people])
 
+        # One page-bound graph read. Preview identities must already have passed
+        # the directory's live eligibility checks; never expose a private peer.
+        mutual_rows = (
+            self._execute_many(
+                MUTUAL_CONNECTIONS_SQL,
+                {"user_id": user_id, "page_user_ids": page_user_ids},
+            )
+            if page_user_ids
+            else []
+        )
+        mutuals = {str(row.get("candidate_id") or ""): row for row in mutual_rows}
+        eligible_people = {str(person.get("userId") or ""): person for person in people}
+
+        def mutual_payload(uid: str) -> dict[str, Any]:
+            row = mutuals.get(uid) or {}
+            count = max(0, int(row.get("mutual_count") or 0))
+            peer = eligible_people.get(str(row.get("preview_user_id") or ""))
+            return {
+                "mutualConnectionCount": count,
+                "mutualConnectionPreview": {
+                    "displayName": peer["displayName"],
+                    "photoUrl": peer.get("photoUrl"),
+                }
+                if count and peer and peer.get("displayName")
+                else None,
+            }
+
         return {
             "items": [
                 {
@@ -3401,6 +3429,7 @@ class ConnectionsService:
                     "maskedEmail": p.get("maskedEmail"),
                     "maskedPhone": p.get("maskedPhone"),
                     "relationship": relationship(str(p.get("userId") or "")),
+                    **mutual_payload(str(p.get("userId") or "")),
                     "isRia": str(p.get("userId") or "") in ria_user_ids,
                 }
                 for p in people

@@ -9,6 +9,7 @@ import {
   ChevronDown,
   Loader2,
   RefreshCw,
+  Trash2,
   Search as SearchIcon,
   X,
 } from "@/components/icons";
@@ -31,8 +32,12 @@ import {
   SettingsRow,
 } from "@/components/app-ui/settings-ui";
 import { ConnectCirclesTab } from "@/components/connect/circles/connect-circles-tab";
+import { DirectoryPersonCard } from "@/components/connect/directory-person-card";
 import { LivingConnections } from "@/components/connect/living-connections";
-import { EMPTY_CIRCLES_SNAPSHOT, type ConnectCirclesSnapshot } from "@/components/connect/circle-discovery";
+import {
+  EMPTY_CIRCLES_SNAPSHOT,
+  type ConnectCirclesSnapshot,
+} from "@/components/connect/circle-discovery";
 import { SurfaceStack } from "@/components/app-ui/surfaces";
 import { buildInviteToOneShare } from "@/lib/connect/invite-to-one";
 import {
@@ -87,7 +92,11 @@ import {
 } from "@/lib/navigation/connect-routes";
 import { CONSENT_STATE_CHANGED_EVENT } from "@/lib/consent/consent-events";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
-import { CACHE_KEYS, CACHE_TTL, CacheService } from "@/lib/services/cache-service";
+import {
+  CACHE_KEYS,
+  CACHE_TTL,
+  CacheService,
+} from "@/lib/services/cache-service";
 import { Skeleton } from "@/components/ui/skeleton";
 import { subscribeToConnectionGraphChanges } from "@/lib/connections/connection-graph-events";
 import { useOutgoingRequestResolutionWatch } from "@/lib/connections/use-outgoing-request-resolution-watch";
@@ -306,8 +315,7 @@ const CONNECT_REMOVE_BUTTON_CLASSNAME =
   "text-destructive hover:bg-destructive/10 hover:text-destructive";
 const CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME =
   "border border-destructive/20 bg-destructive/10 text-destructive shadow-none hover:bg-destructive/15 hover:text-destructive";
-const CONNECT_SECTION_CONTROL_LABEL_CLASSNAME =
-  "connect-section-control-label";
+const CONNECT_SECTION_CONTROL_LABEL_CLASSNAME = "connect-section-control-label";
 const CONNECT_REFRESH_BUTTON_CLASSNAME =
   "h-11 min-h-11 w-11 min-w-11 rounded-full p-0 text-muted-foreground hover:text-foreground disabled:opacity-70";
 
@@ -521,7 +529,9 @@ export default function ConnectPageClient() {
   const commitSurface = useCallback(
     (value: string) => {
       if (value === surface) return;
-      const target = CONNECT_SURFACE_TAB_DEFINITION.tabs.find((tab) => tab.value === value);
+      const target = CONNECT_SURFACE_TAB_DEFINITION.tabs.find(
+        (tab) => tab.value === value,
+      );
       if (target) router.push(target.href, { scroll: false });
     },
     [router, surface],
@@ -562,7 +572,9 @@ export default function ConnectPageClient() {
   // relationship, so an open roster re-reads instead of waiting for a manual
   // refresh -- the request sent from a member row is the case that showed.
   const [circleRefreshToken, setCircleRefreshToken] = useState(0);
-  const [circlesState, setCirclesState] = useState<ConnectCirclesSnapshot>(EMPTY_CIRCLES_SNAPSHOT);
+  const [circlesState, setCirclesState] = useState<ConnectCirclesSnapshot>(
+    EMPTY_CIRCLES_SNAPSHOT,
+  );
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const connectStackRef = useRef<HTMLDivElement | null>(null);
   const stickyHeaderRef = useRef<HTMLDivElement | null>(null);
@@ -909,7 +921,9 @@ export default function ConnectPageClient() {
       });
       connectionReconcileInFlightRef.current = task;
       return task;
-    }, [loadOutgoingRequestIds, refreshConnectionsFirstPage, user]);
+    },
+    [loadOutgoingRequestIds, refreshConnectionsFirstPage, user],
+  );
 
   // The same contact sync the One Location agent offers, on the screen whose
   // whole job is finding people. It is one implementation, not a second one:
@@ -2846,7 +2860,7 @@ export default function ConnectPageClient() {
       as="main"
       data-connect-page=""
       fitContent
-      width="agent"
+      width="reading"
       className="relative isolate"
       nativeTest={{
         routeId: "/one/connect",
@@ -2931,7 +2945,10 @@ export default function ConnectPageClient() {
                     viewportMinHeight="fill"
                     heightMode="active"
                   >
-                    <div data-connect-surface="all" className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}>
+                    <div
+                      data-connect-surface="all"
+                      className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}
+                    >
                       {tab === "nearby" ? (
                         <div className="space-y-3">
                           <div className="px-1">{directorySelector}</div>
@@ -2944,17 +2961,15 @@ export default function ConnectPageClient() {
                               key={user?.uid ?? "signed-out"}
                               currentUserId={user?.uid ?? null}
                               circlesState={circlesState}
-                              ownerName={
-                                user?.displayName || "You"
-                              }
+                              ownerName={user?.displayName || "You"}
                               ownerPhotoUrl={user?.photoURL ?? null}
                               connections={sortedConnections}
                               totalCount={connectionsTotalCount}
                               loading={
                                 !connectionsRefreshError &&
-                                ((!connectionsLoaded ||
+                                (!connectionsLoaded ||
                                   connectionsRefreshingFirstPage) &&
-                                  sortedConnections.length === 0)
+                                sortedConnections.length === 0
                               }
                               error={connectionsRefreshError}
                               onFindPeople={() => {
@@ -2967,15 +2982,21 @@ export default function ConnectPageClient() {
                                 });
                               }}
                               onCreateCircle={() =>
-                                router.push(`${CONNECT_CIRCLES_LIST_HREF}&${CONNECT_CIRCLE_ACTION_PARAM}=create-circle`, {
-                                  scroll: false,
-                                })
+                                router.push(
+                                  `${CONNECT_CIRCLES_LIST_HREF}&${CONNECT_CIRCLE_ACTION_PARAM}=create-circle`,
+                                  {
+                                    scroll: false,
+                                  },
+                                )
                               }
                               onRetry={handleRefreshConnections}
-                              onRetryCircles={() => setCircleRefreshToken((value) => value + 1)}
+                              onRetryCircles={() =>
+                                setCircleRefreshToken((value) => value + 1)
+                              }
                             />
                           ) : null}
                           <SettingsGroup
+                            className="rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-3 sm:p-4"
                             titleControl={
                               <Button
                                 type="button"
@@ -3039,7 +3060,7 @@ export default function ConnectPageClient() {
                               </Button>
                             }
                             separatorInset
-                            headingClassName={CONNECT_SECTION_HEADING_CLASSNAME}
+                            headingClassName="!mt-0 !mb-0 !px-0 border-b border-[color:var(--app-card-border-standard)]"
                             contentId="connect-my-connections-panel"
                             shellClassName={cn(
                               !connectionsExpanded && "hidden",
@@ -3060,15 +3081,20 @@ export default function ConnectPageClient() {
                                 density="compact"
                               />
                             )}
-                            {sortedConnections.length === 0 && !connectionsLoaded ? (
+                            {sortedConnections.length === 0 &&
+                            !connectionsLoaded ? (
                               // The list's resting shape while its first page
                               // is on the way: same rows, same height, no claim.
                               Array.from({ length: 4 }, (_, index) => (
                                 <SettingsRow
                                   key={`connection-placeholder-${index}`}
                                   layout="person"
-                                  leading={<Skeleton className="h-10 w-10 rounded-full" />}
-                                  title={<Skeleton className="h-4 w-32 rounded" />}
+                                  leading={
+                                    <Skeleton className="h-10 w-10 rounded-full" />
+                                  }
+                                  title={
+                                    <Skeleton className="h-4 w-32 rounded" />
+                                  }
                                   disabled
                                 />
                               ))
@@ -3135,6 +3161,14 @@ export default function ConnectPageClient() {
                                   // title, and this one is an element so it can wrap with
                                   // its provenance badge.
                                   // Passing the name keeps the attribute the row already had.
+                                  description={
+                                    connection.createdAt &&
+                                    !Number.isNaN(
+                                      Date.parse(connection.createdAt),
+                                    )
+                                      ? `Connected on ${new Intl.DateTimeFormat(undefined, { month: "long", day: "numeric", year: "numeric" }).format(new Date(connection.createdAt))}`
+                                      : undefined
+                                  }
                                   voiceLabel={
                                     connection.displayName || connection.userId
                                   }
@@ -3157,6 +3191,18 @@ export default function ConnectPageClient() {
                                         CONNECT_ROW_TRAILING_CLASSNAME,
                                       )}
                                     >
+                                      <Button
+                                        type="button"
+                                        variant="none"
+                                        effect="fade"
+                                        size="compact"
+                                        disabled
+                                        title="Messaging is coming soon"
+                                        aria-label={`Message ${connection.displayName || "connection"} (coming soon)`}
+                                        className="!border !border-[color:var(--app-accent)] !bg-transparent !px-3 !text-[color:var(--app-accent)] disabled:!opacity-100"
+                                      >
+                                        Message
+                                      </Button>
                                       {pendingRemoveId ===
                                       connection.connectionId ? (
                                         <>
@@ -3213,12 +3259,12 @@ export default function ConnectPageClient() {
                                             );
                                           }}
                                           aria-label={`Remove connection with ${connection.displayName || connection.userId}`}
-                                          className={cn(
-                                            CONNECT_INLINE_BUTTON_CLASSNAME,
-                                            CONNECT_REMOVE_BUTTON_CLASSNAME,
-                                          )}
+                                          className="!size-11 !min-w-11 !bg-transparent !p-0 text-[color:var(--app-secondary-label)]"
                                         >
-                                          Remove
+                                          <Trash2
+                                            aria-hidden="true"
+                                            className="size-4"
+                                          />
                                         </Button>
                                       )}
                                     </span>
@@ -3252,7 +3298,9 @@ export default function ConnectPageClient() {
                           <div className="space-y-4">
                             <SettingsGroup
                               testId="connect-directory-group"
-                              headingClassName={CONNECT_SECTION_HEADING_CLASSNAME}
+                              headingClassName={
+                                CONNECT_SECTION_HEADING_CLASSNAME
+                              }
                               titleControl={directorySelector}
                               // People only. This one JSX node also renders the RIAs
                               // tab, where an address book has nothing to offer --
@@ -3307,6 +3355,8 @@ export default function ConnectPageClient() {
                                   "Find by name, email or phone."
                                 )
                               }
+                              shellClassName="!overflow-visible !rounded-none !bg-transparent !shadow-none"
+                              contentClassName="grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 md:grid-cols-3 [&>[data-slot=settings-row]]:col-span-full [&>[data-testid=connect-load-more-row]]:col-span-full"
                               separatorInset
                               // The search row belongs to THIS list, so it is read after
                               // the heading that names the list -- not before it. It used
@@ -3503,15 +3553,15 @@ export default function ConnectPageClient() {
                                     person.relationship,
                                   );
                                   const title =
-                                    person.displayName ||
-                                    "Hussh member";
+                                    person.displayName || "Hussh member";
                                   const isSelected = selectedPeople.has(
                                     person.userId,
                                   );
                                   return (
-                                    <SettingsRow
+                                    <DirectoryPersonCard
+                                      person={person}
                                       key={person.userId}
-                                      layout="person"
+
                                       // Verified is a state, and green is what this design
                                       // system already spends on a verified one. It is on the
                                       // row rather than on the tab so the mark still means
@@ -3760,17 +3810,20 @@ export default function ConnectPageClient() {
                         </div>
                       )}
                     </div>
-                    <div data-connect-surface="circles" className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}>
-                    <ConnectCirclesTab
-                      onStateChange={setCirclesState}
-                      currentUserId={user?.uid ?? null}
-                      isActive={surface === "circles"}
-                      // The roster's Connect opens the SAME capability review the
-                      // directory opens, rather than sending outright.
-                      onRequestConnection={sendConnectRequest}
-                      onCancelConnectionRequest={cancelConnectionRequest}
-                      refreshToken={circleRefreshToken}
-                    />
+                    <div
+                      data-connect-surface="circles"
+                      className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}
+                    >
+                      <ConnectCirclesTab
+                        onStateChange={setCirclesState}
+                        currentUserId={user?.uid ?? null}
+                        isActive={surface === "circles"}
+                        // The roster's Connect opens the SAME capability review the
+                        // directory opens, rather than sending outright.
+                        onRequestConnection={sendConnectRequest}
+                        onCancelConnectionRequest={cancelConnectionRequest}
+                        refreshToken={circleRefreshToken}
+                      />
                     </div>
                   </SwipeViews>
                 </div>

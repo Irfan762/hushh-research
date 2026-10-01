@@ -600,11 +600,11 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
 
     expect(await screen.findByRole("heading", { name: "Circles" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add connection" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Find people to connect with" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "Search people" })).toBeTruthy();
     expect(
       await screen.findByText(
-        /Send a request, then add people after they accept/,
+        /Find people to connect with/,
       ),
     ).toBeTruthy();
     fireEvent.click(
@@ -1907,7 +1907,7 @@ describe("Connect — People", () => {
     expect(mocks.sendRequest).not.toHaveBeenCalled();
   });
 
-  it("keeps directory rows name-only while preserving duplicate disambiguation", async () => {
+  it("shows directory emails while preserving duplicate disambiguation", async () => {
     mocks.searchDirectory.mockResolvedValue({
       items: [
         {
@@ -1931,8 +1931,8 @@ describe("Connect — People", () => {
 
     const directory = screen.getByTestId("connect-directory-group");
     expect(within(directory).getAllByText("Ankit Kumar Singh")).toHaveLength(2);
-    expect(within(directory).queryByText("a***t@hushh.ai")).toBeNull();
-    expect(within(directory).queryByText("a***3@gmail.com")).toBeNull();
+    expect(within(directory).getByText("a***t@hushh.ai")).toBeVisible();
+    expect(within(directory).getByText("a***3@gmail.com")).toBeVisible();
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     const result = await sendRequest!({ person: "Ankit Kumar Singh" });
@@ -2513,8 +2513,9 @@ describe("Connect — the phone-width geometry QA reported", () => {
     });
     expect(remove.className).toContain("h-11");
     expect(remove.className).toContain("min-h-11");
-    expect(remove.className).toContain("rounded-xl");
-    expect(remove.className).toContain("text-destructive");
+    expect(remove.querySelector("svg")).toBeTruthy();
+    expect(remove).not.toHaveTextContent("Remove");
+    expect(screen.getByRole("button", { name: /Message Abdul Rashid/ })).toBeDisabled();
     expect(remove.className).not.toContain("h-9");
     expect(remove.className).not.toContain("before:-inset-y-1.5");
     const trailing = remove.closest("div");

@@ -67,7 +67,8 @@ CREATE TABLE connections (
 CREATE TABLE connection_requests (
   requester_user_id TEXT NOT NULL,
   addressee_user_id TEXT NOT NULL,
-  status TEXT NOT NULL
+  status TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb
 );
 CREATE TABLE trusted_connections (
   owner_user_id TEXT NOT NULL,
@@ -289,3 +290,43 @@ def test_directory_pages_stay_full_with_no_vault_rows_interleaved_on_postgres(
     assert len(expected) == 115
     assert pages == [(20, True)] * 5 + [(15, False)]
     assert seen == expected
+
+
+def test_mutuals_use_active_edges_in_both_directions_and_exclude_blocks(connection):
+    from hushh_mcp.services.connection_mutuals import MUTUAL_CONNECTIONS_SQL
+
+    edges = [
+        ("a-peer", "owner", "active"),
+        ("owner", "z-peer", "active"),
+        ("a-peer", "candidate", "active"),
+        ("candidate", "z-peer", "active"),
+        ("candidate", "revoked-peer", "active"),
+        ("owner", "revoked-peer", "revoked"),
+        ("a-peer", "outside-page", "active"),
+    ]
+    for a, b, status in edges:
+        connection.execute(
+            text("INSERT INTO connections VALUES (:a, :b, :status)"),
+            {"a": a, "b": b, "status": status},
+        )
+    params = {"user_id": "owner", "page_user_ids": ["candidate", "a-peer", "owner", "zero"]}
+    rows = connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all()
+    assert [dict(row) for row in rows] == [
+        {"candidate_id": "candidate", "mutual_count": 2, "preview_user_id": "a-peer"}
+    ]
+    connection.execute(
+        text(
+            "INSERT INTO connection_requests VALUES ('candidate', 'a-peer', 'rejected', CAST(:metadata AS JSONB))"
+        ),
+        {"metadata": '{"blocked_by":"a-peer"}'},
+    )
+    rows = connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all()
+    assert [dict(row) for row in rows] == [
+        {"candidate_id": "candidate", "mutual_count": 1, "preview_user_id": None}
+    ]
+    connection.execute(
+        text(
+            "UPDATE connections SET status='revoked' WHERE user_a_id='owner' AND user_b_id='z-peer'"
+        )
+    )
+    assert connection.execute(text(MUTUAL_CONNECTIONS_SQL), params).mappings().all() == []
