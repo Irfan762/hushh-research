@@ -137,8 +137,8 @@ test("relative standup request asks for exact dates before sending", async ({ pa
   await expect(panel.getByRole("button", { name: "Send request" })).toBeDisabled();
   expect(submissions).toHaveLength(0);
   await page.screenshot({ path: "/tmp/agentone-date-clarification.png" });
-  await panel.getByLabel("Start date").fill("2026-09-29");
-  await panel.getByLabel("End date").fill("2026-10-01");
+  await panel.getByLabel("Start date", { exact: true }).fill("2026-09-29");
+  await panel.getByLabel("End date", { exact: true }).fill("2026-10-01");
   await expect(panel.getByRole("button", { name: "Send request" })).toBeEnabled();
   await panel.getByRole("button", { name: "Send request" }).click();
   await expect(panel.getByText("Request sent.")).toBeVisible();
@@ -198,18 +198,65 @@ for (const width of [320, 390, 768, 1440])
       name: "Request files",
       exact: true,
     });
+    if (width === 320) {
+      await page.evaluate(() => {
+        document.documentElement.style.setProperty("--kb-height", "240px");
+        document.documentElement.style.setProperty("--app-safe-area-top-effective", "44px");
+      });
+      await expect.poll(() => panel.evaluate((node) =>
+        Number.parseFloat(getComputedStyle(node).bottom),
+      )).toBeGreaterThanOrEqual(239);
+      const lifted = (await panel.boundingBox())!;
+      expect(lifted.y).toBeGreaterThanOrEqual(44);
+      expect(lifted.y + lifted.height).toBeLessThanOrEqual(820 - 240 + 1);
+      await page.evaluate(() => {
+        document.documentElement.style.removeProperty("--kb-height");
+        document.documentElement.style.removeProperty("--app-safe-area-top-effective");
+      });
+    }
     const purpose = `${"UntrustedLongPurpose".repeat(20)} <script>text only</script>`;
     await panel.getByLabel("What do you need?").fill(purpose);
-    await panel.getByLabel("Start date").fill("2026-01-01");
+    if (width < 640) {
+      await panel.getByRole("button", { name: "Start date: Choose date" }).click();
+      const calendar = panel.getByRole("group", { name: "Choose start date" });
+      const gridBounds = (await calendar.locator("[data-calendar-days]").boundingBox())!;
+      expect(gridBounds.x).toBeGreaterThanOrEqual(0);
+      expect(gridBounds.x + gridBounds.width).toBeLessThanOrEqual(width + 1);
+      expect(await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1)).toBe(true);
+      await calendar.getByRole("combobox", { name: "Year" }).selectOption("2026");
+      await calendar.getByRole("combobox", { name: "Month" }).selectOption("0");
+      const day = calendar.getByRole("button", { name: "Thursday, January 1, 2026" });
+      const dayBounds = (await day.boundingBox())!;
+      expect(dayBounds.width).toBeGreaterThanOrEqual(44);
+      expect(dayBounds.height).toBeGreaterThanOrEqual(44);
+      await day.click();
+      await expect(panel.getByRole("group", { name: "Choose end date" })).toBeVisible();
+    } else {
+      await panel.getByLabel("Start date", { exact: true }).fill("2026-01-01");
+    }
     await expect(
       panel.getByRole("button", { name: "Send request" }),
     ).toBeDisabled();
-    await panel.getByLabel("End date").fill("2026-06-30");
+    if (width < 640) {
+      const calendar = panel.getByRole("group", { name: "Choose end date" });
+      await calendar.getByRole("combobox", { name: "Month" }).selectOption("5");
+      await calendar.getByRole("button", { name: "Tuesday, June 30, 2026" }).click();
+      await expect(panel.getByRole("button", { name: "End date: Jun 30, 2026" })).toBeVisible();
+    } else {
+      await panel.getByLabel("End date", { exact: true }).fill("2026-06-30");
+    }
     expect(submissions).toHaveLength(0);
     for (const control of [
       panel.getByLabel("What do you need?"),
-      panel.getByLabel("Start date"),
-      panel.getByLabel("End date"),
+      ...(width < 640
+        ? [
+            panel.getByRole("button", { name: "Start date: Jan 1, 2026" }),
+            panel.getByRole("button", { name: "End date: Jun 30, 2026" }),
+          ]
+        : [
+            panel.getByLabel("Start date", { exact: true }),
+            panel.getByLabel("End date", { exact: true }),
+          ]),
       panel.getByRole("button", { name: "Send request" }),
       panel.getByRole("button", { name: "Cancel" }),
     ]) {
@@ -218,6 +265,8 @@ for (const width of [320, 390, 768, 1440])
       expect(bounds.height).toBeGreaterThanOrEqual(44);
       expect(bounds.x).toBeGreaterThanOrEqual(0);
       expect(bounds.x + bounds.width).toBeLessThanOrEqual(width + 1);
+      expect(bounds.y).toBeGreaterThanOrEqual(0);
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(821);
     }
     expect(
       await panel.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
