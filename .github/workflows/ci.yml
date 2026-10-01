@@ -139,10 +139,7 @@ jobs:
   repo-governance:
     name: "Governance"
     runs-on: ubuntu-latest
-    # Cold Python/uv dependency setup can exceed 15 minutes before the actual
-    # governance checks begin. Keep the lane bounded while allowing its
-    # prerequisite checks to complete.
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
 
