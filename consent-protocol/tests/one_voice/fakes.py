@@ -34,6 +34,18 @@ class MemoryPendingStore:
                 and datetime.fromisoformat(row.expires_at) < _now()
             ):
                 row.status = "expired"
+                if row.tool_name == "send_mail":
+                    row.args.pop("_sealed_args", None)
+            if (
+                row.user_id == user_id
+                and row.tool_name == "send_mail"
+                and row.status == "executed"
+                and (row.result or {}).get("status") == "draft_open_requested"
+                and row.resolved_at
+                and datetime.fromisoformat(row.resolved_at) < _now() - timedelta(seconds=35)
+            ):
+                row.status = "failed"
+                row.result = {"status": "draft_open_unconfirmed", "needs": None}
 
     async def cancel_open(
         self, *, user_id: str, conversation_id: str, except_id: str | None = None
@@ -46,6 +58,8 @@ class MemoryPendingStore:
                 and row.id != except_id
             ):
                 row.status = "cancelled"
+                if row.tool_name == "send_mail":
+                    row.args.pop("_sealed_args", None)
                 count += 1
         return count
 
@@ -127,6 +141,30 @@ class MemoryPendingStore:
         row.status = status
         row.result = result
         row.resolved_at = _now().isoformat()
+        if row.tool_name == "send_mail":
+            row.args.pop("_sealed_args", None)
+        return row
+
+    async def settle_mail_draft_step(self, *, user_id, pending_action_id, opened, uncertain=False):
+        row = await self.get(user_id=user_id, pending_action_id=pending_action_id)
+        if (
+            row is None
+            or row.tool_name != "send_mail"
+            or row.status != "executed"
+            or (row.result or {}).get("status") != "draft_open_requested"
+        ):
+            return None
+        row.status = "executed" if opened else "failed"
+        row.result = {
+            "status": (
+                "draft_opened"
+                if opened
+                else "draft_open_unconfirmed"
+                if uncertain
+                else "draft_not_opened"
+            ),
+            "needs": None,
+        }
         return row
 
     async def cancel(self, *, user_id, pending_action_id):
@@ -134,6 +172,8 @@ class MemoryPendingStore:
         if row is None or row.status != "pending":
             return None
         row.status = "cancelled"
+        if row.tool_name == "send_mail":
+            row.args.pop("_sealed_args", None)
         return row
 
 

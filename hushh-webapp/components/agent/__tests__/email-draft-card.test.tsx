@@ -126,6 +126,41 @@ describe("EmailDraftCard", () => {
     expect(onSent).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a dictated initial body exact through the reviewed Send tap", async () => {
+    const dictated = "I will send the demo tomorrow.\\n- Please review it.";
+    vi.mocked(EmailDeliveryService.prepare).mockResolvedValue({
+      actionId: "voice-action",
+      expiresAt: "2026-10-02T00:00:00Z",
+    });
+    vi.mocked(EmailDeliveryService.send).mockResolvedValue({
+      messageId: "voice-message",
+      threadId: null,
+      outcomeUnknown: false,
+    });
+
+    render(
+      <EmailDraftCard
+        initialInstruction=""
+        initialDraft={{ to: "pat@example.com", cc: "", bcc: "", subject: "Demo", body: dictated }}
+        verbatimInitialBody
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+      />,
+    );
+
+    expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("one-email-draft-send"));
+    await waitFor(() => expect(EmailDeliveryService.prepare).toHaveBeenCalledTimes(1));
+    expect(EmailDeliveryService.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: expect.objectContaining({
+        body: dictated,
+        htmlBody: expect.stringContaining("I&nbsp;will&nbsp;send&nbsp;the&nbsp;demo&nbsp;tomorrow."),
+      }) }),
+    );
+  });
+
   it("replaces a draft revised in chat and still sends only on the Send click", async () => {
     vi.mocked(EmailDeliveryService.prepare).mockResolvedValue({
       actionId: "action-1",

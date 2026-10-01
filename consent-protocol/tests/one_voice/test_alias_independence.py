@@ -220,6 +220,66 @@ def test_mail_analysis_runs_with_every_alias_emptied(emptied_gateway, monkeypatc
     assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
 
 
+def test_send_mail_binds_and_opens_review_with_every_alias_emptied(emptied_gateway, monkeypatch):
+    from types import SimpleNamespace
+
+    from hushh_mcp.one_voice import private_pending
+    from hushh_mcp.one_voice.tools import mail
+    from hushh_mcp.one_voice.tools.base import EntityContext, ScreenContext, ToolContext
+    from tests.one_voice.test_tools_people import AYESHA, OWNER, ConnectionsDouble, LocationDouble
+
+    assert registry.validate_gateway_binding() == []
+    tool = next(tool for tool in mail.TOOLS if tool.name == "send_mail")
+    entry = action_gateway.get_action_gateway_action(tool.gateway_action_id)
+    assert entry is not None
+    assert dict.__getitem__(entry, "aliases") == []
+    assert dict.__getitem__(entry, "search_keywords") == []
+    emptied_gateway.clear()  # The gateway inspection above is not part of execution.
+
+    settings = SimpleNamespace(app_signing_key="one-voice-mail-alias-test-key-000000")
+    monkeypatch.setattr(mail, "get_core_security_settings", lambda: settings)
+    monkeypatch.setattr(private_pending, "get_core_security_settings", lambda: settings)
+    ctx = ToolContext(
+        user_id=OWNER,
+        conversation_id="conv-1",
+        entities=EntityContext(),
+        screen=ScreenContext(),
+        vault_owner_token="vault-token",  # noqa: S106 - test double
+        services={"connections": ConnectionsDouble(), "location": LocationDouble()},
+    )
+    executor = ToolExecutor(pending_store=MemoryPendingStore())
+
+    found = asyncio.run(
+        executor.call(ctx, "resolve_person", {"spoken_name": "Ayesha", "pool": "connections"})
+    )
+    assert found.result.status in {"single_likely", "multiple"}
+    assert any(candidate.user_id == AYESHA for candidate in found.result.candidates)
+    confirmed = asyncio.run(executor.call(ctx, "confirm_person", {"user_id": AYESHA}))
+    assert confirmed.result.status == "confirmed"
+    card = asyncio.run(
+        executor.call(
+            ctx,
+            "send_mail",
+            {
+                "recipient": {"user_id": AYESHA},
+                "subject": "Demo tomorrow",
+                "message": "I will send you the demo tomorrow.",
+            },
+        )
+    )
+    assert card.result.status == "confirmation_required"
+    assert card.result.tier == "voice"
+    assert card.pending is not None
+    asyncio.run(executor.pending.mark_shown(user_id=OWNER, pending_action_id=card.pending.id))
+    opened = asyncio.run(
+        executor.call(ctx, "confirm_pending_action", {"pending_action_id": card.pending.id})
+    )
+    assert opened.result.status == "draft_open_requested"
+    assert opened.result.client_step["kind"] == "open_mail_draft"
+    assert opened.result.client_step["draft"]["to"] == "ayesha@example.com"
+    assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
+
+
 def _source_files() -> list[Path]:
     return sorted(p for p in ONE_VOICE_ROOT.rglob("*.py") if "__pycache__" not in p.parts)
 

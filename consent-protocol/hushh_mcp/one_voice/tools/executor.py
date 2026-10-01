@@ -27,6 +27,7 @@ from hushh_mcp.one_voice.pending_actions import (
     PendingActionConflict,
     PendingActionStore,
 )
+from hushh_mcp.one_voice.private_pending import open_sealed, seal
 from hushh_mcp.one_voice.tools import registry
 from hushh_mcp.one_voice.tools.base import (
     ConfirmationRequired,
@@ -181,6 +182,36 @@ class ToolExecutor:
             superseded = await self._supersede_targeted(ctx)
         if spec.policy.needs_confirmation:
             args_json = parsed.model_dump(mode="json")
+            if spec.private_args:
+                public_args = {
+                    key: value for key, value in args_json.items() if key not in spec.private_args
+                }
+                private_args = {key: args_json[key] for key in spec.private_args}
+                try:
+                    sealed_args = seal(
+                        private_args,
+                        owner_id=ctx.user_id,
+                        conversation_id=ctx.conversation_id,
+                        tool=spec.name,
+                        public_args=public_args,
+                    )
+                except Exception as exc:  # noqa: BLE001 - fail closed without persisting text
+                    logger.warning(
+                        "one_voice.tool.seal_failed tool=%s error=%s",
+                        spec.name,
+                        type(exc).__name__,
+                    )
+                    return ToolCallOutcome(
+                        result=Rejected(
+                            reason_code="private_draft_unavailable",
+                            spoken_facts=[
+                                "I couldn't prepare that draft securely. Nothing was sent."
+                            ],
+                        ),
+                        spec=spec,
+                        parsed=parsed,
+                    )
+                args_json = {**public_args, "_sealed_args": sealed_args}
             if origin_turn_id:
                 args_json[ORIGIN_TURN_KEY] = origin_turn_id
             if spec.prepare is not None:
@@ -286,8 +317,20 @@ class ToolExecutor:
         args = dict(pending.args or {})
         snapshot = args.pop(PREPARED_KEY, None)
         args.pop(ORIGIN_TURN_KEY, None)
+        sealed_args = args.pop("_sealed_args", None)
         ctx.prepared = dict(snapshot) if isinstance(snapshot, dict) else None
         try:
+            if spec.private_args:
+                private = open_sealed(
+                    sealed_args,
+                    owner_id=ctx.user_id,
+                    conversation_id=ctx.conversation_id,
+                    tool=spec.name,
+                    public_args=args,
+                )
+                if set(private) != set(spec.private_args):
+                    raise ValueError("voice pending draft fields changed")
+                args.update(private)
             parsed = spec.input_model.model_validate(args)
             result = await spec.handler(ctx, parsed)
         except Exception as exc:  # noqa: BLE001 - recorded as failed, never as success
@@ -316,7 +359,16 @@ class ToolExecutor:
             result.ui_refresh = sorted(set(result.ui_refresh) | set(spec.ui_refresh))
         status = "failed" if result.status in {"rejected", "unsupported"} else "executed"
         resolved = await self.pending.resolve(
-            user_id=ctx.user_id, pending_action_id=pending.id, status=status, result=result.public()
+            user_id=ctx.user_id,
+            pending_action_id=pending.id,
+            status=status,
+            # A pending row is retained after it resolves. Its receipt must not
+            # become a second plaintext copy of a dictated mail draft.
+            result=(
+                {"status": result.status, "needs": result.needs}
+                if spec.private_args
+                else result.public()
+            ),
         )
         return ToolCallOutcome(
             result=result,

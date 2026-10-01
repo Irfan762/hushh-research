@@ -266,6 +266,7 @@ describe("ToolResultCard", () => {
     expect(toneForResult({ status: "ok" }, undefined)).toBe("neutral");
     expect(toneForResult({ status: "grant_created" }, true)).toBe("failure");
     expect(toneForResult({ status: "empty" }, true)).toBe("neutral");
+    expect(toneForResult({ status: "draft_open_unconfirmed" }, false)).toBe("neutral");
     expect(toneForResult({ status: "renamed" }, true)).toBe("success");
     // The pending tone is scoped to the armed Save My Soul alert only.
     expect(toneForResult({ status: "sos_grants_created" }, undefined)).toBe(

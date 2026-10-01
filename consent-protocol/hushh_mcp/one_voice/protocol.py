@@ -46,6 +46,8 @@ NOT_OK_STATUSES = frozenset(
         "confirmation_required",
         "firebase_proof_required",
         "scope_review_required",
+        "draft_open_requested",
+        "draft_open_unconfirmed",
         LOCATION_UPDATES_PENDING,
         SOS_GRANTS_CREATED,
         RESET_STEP_ISSUED,

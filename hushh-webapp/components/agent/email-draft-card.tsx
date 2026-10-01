@@ -8,6 +8,7 @@ import {
   EmailRichTextComposer,
   normalizeRichEmailText,
   richEmailHtmlFromMarkdown,
+  verbatimEmailHtmlFromText,
 } from "@/components/agent/email-rich-text";
 import {
   EmailDeliveryError,
@@ -34,6 +35,8 @@ export type SourceBoundEmailReplyAdapter = {
 type EmailDraftCardProps = {
   initialInstruction: string;
   initialDraft?: EmailDraft | null;
+  /** Preserve a person's dictated first-party body exactly until they edit it. */
+  verbatimInitialBody?: boolean;
   /** The person explicitly asked One to draft from a Gmail entry point. */
   autoDraft?: boolean;
   getAuth: () => Promise<{
@@ -77,6 +80,7 @@ function newIdempotencyKey(): string {
 export function EmailDraftCard({
   initialInstruction,
   initialDraft = null,
+  verbatimInitialBody = false,
   autoDraft = false,
   getAuth,
   onRequireVault,
@@ -91,14 +95,17 @@ export function EmailDraftCard({
 }: EmailDraftCardProps) {
   const idPrefix = useId();
   const [draft, setDraft] = useState<EmailDraft>(() => {
-    const body = normalizeRichEmailText(
-      initialDraft?.body ?? (autoDraft ? "" : initialInstruction),
-    );
+    const sourceBody = initialDraft?.body ?? (autoDraft ? "" : initialInstruction);
+    const body = verbatimInitialBody && initialDraft
+      ? sourceBody
+      : normalizeRichEmailText(sourceBody);
     return {
       ...EMPTY_DRAFT,
       ...(initialDraft ?? {}),
       body,
-      htmlBody: richEmailHtmlFromMarkdown(body),
+      htmlBody: verbatimInitialBody && initialDraft
+        ? verbatimEmailHtmlFromText(body)
+        : richEmailHtmlFromMarkdown(body),
     };
   });
   const [showCcBcc, setShowCcBcc] = useState(() => Boolean(draft.cc || draft.bcc));
@@ -607,6 +614,7 @@ export function EmailDraftCard({
               id={`${idPrefix}-message`}
               onChange={(value) => updateDraft("body", value)}
               showPreviewOnFirstContent={autoDraft}
+              verbatimText={verbatimInitialBody}
               value={draft.body}
             />
           </div>

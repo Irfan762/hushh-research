@@ -473,6 +473,8 @@ class ToolSpec:
     # Argument field names that must name a confirmed entity in the context.
     person_args: tuple[str, ...] = ()
     circle_args: tuple[str, ...] = ()
+    # First-party fields sealed before a confirmation row is persisted.
+    private_args: tuple[str, ...] = ()
     # Client surfaces to refresh after a successful mutation.
     ui_refresh: tuple[str, ...] = ()
     # Requires a fresh Firebase proof at confirmation (people/profile plane).

@@ -23,6 +23,8 @@ type RichEmailComposerProps = {
   id: string;
   value: string;
   disabled?: boolean;
+  /** Show first-party dictation without treating punctuation as Markdown. */
+  verbatimText?: boolean;
   showPreviewOnFirstContent?: boolean;
   onChange: (value: string) => void;
 };
@@ -299,6 +301,15 @@ export function richEmailHtmlFromMarkdown(value: string): string {
     .join("");
 }
 
+/** HTML companion for dictation: preserve its words, spaces, and line breaks. */
+export function verbatimEmailHtmlFromText(value: string): string {
+  const lines = value.replace(/\r\n?/g, "\n").split("\n");
+  return `<p>${lines.map((line) => escapeHtml(line)
+    .replaceAll(" ", "&nbsp;")
+    .replaceAll("\t", "&nbsp;&nbsp;&nbsp;&nbsp;"))
+    .join("<br>")}</p>`;
+}
+
 export function EmailRichTextPreview({
   value,
   className,
@@ -473,6 +484,7 @@ export function EmailRichTextComposer({
   id,
   value,
   disabled = false,
+  verbatimText = false,
   onChange,
 }: RichEmailComposerProps) {
   const editorRef = useRef<HTMLDivElement>(null);
@@ -490,13 +502,13 @@ export function EmailRichTextComposer({
 
     const targetHtml = value.trim().startsWith("<") && value.includes(">")
       ? value
-      : richEmailHtmlFromMarkdown(value);
+      : verbatimText ? verbatimEmailHtmlFromText(value) : richEmailHtmlFromMarkdown(value);
 
     if (editorRef.current.innerHTML !== targetHtml) {
       editorRef.current.innerHTML = targetHtml || "<p><br></p>";
       lastHtmlRef.current = editorRef.current.innerHTML;
     }
-  }, [value]);
+  }, [value, verbatimText]);
 
   const emitChange = () => {
     if (!editorRef.current) return;
