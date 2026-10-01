@@ -179,6 +179,7 @@ describe("circle discovery actions", () => {
 
   it("shows Open only for the current owner's saved starter and updates after removal", () => {
     const view = render(ui({ ...ready, circles: [circle()] }));
+    expect(screen.queryByText("Ready")).toBeNull();
     fireEvent.click(
       screen.getByRole("button", { name: "Open Finance circle" }),
     );

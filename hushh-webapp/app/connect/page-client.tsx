@@ -63,6 +63,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogCancel,
+  AlertDialogAction,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import {
   Popover,
@@ -313,8 +323,6 @@ const CONNECT_INLINE_BUTTON_CLASSNAME =
   "ui-text-compact-button-label h-11 min-h-11 rounded-xl px-2.5 text-[13px] leading-4";
 const CONNECT_REMOVE_BUTTON_CLASSNAME =
   "text-destructive hover:bg-destructive/10 hover:text-destructive";
-const CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME =
-  "border border-destructive/20 bg-destructive/10 text-destructive shadow-none hover:bg-destructive/15 hover:text-destructive";
 const CONNECT_SECTION_CONTROL_LABEL_CLASSNAME = "connect-section-control-label";
 const CONNECT_REFRESH_BUTTON_CLASSNAME =
   "h-11 min-h-11 w-11 min-w-11 rounded-full p-0 text-muted-foreground hover:text-foreground disabled:opacity-70";
@@ -1980,6 +1988,9 @@ export default function ConnectPageClient() {
   // it is, so a connection the server has not annotated is simply not an
   // advisor, instead of becoming one by sitting under the advisor tab.
   const sortedConnections = connections;
+  const pendingRemoveConnection = connections.find(
+    (connection) => connection.connectionId === pendingRemoveId,
+  );
 
   // Voice surface for Connect. Until this existed the route derived the
   // generic "app" screen, so One knew a person was somewhere in the app and
@@ -3203,70 +3214,25 @@ export default function ConnectPageClient() {
                                       >
                                         Message
                                       </Button>
-                                      {pendingRemoveId ===
-                                      connection.connectionId ? (
-                                        <>
-                                          <Button
-                                            type="button"
-                                            variant="none"
-                                            effect="fade"
-                                            size="compact"
-                                            className={cn(
-                                              CONNECT_INLINE_BUTTON_CLASSNAME,
-                                              CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME,
-                                            )}
-                                            disabled={
-                                              busyId === connection.connectionId
-                                            }
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              void handleRemove(connection);
-                                            }}
-                                          >
-                                            {busyId === connection.connectionId
-                                              ? "Removing…"
-                                              : "Confirm"}
-                                          </Button>
-                                          <Button
-                                            type="button"
-                                            variant="none"
-                                            effect="fade"
-                                            size="compact"
-                                            className={
-                                              CONNECT_INLINE_BUTTON_CLASSNAME
-                                            }
-                                            disabled={
-                                              busyId === connection.connectionId
-                                            }
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              setPendingRemoveId(null);
-                                            }}
-                                          >
-                                            Cancel
-                                          </Button>
-                                        </>
-                                      ) : (
-                                        <Button
-                                          type="button"
-                                          variant="none"
-                                          effect="fade"
-                                          size="compact"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            setPendingRemoveId(
-                                              connection.connectionId,
-                                            );
-                                          }}
-                                          aria-label={`Remove connection with ${connection.displayName || connection.userId}`}
-                                          className="!size-11 !min-w-11 !bg-transparent !p-0 text-[color:var(--app-secondary-label)]"
-                                        >
-                                          <Trash2
-                                            aria-hidden="true"
-                                            className="size-4"
-                                          />
-                                        </Button>
-                                      )}
+                                      <Button
+                                        type="button"
+                                        variant="none"
+                                        effect="fade"
+                                        size="compact"
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          setPendingRemoveId(
+                                            connection.connectionId,
+                                          );
+                                        }}
+                                        aria-label={`Remove connection with ${connection.displayName || connection.userId}`}
+                                        className="!size-11 !min-w-11 !bg-transparent !p-0 text-[color:var(--app-secondary-label)]"
+                                      >
+                                        <Trash2
+                                          aria-hidden="true"
+                                          className="size-4"
+                                        />
+                                      </Button>
                                     </span>
                                   }
                                 />
@@ -4078,6 +4044,40 @@ export default function ConnectPageClient() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <AlertDialog
+          open={Boolean(pendingRemoveConnection)}
+          onOpenChange={(open) => {
+            if (!open && !busyId) setPendingRemoveId(null);
+          }}
+        >
+          <AlertDialogContent size="sm">
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove connection?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Remove {pendingRemoveConnection?.displayName || "this person"}{" "}
+                from your connections?
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={Boolean(busyId)}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={Boolean(busyId)}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (pendingRemoveConnection && !busyId) {
+                    void handleRemove(pendingRemoveConnection);
+                  }
+                }}
+              >
+                {busyId === pendingRemoveId ? "Removing…" : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <ContactSyncResultsSheet
           {...contactSync.resultsSheetProps}

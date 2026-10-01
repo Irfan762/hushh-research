@@ -9,6 +9,7 @@ import {
   Heart,
   MapPin,
   Plus,
+  ShieldCheck,
   TrendingUp,
 } from "@/components/icons";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
@@ -137,8 +138,10 @@ export function CircleDiscoveryCard({
           onClick={onCreateCircle}
           className="shrink-0 gap-1 !px-2.5"
         >
-          <Plus aria-hidden="true" className="size-4" />
-          Custom circle
+          <span className="inline-flex items-center justify-center gap-1.5 whitespace-nowrap">
+            <Plus aria-hidden="true" className="size-4 shrink-0" />
+            <span>Custom circle</span>
+          </span>
         </Button>
       </div>
       <div
@@ -169,11 +172,6 @@ export function CircleDiscoveryCard({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="ui-text-row-label-compact">{starter.label}</span>
-                  {circle ? (
-                    <span className="rounded-full bg-[color:var(--app-accent-tint)] px-1.5 py-0.5 text-[10px] text-[color:var(--app-accent)]">
-                      Ready
-                    </span>
-                  ) : null}
                 </div>
                 <p className="ui-text-caption mt-0.5 text-[color:var(--app-secondary-label)]">
                   {circle && id === "location"
@@ -195,7 +193,7 @@ export function CircleDiscoveryCard({
                       : onUseStarter(starter)
                 }
                 aria-label={`${circle ? "Open" : "Setup"} ${starter.label} circle`}
-                className="min-w-16 shrink-0 !px-3"
+                className="min-w-16 shrink-0 !bg-transparent !px-3 hover:!bg-transparent"
               >
                 {creating === id
                   ? "Creating…"
@@ -274,19 +272,17 @@ export function CircleDiscoveryCard({
           </span>
         </button>
         {trusted ? (
-          <Button
+          <button
             type="button"
-            variant="blue"
-            effect="fade"
-            size="compact"
             data-circle-discovery-trusted=""
             disabled={Boolean(creating)}
             onClick={() => onOpenCircle(trusted.id)}
-            className="ml-auto gap-1 !px-0"
+            className="ml-auto inline-flex min-h-11 items-center gap-1.5 text-xs font-normal text-[color:var(--app-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--app-accent-ring)] disabled:opacity-50"
           >
-            Your Trusted Circle{" "}
-            <ArrowRight aria-hidden="true" className="size-3.5" />
-          </Button>
+            <ShieldCheck aria-hidden="true" className="size-3.5 shrink-0" />
+            <span>Your Trusted Circle</span>
+            <ArrowRight aria-hidden="true" className="size-3.5 shrink-0" />
+          </button>
         ) : null}
       </div>
     </section>

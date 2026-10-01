@@ -1236,7 +1236,7 @@ describe("Connect — People", () => {
       name: "Remove connection with Remove Me",
     });
     fireEvent.click(remove);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText("Shifted Boundary")).toBeTruthy();
     expect(mocks.onConnectionGraphMutated).toHaveBeenCalledWith("me");
@@ -2534,15 +2534,17 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(classes.has("justify-end")).toBe(true);
 
     fireEvent.click(remove);
-    const confirm = screen.getByRole("button", { name: "Confirm" });
+    const confirm = screen.getByRole("button", { name: "Delete" });
     const cancel = screen.getByRole("button", { name: "Cancel" });
-    expect(confirm.className).toContain("bg-destructive/10");
-    expect(new Set(confirm.className.split(/\s+/)).has("bg-destructive")).toBe(
-      false,
-    );
-    expect(confirm.className).toContain("h-11");
-    expect(cancel.className).toContain("h-11");
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Remove connection?");
+    expect(dialog).toContainElement(confirm);
+    expect(dialog).toContainElement(cancel);
+    expect(trailing).not.toContainElement(confirm);
     expect(confirm.parentElement).toBe(cancel.parentElement);
+    fireEvent.click(cancel);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(remove).toBeVisible();
   });
 
   it("caps My connections on every viewport, phones included", async () => {
