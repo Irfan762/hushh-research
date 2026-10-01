@@ -17,7 +17,7 @@
  * without a network. This file only gathers state and reports.
  *
  * Usage:
- *   node hushh-webapp/scripts/ci/select-uat-target.mjs [--limit 20] [--github-output]
+ *   node hushh-webapp/scripts/ci/select-uat-target.mjs [--limit 20] [--github-output] [--allow-no-op]
  *
  * Requires GITHUB_TOKEN and GITHUB_REPOSITORY (both present in Actions).
  * Exits non-zero when there is nothing safe to deploy, so a caller that
@@ -36,6 +36,9 @@ const TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "";
 const args = process.argv.slice(2);
 const limit = Number(valueOf("--limit") || 20);
 const writeGithubOutput = args.includes("--github-output");
+// Selection-only callers can finish without starting a deployment. Other
+// callers still require an actual deployable target and fail closed.
+const allowNoOp = args.includes("--allow-no-op");
 
 function valueOf(flag) {
   const index = args.indexOf(flag);
@@ -86,18 +89,24 @@ async function uatActualSha() {
   const deployments = await api("/deployments?environment=uat&per_page=10");
   for (const deployment of deployments) {
     const statuses = await api(`/deployments/${deployment.id}/statuses?per_page=10`);
-    if (statuses.some((s) => s.state === "success")) return deployment.sha;
+    if (statuses.some((s) => s.state === "success")) {
+      // Keep the historical baseline for forward-selection compatibility,
+      // but a no-op requires the newest deployment's current status.
+      return { sha: deployment.sha,
+        verified: deployment.id === deployments[0]?.id && statuses[0]?.state === "success" };
+    }
   }
   // Fall back to the newest record. Better a slightly conservative baseline
   // than none: an over-cautious `uat_actual` can only make the selector refuse
   // to move, never make it move somewhere unproven.
-  return deployments[0]?.sha ?? null;
+  return { sha: deployments[0]?.sha ?? null, verified: false };
 }
 
 async function main() {
   git("fetch", "--no-tags", "origin", "main");
   const mainTipSha = git("rev-parse", "origin/main");
-  const uatActual = await uatActualSha();
+  const uatState = await uatActualSha();
+  const uatActual = uatState.sha;
 
   const range = uatActual ? `${uatActual}..origin/main` : `origin/main~${limit}..origin/main`;
   let shas = [];
@@ -149,13 +158,16 @@ async function main() {
 
   report({ mainTipSha, uatActual, ...result, candidates });
 
+  const confirmedNoOp = allowNoOp && result.decision === "NO_OP" &&
+    uatState.verified && uatActual === mainTipSha;
+
   if (writeGithubOutput && process.env.GITHUB_OUTPUT) {
     appendFileSync(
       process.env.GITHUB_OUTPUT,
-      `sha=${result.targetSha ?? ""}\ndecision=${result.decision}\n`,
+      `sha=${result.targetSha ?? ""}\ndecision=${result.decision}\nuat_actual_sha=${uatActual ?? ""}\nreason=${result.reason}\n`,
     );
   }
-  process.exit(result.targetSha ? 0 : 3);
+  process.exit(result.targetSha || confirmedNoOp ? 0 : 3);
 }
 
 function isAncestor(ancestor, descendant) {
