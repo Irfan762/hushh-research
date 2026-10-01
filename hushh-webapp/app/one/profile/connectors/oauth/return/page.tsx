@@ -10,7 +10,7 @@ import { ExternalConnectorService } from "@/lib/services/external-connector-serv
 import { useVault } from "@/lib/vault/vault-context";
 import { useAuth } from "@/hooks/use-auth";
 import {
-  hasDrivePopupMarker,
+  isDrivePopupReturn,
   notifyDrivePopup,
   readDrivePopupAttempt,
 } from "@/lib/profile/drive-oauth-popup";
@@ -133,9 +133,9 @@ function ConnectorOAuthReturnRouter() {
   useEffect(() => {
     if (captured.current) return;
     captured.current = true;
-    const isPopup = hasDrivePopupMarker() || Boolean(window.opener);
+    const search = new URL(window.location.href).searchParams;
+    const isPopup = isDrivePopupReturn(search.get("state"));
     if (!isPopup) {
-      const search = new URL(window.location.href).searchParams;
       const handoff = readDriveChatRecoveryHandoff();
       if (handoff?.reason === "web_full_page" && handoff.returnTo !== "connector_settings") {
         markDriveChatRecoveryReturned({
