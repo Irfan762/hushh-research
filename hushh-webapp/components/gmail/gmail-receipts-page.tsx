@@ -1328,14 +1328,18 @@ export default function GmailReceiptsPage({
   const overviewReceiptsFetching = gmail.syncRun
     ? gmail.syncRun.status === "queued" || gmail.syncRun.status === "running"
     : isSyncingState;
-  const overviewReceiptDetail = overviewReceiptsFetching
+  const overviewReceiptIssue = statusSummary.tone === "error" ||
+    gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled";
+  const overviewReceiptDetail = loadingStatus
+    ? "Checking your Mail status…"
+    : overviewReceiptsFetching
     ? hasStaleBackgroundSync
       ? "Sync is taking longer than usual."
       : isPassiveBackfillState
         ? "Fetching older purchases…"
         : "Fetching your latest purchases…"
     : statusSummary.tone === "error"
-      ? statusSummary.detail
+      ? `${statusSummary.title}. ${statusSummary.detail}`
       : gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled"
         ? "Sync interrupted. Open receipts to retry."
         : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
@@ -1957,10 +1961,7 @@ export default function GmailReceiptsPage({
             />
           ) : null}
 
-          {journeyVariant === "onboarding" ||
-          !isConnected ||
-          (workspace === "overview" &&
-            (loadingStatus || statusSummary.tone === "error")) ? (
+          {journeyVariant === "onboarding" || !isConnected ? (
             <SurfaceInset
               className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
             >
@@ -2118,6 +2119,8 @@ export default function GmailReceiptsPage({
             {isConnected && workspace === "overview" ? (
             <MailOverview
               fetching={overviewReceiptsFetching}
+              receiptIssue={overviewReceiptIssue}
+              receiptCount={total}
               receiptDetail={overviewReceiptDetail}
               receiptUpdated={resolveGmailLastUpdatedLabel(gmail.status, gmail.syncRun)}
               onOpenChat={handleOpenOneChat}
