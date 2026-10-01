@@ -75,6 +75,57 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(open.waitForExistence(timeout: 10), "Chat page did not resume after closing the drawer")
     }
 
+    func testLocalSessionMemorySwipeStopsOnAdd() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in live-session check; requires an existing signed-in account")
+        }
+        let app = XCUIApplication()
+        // This per-launch route preference only navigates the bundled app. It
+        // does not enable UITestMode, mint a reviewer identity, or reset state.
+        app.launchArguments = [
+            "-CapacitorStorage.hushh_perf_probe", "1",
+            "-CapacitorStorage.hushh_perf_route", "/one/pkm",
+        ]
+        app.launch()
+
+        let webView = app.webViews.firstMatch
+        XCTAssertTrue(webView.waitForExistence(timeout: 60), "Local app WebView did not load")
+        let saved = webView.buttons["Saved"]
+        let add = webView.buttons["Add"]
+        let sharing = webView.buttons["Sharing"]
+        let admissionDeadline = Date().addingTimeInterval(90)
+        while Date() < admissionDeadline, !saved.exists {
+            if webView.buttons["Unlock"].exists {
+                _ = attemptVaultPassphraseUnlock(app: app)
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+        }
+        let signInVisible = webView.buttons["Continue with Apple"].exists
+        XCTAssertTrue(saved.exists, "Memory did not open from the current session. Sign-in visible: \(signInVisible)")
+        XCTAssertTrue(saved.isSelected, "Memory should start on Saved")
+        XCTAssertTrue(add.exists && sharing.exists, "Memory tabs are incomplete")
+
+        func swipeLeft() {
+            let start = webView.coordinate(withNormalizedOffset: CGVector(dx: 0.82, dy: 0.56))
+            let end = webView.coordinate(withNormalizedOffset: CGVector(dx: 0.18, dy: 0.56))
+            start.press(forDuration: 0.08, thenDragTo: end)
+        }
+        func waitForSelected(_ tab: XCUIElement) -> Bool {
+            let deadline = Date().addingTimeInterval(12)
+            while Date() < deadline {
+                if tab.isSelected { return true }
+                RunLoop.current.run(until: Date().addingTimeInterval(0.25))
+            }
+            return tab.isSelected
+        }
+
+        swipeLeft()
+        XCTAssertTrue(waitForSelected(add), "One Memory swipe must land on Add")
+        XCTAssertFalse(sharing.isSelected, "The first swipe must not skip Add")
+        swipeLeft()
+        XCTAssertTrue(waitForSelected(sharing), "The next Memory swipe must land on Sharing")
+    }
+
     func testAccountNotFoundRecoveryReturnsToLogin() throws {
         // Public recovery smoke: no reviewer fixture, credentials, or account
         // mutation. Unit/integration tests own the trusted deletion signal.
