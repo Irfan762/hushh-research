@@ -1,4 +1,8 @@
+"use client";
+
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { ChevronLeft } from "@/components/icons";
 
 import {
   LegalDocumentBody,
@@ -14,15 +18,34 @@ import {
 // someone who has never opened the app. It is also bundled into the native
 // static export, so in-app links never leave the app.
 export function LegalDocumentPage({ type }: { type: LegalDocumentType }) {
+  const router = useRouter();
   const doc = LEGAL_DOCUMENTS[type];
   const other = LEGAL_DOCUMENTS[type === "privacy" ? "terms" : "privacy"];
 
+  const handleBack = () => {
+    if (typeof window !== "undefined" && window.history.length > 1) {
+      router.back();
+    } else {
+      router.push("/");
+    }
+  };
+
   return (
     <main
-      className="min-h-dvh bg-[color:var(--app-grouped-background)] px-4 pb-28 pt-[max(var(--app-safe-area-top-effective,0px),32px)] sm:px-6"
+      className="min-h-dvh bg-[color:var(--app-grouped-background)] px-4 pb-28 pt-[max(var(--app-safe-area-top-effective,0px),20px)] sm:px-6"
       data-testid={`legal-${type}-page`}
     >
       <article className="mx-auto w-full max-w-[720px]">
+        <div className="mb-4">
+          <button
+            type="button"
+            aria-label="Go back"
+            onClick={handleBack}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/[0.05] text-[color:var(--app-label)] transition-colors hover:bg-black/[0.08] dark:bg-white/10 dark:hover:bg-white/15"
+          >
+            <ChevronLeft className="h-[18px] w-[18px]" />
+          </button>
+        </div>
         <p className="text-[14px] font-medium uppercase tracking-wide text-[color:var(--app-secondary-label)]">
           Hussh One
         </p>
