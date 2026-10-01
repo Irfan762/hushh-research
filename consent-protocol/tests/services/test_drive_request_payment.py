@@ -2,10 +2,12 @@
 
 # ruff: noqa: F811 -- imported isolated PostgreSQL fixtures
 
+import asyncio
 import hashlib
 import hmac
 import inspect
 import json
+import threading
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +19,7 @@ import pytest
 from sqlalchemy import text
 
 from hushh_mcp.runtime_settings import clear_runtime_settings_caches
+from hushh_mcp.services.connection_graph_service import lock_connection_graph_users
 from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 from hushh_mcp.services.drive_permission_store import DrivePermissionStore
 from hushh_mcp.services.drive_request_payment_refunds import (
@@ -732,3 +735,122 @@ async def test_late_paid_webhook_after_erasure_uses_reserved_attempt(sharing, mo
     assert obligation["stripe_payment_intent_id"] == "pi_test_bound"
     assert obligation["reconciliation_required"] is True and events == 1
     assert len(claims) == 1 and claims[0]["payment_intent"] == "pi_test_bound"
+
+
+@pytest.mark.asyncio
+async def test_webhook_waits_for_account_erasure_and_reconciles_late_payment(sharing, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_local_only_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_payment_test_secret")
+    monkeypatch.setenv("APP_FRONTEND_ORIGIN", "https://test.example")
+    created = await request(sharing)
+    request_id, attempt_id = created["requestId"], str(uuid4())
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("UPDATE drive_share_requests SET payment_required=TRUE WHERE request_id=:request"),
+            {"request": request_id},
+        )
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+              (request_id,user_id,requester_user_id,status,checkout_attempt_id,
+               stripe_checkout_session_id)
+              VALUES (:request,'owner','recipient','checkout_open',:attempt,'cs_test_bound')"""),
+            {"request": request_id, "attempt": attempt_id},
+        )
+
+    service = DriveRequestPaymentService(db=sharing.db)
+    erasure_held = threading.Event()
+    release_erasure = threading.Event()
+    webhook_entered = threading.Event()
+    erasure_pid: list[int] = []
+    webhook_pid: list[int] = []
+
+    def erase(connection):
+        # Hold account erasure's graph gate while the webhook has already read
+        # the still-present request; it must wait before writing payment state.
+        lock_connection_graph_users(connection, user_ids=["recipient"])
+        erasure_pid.append(connection.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        erasure_held.set()
+        assert release_erasure.wait(20), "erasure barrier was not released"
+        erase_drive_account_in_transaction(connection, user_id="recipient", permanent=False)
+
+    original_gate = lock_connection_graph_users
+
+    def observe_webhook_gate(connection, *, user_ids):
+        webhook_pid.append(connection.execute(text("SELECT pg_backend_pid()")).scalar_one())
+        webhook_entered.set()
+        original_gate(connection, user_ids=user_ids)
+
+    erase_task = asyncio.create_task(service._transaction(erase))
+    webhook_task = None
+    try:
+        assert await asyncio.to_thread(erasure_held.wait, 10)
+        monkeypatch.setattr(
+            "hushh_mcp.services.connection_graph_service.lock_connection_graph_users",
+            observe_webhook_gate,
+        )
+        payload, signature = _signed_event(request_id, attempt_id=attempt_id)
+        webhook_task = asyncio.create_task(
+            service.process_webhook(payload=payload, signature=signature)
+        )
+        assert await asyncio.to_thread(webhook_entered.wait, 10)
+        deadline = asyncio.get_running_loop().time() + 5
+        while True:
+            with sharing.db.engine.connect() as connection:
+                blocked = connection.execute(
+                    text("SELECT :holder = ANY(pg_blocking_pids(:waiter))"),
+                    {"holder": erasure_pid[0], "waiter": webhook_pid[0]},
+                ).scalar_one()
+            if blocked:
+                break
+            assert asyncio.get_running_loop().time() < deadline, "webhook did not wait on erasure"
+            await asyncio.sleep(0.01)
+    finally:
+        release_erasure.set()
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(
+                *([erase_task, webhook_task] if webhook_task else [erase_task]),
+                return_exceptions=True,
+            ),
+            30,
+        )
+    assert outcomes == [None, None]
+    with sharing.db.engine.begin() as connection:
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM drive_share_requests WHERE request_id=:request"),
+                {"request": request_id},
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM drive_request_payment_orders WHERE request_id=:request"),
+                {"request": request_id},
+            ).scalar_one()
+            == 0
+        )
+        obligation = (
+            connection.execute(
+                text("""SELECT status,paid_at,erased_at,reconciliation_required,payer_ref
+              FROM drive_request_payment_obligations WHERE request_id=:request"""),
+                {"request": request_id},
+            )
+            .mappings()
+            .one()
+        )
+        events = connection.execute(
+            text(
+                "SELECT count(*) FROM drive_request_payment_webhook_events WHERE request_id=:request"
+            ),
+            {"request": request_id},
+        ).scalar_one()
+        feed_events = connection.execute(
+            text("SELECT count(*) FROM drive_share_events WHERE request_id=:request"),
+            {"request": request_id},
+        ).scalar_one()
+    assert obligation["status"] == "paid"
+    assert obligation["paid_at"] is not None and obligation["erased_at"] is not None
+    assert obligation["reconciliation_required"] is True
+    assert obligation["payer_ref"] == hashlib.sha256(f"{request_id}:recipient".encode()).hexdigest()
+    assert events == 1 and feed_events == 0
