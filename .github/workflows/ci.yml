@@ -397,10 +397,8 @@ jobs:
     # reached the checks with ~100 seconds left and was cancelled part-way
     # through them. Both outcomes report as "cancelled", which reads like
     # infrastructure noise rather than a budget that was never large enough.
-    # 45 leaves room for a cold cache and the complete two-engine suite. In
-    # practice a cold install can consume roughly 25 minutes before the
-    # browser checks begin; a warm one still finishes far inside this budget.
-    timeout-minutes: 45
+    # 30 leaves room for a cold cache; a warm one finishes far inside it.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
         with:
