@@ -217,6 +217,25 @@ def test_feed_projection_allows_only_bounded_renderer_metadata() -> None:
     }
 
 
+def test_recipient_share_outcome_hides_owner_zero_match_result() -> None:
+    recipient = FeedService._to_item(
+        {
+            "id": 1,
+            "event_type": "document_share_outcome",
+            "metadata": {"feed_audience": "recipient", "user_facing_status": "no_match"},
+        }
+    )
+    owner = FeedService._to_item(
+        {
+            "id": 2,
+            "event_type": "document_share_outcome",
+            "metadata": {"feed_audience": "owner", "user_facing_status": "no_match"},
+        }
+    )
+    assert recipient["metadata"]["user_facing_status"] == "no_files_shared"
+    assert owner["metadata"]["user_facing_status"] == "no_match"
+
+
 def test_list_feed_enriches_connection_rows_with_counterpart_photo() -> None:
     list_query = _Query(
         data=[

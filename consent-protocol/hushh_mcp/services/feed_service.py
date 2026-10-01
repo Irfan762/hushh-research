@@ -633,12 +633,19 @@ class FeedService:
 
     @staticmethod
     def _to_item(row: dict[str, Any]) -> dict[str, Any]:
+        metadata = _safe_feed_metadata(row.get("metadata"))
+        if (
+            row.get("event_type") == "document_share_outcome"
+            and metadata.get("feed_audience") == "recipient"
+            and metadata.get("user_facing_status") == "no_match"
+        ):
+            metadata["user_facing_status"] = "no_files_shared"
         return {
             "id": str(row.get("id")),
             "source_domain": row.get("source_domain"),
             "event_type": row.get("event_type"),
             "actor_label": _bounded_text(row.get("actor_label"), limit=_MAX_ACTOR_LABEL_LENGTH),
-            "metadata": _safe_feed_metadata(row.get("metadata")),
+            "metadata": metadata,
             "read": row.get("read_at") is not None,
             "created_at": row.get("created_at"),
         }

@@ -10,6 +10,7 @@ import {
   Loader2,
   RefreshCw,
   Search as SearchIcon,
+  TrashIcon,
   X,
 } from "@/components/icons";
 import {
@@ -304,6 +305,10 @@ const CONNECT_INLINE_BUTTON_CLASSNAME =
   "ui-text-compact-button-label h-11 min-h-11 rounded-xl px-2.5 text-[13px] leading-4";
 const CONNECT_REMOVE_BUTTON_CLASSNAME =
   "text-destructive hover:bg-destructive/10 hover:text-destructive";
+const CONNECT_CONNECTION_TRASH_BUTTON_CLASSNAME =
+  "h-11 min-h-11 w-11 min-w-11 rounded-full border-0 bg-transparent p-0 text-[color:var(--app-tertiary-label)] shadow-none hover:bg-destructive/10 hover:text-destructive";
+const CONNECT_MESSAGE_BUTTON_CLASSNAME =
+  "h-11 min-h-11 rounded-full border-0 bg-transparent px-0 text-[color:var(--app-accent-deep)] shadow-none hover:bg-transparent hover:text-[color:var(--app-accent-deep)]";
 const CONNECT_REMOVE_CONFIRM_BUTTON_CLASSNAME =
   "border border-destructive/20 bg-destructive/10 text-destructive shadow-none hover:bg-destructive/15 hover:text-destructive";
 const CONNECT_SECTION_CONTROL_LABEL_CLASSNAME =
@@ -1381,7 +1386,6 @@ export default function ConnectPageClient() {
         CacheSyncService.onConnectionCapabilityMutated(user.uid);
         // A Circle roster open behind this sheet is now stale: the row that
         // said "Connect" should say "Requested". Re-read rather than patch.
-        setCircleRefreshToken((token) => token + 1);
         toast.success(
           outgoing
             ? "Connection request sent"
@@ -1462,6 +1466,7 @@ export default function ConnectPageClient() {
           audience: connectionAudienceRef.current,
           removedConnection: true,
         });
+        setCircleRefreshToken((token) => token + 1);
         suppressNextLocalGraphEventRef.current = true;
         CacheSyncService.onConnectionGraphMutated(user.uid);
         // Let the directory offer "Connect" again for this person.
@@ -2054,7 +2059,7 @@ export default function ConnectPageClient() {
           id: "circles",
           title: "Circles",
           purpose:
-            "See the groups you are in -- Trusted holds everyone you are connected to, the SMS Circle gets your SMS -- and open one to manage who is in it.",
+            "See the groups you are in -- Trusted is manually managed, the SMS Circle gets your SMS -- and open one to manage who is in it.",
         },
         {
           id: "people",
@@ -3201,25 +3206,49 @@ export default function ConnectPageClient() {
                                           </Button>
                                         </>
                                       ) : (
-                                        <Button
-                                          type="button"
-                                          variant="none"
-                                          effect="fade"
-                                          size="compact"
-                                          onClick={(event) => {
-                                            event.stopPropagation();
-                                            setPendingRemoveId(
-                                              connection.connectionId,
-                                            );
-                                          }}
-                                          aria-label={`Remove connection with ${connection.displayName || connection.userId}`}
-                                          className={cn(
-                                            CONNECT_INLINE_BUTTON_CLASSNAME,
-                                            CONNECT_REMOVE_BUTTON_CLASSNAME,
-                                          )}
-                                        >
-                                          Remove
-                                        </Button>
+                                        <>
+                                          <Button
+                                            type="button"
+                                            variant="none"
+                                            effect="fade"
+                                            size="compact"
+                                            className={cn(
+                                              CONNECT_INLINE_BUTTON_CLASSNAME,
+                                              CONNECT_MESSAGE_BUTTON_CLASSNAME,
+                                            )}
+                                            aria-label={`Message ${connection.displayName || connection.userId}`}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              toast.info("Coming soon");
+                                            }}
+                                          >
+                                            <span className="inline-flex h-8 items-center rounded-full border border-current px-3 hover:bg-[color:var(--app-accent-tint)]">
+                                              Message
+                                            </span>
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            variant="none"
+                                            effect="fade"
+                                            size="compact"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              setPendingRemoveId(
+                                                connection.connectionId,
+                                              );
+                                            }}
+                                            aria-label={`Remove connection with ${connection.displayName || connection.userId}`}
+                                            className={
+                                              CONNECT_CONNECTION_TRASH_BUTTON_CLASSNAME
+                                            }
+                                          >
+                                            <TrashIcon
+                                              weight="regular"
+                                              className="size-4"
+                                              aria-hidden="true"
+                                            />
+                                          </Button>
+                                        </>
                                       )}
                                     </span>
                                   }

@@ -240,6 +240,121 @@ def test_closed_request_does_not_requeue_payment_ready(status, expired):
     store._event.assert_not_called()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "order", [None, {"status": "awaiting_payment", "reconciliation_required": False}]
+)
+async def test_no_match_request_closes_unpaid_payment_state(order):
+    request = {
+        "request_id": str(uuid4()),
+        "user_id": "owner",
+        "recipient_user_id": "recipient",
+        "payment_required": True,
+        "status": "no_match",
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
+    }
+    store = DriveRequestPaymentStore(db=object())
+    store._row = Mock(return_value=request)
+    store._ensure_ready = Mock(return_value=(request, order, False))
+
+    async def transaction(operation):
+        return operation(SimpleNamespace())
+
+    store._transaction = transaction
+    state = await store.payment_state(
+        requester_user_id="recipient", request_id=request["request_id"]
+    )
+    assert state["status"] == "expired"
+    store._ensure_ready.assert_called_once()
+
+
+def _make_legacy_undated_paid_request(sharing, connection, request_id):
+    row = (
+        connection.execute(
+            text("SELECT * FROM drive_share_requests WHERE request_id=:request"),
+            {"request": request_id},
+        )
+        .mappings()
+        .one()
+    )
+    private = sharing._open_request(row)
+    private["purpose"]["periodStart"] = None
+    private["purpose"]["periodEnd"] = None
+    envelope = sharing.sharing_cipher.seal(
+        private, user_id="owner", resource_id=request_id, purpose="request"
+    )
+    connection.execute(
+        text("""UPDATE drive_share_requests
+      SET payment_required=TRUE,request_envelope=CAST(:envelope AS jsonb)
+      WHERE request_id=:request"""),
+        {"request": request_id, "envelope": json.dumps(envelope)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_undated_request_cannot_prepare_a_payment_order(sharing):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    with sharing.db.engine.begin() as connection:
+        _make_legacy_undated_paid_request(sharing, connection, request_id)
+        with pytest.raises(DriveSharingError, match="date_range_required"):
+            DriveRequestPaymentStore(db=sharing.db)._ensure_ready(
+                connection, user_id="owner", request_id=request_id, share_id=None
+            )
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM drive_request_payment_orders WHERE request_id=:request"),
+                {"request": request_id},
+            ).scalar_one()
+            == 0
+        )
+
+
+@pytest.mark.asyncio
+async def test_legacy_undated_order_cannot_start_checkout(sharing, monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_local_only_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_payment_test_secret")
+    monkeypatch.setenv("APP_FRONTEND_ORIGIN", "https://test.example")
+    created = await request(sharing)
+    request_id = created["requestId"]
+    with sharing.db.engine.begin() as connection:
+        _make_legacy_undated_paid_request(sharing, connection, request_id)
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+          (request_id,user_id,requester_user_id,status)
+          VALUES (:request,'owner','recipient','awaiting_payment')"""),
+            {"request": request_id},
+        )
+    stripe_api = Mock()
+    service = DriveRequestPaymentService(db=sharing.db, stripe_api=stripe_api)
+    with pytest.raises(DriveSharingError, match="date_range_required"):
+        await service.checkout(requester_user_id="recipient", request_id=request_id)
+    stripe_api.checkout.Session.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_paid_undated_request_stays_visible_and_enters_refund_reconciliation(sharing):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    with sharing.db.engine.begin() as connection:
+        _make_legacy_undated_paid_request(sharing, connection, request_id)
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+          (request_id,user_id,requester_user_id,status,stripe_payment_intent_id,paid_at)
+          VALUES (:request,'owner','recipient','paid','pi_test_undated',clock_timestamp())"""),
+            {"request": request_id},
+        )
+    service = DriveRequestPaymentService(db=sharing.db)
+    state = await service.payment_state(requester_user_id="recipient", request_id=request_id)
+    assert state["status"] == "paid"
+    assert state["reconciliationRequired"] is True
+    with sharing.db.engine.begin() as connection:
+        claims = _claim_refunds(service, connection, limit=1)
+    assert len(claims) == 1
+    assert claims[0]["payment_intent"] == "pi_test_undated"
+
+
 def test_queued_unposted_grants_do_not_block_terminal_refund_candidate():
     assert "'queued'" not in _REFUND_CANDIDATES_SQL.split("AND NOT EXISTS", 1)[1]
     claim = inspect.getsource(_claim_refunds)
@@ -488,6 +603,29 @@ async def test_refund_first_dispatch_timestamp_survives_uncertain_retry(sharing)
     assert len(second) == 1
     assert second[0]["first_dispatch_at"] == first[0]["first_dispatch_at"]
     assert second[0]["attempt_id"] == first[0]["attempt_id"]
+
+
+@pytest.mark.asyncio
+async def test_paid_no_match_request_is_immediately_refund_eligible(sharing):
+    created = await request(sharing)
+    request_id = created["requestId"]
+    with sharing.db.engine.begin() as connection:
+        connection.execute(
+            text("""UPDATE drive_share_requests
+          SET payment_required=TRUE,status='no_match'
+          WHERE request_id=:request"""),
+            {"request": request_id},
+        )
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+          (request_id,user_id,requester_user_id,status,stripe_payment_intent_id,paid_at)
+          VALUES (:request,'owner','recipient','paid','pi_test_no_match',clock_timestamp())"""),
+            {"request": request_id},
+        )
+        claims = _claim_refunds(DriveRequestPaymentService(db=sharing.db), connection, limit=1)
+    assert len(claims) == 1
+    assert str(claims[0]["request_id"]) == request_id
+    assert claims[0]["payment_intent"] == "pi_test_no_match"
 
 
 def test_confirmed_refund_queues_requester_notice_once():

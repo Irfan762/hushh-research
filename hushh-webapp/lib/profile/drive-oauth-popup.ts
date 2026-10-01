@@ -8,6 +8,9 @@ import { openOAuthWindow } from "@/lib/connections/oauth-window";
 const ATTEMPT_KEY = "one_drive_popup_attempt_v1";
 const SETTLEMENT_KEY = "one_drive_popup_settlement_v1";
 const MAX_AGE_MS = 10 * 60_000;
+// OAuth start itself has a 30-second deadline. Leave that much room inside
+// the server's ten-minute attempt lifetime without comparing device clocks.
+const POPUP_WAIT_MS = MAX_AGE_MS - 30_000;
 const SETTLEMENT_TTL_MS = 3_000;
 export type DrivePopupAttempt = {
   connectorId: "google_drive";
@@ -18,6 +21,20 @@ export type DrivePopupSettlement = DrivePopupAttempt & {
   type: "drive_oauth_settlement";
   outcome: "succeeded" | "cancelled" | "failed";
 };
+
+export function createDrivePopupAttempt(attemptId: string): DrivePopupAttempt {
+  // This is only a local correlation deadline. The server checks the real
+  // attempt expiry when it completes OAuth. A server timestamp is unsafe to
+  // compare with Date.now() on a device whose clock may be behind.
+  const attempt: DrivePopupAttempt = {
+    connectorId: "google_drive",
+    attemptId,
+    expiresAt: Date.now() + POPUP_WAIT_MS,
+  };
+  if (!isDrivePopupAttempt(attempt))
+    throw new Error("Authorization could not start. Try again.");
+  return attempt;
+}
 
 export function isDrivePopupAttempt(
   value: unknown,
@@ -87,7 +104,13 @@ export function readDrivePopupAttempt(): DrivePopupAttempt | null {
   try {
     const raw = window.localStorage.getItem(ATTEMPT_KEY);
     if (!raw) return null;
-    const value: unknown = JSON.parse(raw);
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      window.localStorage.removeItem(ATTEMPT_KEY);
+      return null;
+    }
     const attempt = isDrivePopupAttempt(value) ? value : null;
     if (!attempt) window.localStorage.removeItem(ATTEMPT_KEY);
     return attempt;
@@ -97,10 +120,36 @@ export function readDrivePopupAttempt(): DrivePopupAttempt | null {
 }
 
 export function hasDrivePopupMarker(): boolean {
+  return readDrivePopupAttempt() !== null;
+}
+
+/** The state prefix is an untrusted routing hint; the server verifies its HMAC. */
+export function isDrivePopupReturn(state: string | null): boolean {
+  const attempt = readDrivePopupAttempt();
+  if (!attempt || !state) return false;
+  const [returnedAttemptId, signature, extra] = state.split(".");
+  return (
+    returnedAttemptId === attempt.attemptId &&
+    /^[a-f0-9]{64}$/.test(signature ?? "") &&
+    extra === undefined
+  );
+}
+
+/** Remove only this attempt; another tab may have started a newer one. */
+export function clearDrivePopupAttempt(attempt: DrivePopupAttempt): void {
   try {
-    return window.localStorage.getItem(ATTEMPT_KEY) !== null;
+    const raw = window.localStorage.getItem(ATTEMPT_KEY);
+    if (!raw) return;
+    const stored = JSON.parse(raw) as Partial<DrivePopupAttempt> | null;
+    if (
+      stored?.connectorId === attempt.connectorId &&
+      stored.attemptId === attempt.attemptId &&
+      stored.expiresAt === attempt.expiresAt
+    ) {
+      window.localStorage.removeItem(ATTEMPT_KEY);
+    }
   } catch {
-    return false;
+    // Storage failure cannot prevent popup cleanup.
   }
 }
 
@@ -134,7 +183,7 @@ export function notifyDrivePopup(
         // Browser storage failures cannot block callback cleanup.
       }
     }, SETTLEMENT_TTL_MS);
-    window.localStorage.removeItem(ATTEMPT_KEY);
+    clearDrivePopupAttempt(attempt);
   } catch {
     /* Opener also reconciles after close/expiry. */
   }

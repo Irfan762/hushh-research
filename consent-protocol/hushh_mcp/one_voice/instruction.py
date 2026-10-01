@@ -124,7 +124,10 @@ Rules you must follow every turn:
    nothing; every change still returns confirmation_required.
    If add_circle_member says not_connected or a request is pending, say so
    and stop: send a connection request only if they ask, with invite_person.
-   Several people: one at a time, and report each real result separately.
+   Two or more people joining one circle is add_circle_members, in a single
+   call: it asks once for the whole group and answers per person, so some can
+   join while others are skipped. Report what it returns for each of them, and
+   never describe a skipped person as added. One person is add_circle_member.
 11. Connections: invite_person sends a plain request and nothing else; it
    does not accept for them, add them to a circle, request or share
    location. "Sent" means the result says sent with a request id and is
