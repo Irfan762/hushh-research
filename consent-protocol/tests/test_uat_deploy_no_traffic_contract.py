@@ -21,7 +21,10 @@ def test_uat_no_op_finishes_before_creating_a_deployment() -> None:
     # record or enter release classification with missing runtime evidence.
     assert "environment" not in selection
     assert selection["permissions"] == {
-        "contents": "read", "checks": "read", "deployments": "read", "actions": "read"
+        "contents": "read",
+        "checks": "read",
+        "deployments": "read",
+        "actions": "read",
     }
     assert deploy["needs"] == "select-target"
     assert deploy["if"] == "needs.select-target.outputs.decision == 'DEPLOY_EXACT_SHA'"
@@ -30,12 +33,16 @@ def test_uat_no_op_finishes_before_creating_a_deployment() -> None:
     resolver = next(step for step in selection["steps"] if step.get("id") == "resolve-sha")
     assert "--allow-no-op" in resolver["run"]
     assert "continue-on-error" not in resolver
-    summary = next(step for step in selection["steps"] if step["name"] == "Summarize unchanged UAT target")
+    summary = next(
+        step for step in selection["steps"] if step["name"] == "Summarize unchanged UAT target"
+    )
     assert summary["if"] == "steps.resolve-sha.outputs.decision == 'NO_OP'"
 
     bridge = next(step for step in deploy["steps"] if step.get("id") == "resolve-sha")
     assert bridge["env"]["DEPLOY_SHA"] == "${{ needs.select-target.outputs.sha }}"
-    validator = next(step for step in deploy["steps"] if step["name"] == "Validate deployment SHA against main")
+    validator = next(
+        step for step in deploy["steps"] if step["name"] == "Validate deployment SHA against main"
+    )
     assert validator["env"]["REQUIRE_CI_SUCCESS"] == "1"
     assert validator["env"]["REQUIRED_CHECK_NAME"] == "Main Post-Merge Smoke Gate"
 
