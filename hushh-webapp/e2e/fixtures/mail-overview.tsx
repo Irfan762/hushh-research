@@ -10,9 +10,9 @@ function Fixture() {
   const [fetching, setFetching] = useState(true);
   const [action, setAction] = useState("");
   const [issue, setIssue] = useState(false);
-  return <><AppPageShell width="agent" className="bg-background py-8 text-foreground lg:pt-[104px]">
+  return <><AppPageShell width="agent" className="bg-background py-8 text-foreground lg:pt-[80px]">
     <AppPageHeaderRegion className="mx-auto max-w-[820px]">
-      <PageHeader title="Mail" titleRole="agent" className="flex min-h-[53px] items-center" />
+      <PageHeader title="Mail" titleRole="agent" description="Connected to your Mail" />
     </AppPageHeaderRegion>
     <AppPageContentRegion className="mx-auto !mt-3.5 max-w-[820px]">
     <SurfaceStack compact>

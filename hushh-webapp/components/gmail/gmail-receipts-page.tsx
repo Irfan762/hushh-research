@@ -1900,8 +1900,7 @@ export default function GmailReceiptsPage({
         <PageHeader
           title="Mail"
           titleRole={journeyVariant === "workspace" ? "agent" : "page"}
-          className={journeyVariant === "workspace" ? "flex min-h-[53px] items-center" : undefined}
-          description={journeyVariant === "workspace" ? undefined : pageTitle}
+          description={pageTitle}
           actions={
             isConnected && journeyVariant === "onboarding" ? (
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
