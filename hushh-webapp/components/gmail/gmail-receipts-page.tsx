@@ -1875,7 +1875,7 @@ export default function GmailReceiptsPage({
   return (
     <AppPageShell
       as="div"
-      width="reading"
+      width={journeyVariant === "workspace" ? "agent" : "reading"}
       className="pb-[calc(var(--app-bottom-fixed-ui,96px)+1.5rem)]"
       nativeTest={{
         routeId:
@@ -2120,7 +2120,7 @@ export default function GmailReceiptsPage({
             <MailOverview
               fetching={overviewReceiptsFetching}
               receiptIssue={overviewReceiptIssue}
-              receiptCount={total}
+              receiptCount={receiptListReady ? total : undefined}
               receiptDetail={overviewReceiptDetail}
               receiptUpdated={resolveGmailLastUpdatedLabel(gmail.status, gmail.syncRun)}
               onOpenChat={handleOpenOneChat}

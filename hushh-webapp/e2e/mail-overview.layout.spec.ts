@@ -106,6 +106,13 @@ for (const width of [320, 390, 430, 768, 1440]) {
     await receipts.hover();
     expect(await receipts.evaluate(el => getComputedStyle(el).backgroundColor)).toBe(beforeHover);
     const chat = page.getByRole("button", {name: "Chat with One"});
+    const headingBounds = (await hero.boundingBox())!;
+    const receiptBounds = (await receipts.boundingBox())!;
+    expect(Math.abs(headingBounds.x - receiptBounds.x)).toBeLessThanOrEqual(1);
+    const chatBounds = (await chat.boundingBox())!;
+    expect(chatBounds.width).toBeCloseTo(244, 0);
+    expect(chatBounds.height).toBeCloseTo(50, 0);
+    expect(Math.abs(chatBounds.x + chatBounds.width / 2 - (receiptBounds.x + receiptBounds.width / 2))).toBeLessThanOrEqual(1);
     if (width >= 1024) {
       const ctaBounds = (await chat.boundingBox())!;
       const reservedBounds = (await page.getByTestId("desktop-bottom-clearance").boundingBox())!;

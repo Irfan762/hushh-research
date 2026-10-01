@@ -9,7 +9,7 @@ function Fixture() {
   const [fetching, setFetching] = useState(true);
   const [action, setAction] = useState("");
   const [issue, setIssue] = useState(false);
-  return <><AppPageShell width="reading" className="bg-background py-8 text-foreground lg:pt-[104px]">
+  return <><AppPageShell width="agent" className="bg-background py-8 text-foreground lg:pt-[104px]">
     <AppPageHeaderRegion className="hidden lg:block">
       <p className="text-sm text-muted-foreground">Connected to your Mail</p>
     </AppPageHeaderRegion>

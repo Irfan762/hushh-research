@@ -105,7 +105,7 @@ export function MailOverview({
 }) {
   return (
     <section aria-label="Mail overview" className="w-full pb-4 pt-5 sm:pt-8 lg:pb-0 lg:pt-3">
-      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:px-4 sm:pb-8 lg:mx-auto lg:min-h-0 lg:max-w-[680px] lg:grid-cols-[1fr_1fr] lg:gap-6 lg:pb-3">
+      <div className="grid min-h-[232px] grid-cols-[minmax(0,1.45fr)_minmax(0,1fr)] items-center gap-1 pb-5 sm:min-h-[280px] sm:grid-cols-[1.2fr_1fr] sm:gap-8 sm:pb-8 lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] lg:gap-6 lg:pb-3">
         <div className="relative z-10 min-w-0">
           <span className="mb-3 inline-flex items-center gap-1.5 rounded-full border border-[color:var(--app-accent-tint)] bg-[color:var(--app-accent-surface)] px-3 py-1 text-xs font-semibold text-[color:var(--app-accent)]">
             <Star aria-hidden="true" className="size-3.5" />
@@ -126,7 +126,7 @@ export function MailOverview({
           </ul>
         </div>
         <div aria-hidden="true" className="min-w-0 pr-1 sm:pr-3">
-          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px] lg:ml-0 lg:max-w-[280px]`}>
+          <div data-testid="mail-draft-cards" className={`${styles.stack} ml-auto w-full max-w-[154px] sm:max-w-[220px] lg:ml-0 lg:max-w-none`}>
             {[
               { label: "Reply", icon: Undo2, width: "w-3/4" },
               { label: "Follow up", icon: FileText, width: "w-2/3" },
@@ -156,9 +156,11 @@ export function MailOverview({
           className={`!rounded-[20px] border ${receiptIssue ? "border-destructive/20 bg-destructive/[0.06] dark:bg-destructive/10" : "border-emerald-500/15 bg-emerald-500/[0.06] dark:bg-emerald-500/10"}`}
         />
       </div>
-      <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="mt-3 h-[54px] w-full justify-center text-base sm:w-full lg:mt-1">
-        Chat with One
-      </AskOneButton>
+      <div className="mx-auto mt-3 w-full max-w-[244px] lg:mt-1">
+        <AskOneButton onClick={onOpenChat} showIcon={false} size="prominent" className="w-full sm:w-full">
+          Chat with One
+        </AskOneButton>
+      </div>
     </section>
   );
 }
