@@ -14,11 +14,13 @@ import { useVoiceToolEffects } from "@/lib/one-voice/session-store";
 import type { EmailDraft, EmailDeliveryError } from "@/lib/services/email-delivery-service";
 import { useVault } from "@/lib/vault/vault-context";
 
-type OpenMailDraft = { id: string; draft: EmailDraft; recipientName: string };
+type OpenMailDraft = { id: string; ownerUid: string; draft: EmailDraft; recipientName: string; verbatimInitialBody: boolean };
 type MailDelivery = {
   id: string;
+  ownerUid: string;
   draft: EmailDraft;
   recipientName: string;
+  verbatimInitialBody: boolean;
   status: "sending" | "sent" | "failed" | "outcome_unknown";
   error: string | null;
 };
@@ -52,6 +54,7 @@ export function OneVoiceMailDraftBridge() {
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const ownerRef = useRef(user?.uid ?? null);
+  const wasVaultUnlockedRef = useRef(isVaultUnlocked);
 
   useEffect(() => {
     setHost(document.body);
@@ -76,13 +79,24 @@ export function OneVoiceMailDraftBridge() {
         report("failed", { reason: "invalid_mail_draft" });
         return;
       }
+      if (!user?.uid) {
+        report("failed", { reason: "owner_unavailable" });
+        return;
+      }
+      if (!isVaultUnlocked) {
+        report("failed", { reason: "vault_locked" });
+        setVaultDialogOpen(true);
+        return;
+      }
       if (draftRef.current) {
         report("failed", { reason: "draft_already_open" });
         return;
       }
       const next: OpenMailDraft = {
         id: step.stepId,
+        ownerUid: user.uid,
         recipientName: parsed.toName,
+        verbatimInitialBody: true,
         draft: { to: parsed.to, cc: "", bcc: "", subject: parsed.subject, body: parsed.body },
       };
       previousFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -95,7 +109,7 @@ export function OneVoiceMailDraftBridge() {
 
   // A step succeeds only after the body portal and review card commit.
   useEffect(() => {
-    if (!mailDraft || !host) return;
+    if (!mailDraft || !host || !isVaultUnlocked || mailDraft.ownerUid !== user?.uid) return;
     const report = reportsRef.current.get(mailDraft.id);
     if (!report) return;
     reportsRef.current.delete(mailDraft.id);
@@ -106,7 +120,7 @@ export function OneVoiceMailDraftBridge() {
       draftRef.current = null;
       setMailDraft(null);
     }
-  }, [host, mailDraft]);
+  }, [host, isVaultUnlocked, mailDraft, user?.uid]);
 
   useEffect(() => {
     const reports = reportsRef.current;
@@ -128,6 +142,19 @@ export function OneVoiceMailDraftBridge() {
     setVaultDialogOpen(false);
   }, [user?.uid]);
 
+  useEffect(() => {
+    const wasUnlocked = wasVaultUnlockedRef.current;
+    wasVaultUnlockedRef.current = isVaultUnlocked;
+    if (!wasUnlocked || isVaultUnlocked) return;
+    for (const report of reportsRef.current.values()) report("failed", { reason: "vault_locked" });
+    reportsRef.current.clear();
+    handledStepsRef.current.clear();
+    draftRef.current = null;
+    setMailDraft(null);
+    setMailDelivery(null);
+    setVaultDialogOpen(false);
+  }, [isVaultUnlocked]);
+
   const getMailAuth = useCallback(async () => {
     if (!user || !isVaultUnlocked || (tokenExpiresAt && Date.now() >= tokenExpiresAt)) return null;
     const vaultOwnerToken = getVaultOwnerToken();
@@ -145,10 +172,13 @@ export function OneVoiceMailDraftBridge() {
 
   const onMailSendStarted = (reviewedDraft: EmailDraft): string => {
     const id = newAttemptId();
+    const openDraft = draftRef.current;
     setMailDelivery({
       id,
+      ownerUid: openDraft?.ownerUid ?? user?.uid ?? "",
       draft: reviewedDraft,
-      recipientName: draftRef.current?.recipientName ?? "",
+      recipientName: openDraft?.recipientName ?? "",
+      verbatimInitialBody: Boolean(openDraft?.verbatimInitialBody && reviewedDraft.body === openDraft.draft.body),
       status: "sending",
       error: null,
     });
@@ -175,15 +205,19 @@ export function OneVoiceMailDraftBridge() {
     if (!mailDelivery || mailDelivery.status !== "failed") return;
     const next = {
       id: newAttemptId(),
+      ownerUid: mailDelivery.ownerUid,
       draft: mailDelivery.draft,
       recipientName: mailDelivery.recipientName,
+      verbatimInitialBody: mailDelivery.verbatimInitialBody,
     };
     draftRef.current = next;
     setMailDraft(next);
     setMailDelivery(null);
   };
 
-  const visible = mailDraft || mailDelivery;
+  const visibleDraft = isVaultUnlocked && mailDraft?.ownerUid === user?.uid ? mailDraft : null;
+  const visibleDelivery = isVaultUnlocked && mailDelivery?.ownerUid === user?.uid ? mailDelivery : null;
+  const visible = visibleDraft || visibleDelivery;
   return (
     <>
       {host && visible ? createPortal(
@@ -197,20 +231,20 @@ export function OneVoiceMailDraftBridge() {
             height: viewport.height,
           } : { inset: 0 }}
         >
-          {mailDraft ? (
+          {visibleDraft ? (
             <div
               ref={surfaceRef}
               data-testid="one-voice-mail-draft-surface"
               role="region"
-              aria-label={`Mail draft for ${mailDraft.recipientName}`}
+              aria-label={`Mail draft for ${visibleDraft.recipientName}`}
               tabIndex={-1}
               className="pointer-events-auto max-h-full w-full max-w-2xl overflow-y-auto rounded-2xl bg-card p-2 shadow-2xl outline-none"
             >
               <EmailDraftCard
-                key={mailDraft.id}
+                key={visibleDraft.id}
                 initialInstruction=""
-                initialDraft={mailDraft.draft}
-                verbatimInitialBody
+                initialDraft={visibleDraft.draft}
+                verbatimInitialBody={visibleDraft.verbatimInitialBody}
                 getAuth={getMailAuth}
                 onRequireVault={() => setVaultDialogOpen(true)}
                 onDismiss={dismissDraft}
@@ -220,7 +254,7 @@ export function OneVoiceMailDraftBridge() {
               />
             </div>
           ) : null}
-          {mailDelivery ? (
+          {visibleDelivery ? (
             <div
               data-testid="one-voice-mail-delivery"
               role="status"
@@ -228,12 +262,12 @@ export function OneVoiceMailDraftBridge() {
               className="pointer-events-auto flex h-fit w-full max-w-2xl items-center gap-3 rounded-2xl bg-card px-4 py-3 text-sm shadow-2xl"
             >
               <span className="min-w-0 flex-1">
-                {mailDelivery.status === "sending" ? "Sending mail…" :
-                  mailDelivery.status === "sent" ? "Mail sent." :
-                    mailDelivery.status === "outcome_unknown" ? "Delivery could not be confirmed. Check Sent Mail before trying again." :
-                      mailDelivery.error || "Mail could not be sent."}
+                {visibleDelivery.status === "sending" ? "Sending mail…" :
+                  visibleDelivery.status === "sent" ? "Mail sent." :
+                    visibleDelivery.status === "outcome_unknown" ? "Delivery could not be confirmed. Check Sent Mail before trying again." :
+                      visibleDelivery.error || "Mail could not be sent."}
               </span>
-              {mailDelivery.status === "failed" ? (
+              {visibleDelivery.status === "failed" ? (
                 <button type="button" className="shrink-0 font-semibold text-[color:var(--app-accent)]" onClick={reopenFailedDraft}>
                   Review draft
                 </button>
@@ -253,7 +287,9 @@ export function OneVoiceMailDraftBridge() {
           onOpenChange={setVaultDialogOpen}
           onSuccess={() => setVaultDialogOpen(false)}
           title="Unlock vault to send mail"
-          description="Unlock your vault, then review the draft and tap Send again."
+          description={mailDraft || mailDelivery
+            ? "Unlock your vault, then review the draft and tap Send again."
+            : "Unlock your vault, then ask One to draft the mail again."}
           allowVaultCreation={false}
         />
       ) : null}

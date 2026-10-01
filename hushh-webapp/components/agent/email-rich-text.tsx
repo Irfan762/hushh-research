@@ -491,6 +491,7 @@ export function EmailRichTextComposer({
   const [linkUrl, setLinkUrl] = useState("");
   const isInternalChangeRef = useRef(false);
   const lastHtmlRef = useRef("");
+  const initialVerbatimValueRef = useRef(verbatimText ? value : null);
 
   // Seed editor HTML on mount or when value changes externally (e.g. AI draft generation)
   useEffect(() => {
@@ -500,9 +501,11 @@ export function EmailRichTextComposer({
     }
     if (!editorRef.current) return;
 
-    const targetHtml = value.trim().startsWith("<") && value.includes(">")
-      ? value
-      : verbatimText ? verbatimEmailHtmlFromText(value) : richEmailHtmlFromMarkdown(value);
+    const targetHtml = initialVerbatimValueRef.current !== null && value === initialVerbatimValueRef.current
+      ? verbatimEmailHtmlFromText(value)
+      : value.trim().startsWith("<") && value.includes(">")
+        ? value
+        : richEmailHtmlFromMarkdown(value);
 
     if (editorRef.current.innerHTML !== targetHtml) {
       editorRef.current.innerHTML = targetHtml || "<p><br></p>";

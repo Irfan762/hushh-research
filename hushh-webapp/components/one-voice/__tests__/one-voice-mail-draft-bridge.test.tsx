@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OneVoiceMailDraftBridge } from "@/components/one-voice/one-voice-mail-draft-bridge";
@@ -10,6 +10,7 @@ const harness = vi.hoisted(() => ({
   vaultUnlocked: true,
   vaultToken: "vault-token",
   sendFailure: null as { message: string; code: string | null } | null,
+  reviewedBody: null as string | null,
 }));
 
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: harness.user }) }));
@@ -52,7 +53,7 @@ vi.mock("@/components/agent/email-draft-card", () => ({
         void getAuth().then((auth) => { if (!auth) onRequireVault(); });
       }}>Check auth</button>
       <button type="button" onClick={() => {
-        const id = onSendStarted(initialDraft);
+        const id = onSendStarted(harness.reviewedBody === null ? initialDraft : { ...initialDraft, body: harness.reviewedBody });
         if (harness.sendFailure) onSendFailed(harness.sendFailure, id);
         else onSent(id);
       }}>Send</button>
@@ -85,9 +86,11 @@ function openDraft(input: Record<string, unknown> = payload()) {
 }
 
 beforeEach(() => {
+  harness.user = { uid: "owner", getIdToken: vi.fn(async () => "firebase-token") };
   harness.vaultUnlocked = true;
   harness.vaultToken = "vault-token";
   harness.sendFailure = null;
+  harness.reviewedBody = null;
   act(() => useVoiceSessionStore.getState().reset());
 });
 afterEach(() => cleanup());
@@ -164,14 +167,57 @@ describe("OneVoiceMailDraftBridge", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review draft" }));
     expect(screen.getByTestId("mail-body").textContent).toBe("Tomorrow - I'll send the demo.\nThanks!");
     expect(screen.queryByTestId("one-voice-mail-delivery")).toBeNull();
+    expect(screen.getByTestId("one-email-draft-card")).toHaveAttribute("data-verbatim", "true");
   });
 
-  it("opens the vault prompt when the card requests auth while locked", async () => {
-    harness.vaultUnlocked = false;
+  it("retains a rich-text edit as rich text when reopening a safely failed draft", () => {
+    harness.sendFailure = { message: "Rejected before send.", code: "GMAIL_SEND_DISABLED" };
+    harness.reviewedBody = "<p>Edited <strong>message</strong></p>";
     render(<OneVoiceMailDraftBridge />);
     openDraft();
-    fireEvent.click(screen.getByRole("button", { name: "Check auth" }));
-    await waitFor(() => expect(screen.getByTestId("mail-vault-dialog")).toBeInTheDocument());
-    expect(screen.getByTestId("one-email-draft-card")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review draft" }));
+    expect(screen.getByTestId("mail-body")).toHaveTextContent("<p>Edited <strong>message</strong></p>");
+    expect(screen.getByTestId("one-email-draft-card")).not.toHaveAttribute("data-verbatim");
+  });
+
+  it("does not offer a new send after delivery becomes uncertain", () => {
+    harness.sendFailure = { message: "Response lost.", code: "EMAIL_ACTION_OUTCOME_UNKNOWN" };
+    render(<OneVoiceMailDraftBridge />);
+    openDraft();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(screen.getByTestId("one-voice-mail-delivery")).toHaveTextContent("Check Sent Mail before trying again");
+    expect(screen.queryByRole("button", { name: "Review draft" })).toBeNull();
+  });
+
+  it("rejects an initially locked step promptly and opens the unlock prompt without retaining the draft", () => {
+    harness.vaultUnlocked = false;
+    render(<OneVoiceMailDraftBridge />);
+    const report = openDraft();
+    expect(report).toHaveBeenCalledExactlyOnceWith("failed", { reason: "vault_locked" });
+    expect(screen.getByTestId("mail-vault-dialog")).toBeInTheDocument();
+    expect(screen.queryByTestId("one-email-draft-card")).toBeNull();
+  });
+
+  it("hides and clears an open draft when the owner locks the vault", () => {
+    const view = render(<OneVoiceMailDraftBridge />);
+    openDraft();
+    harness.vaultUnlocked = false;
+    view.rerender(<OneVoiceMailDraftBridge />);
+    expect(screen.queryByTestId("one-email-draft-card")).toBeNull();
+    harness.vaultUnlocked = true;
+    view.rerender(<OneVoiceMailDraftBridge />);
+    expect(screen.queryByTestId("one-email-draft-card")).toBeNull();
+  });
+
+  it("never renders a previous owner's draft after identity switches", () => {
+    const view = render(<OneVoiceMailDraftBridge />);
+    openDraft();
+    harness.user = { uid: "other-owner", getIdToken: vi.fn(async () => "other-token") };
+    view.rerender(<OneVoiceMailDraftBridge />);
+    expect(screen.queryByTestId("one-email-draft-card")).toBeNull();
+    harness.user = { uid: "owner", getIdToken: vi.fn(async () => "firebase-token") };
+    view.rerender(<OneVoiceMailDraftBridge />);
+    expect(screen.queryByTestId("one-email-draft-card")).toBeNull();
   });
 });
