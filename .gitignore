@@ -47,6 +47,8 @@ firebase-debug.log
 node_modules/
 # Local temporary secrets
 /temp_secrets/
+
+
 consent-protocol/.DS_Store
 .DS_Store
 docs/vision/kai/index.html

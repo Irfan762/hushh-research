@@ -420,19 +420,19 @@
       "id": "kai_gmail_receipts_provider_cache",
       "owner": "backend-runtime-governance",
       "data_class": "provider_cache",
-      "lifecycle_status": "current",
+      "lifecycle_status": "current_read_only_cutover",
       "exact_tables": [
         "kai_gmail_connections",
         "kai_gmail_receipts",
         "kai_gmail_sync_runs",
         "kai_receipt_memory_artifacts"
       ],
-      "primary_access_path": "user-consented Gmail receipt sync and receipt-memory preview services",
-      "retention_policy": "Terminal sync-run reads expire after 30 days from completed_at, with updated_at as a conservative fallback only for legacy terminal runs without completed_at. Preview reads expire seven days after created_at; cache updates and PKM-persist acknowledgement do not renew that window. Owner-scoped manual reporting and bounded compaction use scripts/ops/gmail_cache_retention.py; no automatic schedule exists. Physical expired rows can remain until an authorized maintenance run. Durable information requires explicit encrypted PKM write through the consent/vault path.",
-      "deletion_behavior": "Required policy: delete provider cache on Gmail disconnect/account deletion. Account cleanup explicitly deletes sync runs and preview artifacts; disconnect currently cancels active runs and clears provider credentials but retains cache rows. Manual compaction deletes only expired terminal sync runs and preview artifacts for one owner, preserving active runs and PKM. Disconnect cleanup and publication fencing remain implementation gaps. Full account deletion also releases the grant at Google after commit, best effort: a live mailbox watch is stopped (users.stop) before the refresh token is revoked. Disconnect does not yet stop the watch.",
-      "trust_boundary": "Encrypted OAuth tokens, receipt summaries, hashes, and preview artifacts; no raw mailbox memory.",
-      "plaintext_posture": "encrypted_oauth_tokens_and_sensitive_derived_receipt_cache",
-      "expected_row_growth": "high_provider_sync"
+      "primary_access_path": "Read-only legacy receipt history during the private on-device Gmail cutover. New receipt sync and preview writes are blocked in the API and database.",
+      "retention_policy": "Legacy receipt rows remain readable for continuity but receive no new writes. Terminal sync-run reads expire after 30 days; preview reads expire after seven days. Owner-scoped compaction remains available. The next cutover stage must replace this server cache with on-device Gmail pagination before an evidence-gated, owner-scoped purge and a separate destructive table-retirement migration.",
+      "deletion_behavior": "Deletes remain permitted for Gmail disconnect and account deletion. No destructive bulk deletion occurs in this migration. The future purge must be owner-scoped, batched, reversible by encrypted PKM preservation evidence, and independently verified before the tables are dropped.",
+      "trust_boundary": "Legacy provider-derived receipt summaries and preview artifacts are read-only. Trigger 264 blocks INSERT and UPDATE on the receipt and artifact tables, while API gates prevent new server-side Gmail receipt reads and summary creation.",
+      "plaintext_posture": "legacy_sensitive_derived_cache_read_only_no_new_writes",
+      "expected_row_growth": "frozen_pending_device_owned_reader"
     },
     {
       "id": "gmail_owner_approved_delivery",
