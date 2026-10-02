@@ -167,7 +167,9 @@ class PendingActionStore:
             """
             UPDATE one_voice_pending_actions
             SET status = 'failed', resolved_at = NOW(),
-                result = '{"status":"draft_open_unconfirmed","needs":null}'::jsonb,
+                result = jsonb_build_object(
+                    'status', 'draft_open_unconfirmed', 'needs', NULL
+                ),
                 args = args - '_sealed_args'
             WHERE user_id = :user_id AND tool_name = 'send_mail'
               AND status = 'confirmed' AND expires_at < NOW()
@@ -178,7 +180,9 @@ class PendingActionStore:
             """
             UPDATE one_voice_pending_actions
             SET status = 'failed',
-                result = '{"status":"draft_open_unconfirmed","needs":null}'::jsonb
+                result = jsonb_build_object(
+                    'status', 'draft_open_unconfirmed', 'needs', NULL
+                )
             WHERE user_id = :user_id AND tool_name = 'send_mail'
               AND status = 'executed' AND result->>'status' = 'draft_open_requested'
               AND resolved_at < NOW() - make_interval(secs => :ttl)
