@@ -2313,6 +2313,14 @@ a nonexistent anchor; the parity document is now the canonical definition.
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle
 
+### Connect directory request budgets
+
+Directory browsing (empty or whitespace query) and nonempty searches each have a
+500-per-day budget per caller. Both modes share the 60-per-minute ceiling. The
+existing visibility rules and 50-profile page bound are unchanged. Idle Connect
+repair polls refresh connections without issuing another directory search; graph
+changes, foreground refreshes and explicit actions still refresh the directory.
+
 ### Connect directory mutual connections
 
 Directory rows additionally return `mutualConnectionCount` and optional
