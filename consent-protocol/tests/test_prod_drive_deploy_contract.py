@@ -165,19 +165,34 @@ def test_production_drive_worker_keeps_refund_credentials_bound_and_fails_closed
     )
     mocked = """set -euo pipefail
 PROJECT_ID=hushh-pda
+REGION=us-central1
+previous_revision="${PREVIOUS_REVISION:-}"
 gcloud() {
-  [[ "$1" == secrets && "$2" == describe ]] || return 2
-  [[ "$3" != "${MISSING_SECRET:-}" ]]
+  if [[ "$1" == secrets && "$2" == describe ]]; then
+    [[ "$3" != "${MISSING_SECRET:-}" ]]
+  elif [[ "$1" == run && "$2" == revisions && "$3" == describe ]]; then
+    if [[ "${PREVIOUS_STRIPE_BOUND:-false}" == true ]]; then
+      printf '%s\\n' '{"spec":{"containers":[{"name":"drive-worker","env":[{"name":"STRIPE_SECRET_KEY","valueFrom":{"secretKeyRef":{"name":"STRIPE_SECRET_KEY"}}}]}]}}'
+    else
+      printf '%s\\n' '{"spec":{"containers":[{"name":"drive-worker","env":[]}]}}'
+    fi
+  else
+    return 2
+  fi
 }
 """
 
-    def run(*, enabled: bool, missing: str = "") -> subprocess.CompletedProcess[str]:
+    def run(
+        *, enabled: bool, missing: str = "", previous_bound: bool = False
+    ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(  # noqa: S603 - fixed repo shell block with a mocked gcloud
             ["bash", "-c", mocked + block + '\nprintf "%s" "$payment_secret_bindings"\n'],
             env={
                 **os.environ,
                 "DRIVE_REQUEST_PAYMENTS_PROD_ENABLED": "true" if enabled else "false",
                 "MISSING_SECRET": missing,
+                "PREVIOUS_REVISION": "consent-protocol-drive-worker-prev" if previous_bound else "",
+                "PREVIOUS_STRIPE_BOUND": "true" if previous_bound else "false",
             },
             capture_output=True,
             text=True,
@@ -191,6 +206,9 @@ gcloud() {
     assert "APP_FRONTEND_ORIGIN=APP_FRONTEND_ORIGIN:latest" in ready.stdout
     missing_off = run(enabled=False, missing="STRIPE_WEBHOOK_SECRET")
     assert missing_off.returncode == 0 and missing_off.stdout == ""
+    missing_previous = run(enabled=False, missing="STRIPE_WEBHOOK_SECRET", previous_bound=True)
+    assert missing_previous.returncode != 0
+    assert "requires the production Stripe and origin secrets" in missing_previous.stderr
     for secret in ("STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "APP_FRONTEND_ORIGIN"):
         missing_on = run(enabled=True, missing=secret)
         assert missing_on.returncode != 0

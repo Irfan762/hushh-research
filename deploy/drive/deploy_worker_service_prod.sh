@@ -172,7 +172,25 @@ for payment_secret in STRIPE_SECRET_KEY STRIPE_WEBHOOK_SECRET APP_FRONTEND_ORIGI
     stripe_secret_ready=false
   fi
 done
-if [[ "${DRIVE_REQUEST_PAYMENTS_PROD_ENABLED:-false}" == "true" \
+previous_stripe_bound=false
+if [[ "${stripe_secret_ready}" != true && -n "${previous_revision}" ]]; then
+  # Disabling new charges must not remove refund credentials from a serving worker.
+  previous_stripe_bound="$(gcloud run revisions describe "${previous_revision}" \
+    --project="${PROJECT_ID}" --region="${REGION}" --format=json | python3 -c '
+import json, sys
+containers = (json.load(sys.stdin).get("spec") or {}).get("containers") or []
+worker = next((item for item in containers if item.get("name") == "drive-worker"), None)
+if not isinstance(worker, dict) or not isinstance(worker.get("env"), list):
+    raise SystemExit("Serving Drive worker payment binding state is unavailable")
+bound = {
+    item.get("name") for item in worker["env"]
+    if isinstance(item, dict) and ((item.get("valueFrom") or {}).get("secretKeyRef") or {}).get("name")
+}
+print("true" if bound & {"STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"} else "false")
+')"
+fi
+if [[ ( "${DRIVE_REQUEST_PAYMENTS_PROD_ENABLED:-false}" == "true" \
+    || "${previous_stripe_bound}" == "true" ) \
   && "${stripe_secret_ready}" != true ]]; then
   echo "Drive payment reconciliation requires the production Stripe and origin secrets" >&2
   exit 1
