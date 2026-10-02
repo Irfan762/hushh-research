@@ -9,6 +9,7 @@ from .agent_chat import router as agent_chat_router
 from .agent_feedback import router as agent_feedback_router
 from .calendar import router as calendar_router
 from .capability_runtime import router as capability_runtime_router
+from .circle_chat import router as circle_chat_router
 from .command_proposals import router as command_proposals_router
 from .connections import router as connections_router
 from .drive_actions import router as drive_actions_router
@@ -48,6 +49,7 @@ router.include_router(agent_chat_router)
 router.include_router(connections_router)
 router.include_router(messages_router)
 router.include_router(calendar_router)
+router.include_router(circle_chat_router)
 router.include_router(drive_actions_router)
 router.include_router(capability_runtime_router)
 router.include_router(command_proposals_router)

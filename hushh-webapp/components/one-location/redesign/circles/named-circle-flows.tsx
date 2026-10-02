@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
 import { trackEvent } from "@/lib/observability/client";
@@ -1340,8 +1340,10 @@ export function CircleDetailFlow({
   onDelete,
   onProceedToSms,
   livingCircleExperience = false,
+  renderChat,
 }: {
   circleId: string;
+  renderChat?: (circle: OneLocationCircleOverview) => ReactNode;
   currentUserId: string | null;
   busy: boolean;
   onBack: () => void;
@@ -2123,6 +2125,7 @@ export function CircleDetailFlow({
             ) : null}
           </div>
 
+          {circle.systemKind == null && !circle.isSystem ? renderChat?.(circle) : null}
           {livingCircleExperience ? (
             <LivingCirclePanel
               key={circle.id}

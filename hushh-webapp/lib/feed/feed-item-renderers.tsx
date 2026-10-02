@@ -23,6 +23,7 @@ import { formatLocationDurationLabel } from "@/lib/one-location/duration-copy";
 import { buildOneLocationWorkflowHref } from "@/lib/one-location/notifications";
 import { buildKaiMarketRoute } from "@/lib/navigation/routes";
 import { ROUTES } from "@/lib/navigation/routes";
+import { circleChatHref } from "@/lib/circle-chat/routes";
 import type { FeedItem, FeedSourceDomain } from "@/lib/services/feed-service";
 import { getAnalysisHistoryRunRouteId } from "@/lib/kai/analysis-route-intent";
 
@@ -767,6 +768,11 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
             })
           : ROUTES.ONE_LOCATION,
       };
+    }
+    case "location_circle_message": {
+      return { icon: Users, domainLabel: "Circle chat", label: "New circle message",
+        description: metadataString(item.metadata, "circle_name") || "Open your circle chat",
+        href: circleChatHref(metadataString(item.metadata, "circle_id")) };
     }
     case "circle_member_added": {
       const circleName = metadataString(item.metadata, "circle_name");

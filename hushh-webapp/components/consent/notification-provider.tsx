@@ -1,4 +1,5 @@
 "use client";
+import { dispatchCircleChatChanged } from "@/lib/circle-chat/events";
 
 /**
  * Consent Notification Provider
@@ -1695,6 +1696,15 @@ export function ConsentNotificationProvider({
       // Preference changes are silent sync doorbells for the owner's other
       // sessions. They are not Feed activity and carry no preference value;
       // mounted consumers repair from their authenticated resources.
+      if ((msgType === "location_circle_message" || msgType === "location_circle_chat_read") && user?.uid) {
+        const circleId = String(data.circle_id || "").trim();
+        if (data.user_id === user.uid && /^[0-9a-f-]{36}$/i.test(circleId)) {
+          dispatchCircleChatChanged(user.uid, circleId);
+          if (msgType === "location_circle_chat_read") CacheSyncService.onFeedExternalReadChanged(user.uid);
+          dispatchFeedStateChanged(msgType === "location_circle_chat_read" ? "action" : "arrived");
+        }
+        return;
+      }
       if (msgType === "location_settings_changed" && user?.uid) {
         const setting = String(data.setting || "").trim();
         CacheSyncService.onOneLocationStateMutated(

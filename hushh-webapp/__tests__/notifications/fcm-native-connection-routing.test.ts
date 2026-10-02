@@ -57,6 +57,17 @@ import {
 } from "@/lib/utils/browser-navigation";
 
 describe("native system-notification routing", () => {
+  it.each(["ios", "android"])("routes %s circle message taps to the validated chat and ignores supplied external URLs", async (platform) => {
+    mocks.platform = platform;
+    await prepareFCMListeners();
+    const onAction = mocks.listeners.get("notificationActionPerformed");
+    const circle = "11111111-2222-3333-4444-555555555555";
+    onAction?.({ actionId: "tap", notification: { data: { type: "location_circle_message", circle_id: circle, request_url: "https://evil.example/steal" } } });
+    expect(mocks.requestInternalAppNavigation.mock.calls[0]?.[0]?.href).toBe(`/one/connect?tab=circles&action=circle-detail&circleId=${circle}&circleChat=1`);
+    mocks.requestInternalAppNavigation.mockClear();
+    onAction?.({ actionId: "tap", notification: { data: { type: "location_circle_message", circle_id: "../../other", request_url: "https://evil.example" } } });
+    expect(mocks.requestInternalAppNavigation.mock.calls[0]?.[0]?.href).toBe("/one/feed");
+  });
   beforeEach(() => {
     // prepareFCMListeners registers once per module instance, so retain the
     // listener map and clear only assertions between cases.

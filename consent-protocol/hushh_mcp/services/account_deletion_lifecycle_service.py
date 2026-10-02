@@ -177,6 +177,15 @@ class AccountDeletionLifecycleService:
     """Own the durable tombstone and its external Firebase cleanup intent."""
 
     @staticmethod
+    def lock_user_writes_in_transaction(conn, *, user_ids: Iterable[str]) -> None:
+        """Acquire writer barriers before domain locks; deletion takes them exclusively."""
+        normalized = AccountDeletionLifecycleService._normalize_user_ids(user_ids)
+        for namespace in (_CONNECTION_GRAPH_LOCK_NAMESPACE, _ACCOUNT_LIFECYCLE_LOCK_NAMESPACE):
+            for user_id in normalized:
+                conn.execute(text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:user_id, :namespace))"),
+                             {"user_id": user_id, "namespace": namespace})
+
+    @staticmethod
     def _normalize_user_ids(user_ids: Iterable[str]) -> tuple[str, ...]:
         normalized_user_ids = tuple(
             sorted(
