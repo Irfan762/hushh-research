@@ -12,10 +12,11 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
 import pytest
+import stripe
 from sqlalchemy import text
 
 from hushh_mcp.runtime_settings import clear_runtime_settings_caches
@@ -96,6 +97,199 @@ def test_live_stripe_key_is_rejected_outside_production(monkeypatch):
     monkeypatch.setenv("APP_FRONTEND_ORIGIN", "https://test.example")
     with pytest.raises(DriveSharingError, match="payment_unavailable"):
         _config()
+
+
+def _checkout_fixture(monkeypatch, provider_create):
+    monkeypatch.setenv("ENVIRONMENT", "test")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_local_only_synthetic")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_payment_test_secret")
+    monkeypatch.setenv("APP_FRONTEND_ORIGIN", "https://test.example")
+    request_id, attempt_id = str(uuid4()), str(uuid4())
+    order = {
+        "status": "awaiting_payment",
+        "request_status": "pending",
+        "request_expires_at": datetime.now(UTC) + timedelta(hours=1),
+        "checkout_attempt_id": attempt_id,
+        "stripe_checkout_url": None,
+        "stripe_checkout_session_id": None,
+    }
+    service = DriveRequestPaymentService(
+        db=object(),
+        stripe_api=SimpleNamespace(
+            checkout=SimpleNamespace(Session=SimpleNamespace(create=provider_create))
+        ),
+    )
+    service.payment_state = AsyncMock(return_value={"status": "awaiting_payment"})
+    service._current_checkout_authority = Mock()
+    service._row = Mock(side_effect=lambda *args, **kwargs: order.copy())
+    connection = SimpleNamespace(execute=Mock())
+
+    async def transact(operation):
+        return operation(connection)
+
+    service._transaction = transact
+    return service, request_id, attempt_id, connection
+
+
+def _checkout_sdk_response(params, session_id="cs_test_checkout_regression"):
+    return stripe.checkout.Session.construct_from(
+        {
+            "id": session_id,
+            "object": "checkout.session",
+            "mode": params["mode"],
+            "client_reference_id": params["client_reference_id"],
+            "amount_total": 1000,
+            "currency": "usd",
+            "livemode": False,
+            "metadata": params["metadata"],
+            "url": f"https://checkout.stripe.com/c/pay/{session_id}",
+            "expires_at": int(time.time()) + 1800,
+        },
+        params["api_key"],
+    )
+
+
+@pytest.mark.asyncio
+async def test_checkout_uses_supported_stripe_parameters_and_binds_sdk_session(monkeypatch):
+    def create_session(**params):
+        # UAT Stripe rejected this legacy argument before opening Checkout.
+        if "payment_method_types" in params:
+            raise stripe.InvalidRequestError(
+                "payment_method_types is no longer supported",
+                "payment_method_types",
+                http_status=400,
+            )
+        assert params["mode"] == "payment"
+        assert params["line_items"] == [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "unit_amount": 1000,
+                    "product_data": {"name": "Document request"},
+                },
+                "quantity": 1,
+            }
+        ]
+        assert params["idempotency_key"] == f"drive-request-{request_id}-{attempt_id}"
+        assert params["payment_intent_data"]["metadata"] == params["metadata"]
+        return _checkout_sdk_response(params)
+
+    create = Mock(side_effect=create_session)
+    service, request_id, attempt_id, connection = _checkout_fixture(monkeypatch, create)
+    result = await service.checkout(requester_user_id="recipient", request_id=request_id)
+    assert result == {
+        "checkoutUrl": "https://checkout.stripe.com/c/pay/cs_test_checkout_regression"
+    }
+    create.assert_called_once()
+    assert service._current_checkout_authority.call_count == 2
+    binding = connection.execute.call_args.args[1]
+    assert binding["request"] == request_id
+    assert binding["session"] == "cs_test_checkout_regression"
+    assert binding["url"] == result["checkoutUrl"]
+
+
+@pytest.mark.asyncio
+async def test_checkout_recovers_rejected_legacy_attempt_with_stable_retry_key(monkeypatch):
+    def create_session(**params):
+        if params["idempotency_key"] == original_key:
+            if params.get("payment_method_types") == ["card"]:
+                raise stripe.InvalidRequestError(
+                    "payment_method_types is no longer supported",
+                    "payment_method_types",
+                    http_status=400,
+                )
+            raise stripe.IdempotencyError("Different parameters", http_status=400)
+        assert params["idempotency_key"] == original_key + "-dynamic-methods-v1"
+        assert "payment_method_types" not in params
+        return _checkout_sdk_response(params)
+
+    create = Mock(side_effect=create_session)
+    service, request_id, attempt_id, connection = _checkout_fixture(monkeypatch, create)
+    original_key = f"drive-request-{request_id}-{attempt_id}"
+    # The provider succeeds, but the database bind is interrupted. Retrying the
+    # same order must replay the same fallback key instead of opening a new order.
+    connection.execute.side_effect = [None, RuntimeError("bind interrupted"), None, None]
+    with pytest.raises(RuntimeError, match="bind interrupted"):
+        await service.checkout(requester_user_id="recipient", request_id=request_id)
+    result = await service.checkout(requester_user_id="recipient", request_id=request_id)
+    assert result["checkoutUrl"].endswith("cs_test_checkout_regression")
+    calls = [call.kwargs for call in create.call_args_list]
+    assert [call["idempotency_key"] for call in calls] == [
+        original_key,
+        original_key,
+        original_key + "-dynamic-methods-v1",
+        original_key,
+        original_key,
+        original_key + "-dynamic-methods-v1",
+    ]
+    assert calls[1] == {**calls[0], "payment_method_types": ["card"]}
+    assert calls[2] == {**calls[0], "idempotency_key": original_key + "-dynamic-methods-v1"}
+    assert calls[:3] == calls[3:]
+    assert connection.execute.call_args.args[1]["session"] == "cs_test_checkout_regression"
+
+
+@pytest.mark.asyncio
+async def test_checkout_binds_cached_legacy_success_without_creating_another_session(monkeypatch):
+    def create_session(**params):
+        if "payment_method_types" not in params:
+            raise stripe.IdempotencyError("Different parameters", http_status=400)
+        assert params["payment_method_types"] == ["card"]
+        return _checkout_sdk_response(params, "cs_test_existing_legacy")
+
+    create = Mock(side_effect=create_session)
+    service, request_id, attempt_id, connection = _checkout_fixture(monkeypatch, create)
+    result = await service.checkout(requester_user_id="recipient", request_id=request_id)
+    assert result["checkoutUrl"].endswith("cs_test_existing_legacy")
+    assert create.call_count == 2
+    assert {call.kwargs["idempotency_key"] for call in create.call_args_list} == {
+        f"drive-request-{request_id}-{attempt_id}"
+    }
+    assert connection.execute.call_args.args[1]["session"] == "cs_test_existing_legacy"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "legacy_error",
+    [
+        stripe.APIConnectionError("Provider outcome is unknown"),
+        stripe.InvalidRequestError("Different parameter rejected", "currency", http_status=400),
+        stripe.InvalidRequestError("Provider failed", "payment_method_types", http_status=500),
+        stripe.IdempotencyError("Legacy payload mismatch", http_status=400),
+    ],
+    ids=["network", "other-parameter", "server-error", "legacy-idempotency-conflict"],
+)
+async def test_checkout_does_not_change_retry_key_for_uncertain_legacy_outcome(
+    monkeypatch, legacy_error
+):
+    create = Mock(
+        side_effect=[stripe.IdempotencyError("Different parameters", http_status=400), legacy_error]
+    )
+    service, request_id, attempt_id, connection = _checkout_fixture(monkeypatch, create)
+    with pytest.raises(DriveSharingError, match="payment_unavailable"):
+        await service.checkout(requester_user_id="recipient", request_id=request_id)
+    assert create.call_count == 2
+    assert {call.kwargs["idempotency_key"] for call in create.call_args_list} == {
+        f"drive-request-{request_id}-{attempt_id}"
+    }
+    # Only reserve happened; no checkout session was bound and no alternate
+    # provider key was tried for an outcome that could already have succeeded.
+    assert connection.execute.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_checkout_does_not_replay_or_rotate_an_in_progress_idempotency_key(monkeypatch):
+    create = Mock(
+        side_effect=stripe.IdempotencyError(
+            "Another request is in progress", http_status=409, code="idempotency_key_in_use"
+        )
+    )
+    service, request_id, attempt_id, connection = _checkout_fixture(monkeypatch, create)
+    with pytest.raises(DriveSharingError, match="payment_unavailable"):
+        await service.checkout(requester_user_id="recipient", request_id=request_id)
+    create.assert_called_once()
+    assert create.call_args.kwargs["idempotency_key"] == f"drive-request-{request_id}-{attempt_id}"
+    assert "payment_method_types" not in create.call_args.kwargs
+    assert connection.execute.call_count == 1
 
 
 def test_paid_grant_guard_blocks_reconciliation_hold():
