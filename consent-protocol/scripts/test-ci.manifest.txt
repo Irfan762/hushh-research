@@ -27,6 +27,8 @@ tests/services/test_drive_share_notification_worker.py
 tests/services/test_drive_work_drain.py
 tests/services/test_connector_attempt_retention.py
 tests/test_drive_work_drain_routes.py
+tests/services/test_drive_work_wake.py
+tests/test_prod_drive_deploy_contract.py
 tests/test_drive_work_drain_scheduler_contract.py
 tests/test_drive_worker_server.py
 tests/services/test_google_drive_permission_adapter.py
