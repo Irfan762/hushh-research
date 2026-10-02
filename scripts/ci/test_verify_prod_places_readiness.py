@@ -93,11 +93,27 @@ def test_key_probe_accepts_real_place_shape() -> None:
     assert "test-backend-key" not in output.getvalue()
 
 
+def test_production_workflow_keeps_feature_rollback_available() -> None:
+    workflow = (
+        Path(__file__).resolve().parents[2] / ".github/workflows/deploy-production.yml"
+    ).read_text(encoding="utf-8")
+    assert "if: vars.ONE_PLACES_DIRECTORY_ENABLED_PROD != 'false'" in workflow
+    assert (
+        "--one-places-directory-enabled \"${{ vars.ONE_PLACES_DIRECTORY_ENABLED_PROD || 'true' }}\""
+        in workflow
+    )
+    assert (
+        "--consent-center-summary-v2-enabled \"${{ vars.CONSENT_CENTER_SUMMARY_V2_ENABLED || 'true' }}\""
+        in workflow
+    )
+
+
 def main() -> int:
     for test in (
         test_disabled_api_fails_before_key_access,
         test_rejected_backend_key_fails_without_logging_key,
         test_key_probe_accepts_real_place_shape,
+        test_production_workflow_keeps_feature_rollback_available,
     ):
         test()
         print(f"ok {test.__name__}")
