@@ -23,8 +23,10 @@ test.beforeAll(async () => {
       resolve: { alias: [
         { find: "@/lib/services/circle-chat-service", replacement: path.join(root, "e2e/fixtures/circle-chat-boundary.ts") },
         { find: "@/lib/services/api-service", replacement: path.join(root, "e2e/fixtures/circle-chat-http-boundary.ts") },
+        { find: "@/lib/cache/cache-sync-service", replacement: path.join(root, "e2e/fixtures/circle-chat-cache-boundary.ts") },
         { find: "@", replacement: root },
-      ] }, define: { "process.env.NODE_ENV": JSON.stringify("production"), "process.env": "{}" },
+      ] }, define: { "process.env.NODE_ENV": JSON.stringify("production"), "process.env": "{}",
+        __CIRCLE_CHAT_FIXTURE_MEDIA__: JSON.stringify(fs.readFileSync(path.join(root, "public/one-location/onboarding/orbit-office.webp")).toString("base64")) },
       build: { outDir, emptyOutDir: false, lib: { entry: path.join(root, "e2e/fixtures/circle-chat.tsx"), name: "Fixture", formats: ["iife"], fileName: () => "fixture.js" } },
     });
     script = fs.readFileSync(path.join(outDir, "fixture.js"), "utf8");
@@ -38,9 +40,13 @@ test.beforeAll(async () => {
   });
   css = stripAppFontFaces(compiler.build([...candidates])) + productFontStyle();
 });
-async function mount(page: Page, dark = false) {
-  await page.route("http://localhost/circle-chat-fixture", (route) => route.fulfill({ contentType: "text/html", body: `<!doctype html><html class="${dark ? "dark" : ""}"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div></body></html>` }));
-  await page.goto("http://localhost/circle-chat-fixture");
+async function mount(page: Page, dark = false, workspace = false) {
+  await page.route("http://localhost/fixture-person-*.webp", (route) => {
+    const index = Number(route.request().url().match(/person-(\d+)/)![1]);
+    return route.fulfill({ contentType: "image/webp", body: fs.readFileSync(path.join(process.cwd(), `public/one-location/onboarding/orbit-person-${index + 1}.webp`)) });
+  });
+  await page.route("http://localhost/circle-chat-fixture*", (route) => route.fulfill({ contentType: "text/html", body: `<!doctype html><html class="${dark ? "dark" : ""}"><head><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div></body></html>` }));
+  await page.goto(`http://localhost/circle-chat-fixture${workspace ? "?workspace=1" : ""}`);
   await page.addScriptTag({ content: script });
   await awaitProductFont(page);
   await expect(page.getByRole("textbox", { name: "Message" })).toBeVisible();
@@ -77,10 +83,9 @@ test("preserves a timed-out send across collapse and opens images inside the app
   await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("");
   const sends = await page.evaluate(() => (window as unknown as { chatFixture: { sends: unknown[] } }).chatFixture.sends);
   expect(sends).toHaveLength(2); expect(sends[0]).toEqual(sends[1]);
-  await page.getByRole("button", { name: "View image", exact: true }).click();
+  await expect(page.getByRole("button", { name: "View image", exact: true })).toHaveCount(0);
+  await page.locator("[data-circle-chat-image]").scrollIntoViewIfNeeded();
   await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
-  await expect.poll(() => page.getByLabel("Circle messages", { exact: true }).evaluate((element) =>
-    element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThanOrEqual(8);
   await page.getByRole("button", { name: "Open shared image" }).click();
   const dialog = page.getByRole("dialog");
   await expect(dialog).toBeVisible();
@@ -88,3 +93,67 @@ test("preserves a timed-out send across collapse and opens images inside the app
   await page.getByRole("button", { name: "Close", exact: true }).click();
   await expect(dialog).not.toBeVisible();
 });
+
+for (const width of [320, 393, 1440]) {
+  test(`circle workspace preserves drafts across members and blocks reads in the viewer at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: width === 1440 ? 1000 : 852 });
+    await mount(page, false, true);
+    await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
+    await expect(page.getByLabel("Seen by everyone")).toBeVisible();
+    fs.writeFileSync(test.info().outputPath(`circle-geometry-${width}.json`), JSON.stringify(await page.evaluate(() => {
+      const tab = document.querySelector('[role="tab"][data-state="active"]')!;
+      const style = getComputedStyle(tab);
+      return { tab: { className: tab.className, background: style.background, color: style.color, border: style.border, width: tab.getBoundingClientRect().width },
+        heading: getComputedStyle(document.querySelector("h1")!).fontSize,
+        pageWidth: document.documentElement.scrollWidth, viewport: innerWidth };
+    }), null, 2));
+    await page.getByRole("textbox", { name: "Message" }).fill("Draft survives members navigation");
+    await page.getByRole("tab", { name: "Members", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Message" })).not.toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+    await page.getByRole("heading", { name: "Business Circle", exact: true }).click();
+    await page.mouse.move(0, 0);
+    await page.getByRole("tab", { name: "Members", exact: true }).evaluate((tab) => (tab as HTMLElement).blur());
+    await page.screenshot({ path: test.info().outputPath(`circle-members-${width}.png`), animations: "disabled" });
+    await page.getByRole("tab", { name: "Chat", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Message" })).toHaveValue("Draft survives members navigation");
+    await page.getByRole("textbox", { name: "Message" }).fill("");
+    await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
+    await page.locator('input[type="file"]').setInputFiles({ name: "meetup.webp", mimeType: "image/webp", buffer: fs.readFileSync(path.join(process.cwd(), "public/one-location/onboarding/orbit-office.webp")) });
+    await expect(page.getByRole("img", { name: "Image ready to send" })).toBeVisible();
+    await page.mouse.move(0, 0);
+    await page.getByRole("heading", { name: "Business Circle", exact: true }).click();
+    await page.getByRole("tab", { name: "Chat", exact: true }).evaluate((tab) => (tab as HTMLElement).blur());
+    await page.locator("[data-app-scroll-root]").evaluate((root) => { root.scrollTop = 0; });
+    await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
+    await page.screenshot({ path: test.info().outputPath(`circle-workspace-${width}.png`), animations: "disabled" });
+    await page.getByRole("button", { name: "View circle members" }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: test.info().outputPath(`circle-workspace-composer-${width}.png`), animations: "disabled" });
+    await page.getByRole("button", { name: "Remove attached image" }).click();
+    await expect(page.getByRole("img", { name: "Image ready to send" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Change circle photo" }).click();
+    await expect(page.getByRole("dialog", { name: "Circle photo" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Circle photo" })).not.toBeVisible();
+    await page.locator("[data-circle-chat-image]").scrollIntoViewIfNeeded();
+    await expect(page.getByRole("button", { name: "Open shared image" })).toBeVisible();
+    await page.getByRole("button", { name: "Open shared image" }).click();
+    await expect(page.getByRole("dialog", { name: "Shared image" })).toBeVisible();
+    const before = await page.evaluate(() => (window as any).chatFixture.read.length);
+    await page.evaluate(() => { window.dispatchEvent(new Event("focus")); });
+    expect(await page.evaluate(() => (window as any).chatFixture.read.length)).toBe(before);
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width + 1);
+    await page.getByRole("button", { name: "Change circle photo" }).click();
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Choose photo", exact: true }).click();
+    await (await chooser).setFiles(path.join(process.cwd(), "public/one-location/onboarding/orbit-office.webp"));
+    await expect(page.getByRole("button", { name: "Save photo", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "Save photo", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Circle photo" })).not.toBeVisible();
+    await page.getByRole("button", { name: "Change circle photo" }).click();
+    await page.getByRole("button", { name: "Remove photo", exact: true }).click();
+    await page.getByRole("button", { name: "Save photo", exact: true }).click();
+    await expect(page.getByRole("dialog", { name: "Circle photo" })).not.toBeVisible();
+  });
+}

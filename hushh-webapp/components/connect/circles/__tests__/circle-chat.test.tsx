@@ -4,8 +4,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError } from "@/lib/services/api-client";
 import { appInteractionCoordinator } from "@/lib/interaction/interaction-intent-coordinator";
 import { CircleChat } from "../circle-chat";
+import * as feedEvents from "@/lib/feed/feed-events";
 
-const api = vi.hoisted(() => ({ initialize: vi.fn(), state: vi.fn(), wait: vi.fn(), messages: vi.fn(), prepare: vi.fn(), send: vi.fn(), open: vi.fn(), read: vi.fn(), mute: vi.fn() }));
+const api = vi.hoisted(() => ({ initialize: vi.fn(), state: vi.fn(), wait: vi.fn(), messages: vi.fn(), prepare: vi.fn(), send: vi.fn(), open: vi.fn(), read: vi.fn(), mute: vi.fn(), image: vi.fn(), refreshFeedRead: vi.fn() }));
 vi.mock("@/lib/services/circle-chat-service", () => ({ CircleChatService: api }));
 type Observation = { callback: IntersectionObserverCallback; options?: IntersectionObserverInit; target?: Element };
 let observations: Observation[];
@@ -175,4 +176,89 @@ it("continues reconnect catch-up beyond the first five pages without waiting for
   const transcript = screen.getByRole("list");
   expect(transcript.children).toHaveLength(206);
   expect(api.messages).toHaveBeenCalledTimes(7);
+});
+
+it("retains a newer receipt when the committed send response arrives late", async () => {
+  const own = { ...message, id: "own", sequence: 2, senderUserId: "alice", receipt: { recipientCount: 1, readCount: 0 } };
+  let settle!: (value: unknown) => void;
+  api.prepare.mockResolvedValue({ clientMessageId: "held" });
+  api.send.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "hello" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() => expect(settle).toBeDefined());
+  api.messages.mockResolvedValue({ items: [own], hasMore: false, receipts: [{ id: "own", recipientCount: 1, readCount: 1 }] });
+  act(() => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } })));
+  await screen.findByLabelText("Seen by everyone");
+  await act(async () => settle(own));
+  expect(screen.getByLabelText("Seen by everyone")).toBeInTheDocument();
+});
+
+it("keeps a failed incoming read boundary after more than 300 later messages", async () => {
+  api.open.mockImplementation(async (_session, item) => {
+    if (item.sequence === 1) throw new Error("Missing key");
+    return { text: `Message ${item.sequence}`, image: null };
+  });
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText(/could not be opened/i);
+  observe(true);
+  api.messages.mockImplementation(async (_session, page) => {
+    const after = page.after ?? 0;
+    return { items: Array.from({ length: Math.min(40, 326 - after) }, (_, i) => ({ ...message, id: `m${after + i + 1}`, sequence: after + i + 1 })), hasMore: after + 40 < 326 };
+  });
+  act(() => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } })));
+  await screen.findByText("Message 326", {}, { timeout: 2000 });
+  observe(true);
+  await act(async () => {});
+  expect(screen.getByRole("list").children).toHaveLength(300);
+  expect(api.read).not.toHaveBeenCalled();
+});
+
+it("blocks read acknowledgements while an owned sheet is open and resumes on close", async () => {
+  const view = render(<CircleChat session={session} circleName="Family" initialOpen readingBlocked />);
+  await screen.findByText("Incoming private message");
+  observe(true);
+  await act(async () => {});
+  expect(api.read).not.toHaveBeenCalled();
+  view.rerender(<CircleChat session={session} circleName="Family" initialOpen readingBlocked={false} />);
+  await waitFor(() => expect(api.read).toHaveBeenCalledWith(session, 1));
+});
+
+it("shows authoritative receipts immediately when loading earlier messages", async () => {
+  api.messages.mockImplementation(async (_session, page) => page.before
+    ? { items: [{ ...message, id: "older-own", senderUserId: "alice" }], hasMore: false,
+        receipts: [{ id: "older-own", recipientCount: 2, readCount: 2 }] }
+    : { items: page.after ? [] : [{ ...message, sequence: 2 }], hasMore: !page.after });
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Load earlier messages" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Load earlier messages" }));
+  await screen.findByLabelText("Seen by everyone");
+  expect(api.messages).toHaveBeenCalledWith(session, { before: 2 });
+});
+
+it("does not send an empty draft through the desktop Enter shortcut", async () => {
+  vi.stubGlobal("matchMedia", () => ({ matches: true }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  fireEvent.keyDown(screen.getByRole("textbox", { name: "Message" }), { key: "Enter" });
+  await act(async () => {});
+  expect(api.prepare).not.toHaveBeenCalled();
+});
+
+it("refreshes Feed when a receipt doorbell also carries a newer message revision", async () => {
+  const changed = vi.spyOn(feedEvents, "dispatchFeedStateChanged");
+  const waits: ((value: unknown) => void)[] = [];
+  api.wait.mockImplementation(() => new Promise((resolve) => { waits.push(resolve); }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  await act(async () => waits[0]!({ latestSequence: 1, changed: false }));
+  await waitFor(() => expect(waits).toHaveLength(2));
+  changed.mockClear();
+  await act(async () => waits[1]!({ latestSequence: 1, changed: true, receiptsChanged: true }));
+  await waitFor(() => expect(waits).toHaveLength(3));
+  expect(changed).not.toHaveBeenCalled();
+  await act(async () => waits[2]!({ latestSequence: 2, changed: true, receiptsChanged: true }));
+  await waitFor(() => expect(changed).toHaveBeenCalledWith("arrived"));
 });

@@ -2227,6 +2227,39 @@ or rejoining starts a new history window.
 | GET | `/api/one/circles/{circle}/chat/keys/{key}` | Owner-only vault-encrypted historical key backup, only for an accessible current-generation message; active/rotated keys, never revoked keys |
 | POST | `/api/one/circles/{circle}/chat/read` | Visible sequence watermark; atomically marks recipient messages and derived Feed rows read |
 | PUT | `/api/one/circles/{circle}/chat/preferences` | `muted` disables queued system pushes while preserving chat and Feed |
+| PUT | `/api/one/circles/{circle}/photo` | Current owner of an active ordinary circle saves/removes a normalized PNG/JPEG/WebP data URL; bounded private overview response |
+
+Transcript pages deduplicate identity photos in `senders` and cap their combined
+UTF-8 size at 2 MB, falling back to initials without dropping messages. The
+optional paired `receiptAfter` / `receiptThrough` range refreshes sender-only
+receipt metadata for the loaded window even when no new messages arrive.
+New messages persist the original non-sender recipient count; legacy audiences
+remain unknown. Blue double checks mean every original recipient acknowledged
+the message. Partial reads and unknown/empty audiences remain sent. Removed
+accounts cannot shrink the denominator. Receipt doorbells reach only senders
+whose current membership generation still authorizes that message.
+
+Chat and Members share a retained conversation: switching panes preserves
+drafts and uncertain retries. Sender avatars/names, automatically loaded inline
+images, an attachment preview and an in-app viewer use shared UI primitives.
+Visible foreground thumbnails own their decrypted blobs and revoke URLs when
+hidden or access is lost; downloads have two scheduler slots. Native physical
+requests remain awaited after logical cancellation. Open owned dialogs block
+read acknowledgements, as do unresolved incoming decryption failures, including
+after the rendered 300-message window trims older rows.
+
+Circle photos reuse the 256px profile picker but mutate the circle identity.
+The API verifies and decodes a single PNG, JPEG or WebP frame up to 512 by 512
+pixels and 300 KiB (410,000 encoded characters), bounds the request to 430,000
+bytes and never echoes rejected
+input. Private list/detail/overview projections carry the photo; public invite
+previews do not. Photo doorbells refresh circle state without creating Feed
+activity. List projections cap their combined photo bytes at 2 MB and retain
+all circles with a fallback icon; single-circle overview returns the full photo.
+Soft deletion clears the photo; account lifecycle erasure removes the
+owned circle. Photos are private circle metadata, separate from encrypted chat
+attachments. This bounded photo action remains separate from reviewed rename
+commands and their immutable command bindings.
 
 The new chat wire uses camelCase directly on all surfaces. Clients encrypt a
 fresh AES-256-GCM content key per message, wrap it to every recipient using the
@@ -2246,7 +2279,7 @@ work, with catch-up on resume. Busy doorbells coalesce at a 250 ms cadence with
 one trailing refresh; gaps beyond five pages continue immediately. Automatic
 state/message/wait/read budgets are 1,200 per minute per authenticated owner
 (four sessions at four refreshes per second, plus manual headroom). Sending
-retains 30/minute and 1,000/day; image downloads retain 30/minute. These are
+retains 30/minute and 1,000/day; automatic image downloads allow 120/minute. These are
 bounded budgets, not an unlimited throughput or global latency guarantee.
 Native waits stay awaited after a pause because Capacitor cannot cancel the
 underlying request. Read doorbells expose only `readChanged` metadata and
@@ -2262,7 +2295,7 @@ recipient read receipt. Leaving suppresses old unread Feed activity and pushes;
 deleting a Circle erases its message/image store. Reset/full-account cleanup
 also erases authored messages and recipient-owned wraps/preferences.
 
-Migration `265_circle_chat.sql`, its rollback, the release manifest and UAT
+Migrations `265_circle_chat.sql` and `266_circle_chat_presentation.sql`, their rollbacks, the release manifest and UAT
 schema contract travel together. Deploy the migration before the updated
 backend, then the web/native bundle. The rollback removes chat and its derived
 Feed projections; restoring erased history requires a database backup.

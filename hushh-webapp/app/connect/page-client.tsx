@@ -2900,7 +2900,7 @@ export default function ConnectPageClient() {
       as="main"
       data-connect-page=""
       fitContent
-      width="reading"
+      width={circleFlowAction === "circle-detail" ? "agent" : "reading"}
       className="relative isolate"
       nativeTest={{
         routeId: "/one/connect",
@@ -2936,7 +2936,7 @@ export default function ConnectPageClient() {
       <SettingsPresentationProvider density="compact">
         {isFocusedCircleTask ? (
           <AppPageContentRegion className={CONNECT_PAGE_CONTENT_CLASSNAME}>
-            <div className="mx-auto w-full max-w-[560px]">
+            <div className={cn("mx-auto w-full", circleFlowAction !== "circle-detail" && "max-w-[560px]")}>
               <ConnectCirclesTab
                 onStateChange={setCirclesState}
                 currentUserId={user?.uid ?? null}

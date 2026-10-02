@@ -1,6 +1,6 @@
 {
   "contract_name": "uat_integrated_schema",
-  "expected_migration_version": 265,
+  "expected_migration_version": 266,
   "migration_version_policy": "exact",
   "required_functions": [
     "project_calendar_mail_feed",
@@ -45,7 +45,8 @@
     "notify_direct_message_recipient",
     "circle_chat_membership_ended",
     "circle_chat_recipient_deleted",
-    "circle_chat_circle_deleted"
+    "circle_chat_circle_deleted",
+    "circle_photo_erased"
   ],
   "required_tables": {
     "account_deletion_tombstones": [
@@ -165,6 +166,7 @@
       "completed_at"
     ],
     "circle_chat_messages": [
+      "original_recipient_count",
       "id",
       "sequence",
       "circle_id",
@@ -1642,6 +1644,7 @@
       "metadata"
     ],
     "one_location_circles": [
+      "photo_url",
       "id",
       "owner_user_id",
       "name",
