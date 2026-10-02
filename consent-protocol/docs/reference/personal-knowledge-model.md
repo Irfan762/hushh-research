@@ -433,23 +433,68 @@ It holds two things:
   `send_to_model` policies.
 
 **The rule.** A write is refused when it touches a reserved branch and its writer
-is unknown, is a `memory_agent`, or is not listed on that entry. `migration`
-writers are never refused by this registry. Both loaders implement the same rule:
-`hushh_mcp/consent/reserved_branches.py` and `hushh-webapp/lib/pkm/reserved-branches.ts`.
+is unknown, is a `memory_agent`, is not listed on that entry, writes under an
+auto-save authorization, or lacks the capability its catalogue entry requires
+(Location's finalize authority; the KYC reply's information-request authority).
+`migration` writers are never refused by this registry. Both loaders implement the
+same rule: `hushh_mcp/consent/reserved_branches.py` and `hushh-webapp/lib/pkm/reserved-branches.ts`.
 
-**Today it only counts (shadow mode).** Nothing is refused yet.
+**The switch.** The contract's own `"enforcement"` value, `shadow` or `enforce`, decides
+what happens with a refusal. It is a reviewed contract value, not an environment flag,
+so the server and the device read one answer. It ships as `shadow`; the migration
+release (agent-written entries moved to their siblings) flips it.
 
-- The server (`_shadow_reserved_branch_write` in `api/routes/pkm_routes_shared.py`,
-  on `/api/pkm/store-domain`) reads the branches it can see, the mutation plan's
-  `proposed_scope` and the structure decision's paths, and logs
-  `pkm.reserved_would_refuse domain=<d> branch=<b> writer=<w> reason=<r>`.
-- The device (`PkmWriteCoordinator`) compares each reserved branch before and
-  after the write. That catches a change smuggled behind an innocent scope, which
-  the server cannot see because every segment is re-encrypted on each write. It
-  increments a session counter and writes a console debug line.
+- `shadow`: the server logs `pkm.reserved_would_refuse domain=<d> branch=<b> writer=<w>
+  reason=<r>` and the device counts the same; nothing is refused.
+- `enforce`: the server refuses on `/api/pkm/store-domain`, `/store-domain/validate` and
+  both whole-domain delete routes, and `store_domain_data` re-checks as defense in depth.
+  - 403 `PKM_RESERVED_BRANCH_WRITER_FORBIDDEN` with `{code, domain, branch, reason,
+    owner_feature, agent_memory_sibling, offer_action, registry_version}`;
+  - 422 `PKM_WRITER_UNKNOWN` for an uncatalogued writer;
+  - 409 `PKM_RESERVED_REGISTRY_OUTDATED` when the plan's `client_version` is missing or
+    older than `min_client_version`, on a domain that holds a reserved branch. The version
+    rides on the mutation plan because the plan reaches the server whole from the web
+    proxy and both native plugins.
 
-Neither side logs a stored value, and a failure inside the shadow check never
-changes the outcome of a save.
+  The device returns `blocked_reserved_branch` from `PkmWriteCoordinator` before anything
+  is encrypted or sent, and a failure of the check itself fails closed.
+
+**What each side can see.** The server judges the plan's `proposed_scope`, the structure
+decision's paths, and the manifest-path diff against the stored manifest (a path that
+appears or disappears under a reserved branch, whatever the scope claims). The device
+diffs every reserved branch's VALUE before and after the write
+(`assertReservedBranchesUntouched`), which catches a change smuggled behind an innocent
+scope: the server cannot, because each write re-encrypts the whole domain.
+`PersonalKnowledgeModelService.storeDomainData` adds a writer-versus-scope check for the
+Wallet and runtime-secret paths, which do not go through the coordinator.
+
+**The KYC reply capability.** `agent_chat_kyc_owner_confirmed` may write identity
+information only with a `kyc_reply_authorization`: an HMAC token for one owner and one
+open information request, minted by
+`POST /api/one/email/information-requests/{id}/pkm-reply-authorization` and verified at
+`/store-domain` with a live check that the request is still open
+(`hushh_mcp/consent/kyc_reply_authorization.py`). The keyword route that also used this
+writer (`isExplicitKycIdentitySaveRequest`) is retired.
+
+**Agents keep the fact, the app commits it.** The structure prompt carries the reserved
+table. A model target inside an app-owned branch is moved to that branch's
+`agent_memory_sibling` and recorded as `reserved_target_rerouted_to_sibling`; a branch
+with no sibling, or a correction of an app-owned record, is `do_not_save`. See the
+declaration in `backend-semantic-boundary.md`. The card carries a `reserved_offer`, and the
+chat's save receipt shows it as a row ("Add as Home in Location"). Tapping it opens the
+registry route and hands a prefill to that screen in memory only
+(`hushh-webapp/lib/pkm/reserved-offer.ts`: owner-bound, 15 minutes, taken once), never in
+the URL. Location saved places (category and name) and Wallet (nickname) take a prefill;
+the other areas open their screen without one. The owner commits there, with that
+feature's own writer.
+
+**The Memory screen.** `"memory_screen_policy": "read_only_reserved"` makes an item inside
+a reserved branch read-only in Memory, with "Open in <app>" from the entry's offer route;
+the owning screen edits or removes it. Items in `agent_memory` siblings stay editable.
+Setting the value to `editable` restores Memory editing (its writers are then refused in
+enforce mode, since no entry lists them).
+
+Neither side logs a stored value.
 
 **Keeping the catalogue honest.** `hushh-webapp/__tests__/lib/pkm/reserved-branches.test.ts`
 parses the webapp source, collects every writer label (including labels forwarded

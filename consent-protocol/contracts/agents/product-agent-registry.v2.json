@@ -4338,7 +4338,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "1d8ba91564f0239bf23de304e7f2ef478cff6fd0f7bff9a7f52152fdc9385a6a",
+      "system_instruction_sha256": "86982b064f1d8519ce86f45d422b9091288ef48770b39a2a05908908713625ea",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
