@@ -81,6 +81,7 @@ import {
   VOICE_UNAVAILABLE_MESSAGE,
   canAutoReconnect,
   hasOpenPendingAction,
+  isStaleNavigation,
   localCloseReason,
 } from "@/lib/one-voice/session-reducer";
 import {
@@ -453,6 +454,24 @@ type DirectiveContext = {
   screenTimeoutMs: number;
 };
 
+function isStaleDirective(frame: UiDirectiveFrame): boolean {
+  if (frame.kind === "navigate" && typeof frame.payload?.call_id === "string") {
+    return isStaleNavigation(useVoiceSessionStore.getState().state, frame.payload.call_id, frame.turn_id);
+  }
+  return isStaleOrigin(frame.turn_id);
+}
+
+function reportDirectiveOutcome(session: LiveSession, frame: UiDirectiveFrame, status: "opened" | "failed" | "ignored"): void {
+  if (session.tornDown) return;
+  const outcome = isStaleDirective(frame) ? "ignored" : status;
+  if (frame.kind === "navigate" && typeof frame.payload?.call_id === "string") {
+    useVoiceSessionStore.getState().dispatch({
+      type: "navigation_settled", callId: frame.payload.call_id, turnId: frame.turn_id, status: outcome,
+    });
+  }
+  session.client.uiSettled(frame.directive_id, outcome);
+}
+
 /**
  * Route one `ui_directive`. Screens first: a screen that does not own the
  * kind settles "ignored" and the generic executor takes over; a registered
@@ -481,15 +500,11 @@ function runDirective(
       session.directiveTimers.delete(claimTimer);
       claimTimer = null;
     }
-    if (!session.tornDown)
-      session.client.uiSettled(
-        frame.directive_id,
-        isStaleOrigin(frame.turn_id) ? "ignored" : status,
-      );
+    reportDirectiveOutcome(session, frame, status);
   };
   const runGeneric = () => {
     if (settled) return;
-    if (isStaleOrigin(frame.turn_id)) {
+    if (isStaleDirective(frame)) {
       finish("ignored");
       return;
     }
@@ -502,7 +517,7 @@ function runDirective(
   };
   const screenOwned = isScreenOwnedDirective(frame.kind);
   const settle = (status: "opened" | "failed" | "ignored") => {
-    if (isStaleOrigin(frame.turn_id)) {
+    if (isStaleDirective(frame)) {
       finish("ignored");
       return;
     }
@@ -802,8 +817,8 @@ export function VoiceSessionProvider({
       void loadDirectives().then(
         (directives) => {
           if (sessionRef.current !== session || session.tornDown) return;
-          if (isStaleOrigin(frame.turn_id)) {
-            session.client.uiSettled(frame.directive_id, "ignored");
+          if (isStaleDirective(frame)) {
+            reportDirectiveOutcome(session, frame, "ignored");
             return;
           }
           runDirective(session, frame, directives, {
@@ -814,11 +829,7 @@ export function VoiceSessionProvider({
           });
         },
         () => {
-          if (!session.tornDown)
-            session.client.uiSettled(
-              frame.directive_id,
-              isStaleOrigin(frame.turn_id) ? "ignored" : "failed",
-            );
+          reportDirectiveOutcome(session, frame, "failed");
         },
       );
     },
@@ -909,7 +920,7 @@ export function VoiceSessionProvider({
         dispatchServerFrame(frame, now());
         return;
       }
-      const staleOrigin = isStaleOrigin(origin);
+      const staleOrigin = frame.type === "ui_directive" ? isStaleDirective(frame) : isStaleOrigin(origin);
       if (staleOrigin) {
         if (frame.type === "tool.result") {
           // An exact pending card may still settle, but an older result must
@@ -918,7 +929,7 @@ export function VoiceSessionProvider({
           return;
         }
         if (frame.type === "ui_directive") {
-          session.client.uiSettled(frame.directive_id, "ignored");
+          reportDirectiveOutcome(session, frame, "ignored");
           return;
         }
         if (frame.type === "client_step.request") {
