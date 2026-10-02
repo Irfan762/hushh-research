@@ -912,7 +912,10 @@ async function apiFetch(
         url,
         method,
         headers: mergedHeaders,
-        connectTimeout: 15_000,
+        // Capacitor iOS uses connectTimeout as the entire URLRequest timeout,
+        // taking precedence over readTimeout. Preserve the response budget on
+        // iOS; Android supports a separate connection timeout.
+        connectTimeout: Capacitor.getPlatform() === "ios" ? readTimeoutMs : 15_000,
         readTimeout: readTimeoutMs,
       };
 

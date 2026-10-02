@@ -2214,3 +2214,18 @@ a nonexistent anchor; the parity document is now the canonical definition.
 - [Architecture](./architecture.md) -- System overview and tri-flow
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle
+
+### Connect directory mutual connections
+
+Directory rows additionally return `mutualConnectionCount` and optional
+`mutualConnectionPreview` (`displayName`, `photoUrl`, `publicPersonRef`). Counts use distinct shared
+neighbors across active canonical connections, scoped to the returned page,
+excluding blocked relationships. A bounded batch lookup resolves shared peers
+through the canonical directory's live visibility and account checks, independent
+of the current page or search. Eligible previews show an avatar and name; the
+public person reference opens the existing profile route. If the selected peer
+is hidden or disabled, only the count is shown. No raw peer IDs or contact details
+are added. Existing
+masked email/phone visibility remains unchanged. The Next proxy and native HTTP
+transport forward these additive fields. Older servers omit them; clients omit
+the badge rather than inventing a mutual relationship. No migration is required.
