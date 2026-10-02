@@ -233,7 +233,8 @@ class RateLimits:
     CONTACT_DISCOVERY_MATCH = "12/minute"  # noqa: S105
     CONTACT_DISCOVERY_MATCH_DAILY = "60/day"  # noqa: S105
     # Interactive name typing needs headroom; exact email/phone discovery must
-    # still have a bounded per-owner request budget.
+    # still have a bounded per-owner request budget. Browse and nonempty search
+    # have separate daily buckets, with the minute ceiling shared across both.
     ONE_CONNECT_DIRECTORY_READ = "60/minute"  # noqa: S105
     ONE_CONNECT_DIRECTORY_READ_DAILY = "500/day"  # noqa: S105
 

@@ -700,6 +700,18 @@
       "primary_access_path": "AG-UI Agent One text chat, encrypted ADK session restore, encrypted legacy chat history restore, and LLM context assembly"
     },
     {
+      "data_class": "personal_encrypted",
+      "exact_tables": [
+        "circle_chat_messages",
+        "circle_chat_recipients",
+        "circle_chat_preferences"
+      ],
+      "id": "circle_member_chat",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Authenticated Circle chat service: membership-scoped keyset reads, ciphertext/image writes, member key envelopes, unread acknowledgements, mute preferences and durable generic push leases."
+    },
+    {
       "data_class": "audit_regulated",
       "exact_tables": [
         "connected_system_audit_events"
@@ -784,6 +796,27 @@
       "lifecycle_status": "current",
       "owner": "mcp-developer-surface",
       "primary_access_path": "developer app registration, token issuance, and MCP/developer API access"
+    },
+    {
+      "data_class": "personal_encrypted",
+      "exact_tables": [
+        "messages"
+      ],
+      "id": "direct_message_encrypted_content",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Participant-scoped conversation history, latest-message inbox projection, unread-count/read-receipt updates, and transactionally committed recipient doorbells from the Direct Messages service."
+    },
+    {
+      "data_class": "personal_metadata",
+      "exact_tables": [
+        "conversations",
+        "direct_message_blocks"
+      ],
+      "id": "direct_message_relationship_state",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Firebase-authenticated Direct Messages service and /api/one/messages routes. Conversation creation and message insertion lock and verify only the canonical active connections pair; they never infer eligibility from Circle membership, trusted_connections, or a connection origin. Read paths remain participant-scoped after a connection ends."
     },
     {
       "data_class": "reference",
@@ -3746,6 +3779,29 @@
       "api_dependencies": [],
       "cache": {
         "policy": "memory-only",
+        "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+        "resource_classes": [
+          "unknown"
+        ]
+      },
+      "implementation_override": null,
+      "lifecycle": "canonical",
+      "native_surface_id": null,
+      "page_file": "app/one/messages/page.tsx",
+      "pathname": "/one/messages",
+      "route_mode": "standard",
+      "semantic_routes": [],
+      "voice": {
+        "action_ids": [],
+        "delegate_agent_ids": [],
+        "playbook_id": "route.one.messages"
+      }
+    },
+    {
+      "alias": null,
+      "api_dependencies": [],
+      "cache": {
+        "policy": "memory-only",
         "refresh_trigger": "pkm-domain-changed subscription seeded by the PKM invalidation epoch (forces a fresh read after a write on another route); explicit user refresh may force",
         "resource_classes": [
           "unknown"
@@ -5156,7 +5212,8 @@
           "people.profile.connect",
           "people.profile.manage_consent",
           "people.profile.remove_connection",
-          "people.profile.review_information_request"
+          "people.profile.review_information_request",
+          "route.person_profile"
         ],
         "delegate_agent_ids": [],
         "playbook_id": "route.people.person_profile"
@@ -5804,28 +5861,28 @@
   "schema_version": "hushh.runtime_topology_index.v1",
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
-    "action_gateway": "752336e5b4776d367a7f8832b21ab05d7802c3de66297337be69e30de9b93ac9",
+    "action_gateway": "fb4aa31a81c146e81d7a3487baef58063d0430db8c4c3c4b5d1c911ce5c4396d",
     "agent_registry": "03ddee8e63e5295b8b71efd73595abd299fd1aacccc839071293e183a6952563",
-    "cache_manifest": "49ee704f091bfd20121dcdeee4ee92e1efef0c993dd85e01d580214cb9845a4f",
-    "data_plane": "3a86228cfa3493809e9c61873aa513277b900ac9e8238d83041c1d5b68467dd8",
+    "cache_manifest": "6efe0fc1544787a88c94c73b117982946af7fa127a992695bcf292e59ad52d50",
+    "data_plane": "d692595caafdede88b07fcb7b52720e32004e1261d383cc31a25ff859b58805f",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "eae6780e733d951427b8deb0a7fe8ff09af84fe76637e313f11afcae03e8cd55",
-    "route_index": "6548ee3a2bf02511c34faaac9d21a21932e71567fa36b40b18f1bc01be3ac8d7",
-    "route_layout": "529ff35ab193d2cc47db5f2a31b9935ae4b8a98f383eefa776d1bc06705c3355",
-    "surface_map": "583795baa33fc89023799ec8696c167c20db8fc8c0602a1af519f366d3bcdf36",
+    "route_index": "32e1587e66e73c140222d5737b6ffe202d4f0ace2fe8a2ab90c044251854dca0",
+    "route_layout": "c44b5380db23b8e93d0513e333c30c0201b4dcedc87204bd1cea0704042d692c",
+    "surface_map": "255b24754f096469b4d78d517ea849e5dc66bf6e91b4dcf66ded1456b8984cb5",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
   "summary": {
     "a2a_scope_gated_agents": 5,
-    "actions": 230,
+    "actions": 231,
     "agents": 19,
     "aliases": 4,
     "decision_required": 2,
     "in_process_specialists": 5,
     "one_specialist_tools": 6,
-    "physical_routes": 142,
+    "physical_routes": 143,
     "semantic_routes": 14,
-    "table_families": 80
+    "table_families": 83
   }
 }

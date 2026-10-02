@@ -107,6 +107,33 @@ class AccountService:
             "agent_chat_conversations": text(
                 "DELETE FROM agent_chat_conversations WHERE user_id = :user_id"
             ),
+            # Direct-message history is participant-bound, not a `user_id`
+            # table.  Erase child ciphertext before its pair conversation so
+            # both sides' copies disappear during an account purge/reset.
+            "messages": text(
+                """
+                DELETE FROM messages
+                WHERE conversation_id IN (
+                  SELECT id FROM conversations
+                  WHERE participant_a_user_id = :user_id
+                     OR participant_b_user_id = :user_id
+                )
+                """
+            ),
+            "conversations": text(
+                """
+                DELETE FROM conversations
+                WHERE participant_a_user_id = :user_id
+                   OR participant_b_user_id = :user_id
+                """
+            ),
+            "direct_message_blocks": text(
+                """
+                DELETE FROM direct_message_blocks
+                WHERE blocker_user_id = :user_id
+                   OR blocked_user_id = :user_id
+                """
+            ),
             "consent_export_refresh_jobs": text(
                 "DELETE FROM consent_export_refresh_jobs WHERE user_id = :user_id"
             ),
@@ -538,6 +565,15 @@ class AccountService:
                 """
             ),
             "user_push_tokens": text("DELETE FROM user_push_tokens WHERE user_id = :user_id"),
+            "circle_chat_messages": text(
+                "DELETE FROM circle_chat_messages WHERE sender_user_id = :user_id"
+            ),
+            "circle_chat_recipients": text(
+                "DELETE FROM circle_chat_recipients WHERE recipient_user_id = :user_id"
+            ),
+            "circle_chat_preferences": text(
+                "DELETE FROM circle_chat_preferences WHERE user_id = :user_id"
+            ),
             "feed_events": text("DELETE FROM feed_events WHERE user_id = :user_id"),
             "byoc_setup_jobs": text("DELETE FROM byoc_setup_jobs WHERE user_id = :user_id"),
             "pod_lifecycle_events": text(
@@ -1349,6 +1385,9 @@ class AccountService:
                 "one_action_directive_ledger",
                 "agent_chat_messages",
                 "agent_chat_conversations",
+                "messages",
+                "conversations",
+                "direct_message_blocks",
                 "kai_gmail_receipts",
                 "kai_gmail_sync_runs",
                 "kai_gmail_connections",
@@ -1533,6 +1572,9 @@ class AccountService:
             "one_location_recipient_keys",
             # Feed is a derived projection. Clear it after every source table so
             # present or future source-cleanup fan-out cannot recreate a row.
+            "circle_chat_messages",
+            "circle_chat_recipients",
+            "circle_chat_preferences",
             "feed_events",
         ):
             self._delete_user_rows_if_table_exists(conn, table_name=table_name, params=params)
@@ -1709,6 +1751,9 @@ class AccountService:
             "pkm_domain_revision_segments": False,
             "pkm_domain_revisions": False,
             "world_model_index_v2": False,
+            "messages": False,
+            "conversations": False,
+            "direct_message_blocks": False,
             "kai_analyze_runs": False,
             "kai_run_state": False,
             "kai_gmail_connections": False,
@@ -1778,6 +1823,9 @@ class AccountService:
             "one_location_share_grants": False,
             "one_location_recipient_keys": False,
             "feed_events": False,
+            "circle_chat_messages": False,
+            "circle_chat_recipients": False,
+            "circle_chat_preferences": False,
             "runtime_persona_state": False,
             "ria_pick_legacy_retirements": False,
             "developer_oauth_tokens": False,
@@ -1847,6 +1895,9 @@ class AccountService:
                         "one_action_directive_ledger",
                         "agent_chat_messages",
                         "agent_chat_conversations",
+                        "messages",
+                        "conversations",
+                        "direct_message_blocks",
                         "kai_gmail_receipts",
                         "kai_gmail_sync_runs",
                         "kai_gmail_connections",
@@ -2065,6 +2116,9 @@ class AccountService:
                     "one_location_recipient_keys",
                     "one_wallet_cards",
                     # Last derived-data cleanup, before the identity/vault spine.
+                    "circle_chat_messages",
+                    "circle_chat_recipients",
+                    "circle_chat_preferences",
                     "feed_events",
                 ):
                     self._delete_user_rows_if_table_exists(

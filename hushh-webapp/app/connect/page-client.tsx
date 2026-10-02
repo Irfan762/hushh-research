@@ -86,7 +86,11 @@ import { useContactSync } from "@/lib/contacts/use-contact-sync";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { isNative } from "@/lib/capacitor/platform";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
-import { buildPersonProfileRoute, ROUTES } from "@/lib/navigation/routes";
+import {
+  buildDirectMessageRoute,
+  buildPersonProfileRoute,
+  ROUTES,
+} from "@/lib/navigation/routes";
 import {
   CONNECT_CIRCLE_ACTION_PARAM,
   CONNECT_CIRCLE_ID_PARAM,
@@ -653,6 +657,7 @@ export default function ConnectPageClient() {
   const connectionsFirstPageRequestRef = useRef<number | null>(null);
   const connectionReconcileInFlightRef = useRef<Promise<void> | null>(null);
   const connectionReconcileQueuedRef = useRef(false);
+  const directoryReconcileQueuedRef = useRef(false);
   const lastForegroundReconcileAtRef = useRef(0);
   const suppressNextLocalGraphEventRef = useRef(false);
   const [outgoingRequestIds, setOutgoingRequestIds] = useState<
@@ -901,8 +906,15 @@ export default function ConnectPageClient() {
   );
 
   const reconcileConnectionSurfaces = useCallback(
-    ({ ensureAfterCurrent = false }: { ensureAfterCurrent?: boolean } = {}) => {
+    ({
+      ensureAfterCurrent = false,
+      refreshDirectory = true,
+    }: {
+      ensureAfterCurrent?: boolean;
+      refreshDirectory?: boolean;
+    } = {}) => {
       if (!user) return Promise.resolve();
+      if (refreshDirectory) directoryReconcileQueuedRef.current = true;
       const active = connectionReconcileInFlightRef.current;
       if (active) {
         if (ensureAfterCurrent) connectionReconcileQueuedRef.current = true;
@@ -918,7 +930,10 @@ export default function ConnectPageClient() {
             }),
             loadOutgoingRequestIds(),
           ]);
-          setDirectoryRefreshNonce((nonce) => nonce + 1);
+          if (directoryReconcileQueuedRef.current) {
+            directoryReconcileQueuedRef.current = false;
+            setDirectoryRefreshNonce((nonce) => nonce + 1);
+          }
           setCircleRefreshToken((token) => token + 1);
         } while (connectionReconcileQueuedRef.current);
       };
@@ -1078,7 +1093,13 @@ export default function ConnectPageClient() {
     // while Connect remains visible, since FCM and SSE are best-effort.
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") {
-        void reconcileConnectionSurfaces({ ensureAfterCurrent: true });
+        // Idle repair reads must not spend the person's directory search
+        // allowance. Mutations, push, focus and outgoing-resolution events
+        // still refresh the directory through the normal reconciliation path.
+        void reconcileConnectionSurfaces({
+          ensureAfterCurrent: true,
+          refreshDirectory: false,
+        });
       }
     }, 60_000);
     return () => window.clearInterval(timer);
@@ -2879,7 +2900,7 @@ export default function ConnectPageClient() {
       as="main"
       data-connect-page=""
       fitContent
-      width="reading"
+      width={circleFlowAction === "circle-detail" ? "agent" : "reading"}
       className="relative isolate"
       nativeTest={{
         routeId: "/one/connect",
@@ -2915,7 +2936,7 @@ export default function ConnectPageClient() {
       <SettingsPresentationProvider density="compact">
         {isFocusedCircleTask ? (
           <AppPageContentRegion className={CONNECT_PAGE_CONTENT_CLASSNAME}>
-            <div className="mx-auto w-full max-w-[560px]">
+            <div className={cn("mx-auto w-full", circleFlowAction !== "circle-detail" && "max-w-[560px]")}>
               <ConnectCirclesTab
                 onStateChange={setCirclesState}
                 currentUserId={user?.uid ?? null}
@@ -3203,18 +3224,26 @@ export default function ConnectPageClient() {
                                         CONNECT_ROW_TRAILING_CLASSNAME,
                                       )}
                                     >
-                                      <Button
-                                        type="button"
-                                        variant="none"
-                                        effect="fade"
-                                        size="compact"
-                                        disabled
-                                        title="Messaging is coming soon"
-                                        aria-label={`Message ${connection.displayName || "connection"} (coming soon)`}
-                                        className="!border !border-[color:var(--app-accent)] !bg-transparent !px-3 !text-[color:var(--app-accent)] disabled:!opacity-100"
-                                      >
-                                        Message
-                                      </Button>
+                                      {connection.publicPersonRef ? (
+                                        <Button
+                                          type="button"
+                                          variant="none"
+                                          effect="fade"
+                                          size="compact"
+                                          aria-label={`Message ${connection.displayName || connection.userId}`}
+                                          className="!border !border-[color:var(--app-accent)] !bg-transparent !px-3 !text-[color:var(--app-accent)]"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            router.push(
+                                              buildDirectMessageRoute({
+                                                personRef: connection.publicPersonRef,
+                                              }),
+                                            );
+                                          }}
+                                        >
+                                          Message
+                                        </Button>
+                                      ) : null}
                                       <Button
                                         type="button"
                                         variant="none"
