@@ -1918,6 +1918,7 @@ export class AuthService {
         }
         const idToken = tokenResult.token || "";
         const providerId =
+          result.user.providerData?.[0]?.providerId?.trim() ||
           (result.user as { providerId?: string | null }).providerId?.trim() ||
           auth.currentUser?.providerData?.[0]?.providerId ||
           "native";
