@@ -11,7 +11,9 @@ never a person's values. The webapp side, including the writer inventory, is
 
 from __future__ import annotations
 
+import importlib
 import logging
+import pathlib
 from types import SimpleNamespace
 
 import pytest
@@ -179,10 +181,21 @@ def test_shadow_can_never_block_a_write(
     assert any("pkm.reserved_shadow_unavailable" in r.getMessage() for r in caplog.records)
 
 
-def test_loader_reads_lazily_so_the_packaged_runtime_can_import_it() -> None:
-    """``stage-runtime.mjs`` ships ``hushh_mcp`` without ``contracts/``."""
-    reserved_branches._contract.cache_clear()
-    reserved_branches._writers.cache_clear()
-    reserved_branches._entries.cache_clear()
-    assert reserved_branches._contract.cache_info().currsize == 0
+def test_importing_the_loader_never_reads_the_contract(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The packaged MCP runtime ships ``hushh_mcp`` without ``contracts/``.
+
+    ``packages/hushh-mcp/scripts/stage-runtime.mjs`` copies no contracts, so a
+    loader that read the file at import would crash every module importing it
+    there. Re-executing the module with the contract unreadable must succeed.
+    """
+    real_open = pathlib.Path.open
+
+    def guarded_open(self: pathlib.Path, *args, **kwargs):
+        if self.name == "reserved-branches.v1.json":
+            raise AssertionError("reserved-branches.v1.json was read at import time")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "open", guarded_open)
+    importlib.reload(reserved_branches)
+    monkeypatch.undo()
     assert reserved_branches.registry_version() == 1

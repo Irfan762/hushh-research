@@ -628,11 +628,11 @@ def _shadow_log_label(value: str) -> str:
 def _effective_writer_id(request: "StoreDomainRequest") -> str:
     """The writer the service records for this write (store_domain_data's rule)."""
     if request.mutation_plan is not None:
-        return request.mutation_plan.writer_id
+        return str(request.mutation_plan.writer_id)
     if request.upgrade_claim is not None:
         return "pkm_upgrade_orchestrator"
     if request.structure_decision is not None:
-        return request.structure_decision.source_agent or "pkm_structure_agent"
+        return str(request.structure_decision.source_agent or "pkm_structure_agent")
     return "pkm_structure_agent"
 
 
