@@ -1266,117 +1266,6 @@
       "action_ids": [],
       "authorities": {
         "actions": [],
-        "data": [],
-        "invocation": []
-      },
-      "availability": {
-        "enable_flag": null,
-        "environments": [
-          "development",
-          "uat",
-          "production"
-        ],
-        "loopback_only": false
-      },
-      "capabilities": {},
-      "credential_policy": {
-        "allowed": [
-          "hushh_managed_vertex"
-        ],
-        "default": "hushh_managed_vertex"
-      },
-      "description": "Protects Kai's mature financial domain by deciding whether freeform requests belong in governed financial memory.",
-      "evaluations": [],
-      "failure_states": [],
-      "icon": null,
-      "id": "agent_financial_guard",
-      "inputs": [
-        {
-          "description": null,
-          "name": "user_id",
-          "type": "string"
-        },
-        {
-          "description": null,
-          "name": "message",
-          "type": "string"
-        }
-      ],
-      "legacy_ids": [],
-      "manifest_path": "consent-protocol/hushh_mcp/agents/financial_guard/agent.yaml",
-      "manifest_version": 2,
-      "model": {
-        "credential_ref": null,
-        "mode": "hushh_managed_vertex",
-        "name": "gemini-default",
-        "provider": "gemini",
-        "thinking_level": "low"
-      },
-      "name": "Financial Guard Agent",
-      "native_requirements": [],
-      "one_exposure": null,
-      "optional_scopes": [],
-      "outputs": [
-        {
-          "description": null,
-          "name": "decision",
-          "type": "object"
-        }
-      ],
-      "owner": "backend",
-      "parent": "agent_one",
-      "performance": {
-        "latency_p95_ms": 30000,
-        "max_output_tokens": 4096
-      },
-      "pkm": {
-        "behavior": "none",
-        "mutation_contract": null
-      },
-      "privacy": {
-        "context_allowlist": [],
-        "plaintext_telemetry": false
-      },
-      "prompt_reference": null,
-      "required_scopes": [
-        "attr.financial.*"
-      ],
-      "rollout": {
-        "kill_switch": null,
-        "rollback": "Disable the agent and restore the prior manifest.",
-        "strategy": "off"
-      },
-      "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
-        "kind": "adk",
-        "transport": [
-          "in_process"
-        ]
-      },
-      "side_effects": [],
-      "status": "experimental",
-      "subagents": [],
-      "surfaces": {
-        "a2a": false,
-        "android": false,
-        "chat": false,
-        "ios": false,
-        "mcp": false,
-        "not_applicable_reason": null,
-        "voice": false,
-        "web": false
-      },
-      "system_instruction_sha256": "ce6442e5716f92360c059e6261761d21b3ffba210fb0d475493dc1fc65e38a92",
-      "telemetry_namespace": "agent.unclassified",
-      "tools": [],
-      "ui_type": "chat",
-      "version": "1.0.0"
-    },
-    {
-      "action_ids": [],
-      "authorities": {
-        "actions": [],
         "data": [
           "consented_financial_projection"
         ],
@@ -2866,7 +2755,7 @@
         ],
         "default": "hushh_managed_vertex"
       },
-      "description": "Determines whether a user message should become PKM, what kind of memory it represents, and whether confirmation is required before save.",
+      "description": "Determines whether a statement is memory or a live command, what kind of memory it represents, and whether confirmation is required before save.",
       "evaluations": [],
       "failure_states": [],
       "icon": null,
@@ -2996,7 +2885,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "fdef36c87ae0c05479264102e3d144ad90aad67e3e5e3e38e59d33022aa45636",
+      "system_instruction_sha256": "b5cb69eba04ba677aa93ac0f513054f3af355f51c44d7d5b61be82a9975afda2",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -3155,7 +3044,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "6d1a1cb99a905803d7fd3bc3cdd11c03ab0abb927c1db1bc7b89e58a686d30a6",
+      "system_instruction_sha256": "69d6a533d25454462c437eed9a13d1b56ced8650fd2b246e336dc7276d68dfbf",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -3184,7 +3073,7 @@
         ],
         "default": "hushh_managed_vertex"
       },
-      "description": "Splits one natural-language prompt into up to eight PKM memory candidates before downstream intent and structure planning.",
+      "description": "Splits one natural-language prompt into PKM memory candidates, eight per batch, and accounts for every line it does not select.",
       "evaluations": [],
       "failure_states": [],
       "icon": null,
@@ -3235,6 +3124,11 @@
           "description": null,
           "name": "has_more_candidates",
           "type": "boolean"
+        },
+        {
+          "description": null,
+          "name": "not_memory",
+          "type": "array"
         }
       ],
       "owner": "backend",
@@ -3279,7 +3173,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "1e84e78267b1f347080b262d340d9eb6dea687eb5d7b5890585340d053daac2a",
+      "system_instruction_sha256": "8e56fdf976d50dbfa1ef755c0a77faf1bea8b65cfc1327654afccdb5289bd6f2",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -4351,7 +4245,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "86982b064f1d8519ce86f45d422b9091288ef48770b39a2a05908908713625ea",
+      "system_instruction_sha256": "9151b817e0135693e0d162ab0f2f124fbc3bf738f8c9ba2dad3a2bc6aff4ac56",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",

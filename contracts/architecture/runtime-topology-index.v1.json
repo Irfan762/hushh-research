@@ -168,39 +168,6 @@
       }
     },
     {
-      "id": "agent_financial_guard",
-      "parent": "agent_one",
-      "rollout": {
-        "kill_switch": null,
-        "rollback": "Disable the agent and restore the prior manifest.",
-        "strategy": "off"
-      },
-      "runtime": {
-        "adk_mode": "single_turn",
-        "factory": null,
-        "kind": "adk",
-        "transport": [
-          "in_process"
-        ]
-      },
-      "status": "experimental",
-      "surfaces": {
-        "a2a": false,
-        "android": false,
-        "chat": false,
-        "ios": false,
-        "mcp": false,
-        "not_applicable_reason": null,
-        "voice": false,
-        "web": false
-      },
-      "wiring": {
-        "a2a_scope": null,
-        "in_process_dispatch": false,
-        "one_specialist_tool": null
-      }
-    },
-    {
       "id": "agent_kai",
       "parent": "agent_one",
       "rollout": {
@@ -1625,7 +1592,6 @@
     {
       "agent_ids": [
         "agent_kai",
-        "agent_financial_guard",
         "agent_portfolio_import"
       ],
       "evidence_lanes": [
@@ -5791,7 +5757,7 @@
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
-    "agent_registry": "43d5167a199656e53c32abaad786b7576e966b6a5baebf06d29d7f9b8556cb84",
+    "agent_registry": "3865529e2802574f8a94990553b310302f2791b6913670f7e94cd425bed18aff",
     "cache_manifest": "bb1fd935f1fb2ee571f6cafbc49689dea661b71993550797b779784735e57886",
     "data_plane": "1df49f95104f4d30fc5ed6de778ff88e0180f690a8d3a736e2df0cb567be8c5a",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
@@ -5799,13 +5765,13 @@
     "route_index": "55b39926a1b6fbda093c53346e7e007aceba0ed6b3e5d61af244c8d70dd8e29a",
     "route_layout": "467ac69cd8610e2c9299202b97fad06587d347c55835ea46e117668ac5e53849",
     "surface_map": "78ddd564abd49487f114a9c2ab04679fa323a00486149ddfaf45f8b4f0061091",
-    "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
+    "topology_contract": "b803d58913d6ce2094f193ed837d89a6a08b09f172abd7857c760406ece82003",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
   "summary": {
     "a2a_scope_gated_agents": 5,
     "actions": 224,
-    "agents": 19,
+    "agents": 18,
     "aliases": 4,
     "decision_required": 2,
     "in_process_specialists": 5,
