@@ -491,23 +491,29 @@ function runDirective(
   const { executeDirective, isScreenOwnedDirective } = directives;
   const store = useVoiceSessionStore.getState();
   let settled = false;
+  let genericStarted = false;
   let claimTimer: ReturnType<typeof setTimeout> | null = null;
-  const finish = (status: "opened" | "failed" | "ignored") => {
-    if (settled) return;
-    settled = true;
+  const clearClaimTimer = () => {
     if (claimTimer !== null) {
       clearTimeout(claimTimer);
       session.directiveTimers.delete(claimTimer);
       claimTimer = null;
     }
+  };
+  const finish = (status: "opened" | "failed" | "ignored") => {
+    if (settled) return;
+    settled = true;
+    clearClaimTimer();
     reportDirectiveOutcome(session, frame, status);
   };
   const runGeneric = () => {
-    if (settled) return;
+    if (settled || genericStarted) return;
     if (isStaleDirective(frame)) {
       finish("ignored");
       return;
     }
+    genericStarted = true;
+    clearClaimTimer();
     void executeDirective(frame.kind, frame.payload || {}, {
       pathname: context.pathname,
     }).then(
@@ -538,6 +544,7 @@ function runDirective(
     else runGeneric();
     return;
   }
+  if (settled || genericStarted) return;
   const waitMs = screenOwned ? context.screenTimeoutMs : context.claimMs;
   claimTimer = setTimeout(() => {
     if (claimTimer !== null) session.directiveTimers.delete(claimTimer);
