@@ -10,6 +10,12 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
 import { InviteCodeRowIcon } from "@/components/icons/agents";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
@@ -312,6 +318,8 @@ export function ConnectCirclesTab({
   onRequestConnection,
   onCancelConnectionRequest,
   refreshToken = 0,
+  createDialogOpen = false,
+  onCreateDialogOpenChange,
 }: {
   /** Lets the page keep its native beacon and voice metadata truthful without
    *  hoisting circle state into a 2,400-line component. */
@@ -339,6 +347,8 @@ export function ConnectCirclesTab({
    *  relationship -- a sent request, an accepted invite -- so the list and the
    *  open roster re-read instead of waiting for a manual refresh. */
   refreshToken?: number;
+  createDialogOpen?: boolean;
+  onCreateDialogOpenChange?: (open: boolean) => void;
 }) {
   // The context directly, not `useVault()`. That hook throws outside a
   // provider, and this tab must degrade to "circles are unavailable" rather
@@ -637,8 +647,11 @@ export function ConnectCirclesTab({
     [],
   );
 
-  if (vaultOwnerToken && actions && action === "create-circle") {
-    return (
+  if (
+    createDialogOpen ||
+    (vaultOwnerToken && actions && action === "create-circle")
+  ) {
+    const form = actions ? (
       <CreateCircleFlow
         busy={busy}
         onSubmit={async (name, kind) => {
@@ -648,13 +661,42 @@ export function ConnectCirclesTab({
             result: "success",
             circle_kind: kind,
           });
-          // `replace`, so back from the new Circle returns to the list rather
-          // than to the form that just succeeded.
-          go({ action: "circle-detail", circleId: circle.id }, "replace");
+          // Modal creation pushes details so Back returns to its launch page.
+          // The full-page flow replaces the form that just succeeded.
+          go(
+            { action: "circle-detail", circleId: circle.id },
+            createDialogOpen ? "push" : "replace",
+          );
+          onCreateDialogOpenChange?.(false);
           announceCircleMutation("location_circle_created", circle.id);
         }}
       />
+    ) : (
+      <p className="text-sm text-[color:var(--app-secondary-label)]">
+        Unlock One to create a Circle.
+      </p>
     );
+    return createDialogOpen ? (
+      <Dialog
+        modal
+        open
+        onOpenChange={(open) => {
+          if (!busy) onCreateDialogOpenChange?.(open);
+        }}
+      >
+        <DialogContent
+          showCloseButton={!busy}
+          srDescription="Name your Circle and choose its type. You can add people next."
+          onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+          onInteractOutside={(event) => { if (busy) event.preventDefault(); }}
+        >
+          <DialogHeader>
+            <DialogTitle>Create a Circle</DialogTitle>
+          </DialogHeader>
+          {form}
+        </DialogContent>
+      </Dialog>
+    ) : form;
   }
 
   if (vaultOwnerToken && actions && action === "join-circle") {

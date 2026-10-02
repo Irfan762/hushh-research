@@ -37,6 +37,11 @@ export type TopShellBreadcrumbConfig = {
   width?: "content" | "profile";
   align?: "start" | "center";
   /**
+   * Keep an agent-owned page heading out of the compact top bar even after a
+   * scroll observer offers a fallback chip.
+   */
+  suppressFallbackTitle?: boolean;
+  /**
    * Suppress the top-bar back button for this route while keeping the rest of
    * the breadcrumb/title chrome. Used by the onboarding entry screen: until the
    * user has explicitly skipped or continued into a step, there is no confirmed
@@ -86,11 +91,15 @@ export type TopShellTitleSlot<TTitle> =
  * (docs/reference/quality/app-surface-design-system.md).
  */
 export function resolveTopShellTitleSlot<TTitle>(
-  breadcrumb: Pick<TopShellBreadcrumbConfig, "items"> | null | undefined,
+  breadcrumb:
+    | Pick<TopShellBreadcrumbConfig, "items" | "suppressFallbackTitle">
+    | null
+    | undefined,
   fallbackTitle: TTitle | null,
 ): TopShellTitleSlot<TTitle> {
   const items = visibleTopShellBreadcrumbItems(breadcrumb?.items ?? []);
   if (items.length > 0) return { kind: "trail", items };
+  if (breadcrumb?.suppressFallbackTitle) return { kind: "none" };
   if (fallbackTitle) return { kind: "title", title: fallbackTitle };
   return { kind: "none" };
 }
@@ -357,10 +366,10 @@ function resolveTopShellBreadcrumbInner(
       backHref: ROUTES.ONE_HOME,
       width: "content",
       align: "center",
-      items: [
-        { label: "One", href: ROUTES.ONE_HOME },
-        { label: "Wallet" },
-      ],
+      suppressFallbackTitle: true,
+      // Wallet owns its visible PageHeader, so keep the top shell focused on
+      // the back action instead of repeating the route name beside it.
+      items: [{ label: "One", href: ROUTES.ONE_HOME }],
     };
   }
 
@@ -506,12 +515,11 @@ function resolveTopShellBreadcrumbInner(
       backHref: setupBackHref || ROUTES.ONE_HOME,
       width: "content",
       align: "center",
-      items: [
-        fromSetup
-          ? { label: "Set up", href: ROUTES.ONE_SETUP }
-          : { label: "One", href: ROUTES.ONE_HOME },
-        { label: "Finance" },
-      ],
+      suppressFallbackTitle: true,
+      // Finance owns its page header and tab rail in the route body, matching
+      // Location. Preserve the authored back target while keeping the compact
+      // bar clear of a duplicate route title.
+      items: fromSetup ? [] : [{ label: "One", href: ROUTES.ONE_HOME }],
     };
   }
 
@@ -781,10 +789,9 @@ function resolveTopShellBreadcrumbInner(
       backHref,
       width: "profile",
       align: "center",
-      items: [
-        { label: "One", href: ROUTES.ONE_HOME },
-        { label: "Consent Center" },
-      ],
+      suppressFallbackTitle: true,
+      // Consent Center draws its own agent header below this back action.
+      items: [{ label: "One", href: ROUTES.ONE_HOME }],
     };
   }
 
@@ -1022,7 +1029,10 @@ function resolveTopShellBreadcrumbInner(
         resolveCapabilitySetupBackHref(pathname, originHref) || ROUTES.ONE_HOME,
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: ROUTES.ONE_HOME }, { label: "Memory" }],
+      suppressFallbackTitle: true,
+      // Memory owns the visible route title; the shell retains only the
+      // implicit One root so deterministic back navigation stays intact.
+      items: [{ label: "One", href: ROUTES.ONE_HOME }],
     };
   }
 

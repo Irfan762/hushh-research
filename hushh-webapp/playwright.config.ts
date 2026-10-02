@@ -118,6 +118,7 @@ export default defineConfig({
       // that matters is the WKWebView the app ships in. Its fixture builds its
       // own document.
       testMatch: [
+        /connect-page-grid\.layout\.spec\.ts/,
         /first-connect-insights\.layout\.spec\.ts/,
         /chat-onboarding\.layout\.spec\.ts/,
         // agent-markdown: One's answers are read on an iPhone first; the code

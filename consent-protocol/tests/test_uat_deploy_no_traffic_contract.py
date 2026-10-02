@@ -305,10 +305,10 @@ def test_command_deploys_do_not_restore_live_or_model_pack_dependencies() -> Non
     assert "resolve_fleet_model_name" in sources[3]
 
 
-def test_one_voice_live_env_contract_is_explicit_and_dark_in_production() -> None:
+def test_one_voice_live_env_contract_is_explicit_and_enabled_in_production() -> None:
     """One Live Voice runs on Vertex ADC only, behind one flag, with an exact model pin.
 
-    Every lane carries the three names. Production ships with the flag off.
+    Every lane carries the three names. Production enables the same live path as UAT.
     The pinned id must be the registry's native-realtime entry, so the deploy
     substitution and the registry can never disagree.
     """
@@ -327,8 +327,13 @@ def test_one_voice_live_env_contract_is_explicit_and_dark_in_production() -> Non
     assert '_ONE_VOICE_LIVE_ENABLED: "false"' in backend_build
     assert '_VERTEX_LIVE_MODEL_ID: ""' in backend_build
     assert '_VERTEX_LIVE_LOCATION: ""' in backend_build
-    assert "_ONE_VOICE_LIVE_ENABLED=false" in production_workflow
+    assert "_ONE_VOICE_LIVE_ENABLED=true" in production_workflow
     assert "_ONE_VOICE_LIVE_ENABLED=true" in uat_workflow
+    assert (
+        '[[ "${_DEPLOY_ENV}" != "production" || "${_ONE_VOICE_LIVE_ENABLED}" != "true" ]]'
+        in backend_build
+    )
+    assert "python3 scripts/ci/assert_one_voice_live_probe.py" in backend_build
 
     import re
 

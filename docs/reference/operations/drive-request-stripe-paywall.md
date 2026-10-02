@@ -56,8 +56,12 @@ as end-to-end or strict cryptographic zero knowledge of the Drive documents.
    of the payment order, Stripe metadata, webhook logs, and push notification.
 3. Only the authenticated requester may create or reuse a Stripe-hosted Checkout
    Session. Checkout uses fixed `usd` and `1000` cents and a server-selected
-   return origin. A success URL is an indication to refresh status, never proof
-   of payment.
+   return origin. New Checkout sessions use Stripe's Dashboard payment-method
+   configuration. If a pending attempt used the retired `payment_method_types`
+   parameter, recovery first replays its original idempotent payload. It reuses
+   any cached session; only a definitive rejection of that parameter permits a
+   retry under a stable versioned key. A success URL is an indication to refresh
+   status, never proof of payment.
 4. The public webhook verifies Stripe's signature on the raw request body,
    matches its session, amount, currency, request ID, and opaque payer binding to
    the stored order, and settles once. Replayed or out-of-order events cannot
