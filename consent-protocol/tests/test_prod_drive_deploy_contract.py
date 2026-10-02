@@ -115,6 +115,34 @@ def test_drive_release_mode_defaults_off_until_explicit_enable():
     assert module.resolve_mode(
         requested_mode="enable", backend_deploy=True, revision=revision, runtime=runtime
     ) == (False, True)
+    revision["spec"]["containers"][0]["env"][2]["valueFrom"]["secretKeyRef"]["name"] = (
+        "BACKEND_RUNTIME_CONFIG_JSON_DRIVE_123_1"
+    )
+    assert module.resolve_mode(
+        requested_mode="preserve", backend_deploy=True, revision=revision, runtime=runtime
+    ) == (False, False)
+
+
+def test_production_backend_config_stays_on_candidate_and_frontend_scope_skips_places():
+    workflow = yaml.safe_load((ROOT / ".github/workflows/deploy-production.yml").read_text())
+    steps = workflow["jobs"]["deploy"]["steps"]
+    by_name = {step["name"]: step for step in steps}
+    places = by_name["Verify production Places prerequisites"]
+    assert "steps.scope.outputs.deploy_backend == 'true'" in places["if"]
+    backend_sync = by_name["Sync canonical hosted runtime secrets"]
+    frontend_sync = by_name["Sync frontend hosted runtime secrets"]
+    assert backend_sync["if"] == "steps.scope.outputs.deploy_backend == 'true'"
+    assert frontend_sync["if"] == "steps.scope.outputs.deploy_frontend == 'true'"
+    assert "sync_backend_runtime_secrets.py" in backend_sync["run"]
+    assert "sync_frontend_runtime_secrets.py" not in backend_sync["run"]
+    assert "sync_frontend_runtime_secrets.py" in frontend_sync["run"]
+    deploy = by_name["Deploy backend using Cloud Build"]["run"]
+    assert (
+        'DRIVE_SUBSTITUTIONS=",_BACKEND_RUNTIME_CONFIG_JSON_SECRET=${DRIVE_CANDIDATE_RUNTIME_SECRET}"'
+        in deploy
+    )
+    readiness = by_name["Verify backend candidate readiness and exact-SHA provenance"]["run"]
+    assert 'expected_runtime_secret = os.environ["DRIVE_CANDIDATE_RUNTIME_SECRET"]' in readiness
 
 
 def test_disabling_drive_preserves_jobs_until_promotion_and_restores_on_failure():
@@ -290,7 +318,11 @@ def test_older_target_keeps_release_tooling_but_cannot_enable_drive(tmp_path, mo
         "work_drain_scheduler_snapshot_prod.py",
         "restore_prod_after_release_failure.sh",
     )
-    current_paths = [*old_paths, *(f"deploy/drive/{name}" for name in tools)]
+    current_paths = [
+        *old_paths,
+        "scripts/ci/verify-prod-places-readiness.py",
+        *(f"deploy/drive/{name}" for name in tools),
+    ]
     for path in current_paths:
         write(path, (ROOT / path).read_text())
     registry = "consent-protocol/hushh_mcp/services/drive_prod_registry_provisioning.py"
@@ -315,9 +347,18 @@ def test_older_target_keeps_release_tooling_but_cannot_enable_drive(tmp_path, mo
     )
     for path in current_paths:
         # These two existing helpers are consumed directly from RUNNER_TEMP.
-        if path.endswith(("resolve-cloud-run-deploy-revision.py", "resolve-uat-verified-image.py")):
+        if path.endswith(
+            (
+                "resolve-cloud-run-deploy-revision.py",
+                "resolve-uat-verified-image.py",
+                "verify-prod-places-readiness.py",
+            )
+        ):
             continue
         assert (repo / path).read_text() == (ROOT / path).read_text()
+    assert (runner / "release-tools/verify-prod-places-readiness.py").read_text() == (
+        ROOT / "scripts/ci/verify-prod-places-readiness.py"
+    ).read_text()
     assert not (repo / registry).exists(), (
         "Release tooling must not replace target application code"
     )
