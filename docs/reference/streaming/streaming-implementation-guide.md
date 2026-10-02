@@ -172,3 +172,15 @@ The canonical app stream surface is `hushh-webapp/components/app-ui/stream-progr
 - Validate: `npm run typecheck`, `npm run lint -- --max-warnings=0`, `npm run test:ci`.
 - Validate backend: `ruff`, `mypy`, `pytest`.
 - Run manual smoke on Import / Optimize / Analyze in iOS, Android, and web.
+
+
+## Typed-chat emoji reactions
+
+One may call `react_to_message(emoji)` during the normal typed-chat turn. The
+existing AG-UI tool-result frame carries `status: shown` and a validated emoji;
+an optional `clientMessageId` comes only from server-owned joined-input metadata.
+The client renders one badge on the bound user bubble and excludes the call from
+activity rows and diagnostics. Invalid, repeated or ignored results show nothing.
+The tool does not end the answer. Reactions are not sealed in ADK history or
+restored after reload. No new endpoint, SSE event, storage schema or model
+classifier is introduced. Voice instructions remain gated out.

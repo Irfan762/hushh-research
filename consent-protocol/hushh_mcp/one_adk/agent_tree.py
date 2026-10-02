@@ -132,6 +132,7 @@ from hushh_mcp.one_adk.finance_market_tools import (
     get_ticker_news,
 )
 from hushh_mcp.one_adk.follow_up_suggestions import follow_up_instruction, suggest_follow_ups
+from hushh_mcp.one_adk.message_reactions import react_to_message, reaction_instruction
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
 from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instruction
 from hushh_mcp.one_adk.queued_input import club_queued_input
@@ -825,7 +826,11 @@ def _one_runtime_instruction(context: Any) -> str:
     started_at = time.perf_counter()
     try:
         state_getter = getattr(getattr(context, "state", None), "get", None)
-        return _compose_one_runtime_instruction(context) + follow_up_instruction(state_getter)
+        return (
+            _compose_one_runtime_instruction(context)
+            + follow_up_instruction(state_getter)
+            + reaction_instruction(state_getter)
+        )
     finally:
         record_instruction_build((time.perf_counter() - started_at) * 1000)
 
@@ -2424,6 +2429,7 @@ def _one_roster_tools(
         propose_calendar_cancellation,
         propose_gmail_mailbox_change,
         suggest_follow_ups,
+        react_to_message,
     ]
     if _CRM_PRODUCT_AVAILABLE:
         tools.insert(tools.index(ask_consent_agent), ask_connected_systems_agent)
@@ -2473,7 +2479,9 @@ def _before_one_tool(tool: Any, args: dict, tool_context: Any) -> dict | None:
     blocked = block_tools_during_consent_answer(tool_context) or block_tools_during_feed_attention(
         tool_context
     )
-    if blocked or follow_ups:
+    # Presentation metadata reads nothing; consent/feed blocks still apply.
+    reaction = getattr(tool, "func", None) is react_to_message
+    if blocked or follow_ups or reaction:
         return blocked
     return before_external_read_tool(tool, args, tool_context)
 

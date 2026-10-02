@@ -378,6 +378,8 @@ import {
   type QueuedAgentPrompt,
 } from "@/lib/agent/agent-chat-prompt-queue";
 import { LiveTurnQueue } from "@/lib/agent/agent-chat-live-turn-queue";
+import { AgentMessageReactionBadge } from "./agent-message-reaction";
+import { attachMessageReaction, type AgentMessageReaction } from "@/lib/agent/agent-message-reaction";
 import { AgentQueuedStack, QueuedJoinedCaption } from "@/components/agent/agent-queued-stack";
 import { useAgentChatSlowNotice } from "@/components/agent/agent-chat-slow-notice";
 import {
@@ -468,6 +470,7 @@ type AgentMessage = {
   lostTurn?: AgentLostTurn;
   /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
   followUps?: string[];
+  reaction?: AgentMessageReaction | null;
   /**
    * The information request this outcome chip or continuation answer belongs
    * to. Set live when the turn starts; restored from history metadata
@@ -673,6 +676,7 @@ type AgentRunTurnOptions = {
   driveSearchSelection?: { jobId: string; position: number };
   kycInformationSaveConfirmed?: boolean;
   appendUserMessage?: boolean;
+  reactionUserMessageId?: string;
   replaceAssistantMessageId?: string | null;
   deferPkmContext?: boolean;
   /** Pasted text sent as separate document parts beside the typed text. */
@@ -1998,7 +2002,7 @@ export function AgentBubble({
           className={cn(
             "text-sm leading-6",
             isUser
-              ? CHAT_USER_BUBBLE_CLASSNAME
+              ? cn(CHAT_USER_BUBBLE_CLASSNAME, "relative")
               : showAssistantBubble
                 ? cn(ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME, "relative")
                 : "px-0 py-1 text-foreground",
@@ -2020,6 +2024,7 @@ export function AgentBubble({
                 </div>
               ) : null}
               {gmailInformationRequestAttachment}
+              {message.reaction && <AgentMessageReactionBadge reaction={message.reaction} />}
             </>
           ) : shouldRenderStreamPanel ? (
             <AgentTurnStreamPanel
@@ -6189,6 +6194,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             setPendingSpecialistDirective(directive);
           },
+          onMessageReaction: ({ reaction, clientMessageId }) => {
+            if (streamAbortController.signal.aborted || latestVisibleTurnIdRef.current !== debugTurnId) return;
+            const targetId = clientMessageId ? `msg-queued-${clientMessageId}`
+              : options.reactionUserMessageId ?? userMessages.at(-1)?.id ?? userMessage.id;
+            setMessages(current => attachMessageReaction(current, targetId, reaction));
+          },
           onFollowUpSuggestions: (followUps) => {
             if (streamAbortController.signal.aborted) return;
             updateMessage(assistantMessageId, (message) => ({ ...message, followUps }));
@@ -8002,6 +8013,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         await runAgentTurn(retryText, {
           source: "typed",
           appendUserMessage: false,
+          reactionUserMessageId: previousUserMessage.id,
           replaceAssistantMessageId: messageId,
           attachments: retryAttachments,
         });
