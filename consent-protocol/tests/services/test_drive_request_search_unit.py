@@ -665,6 +665,7 @@ async def test_request_returns_a_small_inline_page_then_uses_full_background_pag
     service = DriveOwnerSearchService(store=store, transport=SimpleNamespace())
     service.run_one = AsyncMock()
     service.status = AsyncMock(return_value={"jobId": "synthetic-job", "status": "queued"})
+    after_page = AsyncMock()
     monkeypatch.setattr(search_module, "wake_drive_work", AsyncMock())
     await service.create_for_request(
         user_id="owner",
@@ -677,10 +678,12 @@ async def test_request_returns_a_small_inline_page_then_uses_full_background_pag
         },
         plan={"mode": "find", "terms": ["standup"], "file_kind": "document"},
         require_current=AsyncMock(),
+        after_page=after_page,
     )
     assert service.run_one.await_args.kwargs["max_pages"] == 1
     assert service.run_one.await_args.kwargs["deadline_seconds"] == 15
     assert service.run_one.await_args.kwargs["initial_page_size"] == 25
+    assert service.run_one.await_args.kwargs["after_page"] is after_page
 
     calls = []
 
@@ -1224,3 +1227,91 @@ async def test_unavailable_folder_and_traversal_limits_cannot_claim_completeness
         {"user_id": "owner", "checkpoint": checkpoint}
     )
     assert incomplete and done and checkpoint["coverage_counts"]["workLimitReached"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("handoff_failure", ["unavailable", "deadline"])
+@pytest.mark.parametrize("page_status", ["running", "completed"])
+async def test_page_handoff_failure_preserves_checkpoint_without_provider_retry(
+    monkeypatch, handoff_failure, page_status
+):
+    import asyncio
+
+    checkpoint = _checkpoint()
+    done = page_status == "completed"
+    committed_checkpoint = {**checkpoint, "page_token": None if done else "committed-next-page"}
+    job = {
+        "user_id": "owner",
+        "job_id": "synthetic-job",
+        "checkpoint": checkpoint,
+        "lease_id": "claimed-lease",
+    }
+    persisted = {"status": "running", "lease_id": job["lease_id"]}
+
+    async def commit_page(*args, **kwargs):
+        persisted.update(status=page_status, lease_id=None if done else job["lease_id"])
+        return {"status": page_status, "matched": 25}
+
+    async def release(*args, **kwargs):
+        # A final commit already clears the persisted lease. Cleanup must
+        # return that terminal state, never reopen the completed search.
+        if persisted["lease_id"] is None:
+            assert persisted["status"] == "completed"
+            return "completed"
+        return "queued"
+
+    store = SimpleNamespace(
+        claim=AsyncMock(return_value=job),
+        require_current=AsyncMock(),
+        commit_page=AsyncMock(side_effect=commit_page),
+        release=AsyncMock(side_effect=release),
+    )
+    wake = AsyncMock()
+    monkeypatch.setattr(search_module, "wake_drive_work", wake)
+    scanner = DriveOwnerSearchService(store=store, transport=SimpleNamespace())
+    scanner._page = AsyncMock(return_value=(committed_checkpoint, [{}] * 25, False, done))
+
+    async def unavailable_handoff(**kwargs):
+        assert job["checkpoint"] == committed_checkpoint
+        if handoff_failure == "deadline":
+            await asyncio.sleep(2)
+        raise RuntimeError("handoff unavailable")
+
+    assert await scanner.run_one(
+        user_id="owner",
+        job_id="synthetic-job",
+        deadline_seconds=1,
+        after_page=unavailable_handoff,
+    ) == ("completed" if done else "queued")
+    scanner._page.assert_awaited_once()
+    store.commit_page.assert_awaited_once()
+    if done and handoff_failure == "unavailable":
+        store.release.assert_not_awaited()
+    else:
+        store.release.assert_awaited_once_with(job)
+    wake.assert_awaited_once_with("suggestions")
+    assert job["checkpoint"] == committed_checkpoint
+    if done:
+        from hushh_mcp.services.drive_trusted_auto_service import DriveTrustedAutoService
+
+        assert persisted == {"status": "completed", "lease_id": None}
+        # The search is no longer due. Its committed request still enters the
+        # independent batch continuation lane after the wake.
+        auto = DriveTrustedAutoService(
+            sharing=SimpleNamespace(
+                due_trusted_batches=AsyncMock(
+                    return_value=[
+                        {
+                            "user_id": "owner",
+                            "request_id": "pending-request",
+                        }
+                    ]
+                )
+            ),
+            bulk=object(),
+            payment=object(),
+            wake=wake,
+        )
+        auto.share_available = AsyncMock(return_value=1)
+        assert await auto.continue_batches(max_jobs=1) == 1
+        auto.share_available.assert_awaited_once_with(user_id="owner", request_id="pending-request")
