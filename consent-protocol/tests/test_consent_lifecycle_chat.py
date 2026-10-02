@@ -1659,9 +1659,7 @@ async def test_document_request_accepts_only_same_invocation_queued_user_dates()
         role="user", parts=[types.Part(text="Ask Rahul for last 3 days standup notes")]
     )
     context.invocation_id = "current-invocation"
-    dates = types.Content(
-        role="user", parts=[types.Part(text="Use 2026-09-29 through 2026-10-01")]
-    )
+    dates = types.Content(role="user", parts=[types.Part(text="Use 2026-09-29 through 2026-10-01")])
 
     def queued_event(*, invocation_id="current-invocation", kind=QUEUED_INPUT_KIND, author="user"):
         return Event(

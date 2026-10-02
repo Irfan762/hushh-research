@@ -4679,6 +4679,7 @@ class OneLocationAgentService:
         page: int = 1,
         limit: int = 20,
         candidate_user_id: str | None = None,
+        candidate_user_ids: list[str] | None = None,
         audience: str = "all",
     ) -> dict[str, Any]:
         """Search existing Connect profiles before pagination.
@@ -4760,6 +4761,16 @@ class OneLocationAgentService:
         identifier_search = bool(exact_email or exact_phone)
         needle = " ".join(raw_query.translate(_DIRECTORY_SEPARATOR_FOLD).split())
         target = (candidate_user_id or "").strip() or None
+        targets = (
+            None
+            if candidate_user_ids is None
+            else sorted({uid.strip() for uid in candidate_user_ids if uid.strip()})
+        )
+        if targets == []:
+            return {"items": [], "page": page, "hasMore": False}
+        if targets is not None and len(targets) > 100:
+            raise ValueError("Directory profile lookup is limited to 100 people")
+
         # An unrecognised audience widens to "all" rather than narrowing: a typo
         # in a caller must not silently hide people who are really there.
         requested_audience = (audience or "all").strip().lower()
@@ -4889,6 +4900,8 @@ class OneLocationAgentService:
                   )
                 )
                 AND (:candidate_user_id IS NULL OR profile.user_id = :candidate_user_id)
+                AND (CAST(:candidate_user_ids AS TEXT[]) IS NULL
+                     OR profile.user_id = ANY(CAST(:candidate_user_ids AS TEXT[])))
                 AND (
                   EXISTS (
                     SELECT 1
@@ -4966,6 +4979,7 @@ class OneLocationAgentService:
         params: dict[str, Any] = {
             "owner_user_id": owner_user_id,
             "candidate_user_id": target,
+            "candidate_user_ids": targets,
             "contact_sync_contract_version": CONTACT_SYNC_CONSENT_CONTRACT_VERSION,
             "technical_uuid_pattern": UUID_LIKE_LABEL_PATTERN,
             "opaque_label_min_length": OPAQUE_LABEL_MIN_LENGTH,
