@@ -113,7 +113,7 @@ export type ToolResultTone = "success" | "neutral" | "failure" | "pending";
  * `location_updates_pending` keep their pinned failure tone (their screens
  * render the interim state themselves and the panel hides the card).
  */
-const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED]);
+const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_requested"]);
 
 /** An armed-but-unsent outcome: neither success nor failure yet. */
 /**
@@ -137,6 +137,9 @@ export function toolResultTone(
   // An armed Save My Soul is "sending your position", whatever `ok` says: the
   // relay sends it with ok:false because nothing has been delivered yet.
   if (isPendingStatus(value)) return "pending";
+  // The review card may already be visible after a lost acknowledgement.
+  // This says nothing about a send, so avoid both success and failure claims.
+  if (value === "draft_open_unconfirmed") return "neutral";
   if (
     !ok ||
     !value ||

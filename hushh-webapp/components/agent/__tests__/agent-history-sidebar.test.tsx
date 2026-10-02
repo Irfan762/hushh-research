@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { AgentHistorySidebar } from "@/components/agent/agent-history-sidebar";
 import type { AgentChatConversation } from "@/lib/services/agent-chat-client";
@@ -35,7 +35,6 @@ function renderSidebar(extra: Partial<Parameters<typeof AgentHistorySidebar>[0]>
 }
 
 describe("AgentHistorySidebar", () => {
-  afterEach(() => vi.useRealTimers());
   it("places Drive activity above chats on One and hides it on Puppy", () => {
     const activity = <div data-testid="drive-activity">Drive sharing update</div>;
     const first = renderSidebar({ driveActivity: activity });
@@ -81,34 +80,37 @@ describe("AgentHistorySidebar", () => {
     // Regression: the list sends `last_message_at` as epoch seconds. Parsing
     // it as a date string gave NaN, so every chat grouped as "Older" and no
     // row showed its time.
-    // Keep the age within Today even when CI runs just after midnight.
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0));
-    const seconds = (Date.now() - 19 * 60_000) / 1000;
-    render(
-      <AgentHistorySidebar
-        conversations={[{ ...conversations[0], created_at: null, updated_at: seconds, last_message_at: seconds }]}
-        activeConversationId="conv_1"
-        mode="desktop"
-        onCreateNew={vi.fn()}
-        onSelectConversation={vi.fn()}
-        onRenameConversation={vi.fn()}
-        onDeleteConversation={vi.fn()}
-      />,
-    );
-    const today = screen.getByRole("list", { name: "Today conversations" });
-    expect(within(today).getByText("19m")).toBeInTheDocument();
-    expect(screen.queryByRole("list", { name: "Older conversations" })).not.toBeInTheDocument();
-    // Desktop reveals the age and the actions control together on hover or
-    // focus (founder direction, 2026-09-29), and holds them while the menu is open.
-    const age = within(today).getByText("19m");
-    const actions = within(today).getByRole("button", { name: "Open actions for What needs a reply today?" });
-    // Keep both widths reserved so hover and focus do not bounce the row.
-    for (const element of [age, actions.parentElement!]) {
-      expect(element.className).toContain("opacity-0");
-      expect(element.className).toContain("group-hover:opacity-100");
-      expect(element.className).toContain("group-focus-within:opacity-100");
-      expect(element.className).toContain("motion-reduce:transition-none");
+    vi.setSystemTime(new Date("2026-09-29T12:30:00.000Z"));
+    try {
+      const seconds = (Date.now() - 19 * 60_000) / 1000;
+      render(
+        <AgentHistorySidebar
+          conversations={[{ ...conversations[0], created_at: null, updated_at: seconds, last_message_at: seconds }]}
+          activeConversationId="conv_1"
+          mode="desktop"
+          onCreateNew={vi.fn()}
+          onSelectConversation={vi.fn()}
+          onRenameConversation={vi.fn()}
+          onDeleteConversation={vi.fn()}
+        />,
+      );
+      const today = screen.getByRole("list", { name: "Today conversations" });
+      expect(within(today).getByText("19m")).toBeInTheDocument();
+      expect(screen.queryByRole("list", { name: "Older conversations" })).not.toBeInTheDocument();
+      // Desktop reveals the age and the actions control together on hover or
+      // focus (founder direction, 2026-09-29), and holds them while the menu is open.
+      const age = within(today).getByText("19m");
+      const actions = within(today).getByRole("button", { name: "Open actions for What needs a reply today?" });
+      // Keep both widths reserved so hover and focus do not bounce the row.
+      for (const element of [age, actions.parentElement!]) {
+        expect(element.className).toContain("opacity-0");
+        expect(element.className).toContain("group-hover:opacity-100");
+        expect(element.className).toContain("group-focus-within:opacity-100");
+        expect(element.className).toContain("motion-reduce:transition-none");
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 
