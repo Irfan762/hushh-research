@@ -409,8 +409,8 @@ steps:
 
   # Candidate-image GenAI probe under the exact runtime identity. This runs
   # before the calling workflow can promote a no-traffic revision when the
-  # change-aware verification plan selects it. Direct backend builds retain the
-  # conservative default of running this probe.
+  # operator explicitly opts in. Direct backend builds do not make paid model
+  # calls by default; schema, authority, provenance and health gates still run.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "bash"
     args:
@@ -420,7 +420,7 @@ steps:
         case "${_VERIFY_MANAGED_VERTEX_RUNTIME}" in
           true) ;;
           false)
-            echo "Skipping managed Vertex candidate probe: not selected by the verification plan."
+            echo "Skipping managed Vertex candidate probe: live model checks were not requested."
             exit 0
             ;;
           *)
@@ -719,7 +719,7 @@ substitutions:
   _RUNTIME_ENVIRONMENT: ""
   # Direct backend builds remain conservative. The UAT workflow explicitly
   # overrides this from its authoritative changed-SHA verification plan.
-  _VERIFY_MANAGED_VERTEX_RUNTIME: "true"
+  _VERIFY_MANAGED_VERTEX_RUNTIME: "false"
   _IMAGE_TAG: v2.1.0
   _DEPLOY_ENV: manual
   _DEPLOY_SOURCE: manual
