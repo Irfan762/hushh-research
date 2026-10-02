@@ -169,6 +169,17 @@ def test_production_candidate_config_never_opens_canonical_serving_secret():
     )
     assert canonical == {"google_drive_live": "false", "environment": "production"}
     assert candidate is None
+    disabled_args.production_drive_candidate_secret = CANDIDATE_SECRET_NAME
+    canonical, candidate = module._split_production_drive_candidate_config(
+        disabled_args,
+        {"google_drive_live": "false", "environment": "production"},
+    )
+    assert canonical is None
+    assert candidate == {"google_drive_live": "false", "environment": "production"}
+    with pytest.raises(ValueError, match="per-release candidate secret"):
+        module._validate_connector_rollout(
+            _args(environment="production", candidate_secret="unreviewed-secret")  # noqa: S106
+        )
 
 
 def test_all_users_mode_cannot_be_combined_with_cohort():
