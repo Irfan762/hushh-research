@@ -657,6 +657,7 @@ export default function ConnectPageClient() {
   const connectionsFirstPageRequestRef = useRef<number | null>(null);
   const connectionReconcileInFlightRef = useRef<Promise<void> | null>(null);
   const connectionReconcileQueuedRef = useRef(false);
+  const directoryReconcileQueuedRef = useRef(false);
   const lastForegroundReconcileAtRef = useRef(0);
   const suppressNextLocalGraphEventRef = useRef(false);
   const [outgoingRequestIds, setOutgoingRequestIds] = useState<
@@ -905,8 +906,15 @@ export default function ConnectPageClient() {
   );
 
   const reconcileConnectionSurfaces = useCallback(
-    ({ ensureAfterCurrent = false }: { ensureAfterCurrent?: boolean } = {}) => {
+    ({
+      ensureAfterCurrent = false,
+      refreshDirectory = true,
+    }: {
+      ensureAfterCurrent?: boolean;
+      refreshDirectory?: boolean;
+    } = {}) => {
       if (!user) return Promise.resolve();
+      if (refreshDirectory) directoryReconcileQueuedRef.current = true;
       const active = connectionReconcileInFlightRef.current;
       if (active) {
         if (ensureAfterCurrent) connectionReconcileQueuedRef.current = true;
@@ -922,7 +930,10 @@ export default function ConnectPageClient() {
             }),
             loadOutgoingRequestIds(),
           ]);
-          setDirectoryRefreshNonce((nonce) => nonce + 1);
+          if (directoryReconcileQueuedRef.current) {
+            directoryReconcileQueuedRef.current = false;
+            setDirectoryRefreshNonce((nonce) => nonce + 1);
+          }
           setCircleRefreshToken((token) => token + 1);
         } while (connectionReconcileQueuedRef.current);
       };
@@ -1082,7 +1093,13 @@ export default function ConnectPageClient() {
     // while Connect remains visible, since FCM and SSE are best-effort.
     const timer = window.setInterval(() => {
       if (document.visibilityState === "visible") {
-        void reconcileConnectionSurfaces({ ensureAfterCurrent: true });
+        // Idle repair reads must not spend the person's directory search
+        // allowance. Mutations, push, focus and outgoing-resolution events
+        // still refresh the directory through the normal reconciliation path.
+        void reconcileConnectionSurfaces({
+          ensureAfterCurrent: true,
+          refreshDirectory: false,
+        });
       }
     }, 60_000);
     return () => window.clearInterval(timer);
