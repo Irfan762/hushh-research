@@ -13,7 +13,7 @@ describe("Connect canonical surface contract", () => {
     );
 
     expect(source).toContain("<AppPageShell");
-    expect(source).toContain('width="agent"');
+    expect(source).toContain('width="reading"');
     // The shared top bar owns the single "Connect" title (as on Feed), so the
     // page must not repeat it as an in-body header.
     expect(source).not.toContain("<PageHeader");
@@ -314,13 +314,13 @@ describe("the Location roster hands a connection request to Connect", () => {
     expect(body).toContain("action=circle-detail");
     expect(body).not.toContain("ConnectionsService.sendRequest");
   });
-  it("keeps automated reviewer sessions from starting the ambient circle reconcile", () => {
+  it("keeps automated reviewer sessions from provisioning a Circle", () => {
     const source = readFileSync(
       join(process.cwd(), "components/connect/circles/connect-circles-tab.tsx"),
       "utf8",
     );
     const gate = source.slice(
-      source.indexOf("const alreadyReconciled ="),
+      source.indexOf("const alreadyProvisioned ="),
       source.indexOf("OneLocationService.ensureTrustedSystemCircle("),
     );
 

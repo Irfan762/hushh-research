@@ -7,7 +7,7 @@ vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: mocks.replace }
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: mocks.owner }, loading: false }) }));
 vi.mock("@/lib/vault/vault-context", () => ({ useVault: () => ({ vaultKey: "synthetic-key", vaultOwnerToken: "synthetic-owner-token", ownerTokenStatus: "ready" }) }));
 vi.mock("@/components/vault/vault-lock-guard", () => ({ VaultLockGuard: ({ children }: { children: React.ReactNode }) => mocks.locked ? <div>Unlock vault</div> : children }));
-vi.mock("@/lib/profile/drive-oauth-popup", () => ({ hasDrivePopupMarker: () => false }));
+vi.mock("@/lib/profile/drive-oauth-popup", () => ({ isDrivePopupReturn: () => false }));
 vi.mock("@/lib/agent/drive-oauth-chat-recovery", () => ({
   readDriveChatRecoveryHandoff: () => ({ reason: "web_full_page", ownerUserId: "owner", attemptId: "a".repeat(43), returnTo: mocks.returnTo, customConnector: { connectorId: "custom_" + "a".repeat(32), revision: "aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa" } }),
   markDriveChatRecoveryReturned: mocks.markReturned,

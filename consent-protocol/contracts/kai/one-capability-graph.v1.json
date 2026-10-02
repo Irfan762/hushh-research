@@ -21273,6 +21273,153 @@
     },
     {
       "aliases": [
+        "Open a person's profile",
+        "open their profile",
+        "show their profile"
+      ],
+      "authorization": {
+        "guard_ids": [
+          "auth_signed_in"
+        ],
+        "ownership": "server_resolved_for_target_entity",
+        "predicates": [
+          {
+            "authority": "server",
+            "effect": "required",
+            "id": "auth_signed_in"
+          }
+        ],
+        "server_revalidation": "identity_consent_and_domain_service"
+      },
+      "availability": {
+        "feature_flags": [],
+        "product_available": true
+      },
+      "capability_id": "route.person_profile",
+      "confirmation": {
+        "mode": "none",
+        "required": false,
+        "requires_trusted_tap": false,
+        "surface": null
+      },
+      "description": "Navigates to the profile of one person already confirmed by name. It changes nothing, and it needs that person's profile reference, never a guessed one.",
+      "execution": {
+        "binding_ref": "route:/people/[personRef]",
+        "executor": {
+          "kind": "existing_route",
+          "settlement": "directive_ledger_settlement"
+        },
+        "mode": "client_directive",
+        "outcome": "NAVIGATE",
+        "target": {
+          "path": "route",
+          "status": "wired",
+          "target": "/people/[personRef]"
+        }
+      },
+      "goal_id": "goal.route.person_profile",
+      "idempotency": {
+        "scope": "action_and_normalized_slots",
+        "strategy": "action_directive_ledger"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "kind": "action",
+      "label": "Open a person's profile",
+      "navigation": {
+        "fallback": "/people/[personRef]",
+        "routes": [
+          "/people/[personRef]"
+        ],
+        "screens": [
+          "one_person_profile"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "preconditions": {
+        "guard_ids": [
+          "auth_signed_in"
+        ],
+        "mounted_surface_required": false,
+        "requires_signed_in": true,
+        "requires_vault": false
+      },
+      "render_surface": null,
+      "required_entities": [],
+      "search_keywords": [
+        "profile",
+        "person",
+        "people"
+      ],
+      "settlement_proof": "validated_route_settlement",
+      "side_effect": {
+        "classification": "navigation"
+      },
+      "supported_entrypoints": [
+        "voice",
+        "chat",
+        "typed_search",
+        "command_bar",
+        "ui"
+      ],
+      "technical_interaction": {
+        "allowed_types": [
+          "oauth",
+          "native_permission"
+        ],
+        "policy": "platform_required_only",
+        "requires_user_interaction": false
+      },
+      "telemetry_event": "app_intelligence.action",
+      "version": 1
+    },
+    {
+      "aliases": [
         "Choose Country Code",
         "choose country code",
         "select country",
@@ -37034,7 +37181,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "7b01423d18dd6a2df410fe2820d46887e49044562896ff2cba21300f62ee1c90",
+      "projection_digest": "fafde1783584c33d3b1670c3a40645c1a876301acf37cead0f382eca8aed0275",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -37053,7 +37200,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "a2886808e61bf4cb",
+      "source_revision": "32b235f681091788",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -38571,7 +38718,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "a2886808e61bf4cb",
+    "source_revision": "32b235f681091788",
     "web": {
       "actions": [
         {
@@ -38614,7 +38761,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "dd38bba84119ae174e27694c7381847aa615176649898fd43b9edd3614fd84d8",
+      "projection_digest": "f4d44aa2074485d28c58117d77f86038d6296c849e594d5882b53ea7d6bc7f6c",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -38633,7 +38780,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "a2886808e61bf4cb",
+      "source_revision": "32b235f681091788",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -40190,7 +40337,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "a2886808e61bf4cb",
+  "revision": "32b235f681091788",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -41632,7 +41779,8 @@
         "people.profile.connect",
         "people.profile.manage_consent",
         "people.profile.remove_connection",
-        "people.profile.review_information_request"
+        "people.profile.review_information_request",
+        "route.person_profile"
       ],
       "capability_id": "screen:/people/[personRef]",
       "kind": "screen",
@@ -41884,9 +42032,12 @@
     }
   ],
   "semantic_diff": {
-    "added": [],
+    "added": [
+      "actions:route.person_profile"
+    ],
     "breaking": [],
     "changed": [
+      "screens:screen:/people/[personRef]",
       "services:service.email",
       "services:service.kyc",
       "workflows:workflow.setup.email"
@@ -44140,18 +44291,18 @@
     "capability_graph_evolution": "46ef51500f679427001b34ed111efc260b878327742c8f15036030782321271b",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "7e6fc3787daf322e97c1d546bbfe62856d51db9088944dbbbb43482ef3a917c0",
+    "kai_action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
     "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "054141b4aaf04ef13ce9bd139a1044287be8703c1e65015cc338a970d4fa51ed",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
-    "product_agent_registry": "c653d4ef1de5052b109b7688ee2483b8698ed888ae325702e9ccf9bcff407ac3",
-    "route_orchestration_index": "2c0a80ce5bfb82c804a7561ad751d0ee59cc2280ed6cdec670a27baf34b81697",
+    "product_agent_registry": "03ddee8e63e5295b8b71efd73595abd299fd1aacccc839071293e183a6952563",
+    "route_orchestration_index": "bc6f4d1018e15a2c50474ad85ea48cf2a53c016158edeaba5c2b023309672e11",
     "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
   },
-  "source_revision": "a2886808e61bf4cb",
+  "source_revision": "32b235f681091788",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "a2886808e61bf4cb",
+    "current_graph_revision": "32b235f681091788",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {

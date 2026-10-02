@@ -186,6 +186,11 @@ function driveFeedLine(
         ? "Withdrew their file request"
         : status === "pending" ? "Some shared files are available" : "Getting your shared files";
     case "document_share_outcome":
+      if (status === "no_files_shared") return "No files were shared";
+      if (status === "no_match")
+        return sharedWithMe
+          ? "No files were shared"
+          : "No matching files found; nothing was shared";
       if (sharedWithMe) {
         return status === "partial"
           ? "Sharing finished with some files unavailable"

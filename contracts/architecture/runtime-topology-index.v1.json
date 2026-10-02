@@ -5085,7 +5085,8 @@
           "people.profile.connect",
           "people.profile.manage_consent",
           "people.profile.remove_connection",
-          "people.profile.review_information_request"
+          "people.profile.review_information_request",
+          "route.person_profile"
         ],
         "delegate_agent_ids": [],
         "playbook_id": "route.people.person_profile"
@@ -5733,21 +5734,21 @@
   "schema_version": "hushh.runtime_topology_index.v1",
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
-    "action_gateway": "7e6fc3787daf322e97c1d546bbfe62856d51db9088944dbbbb43482ef3a917c0",
-    "agent_registry": "c653d4ef1de5052b109b7688ee2483b8698ed888ae325702e9ccf9bcff407ac3",
+    "action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
+    "agent_registry": "03ddee8e63e5295b8b71efd73595abd299fd1aacccc839071293e183a6952563",
     "cache_manifest": "9f19ca3738aec55f7b572ddb5f99ef513ec9177cc38a37e3bec76dc9bb3cf1f9",
     "data_plane": "3a86228cfa3493809e9c61873aa513277b900ac9e8238d83041c1d5b68467dd8",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
-    "one_specialist_tools": "32d359f6ec4e3841a180cfd993f409b357e3c1a67676b0213a051d453436dbad",
-    "route_index": "2c0a80ce5bfb82c804a7561ad751d0ee59cc2280ed6cdec670a27baf34b81697",
+    "one_specialist_tools": "3dc81d307ef8cf9932ca3f80c2d54915515161968d0303feccea401e8afebce9",
+    "route_index": "bc6f4d1018e15a2c50474ad85ea48cf2a53c016158edeaba5c2b023309672e11",
     "route_layout": "57993df945d3b7923000063c7cc7826dc21ac179f110ef289df64319d088e435",
-    "surface_map": "6b2e1c2adc6cd279afa2fadc6297896e15c8c90fd6e8cbbe08b341cd8a918219",
+    "surface_map": "08dc32342b60438d325b07e45eab815abb798a89c7a91deb220363b6dfa88833",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
   "summary": {
     "a2a_scope_gated_agents": 5,
-    "actions": 223,
+    "actions": 224,
     "agents": 19,
     "aliases": 4,
     "decision_required": 2,

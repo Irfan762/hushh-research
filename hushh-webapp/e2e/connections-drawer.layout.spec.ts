@@ -292,12 +292,14 @@ for (const width of [390, 768, 1440])
     const height = 720;
     await page.setViewportSize({ width, height });
     await mountAppChrome(page, barHeight);
+    const bottomBarBefore = await page.locator("[data-fixture-bottom-bar]").boundingBox();
     await page.getByRole("button", { name: "Open drawer", exact: true }).click();
     const chats = page.getByRole("dialog", { name: "Agent chat history", exact: true });
     const panel = chats.locator("aside");
     await expect(panel).toBeVisible();
     // Let the slide-in settle before measuring geometry.
     await expect.poll(async () => (await chats.boundingBox())!.x).toBe(0);
+    expect(await page.locator("[data-fixture-bottom-bar]").boundingBox()).toEqual(bottomBarBefore);
     const scrim = page.locator("[data-agent-history-scrim]");
     const readScrim = () =>
       scrim.evaluate((element) => {
@@ -796,12 +798,12 @@ test(`blocked Drive popup fails closed when chat recovery is ${readiness}`, asyn
   );
 });
 
-test("real popup ignores forged settlement and stays revoked when sign-in is cancelled", async ({
+test("Drive popup reaches Google with server clock skew and ignores forged settlement", async ({
   page,
   context,
 }) => {
   const attemptId = "synthetic-oauth-attempt";
-  const expiresAt = Date.now() + 60_000;
+  const serverExpiresAt = Date.now() + 10 * 60_000 + 30_000;
   let statusReads = 0;
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/api/connectors") statusReads++;
@@ -814,7 +816,7 @@ test("real popup ignores forged settlement and stays revoked when sign-in is can
         body: JSON.stringify({
           connectorId: "google_drive",
           attemptId,
-          expiresAt: new Date(expiresAt).toISOString(),
+          expiresAt: new Date(serverExpiresAt).toISOString(),
           authorizeUrl:
             "https://accounts.google.com/o/oauth2/v2/auth?synthetic=1",
         }),
@@ -841,6 +843,12 @@ test("real popup ignores forged settlement and stays revoked when sign-in is can
   await popup.waitForURL(
     "https://accounts.google.com/o/oauth2/v2/auth?synthetic=1",
   );
+  const popupExpiresAt = await page.evaluate(() => {
+    const marker = localStorage.getItem("one_drive_popup_attempt_v1");
+    return marker ? (JSON.parse(marker) as { expiresAt: number }).expiresAt : null;
+  });
+  expect(popupExpiresAt).not.toBeNull();
+  expect(popupExpiresAt).toBeLessThan(serverExpiresAt);
   const before = statusReads;
   await page.evaluate(
     ({ attemptId, expiresAt }) =>
@@ -857,7 +865,7 @@ test("real popup ignores forged settlement and stays revoked when sign-in is can
           },
         }),
       ),
-    { attemptId, expiresAt },
+    { attemptId, expiresAt: popupExpiresAt },
   );
   expect(popup.isClosed()).toBe(false);
   expect(statusReads).toBe(before);

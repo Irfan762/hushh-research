@@ -17508,6 +17508,115 @@
       }
     },
     {
+      "action_id": "route.person_profile",
+      "surface_id": "one_person_profile",
+      "label": "Open a person's profile",
+      "aliases": [
+        "open their profile",
+        "show their profile"
+      ],
+      "search_keywords": [
+        "profile",
+        "person",
+        "people"
+      ],
+      "meaning": "Navigates to the profile of one person already confirmed by name. It changes nothing, and it needs that person's profile reference, never a guessed one.",
+      "speaker_persona": "one",
+      "delegate_agent_id": null,
+      "reachability": {
+        "routes": [
+          "/people/[personRef]"
+        ],
+        "screens": [
+          "one_person_profile"
+        ],
+        "hidden_navigable": true,
+        "navigation_prerequisites": [
+          "The person must be confirmed by name first."
+        ],
+        "active_personas": [
+          "investor",
+          "ria"
+        ],
+        "requires_persona_switch_confirmation": false
+      },
+      "guard_ids": [
+        "auth_signed_in"
+      ],
+      "risk_level": "low",
+      "execution_policy": "allow_direct",
+      "activation_policy": "none",
+      "siri_mode": "unsupported",
+      "siri_requires_vault": false,
+      "siri_vault_locked_fallback_action_id": null,
+      "execution_target": {
+        "status": "wired",
+        "path": "route",
+        "target": "/people/[personRef]",
+        "params": {
+          "requires_person_ref": true
+        }
+      },
+      "control_ids": [],
+      "state_exposure": [],
+      "docs_references": [
+        "hushh-webapp/components/connections/person-profile-page.tsx"
+      ],
+      "workflow": null,
+      "external_callback": null,
+      "expected_effects": {
+        "state_changes": [
+          "current route becomes /people/[personRef]"
+        ],
+        "backend_effects": []
+      },
+      "trigger": {
+        "primary": "voice",
+        "supported": [
+          "voice",
+          "tap",
+          "keyboard",
+          "programmatic"
+        ]
+      },
+      "goal": {
+        "goal_id": "goal.route.person_profile",
+        "required_inputs": [],
+        "input_resolvers": [],
+        "slot_schema": {},
+        "workflow_steps": [
+          {
+            "type": "action",
+            "action_id": "route.person_profile",
+            "label": "Open a person's profile",
+            "failure_behavior": "stop",
+            "settlement_target": {
+              "route": "/people/[personRef]",
+              "screen": "one_person_profile"
+            }
+          }
+        ],
+        "progress_contract": {
+          "mode": "none",
+          "milestone_events": []
+        },
+        "cancellation_contract": {
+          "cancellable": false,
+          "cancel_action_id": null
+        },
+        "result_contract": {
+          "summary_mode": "action_result"
+        },
+        "entrypoint_support": [
+          "voice",
+          "chat",
+          "typed_search",
+          "command_bar",
+          "ui"
+        ]
+      }
+    },
+    {
       "action_id": "phone_mandate.select_country",
       "surface_id": "phone_mandate",
       "label": "Choose Country Code",

@@ -3158,19 +3158,52 @@ async def propose_information_request(
         }
 
 
+def _document_request_user_text(tool_context: ToolContext) -> str:
+    """Read this turn's authored text, including authenticated queued messages."""
+    from hushh_mcp.one_adk.queued_input import QUEUED_INPUT_KIND
+
+    def plain_text(content: Any) -> str:
+        if getattr(content, "role", None) != "user":
+            return ""
+        return "\n".join(
+            part.text
+            for part in (getattr(content, "parts", None) or [])
+            if isinstance(getattr(part, "text", None), str) and not getattr(part, "thought", False)
+        )[:4096]
+
+    pieces = [plain_text(getattr(tool_context, "user_content", None))]
+    invocation_id = getattr(tool_context, "invocation_id", None)
+    if isinstance(invocation_id, str) and invocation_id:
+        events = getattr(getattr(tool_context, "session", None), "events", None) or []
+        for event in reversed(events):
+            metadata = getattr(event, "custom_metadata", None)
+            if (
+                getattr(event, "invocation_id", None) != invocation_id
+                or getattr(event, "author", None) != "user"
+                or not isinstance(metadata, dict)
+                or metadata.get("kind") != QUEUED_INPUT_KIND
+            ):
+                continue
+            queued_text = plain_text(getattr(event, "content", None))
+            if queued_text:
+                pieces.append(queued_text)
+            if len(pieces) >= 17:
+                break
+    return "\n".join(pieces)
+
+
 async def propose_document_request(
     person: str,
     purpose: str,
     tool_context: ToolContext,
     period_start: str = "",
     period_end: str = "",
-    last_six_completed_months: bool = False,
     selection_handle: str = "",
 ) -> dict[str, Any]:
     """Stage one recipient-bound document request; only the browser can send it."""
-    from datetime import date
-
     from hushh_mcp.services.drive_sharing_contract import ShareRequestPurpose
+
+    user_text = _document_request_user_text(tool_context)
 
     user_id, blocked = await _read_tool_user_id(tool_context)
     if blocked is not None:
@@ -3196,17 +3229,25 @@ async def propose_document_request(
                 "status": "connection_required",
                 "message": "Connect with this person before requesting documents.",
             }
-        if last_six_completed_months is True:
-            now = datetime.now(ZoneInfo(_resolve_timezone(tool_context))).date()
-            end = now.replace(day=1).toordinal() - 1
-            end_date = date.fromordinal(end)
-            month = end_date.month - 5
-            year = end_date.year
-            while month <= 0:
-                month += 12
-                year -= 1
-            period_start = date(year, month, 1).isoformat()
-            period_end = end_date.isoformat()
+        if not (period_start and period_end):
+            return {
+                "status": "needs_clarification",
+                "message": (
+                    "Which exact start date and end date should I request? "
+                    "Please give both calendar dates in YYYY-MM-DD format."
+                ),
+            }
+        if not all(
+            re.search(rf"(?<!\d){re.escape(value)}(?!\d)", user_text)
+            for value in (period_start, period_end)
+        ):
+            return {
+                "status": "needs_clarification",
+                "message": (
+                    "Please give the exact start date and end date in YYYY-MM-DD format. "
+                    "I cannot choose them for you."
+                ),
+            }
         terms = ShareRequestPurpose.model_validate(
             {
                 "purpose": str(purpose or "").strip(),

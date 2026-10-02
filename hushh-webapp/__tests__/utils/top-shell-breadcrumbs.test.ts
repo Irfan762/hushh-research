@@ -160,7 +160,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one",
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Consent Center" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
   });
 
@@ -172,7 +173,18 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/kai/analysis?tab=history",
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Consent Center" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
+    });
+  });
+
+  it("keeps Wallet's existing page hero while removing only its compact title", () => {
+    expect(resolveTopShellBreadcrumb("/one/wallet")).toEqual({
+      backHref: "/one",
+      width: "content",
+      align: "center",
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
   });
 
@@ -224,7 +236,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/setup",
       width: "content",
       align: "center",
-      items: [{ label: "Set up", href: "/one/setup" }, { label: "Finance" }],
+      suppressFallbackTitle: true,
+      items: [],
     });
 
     // No origin → Kai home still falls back to One home (unchanged behavior).
@@ -232,7 +245,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one",
       width: "content",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Finance" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
 
     // Unsafe origins are rejected → One home fallback.
@@ -335,18 +349,8 @@ describe("top shell breadcrumbs", () => {
     });
   });
 
-  it("gives per-capability setup steps a back affordance to the hub", () => {
-    expect(resolveTopShellBreadcrumb("/one/setup/finance")).toEqual({
-      backHref: "/one/setup",
-      width: "content",
-      align: "center",
-      hideBack: false,
-      items: [
-        { label: "One", href: "/one" },
-        { label: "Setup", href: "/one/setup" },
-        { label: "Finance" },
-      ],
-    });
+  it("keeps the first-run setup hub as the Finance parent", () => {
+    expect(resolveTopShellBreadcrumb("/one/setup/finance")?.backHref).toBe("/one/setup");
 
     expect(resolveTopShellBreadcrumb("/one/setup/connected-systems")).toEqual({
       backHref: "/one/setup",
@@ -365,17 +369,25 @@ describe("top shell breadcrumbs", () => {
       ],
     });
 
-    expect(resolveTopShellBreadcrumb("/one/setup/finance/")).toEqual({
-      backHref: "/one/setup",
-      width: "content",
-      align: "center",
-      hideBack: false,
-      items: [
-        { label: "One", href: "/one" },
-        { label: "Setup", href: "/one/setup" },
-        { label: "Finance" },
-      ],
+    expect(resolveTopShellBreadcrumb("/one/setup/finance/")?.backHref).toBe("/one/setup");
+  });
+
+  it("returns completed Finance re-entry to One, not the obsolete setup hub", () => {
+    const completed = { setupDismissed: true };
+    expect(resolveTopShellBreadcrumb("/one/setup/finance", undefined, completed)).toMatchObject({
+      backHref: "/one",
+      items: [{ label: "One", href: "/one" }, { label: "Finance" }],
     });
+    expect(resolveTopShellBreadcrumb(
+      "/one/setup/finance", new URLSearchParams("from=/one/setup"), completed,
+    )?.backHref).toBe("/one");
+    expect(resolveTopShellBreadcrumb(
+      "/one/setup/finance", new URLSearchParams("from=/profile"), completed,
+    )?.backHref).toBe("/profile");
+    // One's tile carries an explicit origin, so no cached completion hint is required.
+    expect(resolveTopShellBreadcrumb(
+      "/one/setup/finance", new URLSearchParams("from=/one"),
+    )?.backHref).toBe("/one");
   });
 
   it("retraces a capability setup step to the internal origin that opened it", () => {
@@ -1122,8 +1134,8 @@ describe("top shell title slot", () => {
   }
 
   it.each([
-    // The two reported routes, and the two they must now match.
-    ["/one/pkm", "", ["Memory"]],
+    // Agent roots own their visible heading in the page body, not beside Back.
+    ["/one/pkm", "", "none"],
     ["/one/gmail", "", "title"],
     ["/one/feed", "", ["Feed"]],
     ["/one/connect", "", ["Connect"]],
@@ -1132,8 +1144,8 @@ describe("top shell title slot", () => {
     ["/one/pkm/recent", "", ["Memory", "Recently learned"]],
     // Every other nested route that used to carry a scroll chip.
     ["/one/connected-systems", "", ["Connected Systems"]],
-    ["/one/consent", "", ["Consent Center"]],
-    ["/consents", "", ["Consent Center"]],
+    ["/one/consent", "", "none"],
+    ["/consents", "", "none"],
     ["/one/kyc", "", ["KYC"]],
     ["/one/gmail", "from=/one/setup", "title"],
   ])(
@@ -1148,8 +1160,8 @@ describe("top shell title slot", () => {
       kind: "title",
       title: scrolledChip,
     });
-    // The implicit "One" root is not a trail, so a level-one surface keeps
-    // its chip.
+    // A generic level-one surface with only the implicit root still keeps its
+    // chip unless the route explicitly delegates the visible title to its body.
     expect(
       resolveTopShellTitleSlot({ items: [{ label: "One" }] }, scrolledChip),
     ).toEqual({ kind: "title", title: scrolledChip });
@@ -1161,10 +1173,10 @@ describe("top shell title slot", () => {
     });
   });
 
-  it("does not change the trail when the chip goes away", () => {
+  it("keeps an agent-root title slot empty even when a scroll chip is offered", () => {
     const breadcrumb = resolveTopShellBreadcrumb("/one/pkm");
-    expect(resolveTopShellTitleSlot(breadcrumb, scrolledChip)).toEqual(
-      resolveTopShellTitleSlot(breadcrumb, null),
-    );
+    expect(resolveTopShellTitleSlot(breadcrumb, scrolledChip)).toEqual({
+      kind: "none",
+    });
   });
 });

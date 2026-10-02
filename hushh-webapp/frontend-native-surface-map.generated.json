@@ -8038,7 +8038,8 @@
         "people.profile.connect",
         "people.profile.manage_consent",
         "people.profile.remove_connection",
-        "people.profile.review_information_request"
+        "people.profile.review_information_request",
+        "route.person_profile"
       ],
       "api_dependencies": [
         {
@@ -9490,5 +9491,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "64ba9b4b34624d8c7bcc9d1dc04b56a358aa5c750a5bfdcf8239ee9bf9a40771"
+  "content_sha256": "ca867fcd6ab9c11f87e7332e9dd9623306b4784e5927cec71789a92a65d10f5d"
 }
