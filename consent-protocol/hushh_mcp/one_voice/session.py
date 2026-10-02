@@ -53,6 +53,41 @@ from hushh_mcp.one_voice.tools.session import OPENABLE_SCREENS
 logger = logging.getLogger(__name__)
 
 
+def _failure_fingerprints(error: BaseException) -> list[dict[str, Any]]:
+    """Bounded error locations without messages, locals, arguments or transcripts.
+
+    TaskGroup wraps the useful exception. Logging only that wrapper prevented
+    diagnosis of live sessions which failed immediately after a people read.
+    """
+    from hushh_mcp.runtime_providers.dependency_health import classify_provider_error
+
+    pending = [error]
+    seen: set[int] = set()
+    details: list[dict[str, Any]] = []
+    while pending and len(seen) < 32 and len(details) < 6:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions[:6])
+            continue
+        frames = []
+        trace = current.__traceback__
+        while trace is not None:
+            code = trace.tb_frame.f_code
+            frames.append(f"{code.co_filename.rsplit('/', 1)[-1]}:{code.co_name}:{trace.tb_lineno}")
+            trace = trace.tb_next
+        details.append(
+            {
+                "type": type(current).__name__,
+                "class": classify_provider_error(current),
+                "frames": frames[-6:],
+            }
+        )
+    return details
+
+
 AUTH_TIMEOUT_SECONDS = 5.0
 CLIENT_STEP_TIMEOUT_SECONDS = 25
 # Slack past the advertised timeout before a device report is treated as stale.
@@ -309,7 +344,13 @@ class VoiceSession:
             from hushh_mcp.runtime_providers.dependency_health import classify_provider_error
 
             reason = classify_provider_error(exc)
-            logger.warning("one_voice.session.failed class=%s error=%s", reason, type(exc).__name__)
+            logger.warning(
+                "one_voice.session.failed class=%s error=%s session=%s failures=%s",
+                reason,
+                type(exc).__name__,
+                self.session_id,
+                json.dumps(_failure_fingerprints(exc), separators=(",", ":")),
+            )
             try:
                 await self._send(
                     protocol.error("voice_unavailable", "Voice is unavailable right now.")
@@ -1673,6 +1714,7 @@ class VoiceSession:
                     kind="navigate",
                     turn_id=origin_turn_id,
                     payload={
+                        "call_id": call_id,
                         "gateway_action_id": public["gateway_action_id"],
                         "screen": public.get("screen"),
                         "circle_id": public.get("circle_id"),
