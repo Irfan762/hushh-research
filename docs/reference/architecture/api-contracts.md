@@ -2207,6 +2207,107 @@ the `hushh_tech_client` tool group and no broader capability.
 
 ## Response Format
 
+### Circle member chat
+
+Ordinary named Circles expose member chat through the existing One JSON proxy
+on web and `ApiService.apiFetch` / Capacitor HTTP on iOS and Android. Trusted
+and SMS system Circles are excluded because their rosters have different
+visibility contracts. Every endpoint requires a current `VAULT_OWNER` token;
+the authenticated owner determines the user, and an active Circle membership
+must match the recipient envelope's current `joined_at` generation. Joining
+or rejoining starts a new history window.
+
+| Method | Endpoint | Contract |
+| --- | --- | --- |
+| GET | `/api/one/circles/{circle}/chat` | Current public-key roster/version, unread count, latest sequence and mute state |
+| GET | `/api/one/circles/{circle}/chat/messages` | Ascending visible messages; exclusive `before` or `after` sequence cursor; 40 default, 50 maximum |
+| POST | `/api/one/circles/{circle}/chat/messages` | Client UUID, roster version, encrypted content/image and exactly one key wrap per current member, including sender |
+| GET | `/api/one/circles/{circle}/chat/messages/{message}/image` | Separately authorized encrypted image bytes; images are omitted from transcript pages |
+| GET | `/api/one/circles/{circle}/chat/wait?after={sequence}` | Twenty-second JSON long poll over the existing PostgreSQL user-state event bus; subscribe before revision read, reauthorize before response, disconnect cleanup, four waits per user per worker; `changed` distinguishes matching doorbells from idle timeouts |
+| GET | `/api/one/circles/{circle}/chat/keys/{key}` | Owner-only vault-encrypted historical key backup, only for an accessible current-generation message; active/rotated keys, never revoked keys |
+| POST | `/api/one/circles/{circle}/chat/read` | Visible sequence watermark; atomically marks recipient messages and derived Feed rows read |
+| PUT | `/api/one/circles/{circle}/chat/preferences` | `muted` disables queued system pushes while preserving chat and Feed |
+| PUT | `/api/one/circles/{circle}/photo` | Current owner of an active ordinary circle saves/removes a normalized PNG/JPEG/WebP data URL; bounded private overview response |
+
+Transcript pages deduplicate identity photos in `senders` and cap their combined
+UTF-8 size at 2 MB, falling back to initials without dropping messages. The
+optional paired `receiptAfter` / `receiptThrough` range refreshes sender-only
+receipt metadata for the loaded window even when no new messages arrive.
+New messages persist the original non-sender recipient count; legacy audiences
+remain unknown. Blue double checks mean every original recipient acknowledged
+the message. Partial reads and unknown/empty audiences remain sent. Removed
+accounts cannot shrink the denominator. Receipt doorbells reach only senders
+whose current membership generation still authorizes that message.
+
+Chat and Members share a retained conversation: switching panes preserves
+drafts and uncertain retries. Sender avatars/names, automatically loaded inline
+images, an attachment preview and an in-app viewer use shared UI primitives.
+Visible foreground thumbnails own their decrypted blobs and revoke URLs when
+hidden or access is lost; downloads have two scheduler slots. Native physical
+requests remain awaited after logical cancellation. Open owned dialogs block
+read acknowledgements, as do unresolved incoming decryption failures, including
+after the rendered 300-message window trims older rows.
+
+Circle photos reuse the 256px profile picker but mutate the circle identity.
+The API verifies and decodes a single PNG, JPEG or WebP frame up to 512 by 512
+pixels and 300 KiB (410,000 encoded characters), bounds the request to 430,000
+bytes and never echoes rejected
+input. Private list/detail/overview projections carry the photo; public invite
+previews do not. Photo doorbells refresh circle state without creating Feed
+activity. List projections cap their combined photo bytes at 2 MB and retain
+all circles with a fallback icon; single-circle overview returns the full photo.
+Soft deletion clears the photo; account lifecycle erasure removes the
+owned circle. Photos are private circle metadata, separate from encrypted chat
+attachments. This bounded photo action remains separate from reviewed rename
+commands and their immutable command bindings.
+
+The new chat wire uses camelCase directly on all surfaces. Clients encrypt a
+fresh AES-256-GCM content key per message, wrap it to every recipient using the
+existing vault-synced P-256 recipient keys, and authenticate Circle, client
+message ID, sender, recipient and payload kind as additional data. Text, image
+bytes, filename and MIME metadata remain encrypted; Feed and pushes carry only
+Circle identifiers and generic activity. This reuses the existing authenticated
+key directory; it does not introduce key verification or a ratcheting protocol.
+
+Images are passive JPEG/PNG/WebP files up to 5 MiB and messages contain at most
+4,000 characters. Both API layers bound chat requests to 7,250,000 bytes.
+Validation and database errors never echo rejected payloads. Responses are
+private/no-store. Native long polling receives complete JSON, so it does not
+depend on streamed fetch through the native bridge. Five-second foreground
+polling repairs missing events; native lifecycle and browser visibility suspend
+work, with catch-up on resume. Busy doorbells coalesce at a 250 ms cadence with
+one trailing refresh; gaps beyond five pages continue immediately. Automatic
+state/message/wait/read budgets are 1,200 per minute per authenticated owner
+(four sessions at four refreshes per second, plus manual headroom). Sending
+retains 30/minute and 1,000/day; automatic image downloads allow 120/minute. These are
+bounded budgets, not an unlimited throughput or global latency guarantee.
+Native waits stay awaited after a pause because Capacitor cannot cancel the
+underlying request. Read doorbells expose only `readChanged` metadata and
+invalidate subset-read Feed projections; pre-read responses cannot restore
+cleared cache or clear unrelated unread activity.
+
+Identical retries return the existing message; altered payloads or membership
+generations reject that UUID. Membership and nonblocking key locks serialize
+send authorization without inverting the key-registration lock order. Message,
+recipient wraps, Feed rows and event doorbells commit together. Pushes use a
+bounded five-attempt lease with generic content; provider acceptance is not a
+recipient read receipt. Leaving suppresses old unread Feed activity and pushes;
+deleting a Circle erases its message/image store. Reset/full-account cleanup
+also erases authored messages and recipient-owned wraps/preferences.
+
+Migrations `265_circle_chat.sql` and `266_circle_chat_presentation.sql`, their rollbacks, the release manifest and UAT
+schema contract travel together. Deploy the migration before the updated
+backend, then the web/native bundle. The rollback removes chat and its derived
+Feed projections; restoring erased history requires a database backup.
+
+Core proofs: `tests/test_circle_chat.py` runs against the existing isolated
+PostgreSQL CI service and tests concurrent retry, membership-generation privacy,
+image authorization, key contention, cursor pagination, leases, mute, deletion,
+tombstones and migration replay. The existing encryption, native notification
+routing and Feed-renderer tests cover authenticated client encryption, recovery
+and safe destinations. Native simulator/device verification remains a separate
+release check; browser WebKit is not an iOS device test.
+
 Backend returns **snake_case**. Frontend transforms to **camelCase** in the service layer.
 
 ```
@@ -2244,6 +2345,14 @@ a nonexistent anchor; the parity document is now the canonical definition.
 - [Architecture](./architecture.md) -- System overview and tri-flow
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle
+
+### Connect directory request budgets
+
+Directory browsing (empty or whitespace query) and nonempty searches each have a
+500-per-day budget per caller. Both modes share the 60-per-minute ceiling. The
+existing visibility rules and 50-profile page bound are unchanged. Idle Connect
+repair polls refresh connections without issuing another directory search; graph
+changes, foreground refreshes and explicit actions still refresh the directory.
 
 ### Connect directory mutual connections
 

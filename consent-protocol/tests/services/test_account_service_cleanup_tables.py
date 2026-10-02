@@ -179,6 +179,8 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
     assert result["details"]["one_referral_attributions"] is True
     assert result["details"]["one_referral_codes"] is True
     assert result["details"]["feed_events"] is True
+    for table in ["circle_chat_messages", "circle_chat_recipients", "circle_chat_preferences"]:
+        assert result["details"][table] is True
     assert result["details"]["account_deletion_tombstone"] is True
     assert result["details"]["firebase_cleanup_intent_count"] == 1
 

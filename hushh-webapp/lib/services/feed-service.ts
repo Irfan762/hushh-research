@@ -1,4 +1,5 @@
 import { ApiService } from "@/lib/services/api-service";
+import { currentFeedInvalidationEpoch } from "@/lib/cache/feed-invalidation-epoch";
 import {
   CACHE_KEYS,
   CACHE_TTL,
@@ -26,6 +27,7 @@ export type FeedEventType =
   | "location_public_invite_submitted"
   | "location_one_network_joined"
   | "location_circle_code_joined"
+  | "location_circle_message"
   | "location_circle_member_invite_accepted"
   | "location_sms_contact_added"
   | "location_sms_contact_removed"
@@ -114,6 +116,7 @@ export class FeedService {
       ? CACHE_KEYS.FEED_LIST(firstPageUserId)
       : null;
     const cache = CacheService.getInstance();
+    const epoch = firstPageUserId ? currentFeedInvalidationEpoch(firstPageUserId) : null;
     if (cacheKey && !options.force) {
       const cached = cache.get<FeedListResponse>(cacheKey);
       if (cached) return cached;
@@ -136,7 +139,7 @@ export class FeedService {
     if (!response.ok) {
       throw feedRequestError(payload, response.status);
     }
-    if (cacheKey && firstPageUserId) {
+    if (cacheKey && firstPageUserId && epoch === currentFeedInvalidationEpoch(firstPageUserId)) {
       cache.set(cacheKey, payload, CACHE_TTL.SHORT);
       // The list response and bottom-nav badge describe the same snapshot.
       // Seed both keyed projections together so opening Feed does not launch a
@@ -157,6 +160,7 @@ export class FeedService {
   }): Promise<number> {
     const cacheKey = CACHE_KEYS.FEED_UNREAD_COUNT(options.userId);
     const cache = CacheService.getInstance();
+    const epoch = currentFeedInvalidationEpoch(options.userId);
     if (!options.force) {
       const cached = cache.get<number>(cacheKey);
       if (cached != null) return cached;
@@ -172,7 +176,7 @@ export class FeedService {
       throw feedRequestError(payload, response.status);
     }
     const count = payload.unread_count ?? 0;
-    cache.set(cacheKey, count, CACHE_TTL.SHORT);
+    if (epoch === currentFeedInvalidationEpoch(options.userId)) cache.set(cacheKey, count, CACHE_TTL.SHORT);
     return count;
   }
 

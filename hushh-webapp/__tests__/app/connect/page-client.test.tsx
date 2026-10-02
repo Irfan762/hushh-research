@@ -491,6 +491,49 @@ beforeEach(() => {
 });
 
 describe("P0 connection reconciliation", () => {
+  it("repairs idle connections without spending directory searches, but retains graph refreshes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      render(<ConnectPageClient />);
+      await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+      await waitFor(() => expect(mocks.listConnectionsPage).toHaveBeenCalled());
+      mocks.searchDirectory.mockClear();
+      mocks.listConnectionsPage.mockClear();
+      await act(() => vi.advanceTimersByTimeAsync(180_000));
+      expect(mocks.listConnectionsPage).toHaveBeenCalled();
+      expect(mocks.searchDirectory).not.toHaveBeenCalled();
+      act(() => dispatchConnectionGraphChanged("me"));
+      await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledOnce());
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retains a graph refresh queued during an idle repair", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    try {
+      render(<ConnectPageClient />);
+      await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
+      await waitFor(() => expect(mocks.listConnectionsPage).toHaveBeenCalled());
+      const repair = deferred<TestConnectionPage>();
+      mocks.listConnectionsPage.mockReturnValueOnce(repair.promise);
+      mocks.searchDirectory.mockClear();
+      await act(() => vi.advanceTimersByTimeAsync(60_000));
+      expect(mocks.searchDirectory).not.toHaveBeenCalled();
+      act(() => dispatchConnectionGraphChanged("me"));
+      await act(async () => {
+        repair.resolve({ items: [], page: 1, hasMore: false, totalCount: 0, audience: "all" });
+      });
+      await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledOnce());
+    } finally {
+      visibility.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it("refreshes connection, request, and directory projections after a graph event", async () => {
     render(<ConnectPageClient />);
     await waitFor(() => expect(mocks.listConnectionsPage).toHaveBeenCalled());

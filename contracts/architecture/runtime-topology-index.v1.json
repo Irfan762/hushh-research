@@ -700,6 +700,18 @@
       "primary_access_path": "AG-UI Agent One text chat, encrypted ADK session restore, encrypted legacy chat history restore, and LLM context assembly"
     },
     {
+      "data_class": "personal_encrypted",
+      "exact_tables": [
+        "circle_chat_messages",
+        "circle_chat_recipients",
+        "circle_chat_preferences"
+      ],
+      "id": "circle_member_chat",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Authenticated Circle chat service: membership-scoped keyset reads, ciphertext/image writes, member key envelopes, unread acknowledgements, mute preferences and durable generic push leases."
+    },
+    {
       "data_class": "audit_regulated",
       "exact_tables": [
         "connected_system_audit_events"
@@ -5781,7 +5793,7 @@
     "action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
     "agent_registry": "1363b2d630b8f985f19549a79a974f2769683950ab02d6f4a0ca91589624012b",
     "cache_manifest": "bb1fd935f1fb2ee571f6cafbc49689dea661b71993550797b779784735e57886",
-    "data_plane": "461ecb8cbd26c6b9b85a57e19f4aa5291a8c7a91a02a949409b7afba828691d0",
+    "data_plane": "1df49f95104f4d30fc5ed6de778ff88e0180f690a8d3a736e2df0cb567be8c5a",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "3dc81d307ef8cf9932ca3f80c2d54915515161968d0303feccea401e8afebce9",
     "route_index": "55b39926a1b6fbda093c53346e7e007aceba0ed6b3e5d61af244c8d70dd8e29a",
@@ -5800,6 +5812,6 @@
     "one_specialist_tools": 6,
     "physical_routes": 142,
     "semantic_routes": 14,
-    "table_families": 82
+    "table_families": 83
   }
 }

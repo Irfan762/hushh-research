@@ -24,6 +24,13 @@ function feedItem(
 }
 
 describe("notification-backed Feed projection renderers", () => {
+  it("opens circle chat from metadata without exposing a message preview or trusting an external destination", () => {
+    const circle = "11111111-2222-3333-4444-555555555555";
+    const presented = presentFeedItem(feedItem("location_circle_message", { circle_id: circle, circle_name: "Family", message: "private plaintext", request_url: "https://evil.example" }));
+    expect(presented.href).toContain(`circleId=${circle}&circleChat=1`);
+    expect(JSON.stringify(presented)).not.toContain("private plaintext");
+    expect(presentFeedItem(feedItem("location_circle_message", { circle_id: "invalid" })).href).toBeNull();
+  });
   it.each([
     ["location_share_created", "recipient", {}],
     ["location_share_created", "recipient", { duration_mode: "until_stopped" }],

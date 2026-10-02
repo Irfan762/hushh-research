@@ -26,7 +26,9 @@
     "one_kyc_workflows",
     "drive_bulk_share_files",
     "drive_bulk_share_effects",
-    "drive_request_payment_webhook_events"
+    "drive_request_payment_webhook_events",
+    "circle_chat_messages",
+    "circle_chat_recipients"
   ],
   "retention_registry": [
     {
@@ -1413,6 +1415,23 @@
       "trust_boundary": "The source search must be complete under the same live owner Drive generation. Explicit owner approval binds the frozen encrypted file manifest, verified recipient identities, revision and review digest. File metadata and recipient identities are sealed under DRIVE_SHARING_KEY_V1; plaintext contains opaque owner/recipient/workflow references, keyed digests, bounded counts, leases, states and timestamps. The worker rechecks current authority, recipient identity, Trusted membership and live file metadata before each grant. Unknown provider outcomes are reconciled by read and never blindly retried. Google per-file notification emails are suppressed, and recipient links are exposed only after confirmed grants.",
       "plaintext_posture": "encrypted_frozen_file_and_recipient_metadata_with_opaque_effect_and_notification_state",
       "expected_row_growth": "up_to_10000_files_and_100000_file_recipient_effects_per_approved_search"
+    },
+    {
+      "id": "circle_member_chat",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_encrypted",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "circle_chat_messages",
+        "circle_chat_recipients",
+        "circle_chat_preferences"
+      ],
+      "primary_access_path": "Authenticated Circle chat service: membership-scoped keyset reads, ciphertext/image writes, member key envelopes, unread acknowledgements, mute preferences and durable generic push leases.",
+      "retention_policy": "Messages retained for the lifetime of the ordinary Circle; client images bounded to 5 MB, text to 4000 characters, pages to 50 and rendered windows to 300. No automatic expiry of conversation history. Pushes stop after five attempts.",
+      "deletion_behavior": "Circle soft/hard deletion erases messages, images, envelopes and preferences and removes associated Feed rows. Reset/full account erasure deletes authored messages and recipient-owned envelopes/preferences. Actor-profile cascades provide an additional deletion boundary. Leave/rejoin suppresses old pushes and Feed unread rows; prior-generation envelopes remain inaccessible.",
+      "trust_boundary": "Active ordinary Circle members only, with an envelope matching the current membership joined_at generation. The server relays client ciphertext and recipient public keys; it never receives message or image plaintext.",
+      "plaintext_posture": "ciphertext_and_membership_delivery_metadata",
+      "expected_row_growth": "high_per_message_and_active_member"
     }
   ]
 }

@@ -558,6 +558,15 @@ class AccountService:
                 """
             ),
             "user_push_tokens": text("DELETE FROM user_push_tokens WHERE user_id = :user_id"),
+            "circle_chat_messages": text(
+                "DELETE FROM circle_chat_messages WHERE sender_user_id = :user_id"
+            ),
+            "circle_chat_recipients": text(
+                "DELETE FROM circle_chat_recipients WHERE recipient_user_id = :user_id"
+            ),
+            "circle_chat_preferences": text(
+                "DELETE FROM circle_chat_preferences WHERE user_id = :user_id"
+            ),
             "feed_events": text("DELETE FROM feed_events WHERE user_id = :user_id"),
             "byoc_setup_jobs": text("DELETE FROM byoc_setup_jobs WHERE user_id = :user_id"),
             "pod_lifecycle_events": text(
@@ -1543,6 +1552,9 @@ class AccountService:
             "one_location_recipient_keys",
             # Feed is a derived projection. Clear it after every source table so
             # present or future source-cleanup fan-out cannot recreate a row.
+            "circle_chat_messages",
+            "circle_chat_recipients",
+            "circle_chat_preferences",
             "feed_events",
         ):
             self._delete_user_rows_if_table_exists(conn, table_name=table_name, params=params)
@@ -1774,6 +1786,9 @@ class AccountService:
             "one_location_share_grants": False,
             "one_location_recipient_keys": False,
             "feed_events": False,
+            "circle_chat_messages": False,
+            "circle_chat_recipients": False,
+            "circle_chat_preferences": False,
             "runtime_persona_state": False,
             "ria_pick_legacy_retirements": False,
             "developer_oauth_tokens": False,
@@ -2045,6 +2060,9 @@ class AccountService:
                     "one_location_recipient_keys",
                     "one_wallet_cards",
                     # Last derived-data cleanup, before the identity/vault spine.
+                    "circle_chat_messages",
+                    "circle_chat_recipients",
+                    "circle_chat_preferences",
                     "feed_events",
                 ):
                     self._delete_user_rows_if_table_exists(

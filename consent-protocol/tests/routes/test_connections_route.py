@@ -137,3 +137,40 @@ def test_update_voice_preferences_threads_the_owner_and_flag():
     svc_cls.return_value.update_voice_preferences.assert_called_once_with(
         user_id="user-a", share_scopes_from_last_request=True
     )
+
+
+def test_directory_browse_and_search_keep_separate_bounded_daily_budgets(monkeypatch):
+    from limits import parse
+    from slowapi.errors import RateLimitExceeded
+
+    from api.middlewares.rate_limit import RateLimits, limiter, rate_limit_exceeded_handler
+
+    client = _client()
+    client.app.state.limiter = limiter
+    client.app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    monkeypatch.setattr(limiter, "enabled", True)
+    limiter.reset()
+    path = "/api/one/connections/directory"
+    daily = parse(RateLimits.ONE_CONNECT_DIRECTORY_READ_DAILY)
+    minute = parse(RateLimits.ONE_CONNECT_DIRECTORY_READ)
+    try:
+        # Exhaust search without hundreds of requests or a real identity store.
+        assert limiter.limiter.hit(daily, "testclient:directory:search", path, cost=500)
+        with patch("api.routes.one.connections.ConnectionsService") as service:
+            service.return_value.search_directory.return_value = {
+                "items": [],
+                "page": 1,
+                "hasMore": False,
+            }
+            assert client.get(path, params={"query": "name"}).status_code == 429
+            assert client.get(path).status_code == 200
+            assert client.get(path, params={"query": "  "}).status_code == 200
+            # Browsing is still daily-bounded, not exempt from abuse protection.
+            limiter.limiter.hit(daily, "testclient:directory:browse", path, cost=500)
+            assert client.get(path).status_code == 429
+            limiter.reset()
+            assert limiter.limiter.hit(minute, "testclient", path, cost=60)
+            assert client.get(path).status_code == 429
+            assert client.get(path, params={"query": "name"}).status_code == 429
+    finally:
+        limiter.reset()

@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = "265_gmail_receipt_cache_read_only_cutover.sql"
-ROLLBACK = "265_gmail_receipt_cache_read_only_cutover.rollback.sql"
+MIGRATION = "267_gmail_receipt_cache_read_only_cutover.sql"
+ROLLBACK = "267_gmail_receipt_cache_read_only_cutover.rollback.sql"
 
 
 def test_receipt_cache_cutover_is_registered_reversible_and_blocks_new_writes() -> None:
