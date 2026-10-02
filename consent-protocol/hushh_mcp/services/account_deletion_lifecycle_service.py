@@ -460,6 +460,40 @@ class AccountDeletionLifecycleService:
         )
 
     @staticmethod
+    def record_backend_only_erasure_in_transaction(conn, *, user_id: str) -> None:
+        """Keep resurrection suppression without scheduling external identity cleanup.
+
+        Only the maintainer UAT backend-erasure path uses this seam. Never
+        cancel or replace an existing Firebase cleanup claim: it may already
+        be executing outside this database transaction.
+        """
+        normalized = AccountDeletionLifecycleService._normalize_user_ids((user_id,))
+        AccountDeletionLifecycleService._lock_user_ids_in_transaction(conn, user_ids=normalized)
+        result = conn.execute(
+            text(
+                """
+                INSERT INTO account_deletion_tombstones (
+                  user_id_hash, firebase_uid, cleanup_status,
+                  cleanup_next_attempt_at, cleanup_last_classification,
+                  deleted_at, updated_at
+                ) VALUES (
+                  :user_id_hash, NULL, 'completed', NULL,
+                  'uat_backend_only_erasure', NOW(), NOW()
+                )
+                ON CONFLICT (user_id_hash) DO UPDATE
+                  SET updated_at = NOW()
+                  WHERE account_deletion_tombstones.cleanup_status = 'completed'
+                    AND account_deletion_tombstones.firebase_uid IS NULL
+                    AND account_deletion_tombstones.cleanup_last_classification =
+                      'uat_backend_only_erasure'
+                """
+            ),
+            {"user_id_hash": account_deletion_user_hash(normalized[0])},
+        )
+        if result.rowcount != 1:
+            raise RuntimeError("backend_erasure_conflicting_identity_cleanup")
+
+    @staticmethod
     def record_pending(*, user_ids: Iterable[str]) -> tuple[str, ...]:
         """Persist cleanup intents in one committed database transaction."""
         with get_db_connection() as conn:

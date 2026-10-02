@@ -171,6 +171,25 @@ The in-process 60-second cleanup loop is a latency optimization only. Cloud Run
 may freeze an instance after a response, so the external scheduler is the
 durability path for pending Firebase deletion/quarantine work.
 
+## Maintainer UAT backend-only erasure
+
+The test-account helper uses `AccountService.erase_uat_backend_account`, not
+the public full-account deletion route. Execution requires exact email/UID
+binding, a non-production runtime, and attestation of the connected UAT
+PostgreSQL cluster using the existing server-identity contract.
+
+It reuses canonical transactional erasure and its retention policy, but skips
+provider credential snapshots and revocation. The same UID locks protect a
+terminal tombstone containing no raw Firebase UID or cleanup intent. Existing
+external-cleanup intents fail closed rather than being canceled. Firebase
+sign-in and shared provider grants remain intact; the erased UID cannot
+recreate its UAT account. This is erasure, not same-UID fixture repair.
+
+Verify remaining owner/email-linked rows independently. Catalog discovery is
+not authority for broad follow-on deletes or removal of append-only evidence.
+Shared backups and any separately retained evidence remain subject to their
+existing retention review; this operation is not a claim of legal clearance.
+
 ## Required monitoring
 
 Alert the IAM on-call when any of these conditions occurs:
