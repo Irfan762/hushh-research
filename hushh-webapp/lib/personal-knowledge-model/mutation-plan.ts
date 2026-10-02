@@ -1,6 +1,6 @@
 import type { DomainManifest } from "@/lib/personal-knowledge-model/manifest";
 import { CURRENT_PKM_CONTRACT_VERSION } from "@/lib/personal-knowledge-model/upgrade-contracts";
-import { VAULT_WRITE_PROTOCOL_VERSION } from "@/lib/vault/write-protocol-version";
+import { PKM_CLIENT_VERSION } from "@/lib/vault/write-protocol-version";
 import { v5 as uuidv5 } from "uuid";
 
 export type PkmMutationOperation = "create" | "update" | "move" | "merge" | "delete";
@@ -175,9 +175,7 @@ export type PkmMutationPlanV2 = {
 };
 
 const MACHINE_PROVENANCE_ID = /^[a-z][a-z0-9_.:-]{0,127}$/;
-const PLAN_CLIENT_VERSION = /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(VAULT_WRITE_PROTOCOL_VERSION)
-  ? VAULT_WRITE_PROTOCOL_VERSION
-  : null;
+const PLAN_CLIENT_VERSION = PKM_CLIENT_VERSION;
 
 function normalizedWriterId(value: string): string {
   const candidate = String(value || "").trim().toLowerCase();

@@ -206,8 +206,18 @@ CURRENT_READABLE_PROJECTION_VERSION = "6.0.0"
 CURRENT_READABLE_SUMMARY_VERSION = 6
 GENERIC_DOMAIN_CONTRACT_VERSION = 4
 DYNAMIC_DOMAIN_CONTRACT_VERSION = 4
+# Version 5 moves agent-written entries out of app-owned branches into their
+# agent_memory sibling (contracts/pkm/reserved-branches.v1.json), on the device,
+# through the PKM upgrade gate. Only domains that hold a reserved branch move to
+# it. The TypeScript twin is RESERVED_BRANCH_MIGRATION_DOMAINS in
+# hushh-webapp/lib/personal-knowledge-model/upgrade-contracts.ts; a parity test
+# reads both.
+RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION = 5
+RESERVED_BRANCH_MIGRATION_DOMAINS: frozenset[str] = frozenset(
+    {"financial", "identity", "location", "professional", "ria", "shopping", "wallet"}
+)
 FINANCIAL_DOMAIN_SCHEMA_VERSION = 3
-FINANCIAL_DOMAIN_CONTRACT_VERSION = GENERIC_DOMAIN_CONTRACT_VERSION
+FINANCIAL_DOMAIN_CONTRACT_VERSION = RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION
 FINANCIAL_INTENT_MAP: tuple[str, ...] = (
     "portfolio",
     "profile",
@@ -612,9 +622,29 @@ def is_allowed_top_level_domain(domain: str) -> bool:
     return canonical_top_level_domain(domain) in CANONICAL_DOMAIN_KEYS
 
 
-def current_domain_contract_version(domain: str) -> int:
-    _canonical = canonical_top_level_domain(domain)
+def current_domain_contract_version(domain: str, *, legacy_client: bool = False) -> int:
+    """The domain contract version an upgrade should bring ``domain`` to.
+
+    ``legacy_client`` is a client that predates the reserved-branch migration
+    (it reports no ``x-hushh-client-version`` on the upgrade routes). Its
+    transform for version 5 would be a plain copy, so it is never offered the
+    migration: it would stamp version 5 without moving anything, and the
+    client that can move the entries would then never be asked to.
+    """
+    canonical = canonical_top_level_domain(domain)
+    if canonical in RESERVED_BRANCH_MIGRATION_DOMAINS and not legacy_client:
+        return RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION
     return GENERIC_DOMAIN_CONTRACT_VERSION
+
+
+def highest_known_domain_contract_version(domain: str) -> int:
+    """The newest stored version this server understands, for any client.
+
+    A legacy client reads and writes a version-5 domain safely (the relocation
+    changes where entries live, not the shape any app branch has), so version 5
+    is never reported to it as a future version that needs an app update.
+    """
+    return current_domain_contract_version(domain)
 
 
 def get_canonical_domain_metadata(domain_key: str) -> DomainContractEntry | None:

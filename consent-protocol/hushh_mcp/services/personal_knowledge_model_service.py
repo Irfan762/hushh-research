@@ -853,7 +853,10 @@ class PersonalKnowledgeModelService:
         domain_contract_version = (
             self._to_non_negative_int(source.get("domain_contract_version"))
             or self._to_non_negative_int(summary_projection.get("domain_contract_version"))
-            or current_domain_contract_version(domain)
+            # A manifest that does not state its version has not proved it ran
+            # the reserved-branch relocation; assume it did not, so the next
+            # capable client re-runs the idempotent upgrade rather than skip it.
+            or current_domain_contract_version(domain, legacy_client=True)
         )
         pkm_contract_version = self._normalize_semantic_version(
             source.get("pkm_contract_version")
@@ -3933,23 +3936,23 @@ class PersonalKnowledgeModelService:
         """Defense in depth for the reserved-branch registry, in enforce mode.
 
         The store route refuses first (api/routes/pkm_routes_shared.py, with the
-        manifest diff and the client-version gate). This re-check covers any other
-        caller of store_domain_data with the declared paths alone. An upgrade-claim
-        write (no mutation plan) is the migration writer and is never refused.
+        structure-path novelty and the manifest diff, both judged against the
+        stored manifest). This re-check covers any other caller of
+        store_domain_data with the plan's declared scope alone: a structure
+        decision lists every branch of the merged domain, changed or not, so
+        judging it here without the stored manifest refused legitimate saves
+        into an agent_memory sibling. An upgrade-claim write (no mutation plan)
+        is the migration writer and is never refused.
         """
         if mutation_plan is None:
             return None
+        del structure_decision  # judged by the route against the stored manifest
         try:
             if reserved_enforcement_mode() != "enforce":
                 return None
-            decision = structure_decision or {}
             refusals = evaluate_reserved_write(
                 domain=domain,
-                paths=[
-                    mutation_plan.proposed_scope,
-                    *(decision.get("top_level_scope_paths") or []),
-                    *(decision.get("json_paths") or []),
-                ],
+                paths=[mutation_plan.proposed_scope],
                 writer_id=mutation_plan.writer_id,
                 authorization_mode=mutation_plan.confirmation_receipt.authorization_mode,
                 capabilities=capabilities,

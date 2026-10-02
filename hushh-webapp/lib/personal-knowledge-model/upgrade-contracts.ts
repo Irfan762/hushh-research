@@ -23,7 +23,41 @@ export const CURRENT_PKM_CONTRACT: PkmContractVersion = {
   readableProjectionVersion: CURRENT_READABLE_PROJECTION_VERSION,
 };
 
-export const DOMAIN_CONTRACT_VERSION_MAP: Record<string, number> = {};
+/**
+ * Encrypted preservation storage inside a domain: information an upgrade could
+ * not place with certainty is kept here, never dropped, and never offered for
+ * sharing (the manifest keeps it private and the server refuses to scope it).
+ * The spelling is a cross-runtime contract with
+ * `consent-protocol/db/migrations/098_pkm_v7_recovery_foundation.sql`.
+ */
+export const PKM_QUARANTINE_SEGMENT_ID = "__quarantine_v1" as const;
+
+/**
+ * Version 5 moves agent-written entries out of the branches an app feature
+ * owns (`contracts/pkm/reserved-branches.v1.json`) into that feature's
+ * `agent_memory` sibling. Only the domains holding a reserved branch with a
+ * sibling move to it; every other domain stays on the generic version.
+ * The Python twin is `RESERVED_BRANCH_MIGRATION_DOMAINS` in
+ * `consent-protocol/hushh_mcp/services/domain_contracts.py`; a parity test
+ * reads both.
+ */
+export const RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION = 5;
+export const RESERVED_BRANCH_MIGRATION_DOMAINS: readonly string[] = [
+  "financial",
+  "identity",
+  "location",
+  "professional",
+  "ria",
+  "shopping",
+  "wallet",
+];
+
+export const DOMAIN_CONTRACT_VERSION_MAP: Record<string, number> = Object.fromEntries(
+  RESERVED_BRANCH_MIGRATION_DOMAINS.map((domain) => [
+    domain,
+    RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION,
+  ]),
+);
 
 export function parsePkmSemanticVersion(version: string | null | undefined): PkmSemanticVersion {
   const parts = String(version || "0.0.0")

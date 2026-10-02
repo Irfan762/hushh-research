@@ -76,6 +76,7 @@ vi.mock("@/lib/cache/cache-sync-service", () => ({
 }));
 
 vi.mock("@/lib/personal-knowledge-model/upgrade-contracts", () => ({
+  PKM_QUARANTINE_SEGMENT_ID: "__quarantine_v1",
   CURRENT_PKM_CONTRACT_VERSION: "6.0.0",
   CURRENT_READABLE_PROJECTION_VERSION: "6.0.0",
   CURRENT_READABLE_SUMMARY_VERSION: 1,

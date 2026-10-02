@@ -416,37 +416,182 @@ def test_enforce_answers_an_unknown_writer_with_422(enforce) -> None:
     assert service.stored == []
 
 
-def test_enforce_refuses_a_client_older_than_the_registry(enforce) -> None:
+def _status(body: dict) -> int:
+    return _client().post("/api/pkm/store-domain", json=body).status_code
+
+
+def test_an_old_client_keeps_its_feature_writes_and_loses_only_agent_writes(enforce) -> None:
+    """The old-client policy (personal-knowledge-model.md, Phase 2).
+
+    Builds already in TestFlight and the App Store send no client_version. The
+    writer catalog still applies to them; only the device-dependent checks are
+    skipped; the 409 is reserved for an old client whose writer is unknown.
+    """
     service = enforce()
-    client = _client()
-    stale = client.post(
+
+    def old(domain: str, scope: str, writer_id: str, **extra) -> dict:
+        return _store_body(
+            _plan(domain=domain, scope=scope, writer_id=writer_id, client_version=None), **extra
+        )
+
+    # Legitimate Finance and Location writes from an old build go through.
+    assert _status(old("location", "saved_places", "one_location_saved_place_confirm")) == 200
+    assert _status(old("financial", "profile", "kai_profile_setup_sync")) == 200
+    # ...and so does a chat fact filed in the sibling.
+    assert _status(old("location", "agent_memory", "agent_chat_owner_request")) == 200
+    assert len(service.stored) == 3
+    # A memory-agent writer is refused on the app's branch, whatever the client.
+    refused = _client().post(
         "/api/pkm/store-domain",
-        json=_store_body(
-            _plan(
-                domain="location",
-                scope="saved_places",
-                writer_id="one_location_saved_place_confirm",
-                client_version=None,
-            )
-        ),
+        json=old("location", "saved_places", "agent_chat_owner_request"),
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["code"] == "PKM_RESERVED_BRANCH_WRITER_FORBIDDEN"
+    # An unknown writer from an old client is the one case that says "update".
+    stale = _client().post(
+        "/api/pkm/store-domain", json=old("location", "saved_places", "brand_new_writer")
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["code"] == "PKM_RESERVED_REGISTRY_OUTDATED"
     assert stale.json()["detail"]["min_client_version"] == "2.0.0"
-    # Negative control: a domain with no reserved branch does not need the registry.
-    unreserved = client.post(
-        "/api/pkm/store-domain",
-        json=_store_body(
-            _plan(
-                domain="food",
-                scope="preferences",
-                writer_id="agent_chat_owner_request",
-                client_version=None,
+    # Negative control: the same unknown writer from a current client is a 422.
+    assert (
+        _status(
+            _store_body(
+                _plan(domain="location", scope="saved_places", writer_id="brand_new_writer")
             )
-        ),
+        )
+        == 422
     )
-    assert unreserved.status_code == 200, unreserved.text
-    assert len(service.stored) == 1
+    assert len(service.stored) == 3
+
+
+def test_an_old_clients_manifest_drift_is_not_read_as_a_reserved_change(enforce) -> None:
+    """The manifest diff depends on the client's own builder; skipped for old builds only."""
+    service = enforce()
+    service.stored_paths = frozenset({"saved_places", "saved_places.locations"})
+    drifted = ("saved_places", "saved_places.places", "visit_notes")
+
+    def body(client_version: str | None) -> dict:
+        return _store_body(
+            _plan(
+                domain="location",
+                scope="saved_places",
+                writer_id="one_location_saved_place_confirm",
+                client_version=client_version,
+            ),
+            manifest_paths=drifted,
+        )
+
+    assert _status(body(None)) == 200
+    # Negative control: a current client's manifest is held to the diff.
+    assert _status(body("2.0.0")) == 403
+
+
+def test_a_merged_chat_save_into_the_sibling_is_not_refused_for_the_branches_it_left_alone(
+    enforce,
+) -> None:
+    """Regression: a merged save sends a structure decision for the WHOLE domain.
+
+    manifest.ts lists every branch of the merged domain in json_paths and
+    top_level_scope_paths. Judged as declared changes, a chat save into
+    location.agent_memory read as a write to saved_places and was refused in
+    enforce mode. Only paths the stored manifest does not hold are a change.
+    """
+    service = enforce()
+    service.stored_paths = frozenset(
+        {"saved_places", "saved_places.locations", "agent_memory", "agent_memory.entities"}
+    )
+    whole_domain = {
+        "top_level_scope_paths": ["agent_memory", "saved_places"],
+        "json_paths": [
+            "agent_memory",
+            "agent_memory.entities",
+            "saved_places",
+            "saved_places.locations",
+        ],
+    }
+    plan = _plan(
+        domain="location", scope="agent_memory", writer_id="agent_chat_owner_confirmed_card"
+    )
+    accepted = _client().post(
+        "/api/pkm/store-domain", json=_store_body(plan, structure_decision=whole_domain)
+    )
+    assert accepted.status_code == 200, accepted.text
+    # Negative control: a structure path the domain did not hold is still a change.
+    smuggled = {
+        **whole_domain,
+        "json_paths": [*whole_domain["json_paths"], "visit_notes", "visit_notes.visits"],
+    }
+    refused = _client().post(
+        "/api/pkm/store-domain", json=_store_body(plan, structure_decision=smuggled)
+    )
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["branches"] == ["visit_notes"]
+
+
+def _concrete_branch(entry: reserved_branches.ReservedEntry) -> str:
+    if entry.branch_prefix != reserved_branches.WILDCARD_BRANCH:
+        return entry.branch_prefix
+    return "profile" if entry.domain == "financial" else "items"
+
+
+def _replayable() -> list[tuple[reserved_branches.ReservedEntry, reserved_branches.ReservedWriter]]:
+    pairs = []
+    for entry in reserved_branches.entries():
+        for writer_id in sorted(entry.writer_ids):
+            catalogued = writer(writer_id)
+            assert catalogued is not None, writer_id
+            pairs.append((entry, catalogued))
+    return pairs
+
+
+def test_every_listed_writer_may_write_its_own_entries() -> None:
+    """Replay the whole writer inventory against its own entries, as enforce judges it."""
+    pairs = _replayable()
+    assert len(pairs) > 40
+    for entry, catalogued in pairs:
+        for mode in catalogued.authorization_modes:
+            refusals = evaluate_reserved_write(
+                domain=entry.domain,
+                paths=[_concrete_branch(entry), f"{_concrete_branch(entry)}.detail"],
+                writer_id=catalogued.writer_id,
+                authorization_mode=mode,
+                capabilities=[catalogued.requires_capability]
+                if catalogued.requires_capability
+                else [],
+            )
+            assert refusals == [], (entry.domain, entry.branch_prefix, catalogued.writer_id, mode)
+
+
+@pytest.mark.parametrize("client_version", ["2.0.0", None])
+def test_every_listed_writer_passes_the_store_route_in_enforce_mode(
+    enforce, client_version
+) -> None:
+    """The same replay through /store-domain, for a current and an old client.
+
+    Writers that require a capability (Location finalize, the KYC reply) need a
+    minted authority object; their route behavior has its own tests above.
+    """
+    service = enforce()
+    replayed = 0
+    for entry, catalogued in _replayable():
+        if catalogued.requires_capability:
+            continue
+        plan = _plan(
+            domain=entry.domain,
+            scope=_concrete_branch(entry),
+            writer_id=catalogued.writer_id,
+            client_version=client_version,
+        )
+        mode = catalogued.authorization_modes[0]
+        plan["confirmation_receipt"]["authorization_mode"] = mode
+        if mode == "owner_connected_source_sync":
+            plan["confirmation_receipt"]["connected_source_provider"] = "plaid"
+        response = _client().post("/api/pkm/store-domain", json=_store_body(plan))
+        assert response.status_code == 200, (entry.domain, catalogued.writer_id, response.text)
+        replayed += 1
+    assert replayed == len(service.stored) > 40
 
 
 def test_enforce_sees_a_reserved_manifest_path_behind_an_agent_memory_scope(enforce) -> None:

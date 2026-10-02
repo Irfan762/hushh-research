@@ -18,6 +18,7 @@
 import { mergeWithSupersedeHistory } from "@/lib/pkm/pkm-supersede-merge";
 import type { LocationPkmFinalizeAuthorizationV1 } from "@/lib/services/one-location-onboarding-run-client";
 import { locationFinalizeWire } from "@/lib/one-location/pkm-finalize-authorization";
+import { pkmClientVersionHeaders } from "@/lib/vault/write-protocol-version";
 import {
   RESERVED_ENFORCEMENT_MODE,
   ReservedBranchWriteBlocked,
@@ -44,6 +45,7 @@ import {
   CURRENT_PKM_MODEL_VERSION,
   CURRENT_READABLE_SUMMARY_VERSION,
   CURRENT_READABLE_PROJECTION_VERSION,
+  PKM_QUARANTINE_SEGMENT_ID,
   currentDomainContractVersion,
 } from "@/lib/personal-knowledge-model/upgrade-contracts";
 import {
@@ -876,6 +878,13 @@ export class PersonalKnowledgeModelService {
   }
 
   private static canonicalSegmentId(segmentId: string): string {
+    // The quarantine segment keeps its exact spelling: the server requires a
+    // `__quarantine_v1` segment for any upgrade that quarantined something
+    // (migration 098), and stripping the underscores would also rename the key
+    // when the segment is decrypted back into the domain.
+    if (String(segmentId || "").trim().toLowerCase() === PKM_QUARANTINE_SEGMENT_ID) {
+      return PKM_QUARANTINE_SEGMENT_ID;
+    }
     const normalized = String(segmentId || "")
       .trim()
       .toLowerCase()
@@ -1852,6 +1861,7 @@ export class PersonalKnowledgeModelService {
         const fetchMetadataResponse = async (token?: string) =>
           ApiService.apiFetch(`${this.PKM_API_PREFIX}/metadata/${userId}`, {
             headers: {
+              ...pkmClientVersionHeaders(),
               ...this.getAuthHeaders(token),
               ...(shouldBypassProxyCache ? { "Cache-Control": "no-cache" } : {}),
             },
@@ -2040,26 +2050,23 @@ export class PersonalKnowledgeModelService {
    * The light writer-versus-scope check at the last client step before the
    * network, for the paths that do not go through PkmWriteCoordinator's value
    * diff: the Wallet service and the runtime-secret commits. Judges the plan's
-   * declared scope and structure paths against contracts/pkm/reserved-branches.v1.json;
-   * throws ReservedBranchWriteBlocked in enforce mode, counts nothing otherwise.
+   * declared scope against contracts/pkm/reserved-branches.v1.json; throws
+   * ReservedBranchWriteBlocked in enforce mode, counts nothing otherwise.
    */
   private static assertReservedWriterMayWrite(params: {
     domain: string;
-    structureDecision?: Record<string, unknown>;
     mutationPlan?: PkmMutationPlanV2;
     locationFinalizeAuthorization?: LocationPkmFinalizeAuthorizationV1;
     kycReplyAuthorization?: KycReplyAuthorizationV1;
   }): void {
     if (RESERVED_ENFORCEMENT_MODE !== "enforce" || !params.mutationPlan) return;
-    const decision = params.structureDecision ?? {};
-    const listed = (value: unknown) => (Array.isArray(value) ? value.map(String) : []);
+    // The declared scope only. A merged save's structure decision lists every
+    // branch of the whole domain, changed or not, so judging it refused chat
+    // saves into an agent_memory sibling. Coordinator writes also get the
+    // value diff; the server judges structure paths against the stored manifest.
     const refusals = evaluateReservedWrite({
       domain: params.domain,
-      paths: [
-        params.mutationPlan.proposed_scope,
-        ...listed(decision.top_level_scope_paths),
-        ...listed(decision.json_paths),
-      ],
+      paths: [params.mutationPlan.proposed_scope],
       writerId: params.mutationPlan.writer_id,
       authorizationMode: params.mutationPlan.confirmation_receipt.authorization_mode,
       capabilities: [

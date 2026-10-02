@@ -1117,9 +1117,12 @@ def test_manifest_route_serializes_datetime_fields(monkeypatch):
 
 
 def test_upgrade_status_route_serializes_run_and_steps(monkeypatch):
+    seen_legacy: list[bool] = []
+
     class _FakeUpgradeService:
-        async def build_status(self, user_id: str):
+        async def build_status(self, user_id: str, *, legacy_client: bool = False):
             assert user_id == "user_123"
+            seen_legacy.append(legacy_client)
             return {
                 "user_id": "user_123",
                 "model_version": 3,
@@ -1199,6 +1202,13 @@ def test_upgrade_status_route_serializes_run_and_steps(monkeypatch):
     assert payload["run"]["mode"] == "real"
     assert payload["run"]["error_context"]["correlation_id"] == "corr_123"
     assert payload["run"]["steps"][0]["checkpoint_payload"]["stage"] == "loading_domain"
+    # A build that sends no client level is a legacy client: never offered the
+    # reserved-branch relocation. A current one is.
+    current = client.get(
+        "/api/pkm/upgrade/status/user_123", headers={"x-hushh-client-version": "2.0.0"}
+    )
+    assert current.status_code == 200
+    assert seen_legacy == [True, False]
 
 
 def test_manifest_route_serializes_legacy_manifest_payload(monkeypatch):
@@ -1349,7 +1359,7 @@ def test_validate_store_domain_route_accepts_payload_without_writing(monkeypatch
 
 def test_canonical_pkm_router_exposes_upgrade_status(monkeypatch):
     class _FakeUpgradeService:
-        async def build_status(self, user_id: str):
+        async def build_status(self, user_id: str, *, legacy_client: bool = False):
             assert user_id == "user_123"
             return {
                 "user_id": "user_123",

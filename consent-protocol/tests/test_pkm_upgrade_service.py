@@ -196,6 +196,47 @@ async def test_build_status_prefers_known_summary_versions_when_present():
 
 
 @pytest.mark.asyncio
+async def test_only_a_current_client_is_offered_the_reserved_branch_relocation():
+    """An old build's v5 transform is a copy: it must never be offered the step.
+
+    Offered it, the old build stamps financial v5 with nothing moved, and the
+    client that can move the agent entries is then never asked to. And a domain
+    a current client already moved to v5 must not lock the old build out.
+    """
+
+    def _status_service(domain_version: int) -> PkmUpgradeService:
+        service = PkmUpgradeService()
+        service._pkm_service = _FakePkmService(
+            domain_summaries={
+                "financial": {
+                    "domain_contract_version": domain_version,
+                    "readable_summary_version": CURRENT_READABLE_SUMMARY_VERSION,
+                    "pkm_contract_version": CURRENT_PKM_CONTRACT_VERSION,
+                    "readable_projection_version": CURRENT_READABLE_PROJECTION_VERSION,
+                }
+            }
+        )
+
+        async def _no_runs(_user_id: str):
+            return None
+
+        service._get_latest_run = _no_runs  # type: ignore[method-assign]
+        return service
+
+    at_v4 = _status_service(4)
+    current = await at_v4.build_status("user_123")
+    assert current["upgrade_status"] == "ready"
+    assert current["upgradable_domains"][0]["target_domain_contract_version"] == 5
+    legacy = await at_v4.build_status("user_123", legacy_client=True)
+    assert legacy["upgrade_status"] == "current"
+    assert legacy["upgradable_domains"] == []
+
+    migrated = await _status_service(5).build_status("user_123", legacy_client=True)
+    assert migrated["upgrade_status"] == "current"
+    assert migrated["unsupported_domains"] == []
+
+
+@pytest.mark.asyncio
 async def test_build_status_reuses_metadata_manifest_headers():
     service = PkmUpgradeService()
     service._pkm_service = _FakePkmService()
