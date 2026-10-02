@@ -5744,7 +5744,8 @@
         "people.profile.connect",
         "people.profile.manage_consent",
         "people.profile.remove_connection",
-        "people.profile.review_information_request"
+        "people.profile.review_information_request",
+        "route.person_profile"
       ],
       "action_coverage": "inherited",
       "delegation_policy": {

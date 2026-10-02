@@ -5156,7 +5156,8 @@
           "people.profile.connect",
           "people.profile.manage_consent",
           "people.profile.remove_connection",
-          "people.profile.review_information_request"
+          "people.profile.review_information_request",
+          "route.person_profile"
         ],
         "delegate_agent_ids": [],
         "playbook_id": "route.people.person_profile"
@@ -5804,21 +5805,21 @@
   "schema_version": "hushh.runtime_topology_index.v1",
   "source_sha256": {
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
-    "action_gateway": "752336e5b4776d367a7f8832b21ab05d7802c3de66297337be69e30de9b93ac9",
+    "action_gateway": "fb4aa31a81c146e81d7a3487baef58063d0430db8c4c3c4b5d1c911ce5c4396d",
     "agent_registry": "5f9cc03a2050824f728e03e2c3f4c52271ed3dd29ed7f128cab425bb8fb0c9e0",
     "cache_manifest": "49ee704f091bfd20121dcdeee4ee92e1efef0c993dd85e01d580214cb9845a4f",
     "data_plane": "3a86228cfa3493809e9c61873aa513277b900ac9e8238d83041c1d5b68467dd8",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "eae6780e733d951427b8deb0a7fe8ff09af84fe76637e313f11afcae03e8cd55",
-    "route_index": "6548ee3a2bf02511c34faaac9d21a21932e71567fa36b40b18f1bc01be3ac8d7",
+    "route_index": "41041e40b9f8982b91874afa36dff42242cb761529e64ebc4bc255b662bcba83",
     "route_layout": "529ff35ab193d2cc47db5f2a31b9935ae4b8a98f383eefa776d1bc06705c3355",
-    "surface_map": "583795baa33fc89023799ec8696c167c20db8fc8c0602a1af519f366d3bcdf36",
+    "surface_map": "068d2b978153b26d5996857c77287ec20145e54a0e6fc235f5c387728e234caf",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
   "summary": {
     "a2a_scope_gated_agents": 5,
-    "actions": 230,
+    "actions": 231,
     "agents": 19,
     "aliases": 4,
     "decision_required": 2,
