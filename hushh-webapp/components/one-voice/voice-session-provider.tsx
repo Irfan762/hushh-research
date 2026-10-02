@@ -942,14 +942,45 @@ export function VoiceSessionProvider({
       }
       dispatchServerFrame(frame, now());
       const store = useVoiceSessionStore.getState();
+      const schedulePendingShown = (id: string) => {
+        if (session.pendingShownTimer !== null) clearTimeout(session.pendingShownTimer);
+        session.pendingShownTimer = null;
+        const generation = ++session.pendingShownGeneration;
+        let attempts = 0;
+        const checkCard = () => {
+          if (sessionRef.current !== session || session.tornDown ||
+              generation !== session.pendingShownGeneration ||
+              session.shownPendingActionIds.has(id)) return;
+          const pending = useVoiceSessionStore.getState().state.pendingAction;
+          if (pending?.pending_action_id !== id || pending.resolvedStatus !== null) return;
+          if (pendingCardIsVisible(id) && session.client.pendingShown(id)) {
+            session.shownPendingActionIds.add(id);
+            return;
+          }
+          if (++attempts >= PENDING_CARD_MOUNT_RETRIES) return;
+          session.pendingShownTimer = setTimeout(() => {
+            session.pendingShownTimer = null;
+            (depsRef.current?.afterPaint ?? defaultAfterPaint)(checkCard);
+          }, PENDING_CARD_MOUNT_RETRY_MS);
+        };
+        (depsRef.current?.afterPaint ?? defaultAfterPaint)(checkCard);
+      };
       switch (frame.type) {
-        case "session.ready":
+        case "session.ready": {
           sendAppContext();
+          // The reducer renders the first re-listed card. If the server never
+          // heard it was shown (its pending_action frame was lost to a
+          // reconnect), report it once painted so a later "yes" can confirm
+          // it instead of being refused as an unseen card.
+          const first = frame.pending_actions?.[0];
+          if (first && first.status === "pending" && !first.shown_at)
+            schedulePendingShown(first.pending_action_id);
           // The relay being ready says nothing about whether getUserMedia has
           // completed. Keep the visible status honest until capture is live.
           if (session.paused || !session.captureReady)
             dispatch({ type: "paused" });
           return;
+        }
         case "transcript.input":
           if (
             store.state.activeInputTurnId === frame.turn_id &&
@@ -1019,28 +1050,7 @@ export function VoiceSessionProvider({
           session.confirmingPendingId = null;
           return;
         case "pending_action": {
-          const id = frame.pending_action_id;
-          if (session.pendingShownTimer !== null) clearTimeout(session.pendingShownTimer);
-          session.pendingShownTimer = null;
-          const generation = ++session.pendingShownGeneration;
-          let attempts = 0;
-          const checkCard = () => {
-            if (sessionRef.current !== session || session.tornDown ||
-                generation !== session.pendingShownGeneration ||
-                session.shownPendingActionIds.has(id)) return;
-            const pending = useVoiceSessionStore.getState().state.pendingAction;
-            if (pending?.pending_action_id !== id || pending.resolvedStatus !== null) return;
-            if (pendingCardIsVisible(id) && session.client.pendingShown(id)) {
-              session.shownPendingActionIds.add(id);
-              return;
-            }
-            if (++attempts >= PENDING_CARD_MOUNT_RETRIES) return;
-            session.pendingShownTimer = setTimeout(() => {
-              session.pendingShownTimer = null;
-              (depsRef.current?.afterPaint ?? defaultAfterPaint)(checkCard);
-            }, PENDING_CARD_MOUNT_RETRY_MS);
-          };
-          (depsRef.current?.afterPaint ?? defaultAfterPaint)(checkCard);
+          schedulePendingShown(frame.pending_action_id);
           return;
         }
         case "tool.result":

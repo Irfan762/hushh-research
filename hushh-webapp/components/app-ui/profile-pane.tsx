@@ -12,6 +12,7 @@ import { ProfilePage } from "@/components/profile/profile-workspace-page";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useVault } from "@/lib/vault/vault-context";
 import {
+  PROFILE_PANE_SHOWN_EVENT,
   canGoBackProfilePane,
   popProfilePaneLocation,
   profilePaneLocationKey,
@@ -126,6 +127,11 @@ function ProfilePaneShell() {
  */
 function ProfilePaneBody({ location }: { location: ProfilePaneLocation }) {
   const firstFramePainted = useProfilePaneFirstFramePainted();
+  // Mounted once per open, inside the committed sheet content: the evidence a
+  // requested open is actually showing (voice settles on this, not the ask).
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(PROFILE_PANE_SHOWN_EVENT));
+  }, []);
   useEffect(() => {
     if (firstFramePainted) markProfilePane("hushh:profile-pane-content");
   }, [firstFramePainted]);
