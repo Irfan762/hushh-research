@@ -23,6 +23,7 @@ from hushh_mcp.one_voice.tools.base import (
     now_iso,
 )
 from hushh_mcp.one_voice.tools.executor import ToolExecutor
+from hushh_mcp.one_voice.tools.session import OpenScreenInput, open_screen
 from hushh_mcp.services.connections_service import ConnectionsError
 from hushh_mcp.services.one_location_agent_service import OneLocationAgentError
 
@@ -1314,3 +1315,71 @@ def test_request_cards_name_the_listed_counterpart_even_without_a_person():
     assert spec("accept_connection_request").summarize(ctx, named) == (
         "accept the connection request from Rahul Verma"
     )
+
+
+# -- open_screen: someone else's profile ---------------------------------------
+#
+# "Open Ayesha's profile" used to dispatch the owner's own profile screen with
+# Ayesha's user_id riding along, which the app ignored. Another person's profile
+# is its own screen, filled only from the server-confirmed public ref; the
+# owner-only screens refuse a foreign user_id instead of silently opening yours.
+
+AYESHA_REF = "6f1c2a1e-4b6d-4c7e-9a3b-2d5e8f9a0b1c"
+
+
+def _confirm_with_ref(ctx: ToolContext, ref: str | None) -> None:
+    ctx.entities.remember_person(
+        ConfirmedPerson(
+            user_id=AYESHA,
+            public_person_ref=ref,
+            display_name="Ayesha Sharma",
+            relationship="connected",
+            confirmed_at=now_iso(),
+        )
+    )
+
+
+def _open(ctx: ToolContext, **args: Any):
+    return asyncio.run(open_screen(ctx, OpenScreenInput(**args)))
+
+
+def test_person_profile_opens_from_the_confirmed_public_ref():
+    ctx, _, _ = make_ctx()
+    _confirm_with_ref(ctx, AYESHA_REF.upper())
+    result = _open(ctx, screen="person_profile", user_id=AYESHA)
+    assert result.status == "navigation_dispatched"
+    assert result.gateway_action_id == "route.person_profile"
+    assert result.public_person_ref == AYESHA_REF
+    assert result.user_id == AYESHA
+    assert result.spoken_facts == ["Opening their profile."]
+
+
+@pytest.mark.parametrize(
+    ("args", "ref", "reason"),
+    [
+        ({"screen": "person_profile"}, AYESHA_REF, "person_required"),
+        ({"screen": "person_profile", "user_id": "u-stranger"}, AYESHA_REF, "person_not_confirmed"),
+        ({"screen": "person_profile", "user_id": AYESHA}, None, "no_profile_ref"),
+        ({"screen": "person_profile", "user_id": AYESHA}, "ppr-ayesha", "no_profile_ref"),
+    ],
+)
+def test_person_profile_refuses_without_a_confirmed_person_and_ref(args, ref, reason):
+    ctx, _, _ = make_ctx()
+    _confirm_with_ref(ctx, ref)
+    result = _open(ctx, **args)
+    assert result.status == "rejected"
+    assert result.reason_code == reason
+    assert getattr(result, "public_person_ref", None) is None
+
+
+@pytest.mark.parametrize("screen", ["profile", "profile_privacy", "profile_voice_preferences"])
+def test_owner_profile_screens_refuse_someone_elses_user_id(screen):
+    """Before the fix this returned navigation_dispatched for route.profile."""
+    ctx, _, _ = make_ctx()
+    _confirm_with_ref(ctx, AYESHA_REF)
+    refused = _open(ctx, screen=screen, user_id=AYESHA)
+    assert refused.status == "rejected"
+    assert refused.reason_code == "owner_only_screen"
+    assert "person_profile" in refused.spoken_facts[0]
+    # The owner's own profile still opens.
+    assert _open(ctx, screen=screen).status == "navigation_dispatched"

@@ -618,6 +618,33 @@ describe("reduceVoiceSession: tools and success", () => {
     expect(selectSuccessReceipt(state)).toBeNull();
   });
 
+  it("navigation_dispatched reads neutral, not success, not pending; confirmation_waiting is never success", () => {
+    expect(toolResultTone("navigation_dispatched", true)).toBe("neutral");
+    expect(toolResultTone("navigation_dispatched", false)).toBe("failure");
+    // Screens gate success on this set; ui_settled decides the outcome.
+    expect(NOT_SUCCESS_STATUSES.has("navigation_dispatched")).toBe(true);
+    // Pending would hold the turn on a device step that never comes.
+    expect(isPendingStatus("navigation_dispatched")).toBe(false);
+    const waiting = run(
+      [
+        server(
+          toolResult({
+            tool: "send_message",
+            status: "confirmation_waiting",
+            result_public: {
+              status: "confirmation_waiting",
+              spoken_facts: ["That's already waiting for your answer."],
+            },
+          }),
+        ),
+      ],
+      connected(),
+    );
+    expect(NOT_SUCCESS_STATUSES.has("confirmation_waiting")).toBe(true);
+    expect(toolResultTone("confirmation_waiting", true)).toBe("failure");
+    expect(selectSuccessReceipt(waiting)).toBeNull();
+  });
+
   it("device Location switch tones: on/off succeed, already_* are neutral, pending and rejected fail", () => {
     expect(toolResultTone("on", true)).toBe("success");
     expect(toolResultTone("off", true)).toBe("success");

@@ -22342,6 +22342,153 @@
     },
     {
       "aliases": [
+        "Open a person's profile",
+        "open their profile",
+        "show their profile"
+      ],
+      "authorization": {
+        "guard_ids": [
+          "auth_signed_in"
+        ],
+        "ownership": "server_resolved_for_target_entity",
+        "predicates": [
+          {
+            "authority": "server",
+            "effect": "required",
+            "id": "auth_signed_in"
+          }
+        ],
+        "server_revalidation": "identity_consent_and_domain_service"
+      },
+      "availability": {
+        "feature_flags": [],
+        "product_available": true
+      },
+      "capability_id": "route.person_profile",
+      "confirmation": {
+        "mode": "none",
+        "required": false,
+        "requires_trusted_tap": false,
+        "surface": null
+      },
+      "description": "Navigates to the profile of one person already confirmed by name. It changes nothing, and it needs that person's profile reference, never a guessed one.",
+      "execution": {
+        "binding_ref": "route:/people/[personRef]",
+        "executor": {
+          "kind": "existing_route",
+          "settlement": "directive_ledger_settlement"
+        },
+        "mode": "client_directive",
+        "outcome": "NAVIGATE",
+        "target": {
+          "path": "route",
+          "status": "wired",
+          "target": "/people/[personRef]"
+        }
+      },
+      "goal_id": "goal.route.person_profile",
+      "idempotency": {
+        "scope": "action_and_normalized_slots",
+        "strategy": "action_directive_ledger"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "kind": "action",
+      "label": "Open a person's profile",
+      "navigation": {
+        "fallback": "/people/[personRef]",
+        "routes": [
+          "/people/[personRef]"
+        ],
+        "screens": [
+          "one_person_profile"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "preconditions": {
+        "guard_ids": [
+          "auth_signed_in"
+        ],
+        "mounted_surface_required": false,
+        "requires_signed_in": true,
+        "requires_vault": false
+      },
+      "render_surface": null,
+      "required_entities": [],
+      "search_keywords": [
+        "profile",
+        "person",
+        "people"
+      ],
+      "settlement_proof": "validated_route_settlement",
+      "side_effect": {
+        "classification": "navigation"
+      },
+      "supported_entrypoints": [
+        "voice",
+        "chat",
+        "typed_search",
+        "command_bar",
+        "ui"
+      ],
+      "technical_interaction": {
+        "allowed_types": [
+          "oauth",
+          "native_permission"
+        ],
+        "policy": "platform_required_only",
+        "requires_user_interaction": false
+      },
+      "telemetry_event": "app_intelligence.action",
+      "version": 1
+    },
+    {
+      "aliases": [
         "Choose Country Code",
         "choose country code",
         "select country",
@@ -38103,7 +38250,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "4a7c3e52addd5e6c626a8c64a8975b4bad50da66e842189071bc7c08ec9465b7",
+      "projection_digest": "ec5a7c8b9e6fd930a1a5200195820551d5ad83129b868e756e1a5def9e858c4f",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -38122,7 +38269,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "c2f60a0a18e23643",
+      "source_revision": "f6044f1a0bbd43dd",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -39640,7 +39787,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "c2f60a0a18e23643",
+    "source_revision": "f6044f1a0bbd43dd",
     "web": {
       "actions": [
         {
@@ -39683,7 +39830,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "6aef8033c30341e1e274679089e52d48c3cea43a3f035ca347711873ac98b47c",
+      "projection_digest": "5a6e0683b0f6119799617a47f2a472bc9aa798fa4276c3f81a051f5eafc0b256",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -39702,7 +39849,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "c2f60a0a18e23643",
+      "source_revision": "f6044f1a0bbd43dd",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -41259,7 +41406,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "c2f60a0a18e23643",
+  "revision": "f6044f1a0bbd43dd",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -42713,7 +42860,8 @@
         "people.profile.connect",
         "people.profile.manage_consent",
         "people.profile.remove_connection",
-        "people.profile.review_information_request"
+        "people.profile.review_information_request",
+        "route.person_profile"
       ],
       "capability_id": "screen:/people/[personRef]",
       "kind": "screen",
@@ -42965,12 +43113,16 @@
     }
   ],
   "semantic_diff": {
-    "added": [],
+    "added": [
+      "actions:route.person_profile"
+    ],
     "breaking": [],
-    "changed": [],
+    "changed": [
+      "screens:screen:/people/[personRef]"
+    ],
     "compatible": [],
     "deprecated": [],
-    "from_revision": "c257cdc2d62edab3",
+    "from_revision": "c2f60a0a18e23643",
     "migrated": [],
     "removed": []
   },
@@ -45447,18 +45599,18 @@
     "capability_graph_evolution": "c26df1f82dfc3c40f91df529be2625cc8db94e1caf34c693d9f445027ef7b229",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "752336e5b4776d367a7f8832b21ab05d7802c3de66297337be69e30de9b93ac9",
+    "kai_action_gateway": "fb4aa31a81c146e81d7a3487baef58063d0430db8c4c3c4b5d1c911ce5c4396d",
     "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "054141b4aaf04ef13ce9bd139a1044287be8703c1e65015cc338a970d4fa51ed",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
     "product_agent_registry": "03ddee8e63e5295b8b71efd73595abd299fd1aacccc839071293e183a6952563",
-    "route_orchestration_index": "6548ee3a2bf02511c34faaac9d21a21932e71567fa36b40b18f1bc01be3ac8d7",
+    "route_orchestration_index": "41041e40b9f8982b91874afa36dff42242cb761529e64ebc4bc255b662bcba83",
     "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
   },
-  "source_revision": "c2f60a0a18e23643",
+  "source_revision": "f6044f1a0bbd43dd",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "c2f60a0a18e23643",
+    "current_graph_revision": "f6044f1a0bbd43dd",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {
@@ -45513,6 +45665,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45589,6 +45742,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45665,6 +45819,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45741,6 +45896,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45817,6 +45973,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45893,6 +46050,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",
@@ -45969,6 +46127,7 @@
           "c1df11d262f16eea",
           "c257cdc2d62edab3",
           "c2e7e299b49c5228",
+          "c2f60a0a18e23643",
           "cb4b4f653c99fc16",
           "cccecbbc8438b3aa",
           "ce3d0f0b6b9d9199",

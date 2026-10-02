@@ -419,22 +419,43 @@ export function clearProfilePaneQuery(
 
 export type ProfilePaneOpenSource = "tap" | "native_swipe";
 
+/**
+ * Fired by the pane body once it has actually mounted for an open. A request
+ * answered "opening" is only a request; this is the evidence it is showing.
+ */
+export const PROFILE_PANE_SHOWN_EVENT = "hushh:profile-pane-shown";
+
+/** The shell's synchronous answer to an open request. */
+export type ProfilePaneOpenResult = "opening" | "already_open" | "unavailable";
+
 export type ProfilePaneOpenDetail = {
   source: ProfilePaneOpenSource;
+  /** Called synchronously by the shell listener with what it did. */
+  onResult?: (result: ProfilePaneOpenResult) => void;
 };
 
 /**
  * Ask the app shell to present Profile as a transient pane. The shell owns the
  * pane lifecycle so the top bar, native edge gesture, and future entry points
  * share one surface without adding another navigation stack.
+ *
+ * Returns the shell's answer, or null when no shell listener is mounted.
+ * dispatchEvent is synchronous, so the listener has answered by return.
  */
 export function requestProfilePaneOpen(
   source: ProfilePaneOpenSource = "tap",
-): void {
-  if (typeof window === "undefined") return;
+): ProfilePaneOpenResult | null {
+  if (typeof window === "undefined") return null;
+  let result: ProfilePaneOpenResult | null = null;
   window.dispatchEvent(
     new CustomEvent<ProfilePaneOpenDetail>(PROFILE_PANE_OPEN_EVENT, {
-      detail: { source },
+      detail: {
+        source,
+        onResult: (value) => {
+          result = value;
+        },
+      },
     }),
   );
+  return result;
 }
