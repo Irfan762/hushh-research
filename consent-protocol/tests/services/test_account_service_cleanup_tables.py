@@ -155,6 +155,7 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
     assert result["account_deleted"] is True
     assert result["details"]["external_connectors"] is True
     assert result["details"]["drive_private_data"] is True
+    assert result["details"]["one_kyc_workflows"] is True
     assert result["details"]["one_location_circle_member_invites"] is True
     assert result["details"]["connection_origins"] is True
     assert result["details"]["contact_sync_lookup_budgets"] is True
@@ -207,6 +208,7 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
         "DELETE FROM account_legal_acceptances",
         "DELETE FROM kai_gmail_receipts",
         "DELETE FROM kai_gmail_sync_runs",
+        "DELETE FROM one_kyc_workflows",
         "DELETE FROM kai_gmail_connections",
         "DELETE FROM kai_analyze_runs",
         "DELETE FROM consent_export_refresh_jobs",
@@ -817,6 +819,7 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
     assert result["account_reset"] is True
     assert result["details"]["external_connectors"] is True
     assert result["details"]["drive_private_data"] is True
+    assert result["details"]["one_kyc_workflows"] is True
     assert result["details"]["one_location_circle_member_invites"] is True
     assert result["details"]["one_location_auto_approve_preferences"] is True
     assert result["details"]["one_location_map_preferences"] is True
@@ -836,6 +839,7 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
     # Personal data is cleared.
     cleared_fragments = [
         "DELETE FROM kai_gmail_receipts",
+        "DELETE FROM one_kyc_workflows",
         "DELETE FROM pkm_events",
         "DELETE FROM pkm_blobs",
         "DELETE FROM connected_system_intents",
@@ -1400,6 +1404,8 @@ async def test_uat_backend_erasure_preserves_external_authorities(monkeypatch):
     executed = "\n".join(str(call.args[0]) for call in conn.execute.call_args_list)
     assert "DELETE FROM vault_keys" in executed
     assert "DELETE FROM agent_chat_conversations" in executed
+    assert result["details"]["one_kyc_workflows"] is True
+    assert "DELETE FROM one_kyc_workflows WHERE user_id = :user_id" in executed
     assert "uat_backend_only_erasure" in executed
     pending.assert_not_called()
     snapshot.assert_not_called()

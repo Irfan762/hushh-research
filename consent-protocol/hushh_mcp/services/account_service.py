@@ -1379,6 +1379,8 @@ class AccountService:
                 "direct_message_blocks",
                 "kai_gmail_receipts",
                 "kai_gmail_sync_runs",
+                # Retired intake still has historical mail records to erase.
+                "one_kyc_workflows",
                 "kai_gmail_connections",
                 "kai_receipt_memory_artifacts",
                 "kai_analyze_runs",
@@ -1746,6 +1748,7 @@ class AccountService:
             "kai_gmail_connections": False,
             "kai_gmail_receipts": False,
             "kai_gmail_sync_runs": False,
+            "one_kyc_workflows": False,
             "kai_receipt_memory_artifacts": False,
             "consent_exports": False,
             "consent_export_refresh_jobs": False,
@@ -1886,6 +1889,8 @@ class AccountService:
                         "direct_message_blocks",
                         "kai_gmail_receipts",
                         "kai_gmail_sync_runs",
+                        # Erase before actor_profiles can orphan the legacy rows.
+                        "one_kyc_workflows",
                         "kai_gmail_connections",
                         "kai_receipt_memory_artifacts",
                         "kai_analyze_runs",

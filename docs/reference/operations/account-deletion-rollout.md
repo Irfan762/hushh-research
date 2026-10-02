@@ -192,6 +192,13 @@ existing retention review; this operation is not a claim of legal clearance.
 
 ## Required monitoring
 
+Retiring a feature does not retire its erasure obligation. Historical
+`one_kyc_workflows` mail records remain in the optional-table cleanup for
+account reset, full deletion, and UAT backend-only erasure. Delete them by
+the current owner's UID before deleting the account spine; the legacy
+foreign key otherwise sets the owner to null. This does not restore the
+retired KYC intake feature or change audit retention.
+
 Alert the IAM on-call when any of these conditions occurs:
 
 - the `account-deletion-cleanup-*` scheduler is disabled or its last attempt
