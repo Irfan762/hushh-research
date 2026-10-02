@@ -302,12 +302,16 @@ owner's own message instead of a copy in the tool argument. The device then:
    so the merge agent can choose extend, correct or no_op instead of creating a
    second copy. This is the same owner information One's chat already receives as
    consented turn information; nothing is stored server-side;
-3. drops what the agents judged not to be facts (disclaimers, lists of unknowns),
-   exact duplicates of what is already stored, and restatements the merge agent
-   matched to a stored detail (`no_op` with a target), which count as already known;
-4. writes every remaining card with an `owner_confirmed` receipt, except identifier-class
-   details and details that would change what the owner already shares, which wait for
-   the owner's tap on the receipt card; secrets are never written;
+3. leaves unsaved only what the segmentation agent reports in `not_memory` (an exact
+   duplicate line or a pure disclaimer such as "Information not known"), exact duplicates
+   of what is already stored, and restatements the merge agent matched to a stored detail
+   (`no_op` with a target), which count as already known; every one of them still appears
+   in the line coverage with its reason;
+4. writes every remaining card with an `owner_confirmed` receipt, sensitive details (pay,
+   equity, immigration, a housing deposit) included, labelled sensitive. A card that still
+   carries a raw identifier value, and a detail that would change what the owner already
+   shares, wait for the owner's tap on the receipt card. A Secrets placeholder is a
+   reference, never an identifier; secret values are never written here;
 5. reports a receipt built only from server-acknowledged commits (a `data_version`):
    saved, updated, merged, already known, skipped as not facts, waiting for the owner,
    failed, and sections not read. A section that could not be prepared is reported; it
@@ -331,6 +335,41 @@ paste with six changed facts produced: 9 new, 8 updated (15 earlier values kept 
 history, including the promotion, the salary, the move and the vendor switch), 1 merged,
 78 already known, 3 skipped, 3 sections unread after the 45 second per-proposal budget,
 and no duplicate details. A vault-unlocked browser run was not performed.
+
+### Keeping everything the owner stated
+
+Phase 4 of the reserved-branch plan (2026-10-02). The memory agents decide a place for
+everything the owner states: work context, company, product, tech stack, infrastructure,
+vendors, people, repository metrics, AI tooling and non-secret technical identifiers
+(project ids, environment variable names, OAuth URLs, app ids). A fact about another person
+or organization is kept and attributed to them. Each segment carries `context_quotes`, the
+exact headings that attribute it, and the segmentation agent returns
+`not_memory[]: {quote, reason: duplicate | disclaimer}` for every line it does not select
+(`preview_summary.not_memory` on `/api/pkm/memory/proposals`; the device maps both onto the
+line coverage). The Financial Guard Agent was removed: the intent agent alone tells a live
+`command` ("optimize my portfolio") from a memory, and a money preference lands in
+`financial.agent_memory` through the reserved registry.
+
+Four loss points closed with it:
+
+- the structure agent is skipped only for an intent `no_op` or `command`; a statement that
+  needs confirmation is structured, no longer filed through a fallback record clipped to 240
+  and 500 characters;
+- a quote that does not match the owner's text is dropped alone and counted
+  (`unmatched_quote_count`); quotes are matched after folding Markdown and dash variants and
+  stored as the owner's exact span, instead of one bad quote discarding the whole section;
+- a model domain named after a protocol namespace a person could mean as a subject
+  (`agents`, `mcp`, `system`) is kept in the intent's domain or `professional`
+  (`protocol_domain_name_remapped`) instead of refused;
+- a write whose response was lost is confirmed with `POST /api/pkm/commits/lookup`
+  (owner-scoped, existence and `data_version` only) before the save job retries it or
+  reports it "not yet saved".
+
+Proof: `consent-protocol/tests/services/test_context_transfer_is_kept.py` runs a synthetic,
+founder-shaped 16 KB document (20 sections) through the real preview pipeline with scripted
+agents and checks the recorded answers; `hushh-webapp/__tests__/services/pkm-save-job.test.ts`
+replays them through the resumable save job: every line saved or `not_memory`, zero
+unaccounted, with a negative control that loses lines without `not_memory`.
 
 ### Memory evolves: superseded values stay in history
 

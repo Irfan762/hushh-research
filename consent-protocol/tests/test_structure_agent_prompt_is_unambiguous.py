@@ -22,7 +22,6 @@ def build_prompt() -> str:
         current_domains=["food"],
         registry_choices=[{"domain_key": "food"}],
         simulated_state={},
-        financial_guard={"routing_decision": "none"},
         intent_frame={"save_class": "durable", "requires_confirmation": False},
         merge_decision={"target_domain": "food"},
         strict_small_model=False,

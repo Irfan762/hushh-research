@@ -249,6 +249,15 @@ function registryHandle(
   })?.scope_handle;
 }
 
+/**
+ * The plan id a write carries when it has an idempotency scope. The server
+ * derives the commit id from (owner, domain, plan id), so the same scope always
+ * names the same commit, and a device can later ask whether it landed.
+ */
+export function pkmPlanIdForIdempotencyScope(scope: string): string {
+  return `pkm_plan_${uuidv5(scope, "76f0e762-c176-5947-a680-7011af78b71f").replaceAll("-", "")}`;
+}
+
 export async function buildConfirmedPkmMutationPlanV2(params: {
   userId: string;
   domain: string;
@@ -309,7 +318,7 @@ export async function buildConfirmedPkmMutationPlanV2(params: {
     throw new Error("The requested workflow can only save its private Location draft.");
   }
   const planId = params.idempotencyScope
-    ? `pkm_plan_${uuidv5(params.idempotencyScope, "76f0e762-c176-5947-a680-7011af78b71f").replaceAll("-", "")}`
+    ? pkmPlanIdForIdempotencyScope(params.idempotencyScope)
     : opaqueId("plan");
   const sharingImpact = ownerConfirmation?.sharingImpact;
   const confirmedAt = automatic || connectedSourceSync

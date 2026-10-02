@@ -23,12 +23,15 @@
  *   card's place in the step, so replaying a step cannot write a detail twice.
  * - One runner per job: a Web Lock across tabs, an in-process lock where Web
  *   Locks are unavailable (a second tab then can only replay idempotent commits).
- * - Receipts count only commits that came back with a dataVersion.
+ * - Receipts count only commits that came back with a dataVersion. A write
+ *   whose answer never arrived is asked about (`lookupCommits`, owner-scoped,
+ *   existence and dataVersion only) before it is retried or reported unsaved.
  */
 
 import {
   addToPKM,
   previewAgentPkmMemory,
+  resolveCardTargetDomain,
   type AgentPkmPreviewCard,
   type AgentPkmPreviewResponse,
   type AgentPkmSaveResult,
@@ -46,7 +49,7 @@ import {
   type ExplicitSavePartition,
   type PkmSaveReceipt,
 } from "@/lib/agent/pkm-save-receipt";
-import { sha256Hex } from "@/lib/personal-knowledge-model/mutation-plan";
+import { pkmPlanIdForIdempotencyScope, sha256Hex } from "@/lib/personal-knowledge-model/mutation-plan";
 import {
   MAX_CONCURRENT_PROPOSALS,
   planExplicitSaveSourceChunks,
@@ -70,6 +73,7 @@ import {
 import type { PkmMergeOutcome } from "@/lib/pkm/pkm-supersede-merge";
 import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
 import { assertNoUnguardedSecrets } from "@/lib/pkm/secret-span-guard";
+import { PersonalKnowledgeModelService } from "@/lib/services/personal-knowledge-model-service";
 import { SecureResourceCacheService } from "@/lib/services/secure-resource-cache-service";
 
 export const PKM_SAVE_JOB_RESOURCE_PREFIX = "pkm_save_job:v1:";
@@ -106,6 +110,8 @@ export type PkmSaveJobCommit = {
   outcome?: PkmMergeOutcome;
   domain: string;
   path: string | null;
+  /** Set when the write's own answer was lost and the server confirmed it later. */
+  confirmedBy?: "lookup";
 };
 
 export type PkmSaveJobNotMemory = { quote: string; reason: "duplicate" | "disclaimer" };
@@ -156,6 +162,14 @@ export type PkmSaveJobDeps = {
     cards: AgentPkmPreviewCard[];
     idempotencyScopes: string[];
   }) => Promise<AgentPkmSaveResult>;
+  /**
+   * Whether writes already committed on the server, in order: the committed
+   * dataVersion, or null. Asked only for cards whose own answer never arrived.
+   */
+  lookupCommits?: (params: {
+    cards: AgentPkmPreviewCard[];
+    idempotencyScopes: string[];
+  }) => Promise<Array<{ dataVersion: number } | null>>;
   persist: (job: PkmSaveJob) => Promise<void>;
   /** The vault session is unlocked and current. Checked before every effect. */
   isUnlocked: () => boolean;
@@ -395,12 +409,13 @@ export async function runPkmSaveJob(
     const partition = partitionExplicitSaveCards(cards);
     const commits = step.commits ?? {};
     const pending = partition.save.filter((card) => !commits[card.card_id]);
+    const scopeOf = (card: AgentPkmPreviewCard) => `${step.id}:${cards.indexOf(card)}`;
     if (pending.length) {
       step.state = "committing";
       await save();
       const result = await deps.commit({
         cards: pending,
-        idempotencyScopes: pending.map((card) => `${step.id}:${cards.indexOf(card)}`),
+        idempotencyScopes: pending.map(scopeOf),
       }).catch(() => null);
       pending.forEach((card, index) => {
         const ack = result?.results[index];
@@ -414,6 +429,28 @@ export async function runPkmSaveJob(
           path: card.primary_json_path ?? card.retrieval_hints?.path ?? ack.scope ?? null,
         };
       });
+      // A write can land on the server while its answer is lost (the network
+      // dropped, the tab slept). Replaying it is refused by its own commit id,
+      // so without asking, a saved detail would read "not yet saved" forever.
+      const unconfirmed = pending.filter((card) => !commits[card.card_id]);
+      if (unconfirmed.length && deps.lookupCommits && !interrupted()) {
+        const found = await deps.lookupCommits({
+          cards: unconfirmed,
+          idempotencyScopes: unconfirmed.map(scopeOf),
+        }).catch(() => null);
+        unconfirmed.forEach((card, index) => {
+          const hit = found?.[index];
+          if (!hit) return;
+          commits[card.card_id] = {
+            cardId: card.card_id,
+            dataVersion: hit.dataVersion,
+            commitId: null,
+            domain: resolveCardTargetDomain(card),
+            path: card.primary_json_path ?? card.retrieval_hints?.path ?? null,
+            confirmedBy: "lookup",
+          };
+        });
+      }
       step.commits = commits;
       if (partition.save.some((card) => !commits[card.card_id])) {
         if (interrupted()) step.state = "prepared";
@@ -505,6 +542,18 @@ export function buildPkmSaveJobCoverage(job: PkmSaveJob): {
     const context = step.chunk.context;
     const locate = (quote: string, cursor?: number) =>
       locatePkmQuote({ source: job.source, range, context, quote, cursor });
+    // Spans this step's cards already account for. A repeated line is reported
+    // once as a duplicate: it belongs to an occurrence no card claimed, not to
+    // the first one, which the saved card already covers.
+    const claimed: Array<{ start: number; end: number }> = [];
+    const locateUnclaimed = (quote: string) => {
+      for (let at = job.source.indexOf(quote, range.start); at >= 0 && at + quote.length <= range.end;
+        at = job.source.indexOf(quote, at + 1)) {
+        const span = { start: at, end: at + quote.length };
+        if (!claimed.some((taken) => taken.start < span.end && taken.end > span.start)) return span;
+      }
+      return locate(quote);
+    };
     const partition = partitionExplicitSaveCards(step.cards);
     const heldReason = new Map<string, "needs_owner" | "excluded" | "left_out">();
     partition.needsOwner.forEach((card) => heldReason.set(card.card_id, "needs_owner"));
@@ -515,7 +564,10 @@ export function buildPkmSaveJobCoverage(job: PkmSaveJob): {
     for (const card of step.cards) {
       const quotes = [card.source_quote ?? card.source_text, ...(card.context_quotes ?? [])];
       const located = quotes.map((quote, index) => locate(quote, index === 0 ? cursor : undefined));
-      if (located[0]) cursor = located[0].end;
+      if (located[0]) {
+        cursor = located[0].end;
+        claimed.push(located[0]);
+      }
       const commit = step.commits?.[card.card_id];
       for (const span of located) {
         if (!span) continue;
@@ -533,12 +585,18 @@ export function buildPkmSaveJobCoverage(job: PkmSaveJob): {
       }
     }
     for (const quote of step.duplicateQuotes ?? []) {
-      const span = locate(quote);
-      if (span) spans.push({ ...span, kind: "not_memory", reason: "already_known" });
+      const span = locateUnclaimed(quote);
+      if (span) {
+        claimed.push(span);
+        spans.push({ ...span, kind: "not_memory", reason: "already_known" });
+      }
     }
     for (const entry of step.notMemory ?? []) {
-      const span = locate(entry.quote);
-      if (span) spans.push({ ...span, kind: "not_memory", reason: entry.reason });
+      const span = locateUnclaimed(entry.quote);
+      if (span) {
+        claimed.push(span);
+        spans.push({ ...span, kind: "not_memory", reason: entry.reason });
+      }
     }
   }
   const coverage = computePkmLineCoverage({ source: job.source, spans, destinations });
@@ -770,6 +828,17 @@ function explicitSaveDeps(params: ExplicitPkmSaveJobParams, job: PkmSaveJob): Pk
       confirmation: { ...EXPLICIT_SAVE_CONFIRMATION, confirmedAt: new Date(job.createdAt).toISOString() },
       beforeEffect: params.beforeEffect, mayPublish: params.mayPublish, idempotencyScopes,
     }),
+    lookupCommits: async ({ cards, idempotencyScopes }) => {
+      const rows = await PersonalKnowledgeModelService.lookupMutationCommits({
+        userId: params.userId,
+        vaultOwnerToken: params.vaultOwnerToken,
+        commits: cards.map((card, index) => ({
+          domain: resolveCardTargetDomain(card),
+          planId: pkmPlanIdForIdempotencyScope(idempotencyScopes[index]!),
+        })),
+      });
+      return rows.map((row) => (row.exists && row.dataVersion !== null ? { dataVersion: row.dataVersion } : null));
+    },
     persist: async (current) => {
       try {
         await persistPkmSaveJob(current, params.vaultKey);

@@ -58,6 +58,7 @@ from hushh_mcp.services.pkm_mutation_contracts import (
     PKM_MAX_AFFECTED_SHARING_IDS,
     LocationPkmFinalizeAuthorizationV1,
     PkmMutationPlanV2,
+    derive_pkm_mutation_commit_id,
     validate_location_finalize_authorization_for_write,
     validate_mutation_plan_for_write,
 )
@@ -2866,6 +2867,50 @@ class PersonalKnowledgeModelService:
         )
         payload = self._unwrap_rpc_payload(rpc_result, rpc_name)
         return payload if isinstance(payload, dict) else {"success": False, "conflict": False}
+
+    async def find_mutation_commits(
+        self,
+        *,
+        user_id: str,
+        commits: list[tuple[str, str]],
+    ) -> list[dict[str, Any]]:
+        """Whether each ``(domain, plan_id)`` write already committed for this owner.
+
+        The commit id is derived here from the caller's own user id, exactly as
+        the write path derives it (``derive_pkm_mutation_commit_id``), so an
+        owner can only ever ask about their own writes. The answer is existence
+        and the committed content revision; nothing else about the write.
+        A malformed plan id or domain is simply "not committed".
+        """
+        derived: list[str | None] = []
+        for domain, plan_id in commits:
+            try:
+                derived.append(
+                    derive_pkm_mutation_commit_id(user_id=user_id, domain=domain, plan_id=plan_id)
+                )
+            except ValueError:
+                derived.append(None)
+        wanted = sorted({commit_id for commit_id in derived if commit_id})
+        found: dict[str, int | None] = {}
+        if wanted:
+            result = await self._execute_query(
+                self.db.table("pkm_domain_commits")
+                .select("commit_id,result_content_revision")
+                .eq("user_id", user_id)
+                .eq("commit_kind", "mutation")
+                .in_("commit_id", wanted)
+            )
+            for row in result.data or []:
+                if not isinstance(row, dict):
+                    continue
+                revision = self._to_non_negative_int(row.get("result_content_revision"))
+                found[str(row.get("commit_id"))] = revision
+        return [
+            {"exists": commit_id in found, "data_version": found.get(commit_id)}
+            if commit_id
+            else {"exists": False, "data_version": None}
+            for commit_id in derived
+        ]
 
     async def get_mutation_sharing_impact(
         self,

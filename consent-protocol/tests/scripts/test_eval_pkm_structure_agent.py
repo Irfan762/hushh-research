@@ -63,6 +63,34 @@ def test_release_chain_is_small_but_covers_all_storage_decisions_and_domains():
     }.issubset(expected_domains)
 
 
+def test_context_transfer_phase_expects_work_context_kept_and_commands_dropped():
+    personas, chain_state = eval_script.build_phase_personas(
+        phase="context_transfer", max_prompts_per_persona=120
+    )
+    prompts = personas[0]["prompts"]
+
+    assert chain_state is False
+    assert len(prompts) == eval_script.PHASE_PROMPT_LIMIT["context_transfer"]
+    categories = {prompt.category for prompt in prompts}
+    assert {
+        "context_work",
+        "context_technical_id",
+        "context_people",
+        "context_sensitive",
+        "context_command",
+    }.issubset(categories)
+    # Everything the owner stated is durable; only the live command is not.
+    for prompt in prompts:
+        if prompt.category == "context_command":
+            assert (prompt.expected_save_class, prompt.expected_intent_class) == (
+                "ephemeral",
+                "command",
+            )
+        else:
+            assert prompt.expected_save_class == "durable", prompt.case_id
+            assert "general" not in prompt.expected_domains
+
+
 def test_release_fail_fast_only_stops_zero_tolerance_failures():
     healthy = SimpleNamespace(
         timed_out=False,

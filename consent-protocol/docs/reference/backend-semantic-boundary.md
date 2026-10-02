@@ -16,10 +16,13 @@ mistake for good engineering.
 
 1. **Decides instead.** Host code computes an outcome the agent's own output contract
    already declares, without asking the agent. Measured 2026-09-11:
-   `_should_skip_structure_agent` routes around the structure agent for
+   `_should_skip_structure_agent` routed around the structure agent for
    `financial_core`, for anything requiring confirmation, and for `save_class` in
    `{ephemeral, ambiguous}` -- and "ambiguous" is precisely the case where a model
-   earns its place.
+   earns its place. Closed in Phase 4 of the reserved-branch plan: the structure agent
+   is skipped only when the intent agent itself answered `no_op` or `command`, the
+   keyword-routed Financial Guard stage is gone, and a statement needing confirmation is
+   structured instead of clipped by the fallback record.
 
 2. **Discards.** The agent answered, and host code overwrites or re-derives a field it
    returned with a non-empty value. Measured on the backend, and since closed: the
@@ -206,10 +209,14 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
 - Host policy (`hushh-webapp/lib/agent/agent-pkm-explicit-save.ts`) enforces authority only.
   The owner's request is the confirmation for the content they supplied, so a card the
   agents marked `confirm_first` is written with an `owner_confirmed` receipt. It never
-  changes a card's domain, path, payload or merge mode. It holds back, for the owner's
-  direct tap, a card whose payload has an identifier-class key or value
-  (`contracts/consent/field-sensitivity.v1.json`) or whose save would change what the owner
-  already shares, and it never writes a reserved, degraded, secret or `do_not_save` card.
+  changes a card's domain, path, payload or merge mode. Sensitive details (pay, equity,
+  immigration, a housing deposit) are saved, labelled sensitive. It holds back, for the
+  owner's direct tap, a card whose payload still carries a raw identifier: an
+  identifier-shaped value, or an identifier-class key (`contracts/consent/field-sensitivity.v1.json`)
+  with a digit-bearing value, other than the entity's own `entity_id`. A Secrets placeholder
+  (`⟦secret:<id> <label>⟧`) is a reference, never an identifier. It also holds a card whose
+  save would change what the owner already shares, and it never writes a reserved,
+  degraded, secret or `do_not_save` card.
 - Reconciliation context, not a decision: for each section the device offers up to ten
   of the owner's existing entity summaries chosen by local word overlap
   (`AgentPkmContextStore.findReconciliationCandidates`) as `simulated_state.memories`.
@@ -226,7 +233,31 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
   to that request by a server-issued capability.
 - Live eval before promotion: the synthetic context-transfer run recorded in
   `personal-knowledge-model.md`; mocked contract tests in
-  `hushh-webapp/__tests__/services/agent-pkm-explicit-save.test.ts`.
+  `hushh-webapp/__tests__/services/agent-pkm-explicit-save.test.ts`; the recorded
+  founder-shaped document in `consent-protocol/tests/services/test_context_transfer_is_kept.py`
+  and its replay through the save job in `hushh-webapp/__tests__/services/pkm-save-job.test.ts`.
+
+### Declared: keeping everything the owner stated (Phase 4)
+
+- Owning agents: `agent_memory_segmentation` selects every stated claim with
+  `context_quotes` and accounts for every other line in `not_memory {quote, reason:
+  duplicate | disclaimer}`; `agent_memory_intent` alone decides memory versus a live
+  `command`; `agent_pkm_structure` chooses a domain for everything or the reserved sibling.
+  The Financial Guard Agent and its keyword fallback were removed.
+- Validator, normalize only: `locate_source_quote` maps each quote onto the owner's exact
+  text, folding Markdown emphasis, heading and code marks, dash and quotation-mark variants
+  and whitespace on both sides; the stored quote is always the ORIGINAL span. A quote that
+  matches nothing is dropped alone and counted (`unmatched_quote_count`,
+  `segment_quote_unmatched`); the device shows its lines as "not yet saved". It no longer
+  discards the whole section.
+- Validator, recorded substitution: a model target named after a protocol namespace a
+  person could mean as a subject (`agent`, `agents`, `mcp`, `system`) is kept in the intent
+  agent's recommended domain, or `professional` when that is unusable, nested under the
+  name the model chose, and recorded as `protocol_domain_name_remapped`. The structure
+  instruction already forbids those names, so the hint's rate measures instruction
+  disagreement. Storage and authority namespaces stay refused.
+- Skip rule: the structure agent is skipped only for an intent `no_op` or `command`,
+  recorded as `structure_skipped`.
 
 ### Declared: reserved branches in PKM structure planning
 

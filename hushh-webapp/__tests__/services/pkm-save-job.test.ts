@@ -1,5 +1,10 @@
 import "fake-indexeddb/auto";
 
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
@@ -38,6 +43,7 @@ import {
 } from "@/lib/pkm/pkm-save-job";
 import { sourceChunkRange } from "@/lib/pkm/pkm-source-chunks";
 import { planSecretCaptures, UnguardedSecretError } from "@/lib/pkm/secret-span-guard";
+import { ApiService } from "@/lib/services/api-service";
 
 const USER = "owner-synthetic";
 const VAULT_KEY = "ab".repeat(32);
@@ -403,6 +409,43 @@ describe("resumable explicit save job", () => {
     expect(await holder).toBe("first");
   });
 
+  it("counts a write the device never heard back about once the server confirms it", async () => {
+    // The previous test is the negative control: with no lookup, the same lost
+    // answer leaves the step "not yet saved" and the job completed_with_gaps.
+    const { deps, server, state } = harness();
+    let dropped = false;
+    deps.commit = vi.fn(async (params) => {
+      const result = await server.commit(params);
+      if (!dropped) {
+        dropped = true;
+        throw new TypeError("network dropped after commit");
+      }
+      return result;
+    });
+    const lookups: string[][] = [];
+    deps.lookupCommits = vi.fn(async ({ idempotencyScopes }: { idempotencyScopes: string[] }) => {
+      lookups.push(idempotencyScopes);
+      return idempotencyScopes.map((scope) => {
+        const version = server.writes.get(scope);
+        return version === undefined ? null : { dataVersion: version };
+      });
+    });
+    const job = await newJob(state.clock);
+    await runPkmSaveJob(job, deps);
+
+    expect(job.state).toBe("completed");
+    expect(lookups).toHaveLength(1);
+    const { receipt } = buildPkmSaveJobReceipt(job);
+    expect(receipt.saved).toBe(server.writes.size);
+    expect(receipt.coverage!.notYetSavedLines).toBe(0);
+    const confirmed = job.steps.flatMap((step) => Object.values(step.commits ?? {}))
+      .filter((commit) => commit.confirmedBy === "lookup");
+    expect(confirmed.length).toBe(lookups[0]!.length);
+    expect(confirmed.every((commit) => commit.dataVersion > 0 && commit.commitId === null)).toBe(true);
+    // Each detail was written exactly once.
+    expect(new Set(server.writes.values()).size).toBe(server.writes.size);
+  });
+
   it("keeps the job only in the vault-encrypted cache, never in web storage", async () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     mocks.preview.mockImplementation(async ({ message }: { message: string }) => simulatedAgent(message));
@@ -489,5 +532,153 @@ describe("Secrets placeholders through the resumable save job", () => {
     ).rejects.toBeInstanceOf(UnguardedSecretError);
     expect(await rawCacheRecords()).toEqual([]);
     expect(mocks.preview).not.toHaveBeenCalled();
+  });
+});
+
+
+/**
+ * A founder-shaped context transfer, answered by the REAL server pipeline.
+ *
+ * `context-transfer.recording.v1.json` holds what `/api/pkm/memory/proposals`
+ * returned for each step text: the backend's own segmentation sanitizer and
+ * structure normalization, driven by scripted memory agents
+ * (`consent-protocol/tests/services/context_transfer_agents.py`, which also
+ * proves every recorded answer is still what the server produces). Here the
+ * answers go through the real client: preview normalization, the explicit-save
+ * partition, the resumable job and the line coverage. Synthetic content only.
+ */
+describe("context transfer, recorded from the memory agents", () => {
+  const FIXTURES = path.resolve(__dirname, "../fixtures/pkm");
+  const DOCUMENT = readFileSync(path.join(FIXTURES, "context-transfer.v1.md"), "utf8");
+  const RECORDING_PATH = path.join(FIXTURES, "context-transfer.recording.v1.json");
+  const RECORD = process.env.PKM_CONTEXT_TRANSFER_RECORD === "1";
+  const sha = (text: string) => createHash("sha256").update(text, "utf8").digest("hex");
+  type RecordedStep = { text: string; answer: Record<string, unknown> };
+  type Recording = { version: 1; document_sha256: string; steps: Record<string, RecordedStep> };
+  const recording: Recording = RECORD
+    ? { version: 1, document_sha256: sha(DOCUMENT), steps: {} }
+    : JSON.parse(readFileSync(RECORDING_PATH, "utf8"));
+
+  function serverAnswer(text: string): Record<string, unknown> {
+    const key = sha(text);
+    if (!recording.steps[key]) {
+      if (!RECORD) throw new Error("No recorded server answer for this step; re-record (context_transfer_agents.py).");
+      const backend = path.resolve(__dirname, "../../../consent-protocol");
+      const output = execFileSync(path.join(backend, ".venv/bin/python"), ["-m", "tests.services.context_transfer_agents"], {
+        cwd: backend,
+        input: text,
+        env: {
+          ...process.env,
+          TESTING: "true",
+          APP_SIGNING_KEY: "test_secret_key_for_pytest_only_32chars_min",
+          VAULT_DATA_KEY: "0".repeat(64),
+        },
+      });
+      recording.steps[key] = { text, answer: JSON.parse(output.toString("utf8")) };
+    }
+    return { agent_id: "agent_pkm_structure", agent_name: "PKM Structure Agent", model: "recorded", ...recording.steps[key]!.answer };
+  }
+
+  async function runRecorded(transform: (answer: Record<string, unknown>) => Record<string, unknown> = (answer) => answer) {
+    const actual = await vi.importActual<typeof import("@/lib/agent/agent-pkm-memory")>("@/lib/agent/agent-pkm-memory");
+    const fetch = vi.spyOn(ApiService, "apiFetch").mockImplementation(async (url: string, init?: RequestInit) => {
+      expect(url).toBe("/api/pkm/memory/proposals");
+      const { message } = JSON.parse(String(init?.body)) as { message: string };
+      return new Response(JSON.stringify(transform(serverAnswer(message))), { status: 200 });
+    });
+    // The real client preview (normalization, secret check), the real partition
+    // and job; only the network answer is recorded and the write is faked.
+    const { deps, server, state } = harness({
+      prepare: ({ text, signal }) =>
+        actual.previewAgentPkmMemory({ userId: USER, message: text, currentDomains: [], vaultOwnerToken: "token", signal }),
+    });
+    const job = await createPkmSaveJob({ userId: USER, message: DOCUMENT, currentDomains: [], now: state.clock });
+    await runPkmSaveJob(job, deps);
+    fetch.mockRestore();
+    return { job, server, coverage: buildPkmSaveJobCoverage(job).coverage, receipt: buildPkmSaveJobReceipt(job).receipt };
+  }
+
+  it("saves every stated line or accounts for it, with zero unaccounted", async () => {
+    expect(DOCUMENT.length).toBeGreaterThan(15_000);
+    expect((DOCUMENT.match(/^# /gm) ?? []).length).toBe(20);
+    if (!RECORD) expect(recording.document_sha256).toBe(sha(DOCUMENT));
+
+    const { job, server, coverage, receipt } = await runRecorded();
+    if (RECORD) {
+      // One step per line: compact, and a re-record diffs step by step.
+      const steps = Object.keys(recording.steps).sort()
+        .map((key) => `  ${JSON.stringify(key)}: ${JSON.stringify(recording.steps[key])}`).join(",\n");
+      writeFileSync(RECORDING_PATH,
+        `{\n "version": 1,\n "document_sha256": ${JSON.stringify(recording.document_sha256)},\n "steps": {\n${steps}\n }\n}\n`);
+    }
+
+    expect(job.state).toBe("completed");
+    expect(coverage.totals.not_yet_saved).toBe(0);
+    expect(coverage.totals.held).toBe(0);
+    expect(coverage.accounted).toBe(coverage.totals.lines);
+    expect(receipt.coverage).toMatchObject({ notYetSavedLines: 0, heldLines: 0, accountedLines: coverage.totals.lines });
+    expect(receipt.needsOwner).toBe(0);
+    expect(receipt.saved).toBe(server.writes.size);
+
+    const source = job.source;
+    const lineOf = (text: string) => {
+      const matches = coverage.lines.filter(
+        (line) => source.slice(line.start, line.end).trimEnd() === text,
+      );
+      expect(matches.length, text).toBeGreaterThan(0);
+      return matches;
+    };
+    const saved = (text: string) => {
+      const [line] = lineOf(text);
+      expect(line!.status, text).toBe("saved");
+      expect(line!.destinations[0]?.domain, text).toBeTruthy();
+      return line!.destinations[0]!;
+    };
+    // Work context, technical identifiers and people are memory.
+    for (const text of [
+      "- Backend: FastAPI on Python 3.13",
+      "- Design: Figma with a shared component library",
+      "- GCP project: lumen-demo-482910 in region us-central1",
+      "- The API reads its signing key from the LUMEN_SIGNING_KEY environment variable",
+      "- The Google OAuth callback is https://app.lumen-demo.dev/api/auth/callback/google",
+      "- The iOS bundle identifier is com.lumendemo.one and the Android app id is com.lumendemo.one.android",
+      "- The monorepo has about 9,800 commits since May 2022",
+      "- The local mixture-of-experts model runs at about 62 tokens per second on that laptop",
+      "- Asha Varma is our CTO in all but title and owns the data platform",
+      "- Daniel Cho at Harbor Light Ventures is our board member and lead investor",
+      "- I code every day with Claude Code and Gemini CLI, usually in two terminals side by side",
+    ]) saved(text);
+    // Sensitive details are saved, without a tap.
+    for (const text of [
+      "- Base salary: USD 185,000 per year, set by the board in March 2026",
+      "- My I-140 was approved on 2024-02-11 in the EB-2 category",
+      "- The security deposit was USD 4,800, held by the landlord until the lease ends",
+    ]) saved(text);
+    // A quote returned with its Markdown cleaned, or its dash flattened, still lands.
+    saved("- **Preferred name:** Rowan Ellery, and I go by Ro with close friends");
+    saved("- **Role:** Founder and CEO of Lumen Ledger \u2014 I also act as the de facto head of engineering");
+    // A protocol-named subject is kept in a real domain.
+    expect(saved("- Our agents are orchestrated with Google ADK and talk to each other over A2A").domain).toBe("professional");
+    // The masked secret's line is saved as the placeholder, never a value.
+    saved("- Our GitHub deploy token is \u27e6secret:sec_00000000000000a1 GitHub deploy token ending 9f3c\u27e7 and it rotates every 90 days");
+    const committed = JSON.stringify(server.commit.mock.calls);
+    expect(committed).toContain("\u27e6secret:sec_00000000000000a1");
+    // The disclaimer and the repeat are accounted for, not saved.
+    expect(lineOf("- Information not known: my exact home street address")[0]!.reason).toBe("disclaimer");
+    const repeat = lineOf("- Stripe for payments and Twilio for SMS verification codes");
+    expect(repeat.map((line) => line.status)).toEqual(["saved", "not_memory"]);
+    expect(repeat[1]!.reason).toBe("duplicate");
+  }, RECORD ? 600_000 : 30_000);
+
+  it("negative control: without not_memory and context quotes the same answers leave gaps", async () => {
+    // What the device received before this release: no not_memory list and no
+    // context quotes. The disclaimer and the repeated line read "not yet saved".
+    const { job, coverage } = await runRecorded((answer) => ({
+      ...answer,
+      preview_summary: { ...(answer.preview_summary as Record<string, unknown>), not_memory: [] },
+      preview_cards: (answer.preview_cards as Array<Record<string, unknown>>).map(({ context_quotes: _drop, ...card }) => card),
+    }));
+    expect(job.state).toBe("completed_with_gaps");
+    expect(coverage.totals.not_yet_saved).toBeGreaterThan(0);
   });
 });

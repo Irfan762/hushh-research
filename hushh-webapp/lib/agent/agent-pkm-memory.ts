@@ -108,7 +108,6 @@ export type AgentPkmPreviewResponse = {
   agent_name: string;
   model: string;
   used_fallback: boolean;
-  routing_decision?: string;
   error?: string | null;
   intent_frame?: AgentPkmIntentFrame;
   merge_decision?: Record<string, unknown>;
@@ -402,7 +401,8 @@ export async function previewAgentPkmMemory(params: {
   };
 }
 
-function resolveCardTargetDomain(card: AgentPkmPreviewCard): string {
+/** The domain `addToPKM` writes a card to; the commit id is derived from it. */
+export function resolveCardTargetDomain(card: AgentPkmPreviewCard): string {
   const structureDecision = toRecord(card.structure_decision);
   const manifestDraft = card.manifest_draft && typeof card.manifest_draft === "object"
     ? card.manifest_draft

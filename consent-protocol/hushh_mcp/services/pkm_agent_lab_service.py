@@ -35,6 +35,7 @@ from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
     DYNAMIC_DOMAIN_CONTRACT_VERSION,
+    RESERVED_DYNAMIC_DOMAIN_SLUGS,
     is_valid_dynamic_top_level_domain,
     validate_dynamic_top_level_domain,
 )
@@ -51,9 +52,6 @@ _MEMORY_MERGE_MANIFEST_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "memory_merg
 _MEMORY_SEGMENTATION_MANIFEST_PATH = (
     _REPO_ROOT / "hushh_mcp" / "agents" / "memory_segmentation" / "agent.yaml"
 )
-_FINANCIAL_GUARD_MANIFEST_PATH = (
-    _REPO_ROOT / "hushh_mcp" / "agents" / "financial_guard" / "agent.yaml"
-)
 
 _SAVE_CLASSES = {"durable", "ephemeral", "ambiguous"}
 _INTENT_CLASSES = {
@@ -67,6 +65,9 @@ _INTENT_CLASSES = {
     "travel",
     "shopping_need",
     "financial_event",
+    # A live instruction for One to act now ("optimize my portfolio"). Never
+    # memory; only the live instruction carries it, never pasted content.
+    "command",
     "correction",
     "deletion",
     "note",
@@ -75,11 +76,6 @@ _INTENT_CLASSES = {
 _MUTATION_INTENTS = {"create", "extend", "update", "correct", "delete", "no_op"}
 _WRITE_MODES = {"can_save", "confirm_first", "do_not_save"}
 _AUTO_SAVE_MIN_CONFIDENCE = 0.64
-_FINANCIAL_GUARD_ROUTES = {
-    "financial_core",
-    "sanctioned_financial_memory",
-    "non_financial_or_ephemeral",
-}
 _MERGE_MODES = {
     "create_entity",
     "extend_entity",
@@ -120,19 +116,6 @@ _FINANCIAL_PAYLOAD_HINTS = {
     "user_stated_financial_memory",
     "brokerage",
     "ticker",
-}
-_FINANCIAL_TOP_LEVEL_KEYS = {
-    "events",
-    "portfolio",
-    "holdings",
-    "analysis",
-    "documents",
-    "sources",
-    "runtime",
-    "goals",
-    "profile",
-    # Finance's own sibling for chat facts (contracts/pkm/reserved-branches.v1.json).
-    "agent_memory",
 }
 _FOOD_HINTS = {
     "food",
@@ -270,36 +253,6 @@ _FINANCIAL_HINTS = {
     "loans",
     "save",
 }
-_FINANCIAL_CORE_HINTS = {
-    "optimize",
-    "rebalance",
-    "analyze",
-    "analyse",
-    "allocate",
-    "buy",
-    "sell",
-    "review",
-    "adjust",
-    "lower_volatility",
-    "concentration_risk",
-}
-_FINANCIAL_MEMORY_HINTS = {
-    "remember",
-    "prefer",
-    "preferences",
-    "comfortable",
-    "risk_tolerance",
-    "index_funds",
-    "index",
-    "funds",
-    "dividend",
-    "dividend_paying",
-    "automatic_monthly_investing",
-    "growth",
-    "income",
-    "volatility",
-    "investing",
-}
 _AMBIGUOUS_PREFIXES = {
     "i need something",
     "help me with that",
@@ -337,7 +290,7 @@ Use only:
 Never invent domains, paths, values, entities, or history.
 Never create a "changes" branch for corrections.
 Never duplicate a fact when an active canonical entity can be extended or corrected.
-Never save reminders, one-off tasks, opaque strings, secrets, random ids, or operational requests.
+Keep everything the owner stated. Technical identifiers (project ids, environment variable names, OAuth and callback URLs, app ids) are work context. Secrets arrive already moved to the owner's Secrets as placeholders (⟦secret:<id> <label>⟧): keep one as written, never expand or guess its value.
 Never write developer metadata, parser metadata, hashes, provenance, workflow ids, or raw internal paths into user-facing memory.
 
 Choose exactly one mutation:
@@ -345,9 +298,9 @@ Choose exactly one mutation:
 - extend_entity: same meaning, extra useful detail, no contradiction
 - correct_entity: new statement supersedes old meaning
 - delete_entity: user asks to remove an active memory and a stable target exists
-- no_op: ephemeral, ambiguous, unsupported, unsafe, or no stable target
+- no_op: a live command, a line that only says something is unknown, or a restatement of an existing entity (name it as the target)
 
-Output JSON only. Follow the schema exactly. If unsure, choose confirm_first or no_op."""
+Output JSON only. Follow the schema exactly. If unsure, choose confirm_first; never drop a stated fact."""
 # The secret-span patterns (API keys, passwords, tokens, private keys, card
 # numbers, government ids) live in contracts/pkm/secret-patterns.v1.json, read
 # by hushh_mcp.consent.secret_patterns here and by the device guard that runs
@@ -484,10 +437,24 @@ _SEGMENTATION_CARD_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "source_text": {"type": "STRING"},
+        # Exact headings or lead-in lines that qualify or attribute the
+        # segment. The device maps them back to source lines for coverage.
+        "context_quotes": {"type": "ARRAY", "items": {"type": "STRING"}},
         "confidence": {"type": "NUMBER"},
         "reason": {"type": "STRING"},
     },
-    "required": ["source_text", "confidence", "reason"],
+    "required": ["source_text", "context_quotes", "confidence", "reason"],
+}
+
+# Why a line was left unsaved. Only these two: everything else is memory.
+_NOT_MEMORY_REASONS = ("duplicate", "disclaimer")
+_NOT_MEMORY_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "quote": {"type": "STRING"},
+        "reason": {"type": "STRING", "enum": list(_NOT_MEMORY_REASONS)},
+    },
+    "required": ["quote", "reason"],
 }
 
 _SEGMENTATION_SCHEMA = {
@@ -500,8 +467,15 @@ _SEGMENTATION_SCHEMA = {
         "source_agent": {"type": "STRING"},
         "contract_version": {"type": "INTEGER"},
         "has_more_candidates": {"type": "BOOLEAN"},
+        "not_memory": {"type": "ARRAY", "items": _NOT_MEMORY_SCHEMA},
     },
-    "required": ["segments", "source_agent", "contract_version", "has_more_candidates"],
+    "required": [
+        "segments",
+        "not_memory",
+        "source_agent",
+        "contract_version",
+        "has_more_candidates",
+    ],
 }
 
 _KYC_IDENTITY_FACT_SCHEMA = {
@@ -558,27 +532,6 @@ _MERGE_DECISION_SCHEMA = {
         "target_entity_path",
         "match_confidence",
         "match_reason",
-        "source_agent",
-        "contract_version",
-    ],
-}
-
-_FINANCIAL_GUARD_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "routing_decision": {
-            "type": "STRING",
-            "enum": sorted(_FINANCIAL_GUARD_ROUTES),
-        },
-        "confidence": {"type": "NUMBER"},
-        "reason": {"type": "STRING"},
-        "source_agent": {"type": "STRING"},
-        "contract_version": {"type": "INTEGER"},
-    },
-    "required": [
-        "routing_decision",
-        "confidence",
-        "reason",
         "source_agent",
         "contract_version",
     ],
@@ -681,6 +634,83 @@ _STRUCTURE_PREVIEW_SCHEMA = {
 }
 
 
+# A quote the model returned with its Markdown cleaned or a dash or quotation
+# mark normalized is still the owner's text. These fold away before matching,
+# and the match maps back to the ORIGINAL characters, so the stored quote and
+# its offsets are always an exact span of what the owner wrote.
+_QUOTE_EQUIVALENTS = {
+    "\u2010": "-",
+    "\u2011": "-",
+    "\u2012": "-",
+    "\u2013": "-",
+    "\u2014": "-",
+    "\u2212": "-",
+    "\u2018": "'",
+    "\u2019": "'",
+    "\u201c": '"',
+    "\u201d": '"',
+    "\u00a0": " ",
+}
+_QUOTE_MARKUP = frozenset("*_`#>\\")
+_MAX_CONTEXT_QUOTES = 4
+# Protocol namespace names a person could use for a SUBJECT of their work ("our
+# agents", "the MCP server", "system architecture"). A fact the model filed
+# under one is kept in a real domain instead of refused. The other reserved
+# slugs (vault, pkm, attr, cap, consent, scope, internal, quarantine) stay
+# refused: they name storage and authority, never a topic.
+_REMAPPABLE_PROTOCOL_DOMAIN_NAMES = frozenset({"agent", "agents", "mcp", "system"})
+_MAX_CONTEXT_QUOTE_CHARS = 400
+
+
+def _fold_for_quote_match(text: str) -> tuple[str, list[int]]:
+    """Fold markup, dash and quote variants and whitespace runs.
+
+    Returns the folded text and, for each folded character, the index of the
+    source character it came from.
+    """
+    folded: list[str] = []
+    origin: list[int] = []
+    pending_space = False
+    for index, raw_char in enumerate(text):
+        char = _QUOTE_EQUIVALENTS.get(raw_char, raw_char)
+        if char in _QUOTE_MARKUP:
+            continue
+        if char.isspace():
+            pending_space = bool(folded)
+            continue
+        if pending_space:
+            folded.append(" ")
+            origin.append(index)
+            pending_space = False
+        folded.append(char)
+        origin.append(index)
+    return "".join(folded), origin
+
+
+def locate_source_quote(message: str, quote: str) -> tuple[int, int] | None:
+    """The exact span of ``message`` a model quote refers to, or None.
+
+    An exact substring wins. Otherwise the quote matches when it equals a part
+    of the message once Markdown emphasis, heading and code marks, dash and
+    quotation-mark variants and whitespace runs are folded on both sides. The
+    span returned is always in the original message, so the caller keeps the
+    owner's own characters and offsets, never the model's rewrite.
+    """
+    if not isinstance(quote, str) or not quote.strip():
+        return None
+    index = message.find(quote)
+    if index >= 0:
+        return index, index + len(quote)
+    folded_quote, _ = _fold_for_quote_match(quote)
+    if not folded_quote:
+        return None
+    folded_message, origin = _fold_for_quote_match(message)
+    at = folded_message.find(folded_quote)
+    if at < 0:
+        return None
+    return origin[at], origin[at + len(folded_quote) - 1] + 1
+
+
 def _manifest_model_name(manifest: Any) -> str:
     """The text model a manifest asks for, with the fleet alias resolved.
 
@@ -702,7 +732,6 @@ def _manifest_model_name(manifest: Any) -> str:
 class PKMAgentLabService:
     def __init__(self) -> None:
         self._memory_segmentation_manifest = None
-        self._financial_guard_manifest = None
         self._memory_intent_manifest = None
         self._memory_merge_manifest = None
         self._structure_manifest = None
@@ -715,14 +744,6 @@ class PKMAgentLabService:
                 str(_MEMORY_SEGMENTATION_MANIFEST_PATH)
             )
         return self._memory_segmentation_manifest
-
-    @property
-    def financial_guard_manifest(self):
-        if self._financial_guard_manifest is None:
-            self._financial_guard_manifest = ManifestLoader.load(
-                str(_FINANCIAL_GUARD_MANIFEST_PATH)
-            )
-        return self._financial_guard_manifest
 
     @property
     def memory_intent_manifest(self):
@@ -1006,46 +1027,95 @@ class PKMAgentLabService:
         ]
 
     @classmethod
+    def _sanitize_segmentation(
+        cls,
+        raw: dict[str, Any] | None,
+        *,
+        message: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, str]], int]:
+        """Segments, not-memory lines, and how many quotes matched nothing.
+
+        Every quote is mapped onto an exact span of the owner's text
+        (``locate_source_quote``). A quote that matches nothing is dropped on
+        its own and counted, so its lines read "not yet saved" on the device;
+        it never discards the other segments of the same section. A segment
+        whose span repeats an earlier one is the same text selected twice and
+        is reported as a duplicate, not dropped in silence.
+        """
+        if not isinstance(raw, dict):
+            return [], [], 0
+        items = raw.get("segments")
+        if not isinstance(items, list):
+            return [], [], 0
+
+        segments: list[dict[str, Any]] = []
+        not_memory: list[dict[str, str]] = []
+        unmatched = 0
+        seen: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            quote = item.get("source_text")
+            if not isinstance(quote, str) or not quote.strip():
+                continue
+            if len(quote) > _MAX_SEGMENT_SOURCE_CHARS:
+                # The caller asks the device for a smaller passage instead.
+                continue
+            # Segmentation may select only a direct part of the owner's text.
+            # Never let a rewritten or invented clause become a persistence
+            # candidate, even if a provider returned valid JSON.
+            span = locate_source_quote(message, quote)
+            if span is None:
+                unmatched += 1
+                continue
+            source_text = message[span[0] : span[1]]
+            if source_text in seen:
+                not_memory.append({"quote": source_text, "reason": "duplicate"})
+                continue
+            seen.add(source_text)
+            context_quotes: list[str] = []
+            for context in item.get("context_quotes") or []:
+                if not isinstance(context, str) or len(context) > _MAX_CONTEXT_QUOTE_CHARS:
+                    continue
+                context_span = locate_source_quote(message, context)
+                if context_span is None:
+                    continue
+                exact = message[context_span[0] : context_span[1]]
+                if exact and exact not in context_quotes and exact != source_text:
+                    context_quotes.append(exact)
+                if len(context_quotes) >= _MAX_CONTEXT_QUOTES:
+                    break
+            segments.append(
+                {
+                    "source_text": source_text,
+                    "context_quotes": context_quotes,
+                    "confidence": cls._clamp_confidence(item.get("confidence"), default=0.8),
+                    "reason": cls._safe_excerpt(str(item.get("reason") or ""), limit=160)
+                    or "Segmented memory candidate.",
+                }
+            )
+
+        for entry in raw.get("not_memory") or []:
+            if not isinstance(entry, dict) or entry.get("reason") not in _NOT_MEMORY_REASONS:
+                continue
+            quote = entry.get("quote")
+            if not isinstance(quote, str) or len(quote) > _MAX_SEGMENT_SOURCE_CHARS:
+                continue
+            span = locate_source_quote(message, quote)
+            if span is None:
+                unmatched += 1
+                continue
+            not_memory.append({"quote": message[span[0] : span[1]], "reason": entry["reason"]})
+        return segments, not_memory, unmatched
+
+    @classmethod
     def _sanitize_segmented_messages(
         cls,
         raw: dict[str, Any] | None,
         *,
         message: str,
     ) -> list[dict[str, Any]]:
-        if not isinstance(raw, dict):
-            return []
-
-        items = raw.get("segments")
-        if not isinstance(items, list):
-            return []
-
-        sanitized: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in items:
-            if not isinstance(item, dict):
-                continue
-            source_text = item.get("source_text")
-            if not isinstance(source_text, str) or not source_text.strip():
-                continue
-            if len(source_text) > _MAX_SEGMENT_SOURCE_CHARS:
-                continue
-            # Segmentation may select only a direct part of the owner's text.
-            # Never let a rewritten or invented clause become a persistence
-            # candidate, even if a provider returned valid JSON.
-            if source_text not in message:
-                continue
-            if source_text in seen:
-                continue
-            seen.add(source_text)
-            sanitized.append(
-                {
-                    "source_text": source_text,
-                    "confidence": cls._clamp_confidence(item.get("confidence"), default=0.8),
-                    "reason": cls._safe_excerpt(str(item.get("reason") or ""), limit=160)
-                    or "Segmented memory candidate.",
-                }
-            )
-        return sanitized
+        return cls._sanitize_segmentation(raw, message=message)[0]
 
     @classmethod
     def _stable_entity_id(
@@ -1981,291 +2051,6 @@ class PKMAgentLabService:
             ensure_ascii=False,
         )
 
-    def _build_financial_guard_prompt(
-        self,
-        *,
-        message: str,
-        current_domains: list[str],
-        registry_choices: list[dict[str, Any]],
-        simulated_state: dict[str, Any] | None,
-        strict_small_model: bool,
-    ) -> str:
-        state_summary = (
-            self._compact_state_summary(simulated_state)
-            if strict_small_model
-            else self._build_state_summary(simulated_state)
-        )
-        registry_payload: list[Any]
-        if strict_small_model:
-            registry_payload = self._compact_registry_choices(registry_choices)
-        else:
-            registry_payload = registry_choices
-        header = (
-            "You are the Financial Guard Agent for Kai.\n"
-            "Return JSON only with routing_decision, confidence, reason, source_agent, contract_version.\n"
-            "Allowed routing_decision values: financial_core, sanctioned_financial_memory, non_financial_or_ephemeral.\n"
-        )
-        if strict_small_model:
-            # nosec B608 - this is an LLM prompt template, not a SQL query.
-            return (
-                f"{header}"
-                "Rules:\n"
-                "- financial_core = governed financial analysis, optimization, trading, allocation, or portfolio action.\n"
-                "- sanctioned_financial_memory = durable financial preference or durable financial goal worth remembering.\n"
-                "- non_financial_or_ephemeral = reminders, operational asks, or anything not clearly financial memory/core.\n"
-                "- Shopping habits, brand loyalty, cuisine choices, and ordinary purchases are not financial unless the message is explicitly about investing, portfolio construction, or a financial product.\n"
-                "- Personal life goals like saving for a home or paying off loans are not sanctioned financial memory by default; let downstream intent classification decide the durable domain.\n"
-                "- Prefer non_financial_or_ephemeral when uncertain.\n"
-                f"Current domains: {json.dumps(current_domains)}\n"
-                f"Registry domain keys: {json.dumps(registry_payload)}\n"
-                f"State summary: {json.dumps(state_summary)}\n"
-                f"Message: {message}\n"
-                'Examples: {"message":"Optimize my portfolio for lower volatility.","routing_decision":"financial_core"} '
-                '{"message":"Remember that I prefer index funds.","routing_decision":"sanctioned_financial_memory"} '
-                '{"message":"I tend to buy basics from Patagonia before I look anywhere else.","routing_decision":"non_financial_or_ephemeral"} '
-                '{"message":"One medium-term priority for me is to save for a condo by 2028.","routing_decision":"non_financial_or_ephemeral"} '
-                '{"message":"Remind me to review my brokerage statement tomorrow.","routing_decision":"non_financial_or_ephemeral"}'
-            )
-        return (
-            f"{header}"
-            f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
-            f"Higher-level domain registry choices: {json.dumps(registry_payload)}\n"
-            f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
-            f"{self._reserved_table_prompt_lines()}"
-            f"Natural language message: {message}\n"
-            "Rules:\n"
-            "- financial_core = governed financial action or analysis request.\n"
-            "- sanctioned_financial_memory = stable financial preference worth remembering.\n"
-            "- non_financial_or_ephemeral = non-financial, reminder-like, or too operational for durable financial memory.\n"
-            '- "I prefer dividend-paying stocks." -> sanctioned_financial_memory\n'
-            '- "Optimize my portfolio for lower volatility." -> financial_core\n'
-            '- "Remind me to review my brokerage statement tomorrow." -> non_financial_or_ephemeral\n'
-        )
-
-    @classmethod
-    def _fallback_financial_guard_decision(
-        cls,
-        *,
-        message: str,
-        current_domains: list[str],
-    ) -> dict[str, Any]:
-        normalized = cls._safe_excerpt(message, limit=600).lower()
-        tokens = cls._message_tokens(message)
-        if cls._is_pkm_governance_message(message):
-            return {
-                "routing_decision": "non_financial_or_ephemeral",
-                "confidence": 0.96,
-                "reason": "PKM governance instructions do not grant financial routing authority.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-        finance_signaled = cls._is_finance_message(message)
-
-        if not finance_signaled:
-            return {
-                "routing_decision": "non_financial_or_ephemeral",
-                "confidence": 0.9,
-                "reason": "The message is not clearly about governed financial behavior or durable financial memory.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        if normalized.startswith("remind me") or any(
-            phrase in normalized for phrase in ("tomorrow", "next week", "later today")
-        ):
-            return {
-                "routing_decision": "non_financial_or_ephemeral",
-                "confidence": 0.88,
-                "reason": "The message is finance-adjacent but operational or time-bound rather than durable governed financial intent.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        if any(phrase in normalized for phrase in ("save for", "pay off", "student loan")):
-            return {
-                "routing_decision": "non_financial_or_ephemeral",
-                "confidence": 0.86,
-                "reason": "The message describes a durable personal goal; downstream PKM intent should choose the goal scope without treating it as a governed financial action.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        if cls._is_correction_message(message) or cls._is_deletion_message(message):
-            ranked_domains = cls._keyword_ranked_domains(
-                message=message, current_domains=current_domains
-            )
-            non_financial_ranked = [
-                domain for domain in ranked_domains if domain and domain != "financial"
-            ]
-            if non_financial_ranked:
-                return {
-                    "routing_decision": "non_financial_or_ephemeral",
-                    "confidence": 0.88,
-                    "reason": "The message mutates a non-financial PKM memory; downstream PKM intent should preserve correction/delete semantics for the matching dynamic domain.",
-                    "source_agent": "financial_guard_agent",
-                    "contract_version": 1,
-                }
-            return {
-                "routing_decision": "sanctioned_financial_memory"
-                if "financial" in current_domains
-                else "non_financial_or_ephemeral",
-                "confidence": 0.86,
-                "reason": "The message mutates a durable financial memory; downstream PKM intent should preserve correction/delete semantics.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        if cls._contains_any_hint(
-            normalized_message=normalized,
-            message_words=tokens,
-            hints=_FINANCIAL_MEMORY_HINTS,
-        ) or any(
-            phrase in normalized
-            for phrase in (
-                "remember that i prefer",
-                "i prefer",
-                "my risk tolerance",
-                "comfortable with",
-                "prefer index funds",
-                "prefer dividend-paying stocks",
-            )
-        ):
-            return {
-                "routing_decision": "sanctioned_financial_memory",
-                "confidence": 0.84,
-                "reason": "The message describes a stable financial preference or memory that can extend the governed financial domain without triggering a live portfolio action.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        if cls._contains_any_hint(
-            normalized_message=normalized,
-            message_words=tokens,
-            hints=_FINANCIAL_CORE_HINTS,
-        ) or (
-            "portfolio" in tokens
-            and any(
-                phrase in normalized
-                for phrase in ("i want", "lower", "reduce", "increase", "optimize", "rebalance")
-            )
-        ):
-            return {
-                "routing_decision": "financial_core",
-                "confidence": 0.9,
-                "reason": "The message asks Kai to reason about or act on the governed financial lane rather than store a new durable PKM preference.",
-                "source_agent": "financial_guard_agent",
-                "contract_version": 1,
-            }
-
-        return {
-            "routing_decision": "sanctioned_financial_memory"
-            if "financial" in current_domains
-            else "financial_core",
-            "confidence": 0.72,
-            "reason": "The message is clearly financial, but a guarded lane is still safer than general PKM routing.",
-            "source_agent": "financial_guard_agent",
-            "contract_version": 1,
-        }
-
-    @classmethod
-    def _is_pkm_governance_message(cls, message: str) -> bool:
-        normalized = cls._safe_excerpt(message, limit=800).lower()
-        return (
-            "pkm write" in normalized
-            or "memory is specific" in normalized
-            or normalized.startswith("broad food preferences")
-            or normalized.startswith("broad travel memories")
-            or normalized.startswith("broad health constraints")
-            or "reminders kept separate from durable pkm" in normalized
-            or "vague prompts to trigger confirmation" in normalized
-            or normalized.startswith("i want the system to ")
-        )
-
-    @classmethod
-    def _sanitize_financial_guard_decision(
-        cls,
-        *,
-        message: str,
-        raw: dict[str, Any] | None,
-        fallback: dict[str, Any],
-    ) -> dict[str, Any]:
-        decision = deepcopy(fallback)
-        if isinstance(raw, dict):
-            routing_decision = str(raw.get("routing_decision") or "").strip().lower()
-            if routing_decision in _FINANCIAL_GUARD_ROUTES:
-                decision["routing_decision"] = routing_decision
-            decision["confidence"] = cls._clamp_confidence(
-                raw.get("confidence"),
-                default=float(decision["confidence"]),
-            )
-            decision["reason"] = str(raw.get("reason") or decision["reason"] or "").strip()
-            decision["source_agent"] = (
-                cls._normalize_segment(str(raw.get("source_agent") or ""))
-                or "financial_guard_agent"
-            )
-            try:
-                decision["contract_version"] = int(raw.get("contract_version") or 1)
-            except Exception:
-                decision["contract_version"] = 1
-        fallback_confidence = cls._clamp_confidence(fallback.get("confidence"), default=0.0)
-        decision_confidence = cls._clamp_confidence(decision.get("confidence"), default=0.0)
-        raw_financial_core_override = (
-            decision.get("routing_decision") == "financial_core"
-            and decision_confidence >= fallback_confidence + 0.05
-            and cls._is_finance_message(message)
-        )
-        if fallback_confidence >= 0.84 and not raw_financial_core_override:
-            decision["routing_decision"] = fallback["routing_decision"]
-            decision["confidence"] = max(
-                decision_confidence,
-                fallback_confidence,
-            )
-            decision["reason"] = fallback.get("reason") or decision.get("reason") or ""
-        if not decision.get("reason"):
-            decision["reason"] = "Financial Guard Agent routed the message conservatively."
-        return decision
-
-    @classmethod
-    def _intent_frame_from_financial_guard(
-        cls,
-        *,
-        message: str,
-        current_domains: list[str],
-        registry_choices: list[dict[str, Any]],
-        financial_guard: dict[str, Any],
-    ) -> dict[str, Any]:
-        routing_decision = str(financial_guard.get("routing_decision") or "").strip().lower()
-        has_refinement_signal = cls._has_refinement_signal(message)
-        if cls._is_deletion_message(message):
-            intent_class = "deletion"
-            mutation_intent = "delete"
-        elif cls._is_correction_message(message):
-            intent_class = "correction"
-            mutation_intent = "correct"
-        else:
-            intent_class = "financial_event"
-            mutation_intent = "extend" if has_refinement_signal else "create"
-        requires_confirmation = False
-        confirmation_reason = ""
-        confidence = cls._clamp_confidence(financial_guard.get("confidence"), default=0.82)
-        if routing_decision == "sanctioned_financial_memory" and confidence < 0.7:
-            requires_confirmation = True
-            confirmation_reason = str(financial_guard.get("reason") or "").strip()
-        return {
-            "save_class": "durable",
-            "intent_class": intent_class,
-            "mutation_intent": mutation_intent,
-            "requires_confirmation": requires_confirmation,
-            "confirmation_reason": confirmation_reason,
-            "candidate_domain_choices": cls._candidate_domain_choices(
-                ranked_domains=["financial", *current_domains],
-                registry_choices=registry_choices,
-            ),
-            "confidence": confidence,
-            "source_agent": str(financial_guard.get("source_agent") or "financial_guard_agent"),
-            "contract_version": int(financial_guard.get("contract_version") or 1),
-        }
-
     @classmethod
     def _fallback_intent_frame(
         cls,
@@ -2273,18 +2058,12 @@ class PKMAgentLabService:
         message: str,
         current_domains: list[str],
         registry_choices: list[dict[str, Any]],
-        financial_guard: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         normalized = cls._safe_excerpt(message, limit=800).lower()
         tokens = cls._message_tokens(message)
         message_words = tokens
         ranked_domains = cls._keyword_ranked_domains(
             message=message, current_domains=current_domains
-        )
-        finance_route = (
-            str(financial_guard.get("routing_decision") or "").strip().lower()
-            if isinstance(financial_guard, dict)
-            else ""
         )
         has_refinement_signal = cls._has_refinement_signal(message)
         is_explicitly_unresolved = any(
@@ -2392,19 +2171,6 @@ class PKMAgentLabService:
             intent_class = "note"
             mutation_intent = "extend"
             confidence = 0.8
-        elif finance_route == "sanctioned_financial_memory":
-            save_class = "durable"
-            intent_class = "financial_event"
-            mutation_intent = "extend" if has_refinement_signal else "create"
-            confidence = max(
-                0.84,
-                cls._clamp_confidence(
-                    financial_guard.get("confidence")
-                    if isinstance(financial_guard, dict)
-                    else None,
-                    default=0.84,
-                ),
-            )
         elif cls._is_deletion_message(message):
             save_class = "durable"
             intent_class = "deletion"
@@ -2661,6 +2427,12 @@ class PKMAgentLabService:
                 registry_choices=registry_choices,
             )
 
+        if frame["intent_class"] == "command":
+            # The intent agent's own answer, made consistent: a live command is
+            # never memory, whatever save_class came with it.
+            frame["save_class"] = "ephemeral"
+            frame["requires_confirmation"] = False
+            frame["confirmation_reason"] = ""
         if frame["save_class"] == "ambiguous":
             frame["requires_confirmation"] = True
             frame["mutation_intent"] = "no_op"
@@ -3455,8 +3227,12 @@ class PKMAgentLabService:
                 message=message,
             ),
             "kind": intent_class or "note",
-            "summary": cls._safe_excerpt(message, limit=240),
-            "observations": [cls._safe_excerpt(message, limit=500)],
+            # The whole statement, never a clipped prefix: a segment is at most
+            # _MAX_SEGMENT_SOURCE_CHARS. This record used to cut the summary
+            # at 240 and the observation at 500 characters, so a long fact
+            # that skipped the structure agent was saved incomplete.
+            "summary": cls._safe_excerpt(message, limit=_MAX_SEGMENT_SOURCE_CHARS),
+            "observations": [cls._safe_excerpt(message, limit=_MAX_SEGMENT_SOURCE_CHARS)],
             "status": _ENTITY_STATUS_ACTIVE,
         }
 
@@ -3626,6 +3402,38 @@ class PKMAgentLabService:
         return deepcopy(right)
 
     @classmethod
+    def _remap_protocol_domain_name(
+        cls,
+        *,
+        target_domain: str,
+        payload: dict[str, Any],
+        recommended_domain: str,
+    ) -> tuple[str, dict[str, Any], bool]:
+        """Keep a fact whose domain name collides with a protocol namespace.
+
+        ``agent``, ``agents``, ``mcp`` and ``system`` are among the
+        RESERVED_DYNAMIC_DOMAIN_SLUGS, so they can never be a person's domain. A statement about agent, MCP or system
+        architecture is still the owner's work context: rather than refusing
+        it, the fact moves into the intent's recommended domain (or
+        ``professional``), nested under the name the model chose, so the
+        subject survives as a branch. App-owned and internal domains are not
+        handled here; they keep their own reserved-branch rules.
+        """
+        slug = cls._normalize_segment(target_domain)
+        if slug not in _REMAPPABLE_PROTOCOL_DOMAIN_NAMES:
+            return target_domain, payload, False
+        replacement = cls._normalize_segment(recommended_domain or "")
+        if (
+            not replacement
+            or replacement in RESERVED_DYNAMIC_DOMAIN_SLUGS
+            or replacement == _GENERAL_DOMAIN_KEY
+            or not is_valid_dynamic_top_level_domain(replacement)
+        ):
+            replacement = "professional"
+        nested = {slug: deepcopy(payload)} if payload else {}
+        return replacement, nested, True
+
+    @classmethod
     def _reroute_reserved_payload(
         cls,
         *,
@@ -3743,15 +3551,6 @@ class PKMAgentLabService:
             'reserved_offer {"branch": "<domain>.<reserved branch>", "label": "<2 to 4 word noun the owner would tap, e.g. Home>"}.\n'
             "- A row whose agent_memory_sibling is null keeps no chat facts: use do_not_save.\n"
         )
-
-    @classmethod
-    def _payload_has_financial_shape(cls, payload: dict[str, Any]) -> bool:
-        top_level_keys = {
-            cls._normalize_segment(str(key))
-            for key in payload.keys()
-            if cls._normalize_segment(str(key))
-        }
-        return bool(top_level_keys & _FINANCIAL_TOP_LEVEL_KEYS)
 
     @classmethod
     def _first_recommended_domain(
@@ -4032,7 +3831,6 @@ class PKMAgentLabService:
         registry_choices: list[dict[str, Any]],
         intent_frame: dict[str, Any],
         merge_decision: dict[str, Any],
-        financial_guard: dict[str, Any],
         parsed_structure: dict[str, Any] | None,
         fallback_target_domain: str,
         simulated_state: dict[str, Any] | None,
@@ -4064,7 +3862,6 @@ class PKMAgentLabService:
         raw_structure = parsed_structure or {}
         raw_decision = raw_structure.get("structure_decision")
         raw_decision = raw_decision if isinstance(raw_decision, dict) else {}
-        finance_route = str(financial_guard.get("routing_decision") or "").strip().lower()
 
         suggested_target_domain = (
             cls._normalize_segment(str(raw_decision.get("target_domain") or ""))
@@ -4116,6 +3913,13 @@ class PKMAgentLabService:
             or recommended_domain
             or _DEFAULT_CONFIRMATION_DOMAINS[0]
         )
+        target_domain, candidate_payload, remapped = cls._remap_protocol_domain_name(
+            target_domain=target_domain,
+            payload=candidate_payload,
+            recommended_domain=recommended_domain,
+        )
+        if remapped:
+            validation_hints.append("protocol_domain_name_remapped")
         reserved_entry: ReservedEntry | None = None
         reserved_branch: str | None = None
         try:
@@ -4189,22 +3993,6 @@ class PKMAgentLabService:
             validation_hints.append("unresolved_domain_choice")
             target_domain = recommended_domain or _DEFAULT_CONFIRMATION_DOMAINS[0]
 
-        if finance_route == "sanctioned_financial_memory":
-            raw_target_domain = cls._normalize_segment(str(raw_decision.get("target_domain") or ""))
-            if raw_target_domain and raw_target_domain != "financial":
-                validation_hints.append("financial_target_normalized")
-            if target_domain != "financial":
-                validation_hints.append("financial_target_normalized")
-                target_domain = "financial"
-            if not cls._payload_has_financial_shape(candidate_payload):
-                validation_hints.append("financial_payload_normalized")
-                candidate_payload = cls._fallback_payload_from_intent(
-                    message=message,
-                    intent_frame=intent_frame,
-                    merge_decision=merge_decision,
-                    target_domain="financial",
-                )
-
         if target_domain not in registry_keys and target_domain not in current_domains:
             validation_hints.append("new_domain_requires_extra_confidence")
             validation_hints.append("custom_domain_pending_owner_confirmation")
@@ -4231,12 +4019,12 @@ class PKMAgentLabService:
             intent_frame.get("intent_class") not in {"financial_event", "plan_or_goal"}
             and target_domain == "financial"
         ):
+            # Recorded, not substituted. This rule used to move the fact to the
+            # intent's first non-financial choice, or to `professional`, which
+            # filed "I prefer index funds" (intent `preference`) outside Finance.
+            # The structure agent named Finance; the reserved registry keeps the
+            # fact in financial.agent_memory; the hint only holds auto-save.
             validation_hints.append("financial_domain_requires_confirmation")
-            target_domain = (
-                recommended_domain
-                if recommended_domain != "financial"
-                else _DEFAULT_CONFIRMATION_DOMAINS[0]
-            )
 
         if merge_mode not in {"correct_entity", "delete_entity"}:
             current_root_scope = next(
@@ -4379,7 +4167,6 @@ class PKMAgentLabService:
                 in {
                     "non_financial_payload_replaced",
                     "financial_domain_requires_confirmation",
-                    "financial_payload_normalized",
                     "unresolved_domain_choice",
                 }
                 for hint in validation_hints
@@ -4502,50 +4289,6 @@ class PKMAgentLabService:
             "reserved_offer": cls._reserved_offer(
                 entry=reserved_entry, branch=reserved_branch, raw_structure=raw_structure
             ),
-        }
-
-    @classmethod
-    def _build_financial_core_preview(
-        cls,
-        *,
-        message: str,
-        current_domains: list[str],
-        intent_frame: dict[str, Any],
-    ) -> dict[str, Any]:
-        merge_decision = {
-            "merge_mode": "no_op",
-            "target_domain": "financial",
-            "target_entity_id": "",
-            "target_entity_path": "",
-            "match_confidence": 1.0,
-            "match_reason": "Governed financial-core requests are not written into PKM.",
-            "source_agent": "memory_merge_agent",
-            "contract_version": 1,
-        }
-        candidate_payload = cls._fallback_payload_from_intent(
-            message=message,
-            intent_frame=intent_frame,
-            merge_decision=merge_decision,
-            target_domain="financial",
-        )
-        structure_decision = cls._fallback_structure_decision(
-            message=message,
-            current_domains=current_domains,
-            intent_frame=intent_frame,
-            target_domain="financial",
-            candidate_payload=candidate_payload,
-        )
-        target_entity_scope = cls._manifest_target_entity_scope(
-            requested_scope="events.entities",
-            manifest_paths=structure_decision["json_paths"],
-        )
-        return {
-            "candidate_payload": candidate_payload,
-            "structure_decision": structure_decision,
-            "write_mode": "do_not_save",
-            "primary_json_path": None,
-            "target_entity_scope": target_entity_scope,
-            "validation_hints": ["routed_to_financial_core"],
         }
 
     @classmethod
@@ -4837,7 +4580,6 @@ class PKMAgentLabService:
         return {
             "card_id": card_id,
             "source_text": source_text,
-            "routing_decision": preview.get("routing_decision") or "non_financial_or_ephemeral",
             "save_class": intent_frame.get("save_class") or "unknown",
             "intent_class": intent_frame.get("intent_class") or "unknown",
             "mutation_intent": intent_frame.get("mutation_intent") or "unknown",
@@ -5072,7 +4814,6 @@ class PKMAgentLabService:
                 structure_decision=structure_decision,
             )
             preview = {
-                "routing_decision": "non_financial_or_ephemeral",
                 "intent_frame": intent_frame,
                 "merge_decision": {
                     "merge_mode": "extend_entity" if domain in current_domains else "create_entity",
@@ -5163,7 +4904,6 @@ class PKMAgentLabService:
                 structure_decision=structure_decision,
             )
             preview = {
-                "routing_decision": "non_financial_or_ephemeral",
                 "intent_frame": intent_frame,
                 "merge_decision": {
                     "merge_mode": "extend_entity" if domain in current_domains else "create_entity",
@@ -5240,7 +4980,6 @@ class PKMAgentLabService:
             "error": "sensitive_input_rejected"
             if blocking_secret_kind
             else ("kyc_identity_extraction_unavailable" if used_fallback else None),
-            "routing_decision": primary.get("routing_decision", "non_financial_or_ephemeral"),
             "intent_frame": primary.get("intent_frame", {}),
             "merge_decision": primary.get("merge_decision", {}),
             "candidate_payload": primary.get("candidate_payload", {}),
@@ -5275,13 +5014,14 @@ class PKMAgentLabService:
         message: str,
         current_domains: list[str],
         registry_choices: list[dict[str, Any]],
-        financial_guard: dict[str, Any],
         simulated_state: dict[str, Any] | None,
         strict_small_model: bool,
+        context_quotes: list[str] | None = None,
     ) -> str:
         rules = []
         state_summary = self._build_state_summary(simulated_state)
         registry_payload: Any = registry_choices
+        context_line = self._section_context_line(context_quotes)
         if strict_small_model:
             rules.append(
                 "- Minimal-thinking mode: prefer conservative broad domains, do not invent narrow domains, and only use ontology labels from the contract."
@@ -5291,36 +5031,33 @@ class PKMAgentLabService:
             registry_payload = self._compact_registry_choices(registry_choices)
             return (
                 f"{self._kernel_prompt('Memory Intent Agent')}"
-                "You are the Memory Intent Agent for Hussh Kai.\n"  # nosec B608 - prompt template, not SQL.
+                "You are the Memory Intent Agent for the Hussh private agent.\n"  # nosec B608 - prompt template, not SQL.
                 "Return JSON only with save_class, intent_class, mutation_intent, requires_confirmation, confirmation_reason, candidate_domain_choices, confidence, source_agent, contract_version.\n"
                 "Allowed save_class: durable, ephemeral, ambiguous.\n"
-                "Allowed intent_class: preference, profile_fact, routine, task_or_reminder, plan_or_goal, relationship, health, travel, shopping_need, financial_event, correction, deletion, note, ambiguous.\n"
+                "Allowed intent_class: preference, profile_fact, routine, task_or_reminder, plan_or_goal, relationship, health, travel, shopping_need, financial_event, command, correction, deletion, note, ambiguous.\n"
                 "Allowed mutation_intent: create, extend, update, correct, delete, no_op.\n"
-                f"Financial Guard decision: {json.dumps(financial_guard)}\n"
                 f"Soft ontology domain keys: {json.dumps(registry_payload)}\n"
                 f"Current domains: {json.dumps(current_domains)}\n"
                 f"State summary: {json.dumps(state_summary)}\n"
                 f"{self._reserved_table_prompt_lines()}"
+                f"{context_line}"
                 f"Message: {message}\n"
                 "Rules:\n"
-                "- durable = lasting personal knowledge.\n"
-                "- ephemeral = reminders, errands, one-off requests.\n"
-                "- ambiguous = too vague to save safely.\n"
+                "- durable = anything the owner stated, including work context, people, vendors, metrics and technical ids.\n"
+                "- ephemeral = a live command (intent_class command) or an errand; never pasted source material.\n"
+                "- ambiguous = a fragment with no subject at all.\n"
                 "- Brand loyalty, cuisine choices, and shopping habits are preference, not financial_event.\n"
                 "- Home base, residence, and where the user lives are profile_fact, not preference.\n"
-                "- Financial goals like saving for a home or paying off loans are usually plan_or_goal, not financial_event, unless the message is explicitly about portfolio construction, investing behavior, or risk preference.\n"
+                "- A stated money preference (index funds, risk tolerance) is durable with financial recommended first; an instruction to act on money now (optimize, rebalance, sell, buy) is command.\n"
                 "- If state_summary already shows an active memory in the same broad domain and the new message says still, also, again, continue, or otherwise refines the same theme, prefer mutation_intent extend instead of create.\n"
-                "- Repeating a durable policy like reminders staying out of PKM should not become a new durable preference unless the user clearly states a lasting meta-preference.\n"
-                "- If multiple broad domains are plausible, set requires_confirmation=true and return 2-4 broad candidate domains.\n"
-                "- If Financial Guard says sanctioned_financial_memory, use intent_class financial_event with financial recommended first.\n"
-                "- If Financial Guard says non_financial_or_ephemeral, do not force financial.\n"
+                "- If multiple broad domains are plausible, keep it durable, set requires_confirmation=true and return 2-4 broad candidate domains.\n"
                 "- Gibberish, ciphertext-like blobs, random hex strings, or semantically empty fragments must become no_op.\n"
                 "- Never use general.\n"
                 'Examples: {"message":"Window seats work better for me now.","save_class":"durable","intent_class":"correction","mutation_intent":"correct","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"travel","recommended":true}]} '
                 '{"message":"Please call my aunt tomorrow.","save_class":"ephemeral","intent_class":"task_or_reminder","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"social","recommended":true}]} '
-                '{"message":"My plans still revolve around living out of Seattle.","save_class":"durable","intent_class":"profile_fact","mutation_intent":"create","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"location","recommended":true}]} '
+                '{"message":"Optimize my portfolio for lower volatility.","save_class":"ephemeral","intent_class":"command","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"financial","recommended":true}]} '
+                '{"message":"- GCP project: example-proj-123","save_class":"durable","intent_class":"profile_fact","mutation_intent":"create","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"professional","recommended":true}]} '
                 '{"message":"One medium-term priority for me is to pay off my student loans in three years.","save_class":"durable","intent_class":"plan_or_goal","mutation_intent":"create","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"financial","recommended":true}]} '
-                '{"message":"I still gravitate toward aisle seats if I have the choice.","save_class":"durable","intent_class":"preference","mutation_intent":"extend","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"travel","recommended":true}]} '
                 '{"message":"Delete the outdated note about seat selection.","save_class":"durable","intent_class":"deletion","mutation_intent":"delete","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"travel","recommended":true}]} '
                 '{"message":"4d2fa9aa67f03c119ed8b8d38b9a7e0a","save_class":"ephemeral","intent_class":"ambiguous","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"professional","recommended":true}]}'
             )
@@ -5328,27 +5065,42 @@ class PKMAgentLabService:
             f"{self._kernel_prompt('Memory Intent Agent')}"
             f"{self.memory_intent_manifest.system_instruction}\n\n"
             "Return JSON only.\n"
-            f"Financial Guard decision: {json.dumps(financial_guard)}\n"
             f"Soft ontology domain choices: {json.dumps(registry_payload)}\n"
             f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
             f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
+            f"{context_line}"
             f"Natural language message: {message}\n"
             "Rules:\n"
-            "- Durable means stable personal knowledge worth saving.\n"
-            "- Ephemeral means reminders, one-off tasks, or operational requests that should not be stored as durable PKM.\n"
+            "- Durable means anything the owner stated: personal facts, work context, people, vendors, metrics and technical identifiers.\n"
+            "- Ephemeral means only a live command (intent_class command) or an errand; pasted source material is never ephemeral.\n"
             "- If the user is correcting or deleting prior meaning, set mutation_intent to correct or delete.\n"
-            "- If multiple broad domains are plausible, require confirmation and provide 2-4 broad candidate domains.\n"
-            "- If Financial Guard says sanctioned_financial_memory, classify this as financial_event with financial recommended first.\n"
-            "- If Financial Guard says non_financial_or_ephemeral, do not force a financial label.\n"
+            "- If multiple broad domains are plausible, keep it durable, require confirmation and provide 2-4 broad candidate domains.\n"
             "- Gibberish, ciphertext-like blobs, or semantically empty fragments must map to no_op and do_not_save.\n"
             "- Never use general.\n"
             f"{chr(10).join(rules)}\n"
             "Examples:\n"
             'I like Chinese food. -> {"save_class":"durable","intent_class":"preference","mutation_intent":"create","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"food","display_name":"Food & Dining","description":"Dietary preferences, favorite cuisines, and restaurant history","recommended":true}],"confidence":0.93,"source_agent":"memory_intent_agent","contract_version":1}\n'
             'Remind me to call mom on Sunday. -> {"save_class":"ephemeral","intent_class":"task_or_reminder","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"social","display_name":"Social","description":"Relationships, family context, and social preferences","recommended":true}],"confidence":0.96,"source_agent":"memory_intent_agent","contract_version":1}\n'
+            'Optimize my portfolio for lower volatility. -> {"save_class":"ephemeral","intent_class":"command","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"financial","display_name":"Financial","description":"Investment portfolio, risk profile, and financial preferences","recommended":true}],"confidence":0.95,"source_agent":"memory_intent_agent","contract_version":1}\n'
             'Actually I prefer window seats now. -> {"save_class":"durable","intent_class":"correction","mutation_intent":"correct","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"travel","display_name":"Travel","description":"Travel preferences, loyalty programs, and trip history","recommended":true}],"confidence":0.89,"source_agent":"memory_intent_agent","contract_version":1}\n'
             'Remember that I prefer index funds. -> {"save_class":"durable","intent_class":"financial_event","mutation_intent":"extend","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"financial","display_name":"Financial","description":"Investment portfolio, risk profile, and financial preferences","recommended":true}],"confidence":0.92,"source_agent":"memory_intent_agent","contract_version":1}\n'
+            '- OAuth callback: https://auth.example.dev/oauth/callback -> {"save_class":"durable","intent_class":"profile_fact","mutation_intent":"create","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"professional","display_name":"Professional","description":"Career information, skills, and work preferences","recommended":true}],"confidence":0.9,"source_agent":"memory_intent_agent","contract_version":1}\n'
             'Q2FmZSB3YWtlIHVwIGhhc2ggcGF5bG9hZA== -> {"save_class":"ephemeral","intent_class":"ambiguous","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"professional","display_name":"Professional","description":"Career information, skills, and work preferences","recommended":true}],"confidence":0.98,"source_agent":"memory_intent_agent","contract_version":1}'
+        )
+
+    @staticmethod
+    def _section_context_line(context_quotes: list[str] | None) -> str:
+        """The headings that attribute a statement, quoted, as prompt context.
+
+        They qualify the statement (whose company, which person, which
+        period); they are not a second fact to save.
+        """
+        quotes = [quote for quote in (context_quotes or []) if isinstance(quote, str) and quote]
+        if not quotes:
+            return ""
+        return (
+            "Section context (exact headings above this statement; they attribute and "
+            f"qualify it and are not a separate fact): {json.dumps(quotes, ensure_ascii=False)}\n"
         )
 
     def _build_memory_merge_prompt(
@@ -5416,42 +5168,44 @@ class PKMAgentLabService:
         registry_choices: list[dict[str, Any]],
         intent_frame: dict[str, Any],
         merge_decision: dict[str, Any],
-        financial_guard: dict[str, Any],
         simulated_state: dict[str, Any] | None,
         strict_small_model: bool,
+        context_quotes: list[str] | None = None,
     ) -> str:
         state_summary = self._build_state_summary(simulated_state)
         small_model_rules = ""
+        context_line = self._section_context_line(context_quotes)
         if strict_small_model:
             state_summary = self._compact_state_summary(simulated_state)
             compact_registry_choices = self._compact_registry_choices(registry_choices)
             return (
-                "You are the PKM Structure Agent for Hussh Kai.\n"
+                "You are the PKM Structure Agent for the Hussh private agent.\n"
                 "Return JSON only with candidate_payload, structure_decision, write_mode, primary_json_path, target_entity_scope, validation_hints.\n"
                 "Allowed actions: match_existing_domain, create_domain, extend_domain.\n"
                 "Allowed write_mode: can_save, confirm_first, do_not_save.\n"
-                f"Financial Guard decision: {json.dumps(financial_guard)}\n"
                 f"Intent frame: {json.dumps(intent_frame)}\n"
                 f"Merge decision: {json.dumps(merge_decision)}\n"
                 f"Soft ontology domain keys: {json.dumps(compact_registry_choices)}\n"
                 f"Current domains: {json.dumps(current_domains)}\n"
                 f"State summary: {json.dumps(state_summary)}\n"
+                f"{context_line}"
                 f"Message: {message}\n"
                 "Rules:\n"
                 "- candidate_payload must align with target_domain and intent_frame.\n"
+                "- Choose a domain for everything stated; work context, technical ids, vendors and people go under professional or a work domain.\n"
                 "- Keep payload shallow, durable, and entity-based when possible.\n"
                 "- Use merge_decision.target_domain unless there is a clear validation error.\n"
                 "- For correct_entity/delete_entity, candidate_payload must use merge_decision.target_entity_path and must not create a changes subtree.\n"
                 "- For delete_entity, do not create replacement plaintext; target the existing entity id only.\n"
                 "- primary_json_path may be a top-level root path when broad structure is enough.\n"
                 "- Use a deeper nested path only when the subtree is clearly stable.\n"
-                "- If requires_confirmation is true, return write_mode=confirm_first and primary_json_path=null or empty.\n"
+                "- If requires_confirmation is true, return write_mode=confirm_first.\n"
                 "- If save_class is ephemeral, return write_mode=do_not_save.\n"
-                "- If Financial Guard says sanctioned_financial_memory, target_domain must be financial and the payload goes under agent_memory.\n"
+                "- A finance preference or goal goes under agent_memory in financial.\n"
                 "- candidate_payload should favor entities keyed by stable ids over anonymous statement arrays.\n"
                 "- Never use general.\n"
                 'Examples: {"message":"I usually choose Thai takeout first.","target_domain":"food","primary_json_path":"preferences"} '
-                '{"message":"Window seats are easier for me.","target_domain":"travel","primary_json_path":"seat_preferences"}'
+                '{"message":"- Backend: FastAPI on Cloud Run","target_domain":"professional","primary_json_path":"tech_stack"}'
             )
         small_model_rules = (
             "- Minimal-thinking mode: prefer shallow payloads with entities{} maps under one stable subtree.\n"
@@ -5459,12 +5213,12 @@ class PKMAgentLabService:
         )
         return (
             "Return JSON only.\n"
-            f"Financial Guard decision: {json.dumps(financial_guard)}\n"
             f"Intent frame: {json.dumps(intent_frame)}\n"
             f"Merge decision: {json.dumps(merge_decision)}\n"
             f"Soft ontology domain choices: {json.dumps(registry_choices)}\n"
             f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
             f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
+            f"{context_line}"
             f"Natural language message: {message}\n"
             "Rules:\n"
             "- candidate_payload must align with target_domain and the intent frame.\n"
@@ -5474,7 +5228,7 @@ class PKMAgentLabService:
             "- create_domain is a normal, expected outcome. A person is not a fixed list of categories. If a statement is about a distinct part of who they are, name a new domain for it.\n"
             "- Do not stretch an existing domain to absorb something it is not about. Measured: the wording this replaced produced zero new domains across ten statements and filed someone's communication style under ria, the financial-advisor domain.\n"
             "- You may propose a new safe lowercase snake_case top-level domain when no existing domain is semantically accurate.\n"
-            "- Never propose protocol or internal namespaces such as vault, pkm, attr, cap, agent, runtime_secrets, kyc_connector, or kyc_workflow.\n"
+            "- Never propose protocol or internal namespaces such as vault, pkm, attr, cap, agent, agents, mcp, system, runtime_secrets, kyc_connector, or kyc_workflow; a fact about agent or system architecture is work context under professional.\n"
             "- Every durable write is confirm_first; never rely on can_save for persistence.\n"
             "- Keep payloads shallow, durable, and conservative.\n"
             "- Use stable snake_case keys.\n"
@@ -5482,44 +5236,43 @@ class PKMAgentLabService:
             "- Use merge_decision.target_domain unless validation requires a different broad domain.\n"
             "- For correct_entity/delete_entity, candidate_payload must align to merge_decision.target_entity_path and must not create a changes subtree.\n"
             "- For delete_entity, target the existing entity id; do not create replacement plaintext or a new deleted memory.\n"
-            "- For reminders or ephemeral requests, use write_mode=do_not_save.\n"
+            "- For a live command or an errand, use write_mode=do_not_save.\n"
             "- If intent_frame.requires_confirmation is true, return write_mode=confirm_first.\n"
             "- primary_json_path must identify the main path inside the domain payload. Use a top-level path when a broad root-domain write is enough; use a deeper nested path only when the subtree is clearly stable.\n"
             "- target_entity_scope should point to the stable subtree being written or changed.\n"
-            "- If Financial Guard says sanctioned_financial_memory, the only valid target_domain is financial.\n"
-            "- For sanctioned financial memory, follow the Finance rule in your system instruction: the fact goes under agent_memory, never a Finance app branch.\n"
+            "- A finance preference or goal follows the Finance rule in your system instruction: the fact goes under agent_memory, never a Finance app branch.\n"
             "- Gibberish or opaque input must return write_mode=do_not_save.\n"
             "- Never use the domain key general.\n"
             f"{small_model_rules}"
             "Examples:\n"
             'I gravitate toward Cantonese menus when I go out. -> {"candidate_payload":{"preferences":{"entities":{"mem_food_pref":{"entity_id":"mem_food_pref","kind":"preference","summary":"I gravitate toward Cantonese menus when I go out.","observations":["I gravitate toward Cantonese menus when I go out."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"food","json_paths":["preferences","preferences.entities","preferences.entities.mem_food_pref","preferences.entities.mem_food_pref.summary"],"top_level_scope_paths":["preferences"],"externalizable_paths":["preferences.entities.mem_food_pref.summary"],"summary_projection":{"intent_class":"preference","top_level_scope":"preferences"},"sensitivity_labels":{},"confidence":0.91,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"confirm_first","primary_json_path":"preferences","target_entity_scope":"preferences","validation_hints":[]}\n'
             'Circle back with my aunt this weekend. -> {"candidate_payload":{"tasks":{"entities":{"mem_social_task":{"entity_id":"mem_social_task","kind":"task_or_reminder","summary":"Circle back with my aunt this weekend.","observations":["Circle back with my aunt this weekend."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"social","json_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"top_level_scope_paths":["tasks"],"externalizable_paths":["tasks.entities.mem_social_task.summary"],"summary_projection":{"intent_class":"task_or_reminder","top_level_scope":"tasks"},"sensitivity_labels":{},"confidence":0.87,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"do_not_save","primary_json_path":"","target_entity_scope":"tasks","validation_hints":[]}\n'
+            '- GCP project: example-proj-123 (section "## Infrastructure") -> target_domain professional, candidate_payload {"infrastructure":{"entities":{"gcp_project":{"entity_id":"gcp_project","kind":"profile_fact","summary":"GCP project: example-proj-123","observations":["GCP project: example-proj-123"],"status":"active"}}}}, write_mode confirm_first.\n'
             "Remember that I prefer index funds. -> target_domain must be financial, write_mode confirm_first, and candidate_payload must use agent_memory, the Finance sibling for chat facts.\n"
             'My home is 12 Example Street. -> target_domain location, candidate_payload under agent_memory (location.saved_places is the Location app\'s), reserved_offer {"branch":"location.saved_places","label":"Home"}.'
         )
 
     @classmethod
-    def _should_skip_structure_agent(
-        cls,
-        *,
-        intent_frame: dict[str, Any],
-        financial_guard: dict[str, Any],
-    ) -> bool:
-        routing_decision = cls._normalize_segment(
-            str(financial_guard.get("routing_decision") or "")
-        )
-        if routing_decision == "financial_core":
+    def _should_skip_structure_agent(cls, *, intent_frame: dict[str, Any]) -> bool:
+        """Skip the structure agent only when the intent agent said "nothing to save".
+
+        Two answers qualify: ``no_op`` (the intent agent judged it not memory)
+        and ``command`` (a live instruction for One to act, such as "optimize my
+        portfolio", which only the live turn can carry). Everything else is
+        structured, including a statement that needs the owner's confirmation:
+        skipping those used to file them through ``_build_entity_record``, a
+        keyword-free fallback that kept a truncated summary of the statement.
+        """
+        if cls._normalize_segment(str(intent_frame.get("intent_class") or "")) == "command":
             return True
-        if bool(intent_frame.get("requires_confirmation")):
-            return True
-        save_class = cls._normalize_segment(str(intent_frame.get("save_class") or ""))
-        return save_class in {"ephemeral", "ambiguous"}
+        return cls._normalize_segment(str(intent_frame.get("mutation_intent") or "")) == "no_op"
 
     async def _generate_single_structure_preview(
         self,
         *,
         user_id: str,
         message: str,
+        context_quotes: list[str] | None = None,
         current_domains: list[str] | None = None,
         current_manifests: list[dict[str, Any]] | None = None,
         simulated_state: dict[str, Any] | None = None,
@@ -5543,195 +5296,125 @@ class PKMAgentLabService:
             current_domains=normalized_domains,
             override=effective_registry_override,
         )
-        financial_guard_fallback = self._fallback_financial_guard_decision(
+        # Whether each stage was ROUTED AROUND, as distinct from whether it ran
+        # and fell back. A skip means no model judgement exists for that stage
+        # at all, and an unobservable substitution is indistinguishable from a
+        # model answer, which is why these are never folded into fallback_used.
+        merge_skipped = False
+        structure_skipped = False
+
+        # The intent agent alone decides memory versus command. There is no
+        # earlier finance stage: a finance preference is memory like any other,
+        # and the reserved registry files it under financial.agent_memory.
+        fallback_intent = self._fallback_intent_frame(
             message=message,
             current_domains=normalized_domains,
+            registry_choices=registry_choices,
         )
-        financial_guard_raw = await run_contract(
-            manifest=self.financial_guard_manifest,
-            prompt=self._build_financial_guard_prompt(
+        intent_raw = await run_contract(
+            manifest=self.memory_intent_manifest,
+            prompt=self._build_memory_intent_prompt(
                 message=message,
                 current_domains=normalized_domains,
                 registry_choices=registry_choices,
                 simulated_state=simulated_state,
                 strict_small_model=strict_small_model,
+                context_quotes=context_quotes,
             ),
-            response_schema=_FINANCIAL_GUARD_SCHEMA,
+            response_schema=_INTENT_FRAME_SCHEMA,
             model_override=model_override,
             timeout_seconds=self._remaining_preview_budget_seconds(deadline),
             execution_trace=execution_trace,
         )
-        financial_guard_used_fallback = financial_guard_raw is None
-        # Whether each stage was ROUTED AROUND, as distinct from whether it ran
-        # and fell back. A skip means no model judgement exists for that stage
-        # at all, and an unobservable substitution is indistinguishable from a
-        # model answer, which is why these are never folded into fallback_used.
-        intent_skipped = False
-        merge_skipped = False
-        structure_skipped = False
-        financial_guard = self._sanitize_financial_guard_decision(
+        intent_used_fallback = intent_raw is None
+        intent_frame = self._sanitize_intent_frame(
             message=message,
-            raw=financial_guard_raw,
-            fallback=financial_guard_fallback,
+            raw=intent_raw,
+            fallback=fallback_intent,
+            registry_choices=registry_choices,
+            current_domains=normalized_domains,
         )
 
-        fallback_intent = self._fallback_intent_frame(
+        merge_fallback = self._fallback_merge_decision(
+            message=message,
+            current_domains=normalized_domains,
+            intent_frame=intent_frame,
+            simulated_state=simulated_state,
+        )
+        if intent_frame.get("mutation_intent") == "no_op":
+            merge_raw = None
+            merge_used_fallback = False
+            merge_skipped = True
+        else:
+            merge_raw = await run_contract(
+                manifest=self.memory_merge_manifest,
+                prompt=self._build_memory_merge_prompt(
+                    message=message,
+                    current_domains=normalized_domains,
+                    intent_frame=intent_frame,
+                    simulated_state=simulated_state,
+                    strict_small_model=strict_small_model,
+                ),
+                response_schema=_MERGE_DECISION_SCHEMA,
+                model_override=model_override,
+                timeout_seconds=self._remaining_preview_budget_seconds(deadline),
+                execution_trace=execution_trace,
+            )
+            merge_used_fallback = merge_raw is None
+        merge_decision = self._sanitize_merge_decision(
+            raw=merge_raw,
+            fallback=merge_fallback,
+            intent_frame=intent_frame,
+            current_domains=normalized_domains,
+        )
+        merge_mode = str(merge_decision.get("merge_mode") or "")
+        if merge_mode == "extend_entity":
+            intent_frame["mutation_intent"] = "extend"
+        elif merge_mode == "correct_entity":
+            intent_frame["mutation_intent"] = "correct"
+        elif merge_mode == "delete_entity":
+            intent_frame["mutation_intent"] = "delete"
+
+        fallback_target_domain = self._first_recommended_domain(
+            intent_frame, fallback=_DEFAULT_CONFIRMATION_DOMAINS[0]
+        )
+        if self._should_skip_structure_agent(intent_frame=intent_frame):
+            structure_raw = None
+            structure_used_fallback = False
+            # The model was never asked. That is not the same as the model
+            # answering and needing no fallback, and until now both wrote
+            # False here, so a skipped stage reported as a successful run.
+            structure_skipped = True
+        else:
+            structure_raw = await run_contract(
+                manifest=self.structure_manifest,
+                prompt=self._build_structure_prompt(
+                    message=message,
+                    current_domains=normalized_domains,
+                    registry_choices=registry_choices,
+                    intent_frame=intent_frame,
+                    merge_decision=merge_decision,
+                    simulated_state=simulated_state,
+                    strict_small_model=strict_small_model,
+                    context_quotes=context_quotes,
+                ),
+                response_schema=_STRUCTURE_PREVIEW_SCHEMA,
+                model_override=model_override,
+                timeout_seconds=self._remaining_preview_budget_seconds(deadline),
+                execution_trace=execution_trace,
+            )
+            structure_used_fallback = structure_raw is None
+        normalized_preview = self._normalize_structure_preview(
             message=message,
             current_domains=normalized_domains,
             registry_choices=registry_choices,
-            financial_guard=financial_guard,
+            intent_frame=intent_frame,
+            merge_decision=merge_decision,
+            parsed_structure=structure_raw,
+            fallback_target_domain=fallback_target_domain,
+            simulated_state=simulated_state,
         )
-        if financial_guard["routing_decision"] == "financial_core":
-            intent_frame = self._intent_frame_from_financial_guard(
-                message=message,
-                current_domains=normalized_domains,
-                registry_choices=registry_choices,
-                financial_guard=financial_guard,
-            )
-            merge_decision = {
-                "merge_mode": "no_op",
-                "target_domain": "financial",
-                "target_entity_id": "",
-                "target_entity_path": "",
-                "match_confidence": 1.0,
-                "match_reason": "Governed financial-core requests stay outside PKM writes.",
-                "source_agent": "memory_merge_agent",
-                "contract_version": 1,
-            }
-            intent_used_fallback = False
-            merge_used_fallback = False
-            structure_used_fallback = False
-            # Financial-core never consults any of the three. Recorded as three
-            # skips rather than silence.
-            intent_skipped = True
-            merge_skipped = True
-            structure_skipped = True
-            normalized_preview = self._build_financial_core_preview(
-                message=message,
-                current_domains=normalized_domains,
-                intent_frame=intent_frame,
-            )
-            agent_manifest = self.financial_guard_manifest
-        else:
-            if financial_guard["routing_decision"] == "sanctioned_financial_memory":
-                intent_frame = self._intent_frame_from_financial_guard(
-                    message=message,
-                    current_domains=normalized_domains,
-                    registry_choices=registry_choices,
-                    financial_guard=financial_guard,
-                )
-                intent_used_fallback = False
-                # Derived from the guard, not asked of the intent agent.
-                intent_skipped = True
-            else:
-                intent_raw = await run_contract(
-                    manifest=self.memory_intent_manifest,
-                    prompt=self._build_memory_intent_prompt(
-                        message=message,
-                        current_domains=normalized_domains,
-                        registry_choices=registry_choices,
-                        financial_guard=financial_guard,
-                        simulated_state=simulated_state,
-                        strict_small_model=strict_small_model,
-                    ),
-                    response_schema=_INTENT_FRAME_SCHEMA,
-                    model_override=model_override,
-                    timeout_seconds=self._remaining_preview_budget_seconds(deadline),
-                    execution_trace=execution_trace,
-                )
-                intent_used_fallback = intent_raw is None
-                intent_frame = self._sanitize_intent_frame(
-                    message=message,
-                    raw=intent_raw,
-                    fallback=fallback_intent,
-                    registry_choices=registry_choices,
-                    current_domains=normalized_domains,
-                )
-
-            merge_fallback = self._fallback_merge_decision(
-                message=message,
-                current_domains=normalized_domains,
-                intent_frame=intent_frame,
-                simulated_state=simulated_state,
-            )
-            if intent_frame.get("mutation_intent") == "no_op":
-                merge_raw = None
-                merge_used_fallback = False
-                merge_skipped = True
-            else:
-                merge_raw = await run_contract(
-                    manifest=self.memory_merge_manifest,
-                    prompt=self._build_memory_merge_prompt(
-                        message=message,
-                        current_domains=normalized_domains,
-                        intent_frame=intent_frame,
-                        simulated_state=simulated_state,
-                        strict_small_model=strict_small_model,
-                    ),
-                    response_schema=_MERGE_DECISION_SCHEMA,
-                    model_override=model_override,
-                    timeout_seconds=self._remaining_preview_budget_seconds(deadline),
-                    execution_trace=execution_trace,
-                )
-                merge_used_fallback = merge_raw is None
-            merge_decision = self._sanitize_merge_decision(
-                raw=merge_raw,
-                fallback=merge_fallback,
-                intent_frame=intent_frame,
-                current_domains=normalized_domains,
-            )
-            merge_mode = str(merge_decision.get("merge_mode") or "")
-            if merge_mode == "extend_entity":
-                intent_frame["mutation_intent"] = "extend"
-            elif merge_mode == "correct_entity":
-                intent_frame["mutation_intent"] = "correct"
-            elif merge_mode == "delete_entity":
-                intent_frame["mutation_intent"] = "delete"
-
-            fallback_target_domain = self._first_recommended_domain(
-                intent_frame, fallback=_DEFAULT_CONFIRMATION_DOMAINS[0]
-            )
-            if self._should_skip_structure_agent(
-                intent_frame=intent_frame,
-                financial_guard=financial_guard,
-            ):
-                structure_raw = None
-                structure_used_fallback = False
-                # The model was never asked. That is not the same as the model
-                # answering and needing no fallback, and until now both wrote
-                # False here, so a skipped stage reported as a successful run.
-                structure_skipped = True
-            else:
-                structure_raw = await run_contract(
-                    manifest=self.structure_manifest,
-                    prompt=self._build_structure_prompt(
-                        message=message,
-                        current_domains=normalized_domains,
-                        registry_choices=registry_choices,
-                        intent_frame=intent_frame,
-                        merge_decision=merge_decision,
-                        financial_guard=financial_guard,
-                        simulated_state=simulated_state,
-                        strict_small_model=strict_small_model,
-                    ),
-                    response_schema=_STRUCTURE_PREVIEW_SCHEMA,
-                    model_override=model_override,
-                    timeout_seconds=self._remaining_preview_budget_seconds(deadline),
-                    execution_trace=execution_trace,
-                )
-                structure_used_fallback = structure_raw is None
-            normalized_preview = self._normalize_structure_preview(
-                message=message,
-                current_domains=normalized_domains,
-                registry_choices=registry_choices,
-                intent_frame=intent_frame,
-                merge_decision=merge_decision,
-                financial_guard=financial_guard,
-                parsed_structure=structure_raw,
-                fallback_target_domain=fallback_target_domain,
-                simulated_state=simulated_state,
-            )
-            agent_manifest = self.structure_manifest
+        agent_manifest = self.structure_manifest
         manifest = self._build_manifest_from_payload(
             user_id=user_id,
             domain=normalized_preview["structure_decision"]["target_domain"],
@@ -5740,27 +5423,20 @@ class PKMAgentLabService:
         )
 
         errors = []
-        if financial_guard_used_fallback:
-            errors.append("financial_guard_agent_fallback")
         if intent_used_fallback:
             errors.append("memory_intent_agent_fallback")
         if merge_used_fallback:
             errors.append("memory_merge_agent_fallback")
         if structure_used_fallback:
             errors.append("pkm_structure_agent_fallback")
-        used_fallback = (
-            financial_guard_used_fallback
-            or intent_used_fallback
-            or merge_used_fallback
-            or structure_used_fallback
-        )
+        used_fallback = intent_used_fallback or merge_used_fallback or structure_used_fallback
         drift_flags = self._drift_flags_from_preview(
             validation_hints=normalized_preview["validation_hints"],
             fallback_used=used_fallback,
             intent_used_fallback=intent_used_fallback,
             merge_used_fallback=merge_used_fallback,
             structure_used_fallback=structure_used_fallback,
-            intent_skipped=intent_skipped,
+            intent_skipped=False,
             merge_skipped=merge_skipped,
             structure_skipped=structure_skipped,
         )
@@ -5773,12 +5449,11 @@ class PKMAgentLabService:
             "intent_used_fallback": intent_used_fallback,
             "merge_used_fallback": merge_used_fallback,
             "structure_used_fallback": structure_used_fallback,
-            "intent_skipped": intent_skipped,
+            "intent_skipped": False,
             "merge_skipped": merge_skipped,
             "structure_skipped": structure_skipped,
             "drift_flags": drift_flags,
             "error": "; ".join(errors) or None,
-            "routing_decision": financial_guard["routing_decision"],
             "intent_frame": intent_frame,
             "merge_decision": merge_decision,
             "candidate_payload": normalized_preview["candidate_payload"],
@@ -5832,7 +5507,6 @@ class PKMAgentLabService:
         # continuation rather than silently replaying a previous interpretation.
         contracts = [
             (self.memory_segmentation_manifest, _SEGMENTATION_SCHEMA),
-            (self.financial_guard_manifest, _FINANCIAL_GUARD_SCHEMA),
             (self.memory_intent_manifest, _INTENT_FRAME_SCHEMA),
             (self.memory_merge_manifest, _MERGE_DECISION_SCHEMA),
             (self.structure_manifest, _STRUCTURE_PREVIEW_SCHEMA),
@@ -5930,11 +5604,14 @@ class PKMAgentLabService:
             )
             if isinstance(segmentation_raw, dict):
                 raw_segments = segmentation_raw.get("segments")
+                # A malformed batch is a schema failure. A quote that does not
+                # match the owner's text is not: that one segment is dropped
+                # and reported in _sanitize_segmentation, and the rest of the
+                # section is kept (it used to discard the whole section).
                 if not isinstance(raw_segments, list) or any(
                     not isinstance(item, dict)
                     or not isinstance(item.get("source_text"), str)
                     or not item["source_text"].strip()
-                    or item["source_text"] not in message
                     for item in (raw_segments if isinstance(raw_segments, list) else [])
                 ):
                     segmentation_used_fallback = True
@@ -5944,9 +5621,11 @@ class PKMAgentLabService:
                 # semantic selection. Never auto-save a partially certified batch.
                 segmentation_raw = None
 
-            segmented_messages = self._sanitize_segmented_messages(
+            segmented_messages, not_memory, unmatched_quotes = self._sanitize_segmentation(
                 segmentation_raw, message=message
             )
+            if unmatched_quotes:
+                logger.info("pkm.agent_lab.segment_quote_unmatched count=%s", unmatched_quotes)
             total_segments_detected = len(segmented_messages)
             split_recommended = total_segments_detected > _MAX_PREVIEW_CARDS or (
                 isinstance(segmentation_raw, dict)
@@ -5970,6 +5649,7 @@ class PKMAgentLabService:
                 index: int, segment: dict[str, Any]
             ) -> dict[str, Any] | None:
                 source_text = segment["source_text"]
+                context_quotes = list(segment.get("context_quotes") or [])
                 if not source_text:
                     return None
                 source_key = hashlib.sha256(source_text.encode()).hexdigest()
@@ -5993,6 +5673,7 @@ class PKMAgentLabService:
                 preview = await self._generate_single_structure_preview(
                     user_id=user_id,
                     message=source_text,
+                    context_quotes=context_quotes,
                     current_domains=normalized_domains,
                     current_manifests=current_manifests,
                     simulated_state=simulated_state,
@@ -6015,6 +5696,7 @@ class PKMAgentLabService:
                     preview=preview,
                     simulated_state=simulated_state,
                 )
+                card["context_quotes"] = context_quotes
                 return {
                     "preview": preview,
                     "latency_ms": preview_latency_ms,
@@ -6058,6 +5740,10 @@ class PKMAgentLabService:
                 split_recommended=split_recommended,
                 total_segments_detected=total_segments_detected,
             )
+            # Lines the segmentation agent accounted for without saving, as
+            # exact quotes; the device maps them onto its coverage receipt.
+            preview_summary["not_memory"] = not_memory
+            preview_summary["unmatched_quote_count"] = unmatched_quotes
             context_plan = self._context_plan_from_cards(preview_cards)
             total_latency_ms = round((time.perf_counter() - total_started_at) * 1000, 2)
             performance = {
@@ -6089,9 +5775,15 @@ class PKMAgentLabService:
                 # An explicit, valid empty segmentation is the model's no-op
                 # decision, not a failed provider call. Malformed output and
                 # rejected nonempty source quotes still fail closed.
+                # Nothing to save, and every quote the agent returned matched:
+                # an empty selection, or a section that is all disclaimer or
+                # duplicate lines (reported in not_memory). An unmatched quote
+                # keeps this a retryable failure instead.
                 empty_selection = (
                     isinstance(segmentation_raw, dict)
-                    and segmentation_raw.get("segments") == []
+                    and isinstance(segmentation_raw.get("segments"), list)
+                    and not segmented_messages
+                    and unmatched_quotes == 0
                     and segmentation_raw.get("has_more_candidates") is False
                     and type(segmentation_raw.get("contract_version")) is int
                     and segmentation_raw["contract_version"] == 1
@@ -6103,6 +5795,8 @@ class PKMAgentLabService:
                 empty_hints = [] if preparation_valid else ["preview_generation_failed"]
                 if split_recommended:
                     empty_hints.append("split_recommended")
+                if unmatched_quotes:
+                    empty_hints.append("segment_quote_unmatched")
                 empty_manifest = self._build_manifest_from_payload(
                     user_id=user_id,
                     domain="professional",
@@ -6137,7 +5831,6 @@ class PKMAgentLabService:
                     "error": None
                     if preparation_valid
                     else "; ".join(self._unique_list(errors or ["memory_segmentation_no_output"])),
-                    "routing_decision": "non_financial_or_ephemeral",
                     "intent_frame": {},
                     "merge_decision": {},
                     "candidate_payload": {},
@@ -6159,6 +5852,8 @@ class PKMAgentLabService:
             validation_hints = list(primary_preview.get("validation_hints") or [])
             if split_recommended and "split_recommended" not in validation_hints:
                 validation_hints.append("split_recommended")
+            if unmatched_quotes:
+                validation_hints.append("segment_quote_unmatched")
 
             response_payload = {
                 **primary_preview,

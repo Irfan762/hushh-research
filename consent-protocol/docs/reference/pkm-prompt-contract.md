@@ -15,13 +15,24 @@ PKM semantics must be derived by manifest-backed agents with exact structured ou
 
 The canonical flow is:
 
-1. `Financial Guard Agent`
+1. `Memory Segmentation Agent`
 2. `Memory Intent Agent`
 3. `Memory Merge Agent`
 4. `PKM Structure Agent`
 5. deterministic validator
 
-No service-local prompt or heuristic may replace either agent as the semantic source of truth.
+No service-local prompt or heuristic may replace any of these agents as the semantic source of truth.
+
+The agents keep everything the owner stated (founder decision, Phase 4 of the reserved-branch
+plan). Work context, company, product, tech stack, infrastructure, vendors, people, metrics,
+AI tooling and non-secret technical identifiers (project ids, environment variable names,
+OAuth URLs, app ids) are memory. Only exact duplicates and pure disclaimers ("Information not
+known") are left unsaved, and both are reported in `not_memory`. Secrets never reach the agents:
+the device moved them into Secrets and left `⟦secret:<id> <label>⟧`, which the agents keep as an
+exact quote and never expand. A fact aimed at an app-owned branch goes to that branch's
+`agent_memory` sibling. The Financial Guard Agent that used to run first was removed: the
+intent agent alone tells a live `command` ("optimize my portfolio") from a memory, and a money
+preference is filed in `financial.agent_memory` by the reserved registry.
 
 ### Preparation failure and retry
 
@@ -30,8 +41,8 @@ successful first candidate must not hide a later failed agent stage. Individual
 cards retain their own outcomes; aggregate diagnostics do not alter model meaning.
 
 The existing request-bound preview cache may retain an exact validated prefix for
-each unique model-authored source segment after a stage timeout. If Financial Guard times out, only
-segmentation is reusable; the guard and every later stage run again. Changed
+each unique model-authored source segment after a stage timeout. If Memory Intent times out, only
+segmentation is reusable; intent and every later stage run again. Changed
 owner, credential, source, context, contracts or cache expiry invalidate reuse.
 Failed or fallback decisions are never retained as successful preparation, and a
 retry does not extend the original cache lifetime or authorize a save. Multi-segment
@@ -56,12 +67,12 @@ Use only the user's exact message, current active domains, manifest/scope regist
 Never invent domains, paths, values, entities, or history.
 Never create a "changes" branch for corrections.
 Never duplicate a fact when an active canonical entity can be extended or corrected.
-Never save reminders, one-off tasks, opaque strings, secrets, random ids, or operational requests.
+Keep everything the owner stated. Technical identifiers (project ids, environment variable names, OAuth and callback URLs, app ids) are work context. Secrets arrive already moved to the owner's Secrets as placeholders (⟦secret:<id> <label>⟧): keep one as written, never expand or guess its value.
 Never write developer metadata, parser metadata, hashes, provenance, workflow ids, or raw internal paths into user-facing memory.
 Never select, create, redirect, or repurpose the reserved source_library domain.
 
 Choose exactly one mutation: create_entity, extend_entity, correct_entity, delete_entity, or no_op.
-If unsure, choose confirm_first or no_op.
+If unsure, choose confirm_first; never drop a stated fact.
 ```
 
 The three agents specialize this kernel:
@@ -73,35 +84,20 @@ The three agents specialize this kernel:
 
 ## Agent ownership
 
-### Financial Guard Agent
+### Memory Segmentation Agent
 
 Owns:
 
-- finance-sensitive routing
-- `financial_core` vs `sanctioned_financial_memory` vs `non_financial_or_ephemeral`
-- protection of Kai's governed financial lane from casual PKM drift
+- selecting every stated claim as an exact quote, eight per batch, with `has_more_candidates`
+  when more remain (the device splits the passage and asks again)
+- `context_quotes`: the exact headings or lead-in lines that attribute or qualify a segment
+- `not_memory[]: {quote, reason: duplicate | disclaimer}` for every line it does not select
 
 Does not own:
 
-- final non-financial ontology
-- payload structure
-- persistence safety checks
-
-## FinancialGuardDecision contract
-
-Required fields:
-
-- `routing_decision = financial_core | sanctioned_financial_memory | non_financial_or_ephemeral`
-- `confidence`
-- `reason`
-
-Rules:
-
-- JSON only
-- no prose outside the schema
-- route portfolio action requests to `financial_core`
-- route durable financial preferences to `sanctioned_financial_memory`
-- never use `general`
+- intent, domain, payload, or whether a quote "really" matches; the server maps each quote
+  onto the owner's exact text (`locate_source_quote`), tolerating cleaned Markdown and dash or
+  quotation-mark variants, and drops only a quote that matches nothing
 
 ### Memory Intent Agent
 
@@ -188,7 +184,8 @@ target domain.
 Required fields:
 
 - `save_class = durable | ephemeral | ambiguous`
-- `intent_class`
+- `intent_class` (includes `command`: a live instruction to act now, never memory, and never
+  applied to pasted or quoted source material)
 - `mutation_intent = create | extend | update | correct | delete | no_op`
 - `requires_confirmation`
 - `confirmation_reason`
@@ -231,7 +228,12 @@ The validator may:
 - reject incoherent output
 - downgrade to `confirm_first`
 - downgrade to `do_not_save`
-- normalize finance payload/domain consistency
+- keep a fact whose domain the model named after a protocol namespace (`agent`, `agents`,
+  `mcp`, `system`) in the intent's domain or `professional`, recorded as
+  `protocol_domain_name_remapped`; storage and authority namespaces (`vault`, `pkm`, `consent`,
+  `scope`, quarantine) stay refused
+- skip the structure agent only for an intent `no_op` or `command`; a statement that needs the
+  owner's confirmation is still structured, never filed through the clipped fallback record
 - prevent unsafe scope emission
 - reject reserved-domain selection by a generic PKM agent
 - set `do_not_save` with `source_managed_branch_blocked` when a financial candidate

@@ -2546,6 +2546,40 @@ export class PersonalKnowledgeModelService {
     };
   }
 
+  /**
+   * Whether each of the owner's own writes already committed, in order.
+   * Owner-scoped on the server; the answer is existence and the committed
+   * revision only. Used when a write's response never arrived.
+   */
+  static async lookupMutationCommits(params: {
+    userId: string;
+    vaultOwnerToken: string;
+    commits: ReadonlyArray<{ domain: string; planId: string }>;
+  }): Promise<Array<{ exists: boolean; dataVersion: number | null }>> {
+    if (!params.commits.length) return [];
+    const response = await ApiService.apiFetch(`${this.PKM_API_PREFIX}/commits/lookup`, {
+      method: "POST",
+      headers: { ...this.getAuthHeaders(params.vaultOwnerToken), "Content-Type": "application/json" },
+      body: JSON.stringify({
+        user_id: params.userId,
+        commits: params.commits.map((commit) => ({ domain: commit.domain, plan_id: commit.planId })),
+      }),
+    });
+    if (!response.ok) {
+      throw new Error("Saved details could not be confirmed. Try again.");
+    }
+    const payload = (await response.json()) as { commits?: Array<{ exists?: unknown; data_version?: unknown }> };
+    const rows = Array.isArray(payload.commits) ? payload.commits : [];
+    return params.commits.map((_, index) => {
+      const row = rows[index];
+      const version = row?.data_version;
+      return {
+        exists: row?.exists === true,
+        dataVersion: typeof version === "number" && Number.isInteger(version) && version >= 0 ? version : null,
+      };
+    });
+  }
+
   static async getMutationSharingImpact(params: {
     userId: string;
     domain: string;

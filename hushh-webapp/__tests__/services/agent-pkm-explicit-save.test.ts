@@ -82,6 +82,29 @@ describe("explicit memory save", () => {
     expect(timedOut.skipped).toEqual([]);
   });
 
+  it("saves sensitive details without a tap and holds only a raw identifier value", () => {
+    // Founder decision: salary, equity, a visa and a housing deposit are saved
+    // on an explicit save, labelled sensitive. A government id never reaches a
+    // card: the device guard kept it in Secrets and left a placeholder.
+    const placeholder = "\u27e6secret:sec_0000000000000001 Passport ending 4567\u27e7";
+    const partition = partitionExplicitSaveCards([
+      card("salary", { candidate_payload: { compensation: { base_salary: "USD 185,000 (synthetic)", equity: "0.4%" } } }),
+      card("visa", { candidate_payload: { immigration: { visa: "H-1B", approved_on: "2023-10-01", passport_country: "India" } } }),
+      card("deposit", { candidate_payload: { housing: { security_deposit: "USD 4,800" } } }),
+      card("masked", { candidate_payload: { identity: { passport_number: placeholder } } }),
+      // An entity's own id under a token-named entity is bookkeeping, not a number.
+      card("token-note", { candidate_payload: { infrastructure: { entities: { deploy_token: {
+        entity_id: "mem_3fa2b9c01d2e", summary: `Our deploy token is ${placeholder}, rotated every 90 days` } } } } }),
+      // Negative controls: a raw number under an identifier key, an SSN-shaped
+      // value anywhere, and a date of birth still wait for the owner's tap.
+      card("raw-passport", { candidate_payload: { identity: { passport_number: "Z9876543" } } }),
+      card("ssn", { candidate_payload: { notes: { line: "my number is 123-45-6789" } } }),
+      card("dob", { candidate_payload: { identity: { date_of_birth: "1990-04-12" } } }),
+    ]);
+    expect(partition.save.map((item) => item.card_id)).toEqual(["salary", "visa", "deposit", "masked", "token-note"]);
+    expect(partition.needsOwner.map((item) => item.card_id)).toEqual(["raw-passport", "ssn", "dob"]);
+  });
+
   it("saves a fact re-routed to its app's agent_memory sibling and offers the app's screen", () => {
     // The server moved "my home is ..." out of location.saved_places into
     // location.agent_memory. The hint names "reserved", but it is not a refusal:

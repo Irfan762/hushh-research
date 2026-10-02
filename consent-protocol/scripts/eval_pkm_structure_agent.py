@@ -51,13 +51,153 @@ PHASE_ORDER = (
     "fresh_random_120",
     "fresh_chain_60",
     "fresh_chain_120",
+    "context_transfer",
 )
 PHASE_PROMPT_LIMIT = {
     "release_chain_24": 24,
     "fresh_random_120": 120,
     "fresh_chain_60": 60,
     "fresh_chain_120": 120,
+    "context_transfer": 12,
 }
+# Work context may land in professional or in a work domain the structure agent
+# names itself; either keeps it. What must never happen is a do_not_save.
+_WORK_DOMAINS = (
+    "professional",
+    "work",
+    "career",
+    "company",
+    "business",
+    "engineering",
+    "technology",
+    "tech_stack",
+)
+# A pasted "context transfer", one section at a time, the way the device sends
+# it (heading plus lines). Production 2026-09-29: the memory agents dropped work
+# context, vendors, people, metrics and technical identifiers from exactly this
+# shape as "not about the owner" or "opaque". Synthetic values only.
+_CONTEXT_TRANSFER_CASES: tuple[tuple[str, str, str, str, str, tuple[str, ...], bool, str], ...] = (
+    (
+        "ct_stack",
+        "## Tech stack\n- Backend: FastAPI on Cloud Run with Postgres on Cloud SQL",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_work",
+    ),
+    (
+        "ct_project_id",
+        "## Infrastructure\n- GCP project: lumen-demo-482910 in us-central1",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_technical_id",
+    ),
+    (
+        "ct_env_name",
+        "## Infrastructure\n- The API reads its signing key from the LUMEN_SIGNING_KEY environment variable",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_technical_id",
+    ),
+    (
+        "ct_oauth",
+        "## Integrations\n- Google OAuth callback: https://app.lumen-demo.dev/api/auth/callback/google",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_technical_id",
+    ),
+    (
+        "ct_people",
+        "## People\n- Asha Varma is our CTO and owns the data platform",
+        "durable",
+        "relationship",
+        "create",
+        (*_WORK_DOMAINS, "social"),
+        False,
+        "context_people",
+    ),
+    (
+        "ct_vendors",
+        "## Vendors\n- We use Twilio for SMS and Plaid for bank connections",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_work",
+    ),
+    (
+        "ct_metrics",
+        "## Repository\n- The monorepo has about 9,800 commits and 41 contributors",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_work",
+    ),
+    (
+        "ct_ai_tools",
+        "## AI tools\n- I code every day with Claude Code and Gemini CLI",
+        "durable",
+        "preference",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_work",
+    ),
+    (
+        "ct_agents",
+        "## Architecture\n- Our agents are orchestrated with Google ADK and talk over A2A",
+        "durable",
+        "profile_fact",
+        "create",
+        _WORK_DOMAINS,
+        False,
+        "context_work",
+    ),
+    (
+        "ct_salary",
+        "## Compensation\n- Base salary: USD 185,000 with 0.4% equity",
+        "durable",
+        "profile_fact",
+        "create",
+        (*_WORK_DOMAINS, "financial"),
+        True,
+        "context_sensitive",
+    ),
+    (
+        "ct_finance_pref",
+        "## Money\n- I prefer index funds over picking stocks",
+        "durable",
+        "preference",
+        "create",
+        ("financial",),
+        False,
+        "context_finance_memory",
+    ),
+    (
+        "ct_command",
+        "Optimize my portfolio for lower volatility.",
+        "ephemeral",
+        "command",
+        "no_op",
+        ("financial",),
+        False,
+        "context_command",
+    ),
+)
 DEFAULT_GATE_THRESHOLDS = {
     "schema_ok_rate": 1.0,
     "domain_ok_rate": 0.95,
@@ -508,7 +648,7 @@ def parse_args() -> argparse.Namespace:
         default="fresh_random_120",
         help=(
             "Benchmark phase: 24-case release chain, 120 fresh single-turn prompts, "
-            "60 chained prompts, or 120 chained prompts."
+            "60 chained prompts, 120 chained prompts, or the pasted context-transfer pack."
         ),
     )
     parser.add_argument(
@@ -3004,10 +3144,44 @@ def _build_fresh_chain(seed: PersonaSeed) -> list[PromptCase]:
     return prompts
 
 
+def _build_context_transfer_cases() -> list[PromptCase]:
+    prompts: list[PromptCase] = []
+    for (
+        case_id,
+        message,
+        save_class,
+        intent,
+        mutation,
+        domains,
+        confirm,
+        category,
+    ) in _CONTEXT_TRANSFER_CASES:
+        _append_case(
+            prompts,
+            case_id=case_id,
+            message=message,
+            save_class=save_class,
+            intent=intent,
+            mutation=mutation,
+            domains=domains,
+            confirm=confirm,
+            category=category,
+        )
+    return prompts
+
+
 def build_phase_personas(
     *, phase: str, max_prompts_per_persona: int
 ) -> tuple[list[dict[str, Any]], bool]:
     prompt_limit = min(max_prompts_per_persona, PHASE_PROMPT_LIMIT[phase])
+    if phase == "context_transfer":
+        return [
+            {
+                "persona_id": "context_transfer_pack",
+                "name": "Context Transfer Pack",
+                "prompts": _build_context_transfer_cases()[:prompt_limit],
+            }
+        ], False
     if phase == "fresh_random_120":
         prompts: list[PromptCase] = []
         for seed in PERSONA_SEEDS:

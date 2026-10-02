@@ -20,13 +20,12 @@ It inherits the methodological rules in `./pkm-agent-north-star.md`.
 
 The preview path is an ADK/A2A-style pipeline:
 
-1. `Financial Guard Agent`
-   - decides `financial_core` vs sanctioned financial memory vs non-financial
-   - prevents finance-sensitive prompts from drifting into casual PKM structure
+1. `Memory Segmentation Agent`
+   - returns exact quotes, `context_quotes`, and `not_memory` for every line it does not select
 
 2. `Memory Intent Agent`
    - returns `IntentFrame`
-   - decides durable vs ephemeral vs ambiguous
+   - decides durable vs ephemeral vs ambiguous, and a live `command` versus memory
    - classifies ontology intent
    - decides mutation intent
    - returns broad candidate domains
@@ -53,6 +52,7 @@ The intent ontology is fixed:
 - `travel`
 - `shopping_need`
 - `financial_event`
+- `command`
 - `correction`
 - `deletion`
 - `note`
@@ -75,6 +75,13 @@ The intent ontology is fixed:
   - `60` chained prompts for one evolving PKM
 - `fresh_chain_120`
   - `120` chained prompts for one richer evolving PKM
+- `context_transfer`
+  - `12` sections of a pasted context transfer, sent the way the device sends them (heading
+    plus lines): tech stack, a GCP project id, an environment variable name, an OAuth callback,
+    people, vendors, repository metrics, AI tools, agent architecture, a salary, a finance
+    preference, and one live command. Every statement must stay durable and land in a work
+    domain (or Finance for the preference); only the command is ephemeral. Production
+    2026-09-29 dropped exactly this shape as "not about the owner" or "opaque".
 
 ## Live Model Policy
 

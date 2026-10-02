@@ -1429,3 +1429,110 @@ def test_canonical_pkm_router_exposes_validate_store_domain(monkeypatch):
     payload = response.json()
     assert payload["success"] is True
     assert "without saving it" in payload["message"]
+
+
+def test_commit_lookup_is_owner_scoped_and_answers_existence_only(monkeypatch):
+    """A write the device never got to confirm can be confirmed, by its owner only.
+
+    The commit id is derived on the server from the TOKEN's user, exactly as the
+    write path derives it, so naming another owner's plan finds nothing. The
+    answer carries existence and the committed revision, never the write.
+    """
+    from hushh_mcp.services.personal_knowledge_model_service import (
+        PersonalKnowledgeModelService,
+    )
+    from hushh_mcp.services.pkm_mutation_contracts import derive_pkm_mutation_commit_id
+
+    plan = "pkm_plan_" + "a" * 32
+    stored = {
+        derive_pkm_mutation_commit_id(user_id="user_123", domain="professional", plan_id=plan): 7,
+        # The same plan id, committed by someone else.
+        derive_pkm_mutation_commit_id(user_id="other_owner", domain="food", plan_id=plan): 3,
+    }
+    queries: list[dict] = []
+
+    class _Query:
+        def __init__(self):
+            self.filters: dict = {}
+
+        def select(self, columns):
+            self.filters["select"] = columns
+            return self
+
+        def eq(self, column, value):
+            self.filters[column] = value
+            return self
+
+        def in_(self, column, values):
+            self.filters[f"{column}__in"] = list(values)
+            return self
+
+    class _Db:
+        def table(self, name):
+            assert name == "pkm_domain_commits"
+            return _Query()
+
+    service = PersonalKnowledgeModelService()
+    service._db = _Db()
+
+    async def execute(query):
+        queries.append(query.filters)
+        assert query.filters["user_id"] == "user_123"
+        rows = [
+            {"commit_id": commit_id, "result_content_revision": revision}
+            for commit_id, revision in stored.items()
+            if commit_id in query.filters["commit_id__in"]
+        ]
+        return type("Result", (), {"data": rows})()
+
+    monkeypatch.setattr(service, "_execute_query", execute)
+    monkeypatch.setattr(pkm, "get_pkm_service", lambda: service)
+    app = FastAPI()
+    app.include_router(pkm.router)
+    app.dependency_overrides[pkm.require_vault_owner_token] = lambda: {"user_id": "user_123"}
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/pkm/commits/lookup",
+        json={
+            "user_id": "user_123",
+            "commits": [
+                {"domain": "professional", "plan_id": plan},
+                # Negative controls: the other owner's commit, and a plan never written.
+                {"domain": "food", "plan_id": plan},
+                {"domain": "professional", "plan_id": "pkm_plan_" + "b" * 32},
+                # A domain no write can have: answered "not committed", never queried.
+                {"domain": "vault", "plan_id": plan},
+            ],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "commits": [
+            {"exists": True, "data_version": 7},
+            {"exists": False, "data_version": None},
+            {"exists": False, "data_version": None},
+            {"exists": False, "data_version": None},
+        ]
+    }
+    assert len(queries) == 1 and len(queries[0]["commit_id__in"]) == 3
+    assert queries[0]["commit_kind"] == "mutation"
+
+    forbidden = client.post(
+        "/api/pkm/commits/lookup",
+        json={"user_id": "other_owner", "commits": [{"domain": "food", "plan_id": plan}]},
+    )
+    assert forbidden.status_code == 403
+    malformed = client.post(
+        "/api/pkm/commits/lookup",
+        json={"user_id": "user_123", "commits": [{"domain": "food", "plan_id": "not-a-plan"}]},
+    )
+    assert malformed.status_code == 422
+    too_many = client.post(
+        "/api/pkm/commits/lookup",
+        json={
+            "user_id": "user_123",
+            "commits": [{"domain": "food", "plan_id": plan}] * 65,
+        },
+    )
+    assert too_many.status_code == 422
