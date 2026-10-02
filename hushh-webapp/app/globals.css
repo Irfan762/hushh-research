@@ -2488,7 +2488,14 @@ html.kb-open [data-slot="dialog-content"]:not([data-keyboard-anchor="bottom"]) {
 
 /* The request form stays in one phone sheet while its inline range calendar
    opens. Keep 44px day targets inside a 320px viewport and lift the whole
-   surface above the keyboard without changing desktop dialogs. */
+   surface above the keyboard without changing desktop dialogs.
+
+   The dialog primitive centers with the independent `translate` property
+   (Tailwind v4 `translate-x/y-[-50%]`). Do NOT reset it here: the production
+   optimizer (Lightning CSS, minify) folds `translate: none` into the sibling
+   `transform` and drops it, so production kept the -50% shift and the sheet
+   rendered half off the left edge of a phone. The reset lives on the element
+   as `max-sm:translate-x-0 max-sm:translate-y-0` utilities instead. */
 @media (max-width: 639px) {
   [data-request-files-dialog] {
     top: auto !important;
@@ -2502,7 +2509,6 @@ html.kb-open [data-slot="dialog-content"]:not([data-keyboard-anchor="bottom"]) {
     ) !important;
     margin-top: 0 !important;
     transform: none !important;
-    translate: none !important;
     padding: 1rem 0.25rem
       calc(1rem + var(--app-safe-area-bottom-effective, 0px));
     border-radius: var(--app-card-radius-feature)
