@@ -23,10 +23,12 @@ import { stageReservedOfferPrefill, type ReservedOfferItem } from "@/lib/pkm/res
 function MemorySaveCardWithOffers({
   receipt,
   onConfirmNeedsOwner,
+  onRetry,
   pendingCards,
 }: {
   receipt: NonNullable<AgentPkmCaptureStatus["receipt"]>;
   onConfirmNeedsOwner?: () => Promise<void>;
+  onRetry?: () => Promise<void>;
   pendingCards?: readonly AgentPkmPreviewCard[];
 }) {
   const router = useRouter();
@@ -47,6 +49,7 @@ function MemorySaveCardWithOffers({
       )}
       onConfirmNeedsOwner={onConfirmNeedsOwner}
       onOpenOffer={openOffer}
+      onRetry={onRetry}
       pendingCards={pendingCards}
     />
   );
@@ -78,6 +81,7 @@ export function AgentMemoryCaptureStatus({
       <MemorySaveCardWithOffers
         receipt={status.receipt}
         onConfirmNeedsOwner={onConfirmNeedsOwner}
+        onRetry={onRetry}
         pendingCards={pendingCards}
       />
     );
