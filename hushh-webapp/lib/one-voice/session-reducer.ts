@@ -869,10 +869,22 @@ function reduceServerFrame(
       const { type: _type, turn_id: _turnId, ...payload } = frame;
       void _type;
       void _turnId;
+      const confirmedId =
+        payload.kind === "person" ? payload.user_id : payload.circle_id;
+      const picker = state.candidatePicker;
+      const confirmedCandidate =
+        Boolean(confirmedId) &&
+        picker?.kind === payload.kind &&
+        picker.candidates.some(
+          (candidate) =>
+            (picker.kind === "person" ? candidate.user_id : candidate.circle_id) ===
+            confirmedId,
+        );
       return {
         ...state,
         idleDeadlineAt: null,
         entities: upsertEntity(state.entities, payload),
+        candidatePicker: confirmedCandidate ? null : picker,
       };
     }
     case "candidate_picker":

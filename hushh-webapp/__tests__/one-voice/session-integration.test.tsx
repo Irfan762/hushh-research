@@ -1,4 +1,4 @@
-import { act, cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useEffect } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -102,6 +102,7 @@ import {
   VoiceSessionProvider,
   useVoiceSession,
 } from "@/components/one-voice/voice-session-provider";
+import { OneVoicePanel } from "@/components/one-voice/one-voice-panel";
 
 class FakeCapture {
   started = 0;
@@ -162,6 +163,23 @@ function Probe({ effects }: { effects?: VoiceToolEffectHandlers }) {
   return <output data-testid="phase">{session.state.phase}</output>;
 }
 
+function PanelProbe() {
+  const session = useVoiceSession();
+  return <OneVoicePanel state={session.state} controller={session} />;
+}
+
+function mockPendingCardGeometry() {
+  const rect = (top: number, bottom: number) => ({
+    x: 0, y: top, left: 0, top, right: 320, bottom,
+    width: 320, height: bottom - top, toJSON: () => ({}),
+  }) as DOMRect;
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.matches('[data-testid="one-voice-panel"]')) return rect(50, 450);
+    if (this.matches('[data-pending-action-id]')) return rect(100, 260);
+    return rect(0, 0);
+  });
+}
+
 type Mounted = {
   server: ScriptedVoiceServer;
   capture: FakeCapture;
@@ -173,6 +191,7 @@ function mount(
   options: {
     effects?: VoiceToolEffectHandlers;
     enabled?: boolean;
+    showPanel?: boolean;
     /**
      * The test override for the client-step budget. `null` leaves it unset so
      * the provider falls back to the server's `timeout_s` and its own default.
@@ -209,6 +228,7 @@ function mount(
       }}
     >
       <Probe effects={options.effects} />
+      {options.showPanel ? <PanelProbe /> : null}
     </VoiceSessionProvider>,
   );
   return { server, capture, playback, unmount: view.unmount };
@@ -244,6 +264,7 @@ afterEach(() => {
   cleanup();
   controller = null;
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("VoiceSessionProvider with a scripted relay", () => {
@@ -307,7 +328,8 @@ describe("VoiceSessionProvider with a scripted relay", () => {
   });
 
   it("acknowledges a card with pending_action.shown; confirm carries the receipt token", async () => {
-    const mounted = await startSession(mount());
+    mockPendingCardGeometry();
+    const mounted = await startSession(mount({ showPanel: true }));
     const { server } = mounted;
     const card = pendingActionFrame();
     await act(async () => {
@@ -318,12 +340,14 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     expect(controller!.state.pendingAction?.entities[0]?.display_name).toBe(
       "Priya",
     );
-    expect(server.frames("pending_action.shown")).toEqual([
+    expect(screen.getByTestId("one-voice-pending-action").getAttribute("data-pending-action-id"))
+      .toBe(card.pending_action_id);
+    await waitFor(() => expect(server.frames("pending_action.shown")).toEqual([
       {
         type: "pending_action.shown",
         pending_action_id: card.pending_action_id,
       },
-    ]);
+    ]));
     await act(async () => {
       await controller!.confirmPending({ consentVersion: null });
     });
@@ -337,6 +361,15 @@ describe("VoiceSessionProvider with a scripted relay", () => {
         consent_version: null,
       },
     ]);
+  });
+
+  it("does not acknowledge a pending action when no confirmation card is mounted", async () => {
+    const mounted = await startSession(mount());
+    await act(async () => {
+      mounted.server.push(pendingActionFrame());
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(mounted.server.frames("pending_action.shown")).toHaveLength(0);
   });
 
   it("a second Confirm for the same card while the first is in flight sends nothing; the resolution unlocks the next card", async () => {
