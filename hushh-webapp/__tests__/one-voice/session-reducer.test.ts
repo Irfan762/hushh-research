@@ -32,6 +32,16 @@ import {
 import { pendingActionFrame, readyFrame } from "./fixtures/scripted-server";
 
 describe("turn ownership", () => {
+  it("ignores navigation settlement for another call or an older input", () => {
+    const state = run([
+      server({ type: "transcript.input", turn_id: "old", text: "Open profile", final: true }),
+      server({ type: "tool.started", call_id: "profile", tool: "open_screen", args_public: {}, turn_id: "old" }),
+      server({ type: "transcript.input", turn_id: "new", text: "List connections", final: true }),
+    ], connected());
+    expect(reduceVoiceSession(state, { type: "navigation_settled", callId: "profile", turnId: "old", status: "opened" })).toBe(state);
+    expect(reduceVoiceSession(state, { type: "navigation_settled", callId: "other", turnId: "new", status: "failed" })).toBe(state);
+  });
+
   const input = (turn_id: string, text: string): ServerFrame => ({
     type: "transcript.input", turn_id, text, final: true,
   });
