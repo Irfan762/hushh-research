@@ -813,7 +813,7 @@ class OneLocationCircleService:
                   AND {_TRUSTED_ROSTER_VIEWER_SQL.format(circle="c", membership="mine", viewer="user_id")}
                 GROUP BY c.id, mine.role, owner_identity.display_name
                 ORDER BY c.updated_at DESC, c.created_at DESC
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id},
             )
             return [self._circle_summary(row) for row in (result.data or [])]
@@ -868,7 +868,7 @@ class OneLocationCircleService:
                   active_code.id, active_code.circle_id,
                   active_code.code_hash, active_code.expires_at,
                   active_code.metadata
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id, "circle_id": cleaned_circle_id},
             )
             summary_row = next(iter(summary_result.data or []), None)
@@ -1035,7 +1035,7 @@ class OneLocationCircleService:
                 ) active_code ON TRUE
                 WHERE c.id = CAST(:circle_id AS UUID)
                   AND c.status = 'active'
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id, "circle_id": cleaned_circle_id},
             )
             row = next(iter(result.data or []), None)
