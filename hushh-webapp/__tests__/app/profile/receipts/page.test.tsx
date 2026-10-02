@@ -921,6 +921,37 @@ describe("ProfileReceiptsPage", () => {
     expect(mocks.gmailReceiptsService.syncNow).not.toHaveBeenCalled();
   });
 
+  it("keeps one steady fetching state while older purchases arrive as a chain of runs", async () => {
+    const run = (id: string, status: "running" | "completed") => ({
+      run_id: id, user_id: "user-123", trigger_source: "backfill", sync_mode: "backfill" as const,
+      status, listed_count: 10, filtered_count: 5, synced_count: 3, extracted_count: 1,
+      duplicates_dropped: 0, extraction_success_rate: 1,
+    });
+    const backfillView = (syncRun: ReturnType<typeof run>) => makeGmailView({
+      syncRun,
+      presentation: {
+        ...buildGmailView().presentation,
+        state: syncRun.status === "running" ? "connected_backfill_running" : "connected",
+      } as never,
+    });
+    mocks.useGmailConnectorStatus.mockReturnValue(backfillView(run("chunk-1", "running")));
+    const { rerender } = render(<ProfileReceiptsPage initialWorkspace="overview" />);
+    const receiptStatus = await screen.findByTestId("mail-receipt-sync");
+    expect(receiptStatus).toHaveTextContent("Fetching older purchases…");
+
+    // Chunk 1 ends before chunk 2 is visible: the seam must not read as "ready".
+    mocks.useGmailConnectorStatus.mockReturnValue(backfillView(run("chunk-1", "completed")));
+    rerender(<ProfileReceiptsPage initialWorkspace="overview" />);
+    expect(receiptStatus).toHaveTextContent("Fetching older purchases…");
+    expect(receiptStatus).not.toHaveTextContent("Your latest receipts are ready.");
+    expect(screen.getByRole("status", { name: "Fetching receipts" })).toBeVisible();
+
+    mocks.useGmailConnectorStatus.mockReturnValue(backfillView(run("chunk-2", "running")));
+    rerender(<ProfileReceiptsPage initialWorkspace="overview" />);
+    expect(receiptStatus).toHaveTextContent("Fetching older purchases…");
+    expect(receiptStatus).not.toHaveTextContent("Your latest receipts are ready.");
+  });
+
   it("shows a connected sync failure only in the lower receipt status card", async () => {
     const connected = buildGmailView();
     mocks.useGmailConnectorStatus.mockReturnValue(makeGmailView({
