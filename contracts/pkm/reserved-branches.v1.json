@@ -1,6 +1,10 @@
 {
   "$comment": "Which PKM branches an app feature owns because it needs them to work, and which writers may change them. One truth table read by the Python loader (consent-protocol/hushh_mcp/consent/reserved_branches.py) and the TypeScript one (hushh-webapp/lib/pkm/reserved-branches.ts). Hand-edited on purpose, changed only by a reviewed release. Byte-identical copies live in consent-protocol/contracts/pkm/ (the backend image is built from consent-protocol/) and hushh-webapp/contracts/pkm/ (the webapp imports it); parity tests fail on any drift.",
-  "$comment_phase": "Phase 0 is SHADOW mode. Nothing reads this file to refuse a write yet. The server and the device compute whether a write WOULD be refused and log a count with no values (pkm.reserved_would_refuse). Enforcement, the sibling re-route and offer cards arrive in a later release.",
+  "$comment_phase": "Phase 1 adds enforcement behind the `enforcement` switch below. In `shadow` the server and the device only count what they would refuse (pkm.reserved_would_refuse, labels only). In `enforce` the server refuses with 403 PKM_RESERVED_BRANCH_WRITER_FORBIDDEN (422 PKM_WRITER_UNKNOWN for an uncatalogued writer, 409 PKM_RESERVED_REGISTRY_OUTDATED for a client older than min_client_version) and the device returns blocked_reserved_branch. The switch lives here, not in an env flag, so every surface reads one reviewed value; the migration release flips it after moving agent-written entries to their siblings.",
+  "$comment_enforcement": "`shadow` or `enforce`. Read by hushh_mcp/consent/reserved_branches.py enforcement_mode() and lib/pkm/reserved-branches.ts RESERVED_ENFORCEMENT_MODE. Any other value fails the loaders closed.",
+  "enforcement": "shadow",
+  "$comment_memory_screen_policy": "How the Memory screen treats items inside a reserved branch. `read_only_reserved`: the owning app screen edits and deletes them, and Memory shows `Open in <app>` from the entry's offer_action; items in agent_memory siblings stay editable. `editable`: Memory edits reserved items itself, as before Phase 1 (its writers pkm_memory_edited_button and pkm_memory_deleted_button are then refused in enforce mode, because no entry lists them). Reversible by changing this one value.",
+  "memory_screen_policy": "read_only_reserved",
   "version": 1,
   "$comment_min_client_version": "The oldest client that understands this registry, compared against the existing x-hushh-client-version header (the vault-write protocol level, see hushh-webapp/lib/vault/write-protocol-version.ts). Unread in shadow mode.",
   "min_client_version": "2.0.0",
@@ -41,12 +45,14 @@
     "one_location_visit_rating_removed": {"feature": "location", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
     "kyc_identity_onboarding": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
-    "$comment_kyc_reply": "A typed reply to an owner-selected KYC information request. It is a feature writer, not a memory agent, because the owner is answering a specific request; a later release binds it to that request (information_request_id) and retires the keyword route that also uses this label today.",
+    "$comment_kyc_reply": "A typed reply to an owner-selected KYC information request. It is a feature writer, not a memory agent, because the owner is answering a specific request. requires_capability binds it to that request: the server issues a signed kyc_reply_authorization for one open information_request_id (hushh_mcp/consent/kyc_reply_authorization.py) and /store-domain verifies it, so the label alone authorizes nothing. The keyword route that also used this label was retired with Phase 1.",
     "agent_chat_kyc_owner_confirmed": {"feature": "kyc", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"], "requires_capability": "information_request_id"},
     "kyc_workflow_owner_action": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
     "kyc_connector_owner_setup": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
     "one_chat_onboarding": {"feature": "settings", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"]},
+    "$comment_style_settings": "Settings > Preferences > How One writes to you (hushh-webapp/lib/agent/owner-style-settings-writer.ts, OWNER_STYLE_SETTINGS_SOURCE). Chat only proposes a style change; the owner commits it here.",
+    "one_settings_communication_preferences": {"feature": "settings", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
     "one_wallet_add": {"feature": "wallet", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
     "one_wallet_remove": {"feature": "wallet", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
@@ -74,7 +80,7 @@
     "chat_connector_card": {"feature": "connectors", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"]},
     "pkm_memory_auto_save_toggle": {"feature": "memory_settings", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
-    "$comment_memory_edits": "The owner's direct edit and delete controls on the Memory screen. A feature writer, but listed on no reserved entry, so an edit there to a reserved branch is counted as a would-refuse in shadow mode. Whether Memory may edit feature-owned branches is a decision for the enforcement release.",
+    "$comment_memory_edits": "The owner's direct edit and delete controls on the Memory screen. A feature writer, but listed on no reserved entry: under memory_screen_policy read_only_reserved the Memory screen never offers them on a reserved item, and the owning app screen edits it instead.",
     "pkm_memory_edited_button": {"feature": "memory_workspace", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
     "pkm_memory_deleted_button": {"feature": "memory_workspace", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
@@ -96,7 +102,7 @@
     "pkm_upgrade_orchestrator": {"feature": "pkm_upgrade", "class": "migration", "surfaces": ["system_upgrade"], "authorization_modes": ["upgrade_claim"]}
   },
 
-  "$comment_entries": "branch_prefix is a dotted path under the domain; `*` reserves every top-level branch of the domain except those in `except`. A path matches an entry when it equals the prefix or lies beneath it. agent_memory_sibling is where chat facts about the area are kept (null where no chat fact belongs). offer_action names a route in contracts/kai/one-route-orchestration-index.v1.json and an action in the generated gateway (null where nothing should be offered). shareable and send_to_model are declared now and enforced by later releases.",
+  "$comment_entries": "branch_prefix is a dotted path under the domain; `*` reserves every top-level branch of the domain except those in `except`. A path matches an entry when it equals the prefix or lies beneath it. agent_memory_sibling is where chat facts about the area are kept (null where no chat fact belongs). offer_action names a route in contracts/kai/one-route-orchestration-index.v1.json and an action in the generated gateway (null where nothing should be offered); {label} in label_template is the short noun the structure agent returns for the re-routed fact (\"Home\", \"Amex Gold\"). shareable and send_to_model are declared now and enforced by later releases.",
   "entries": [
     {
       "domain": "financial",
@@ -149,7 +155,7 @@
         "location_onboarding_command"
       ],
       "agent_memory_sibling": "location.agent_memory",
-      "offer_action": {"route_pattern": "/one/location", "action_id": "route.one_location", "label_template": "Add {label} in Location"},
+      "offer_action": {"route_pattern": "/one/location", "action_id": "route.one_location", "label_template": "Add as {label} in Location"},
       "shareable": "policy",
       "send_to_model": "full"
     },
@@ -191,9 +197,9 @@
       "branch_prefix": "communication_preferences",
       "except": [],
       "owner_feature": "settings",
-      "writer_ids": ["one_chat_onboarding"],
+      "writer_ids": ["one_chat_onboarding", "one_settings_communication_preferences"],
       "agent_memory_sibling": "identity.agent_memory",
-      "offer_action": {"route_pattern": "/one/profile", "action_id": "route.profile", "label_template": "Change {label} in Settings"},
+      "offer_action": {"route_pattern": "/one/profile/preferences", "action_id": "route.profile", "label_template": "Change {label} in Preferences"},
       "shareable": "policy",
       "send_to_model": "full"
     },

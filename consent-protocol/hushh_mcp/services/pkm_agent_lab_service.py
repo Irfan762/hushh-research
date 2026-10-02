@@ -13,6 +13,15 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from hushh_mcp.consent.reserved_branches import (
+    ReservedEntry,
+    reserved_entry_for,
+    reserved_table_for_prompt,
+    sibling_for,
+)
+from hushh_mcp.consent.reserved_branches import (
+    registry_version as reserved_registry_version,
+)
 from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.constants import GEMINI_MODEL
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
@@ -25,7 +34,7 @@ from hushh_mcp.runtime_providers.gemini_config import resolve_fleet_model_name
 from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
     DYNAMIC_DOMAIN_CONTRACT_VERSION,
-    FINANCIAL_SOURCE_MANAGED_BRANCHES,
+    is_valid_dynamic_top_level_domain,
     validate_dynamic_top_level_domain,
 )
 from hushh_mcp.services.generated_contracts import shared_config_path
@@ -121,6 +130,8 @@ _FINANCIAL_TOP_LEVEL_KEYS = {
     "runtime",
     "goals",
     "profile",
+    # Finance's own sibling for chat facts (contracts/pkm/reserved-branches.v1.json).
+    "agent_memory",
 }
 _FOOD_HINTS = {
     "food",
@@ -388,6 +399,7 @@ _DRIFT_FLAG_NAMES = (
     "correction_without_target",
     "changes_branch_blocked",
     "internal_metadata_blocked",
+    "reserved_target_rerouted_to_sibling",
 )
 _MEMORY_SIMILARITY_STOPWORDS = {
     "a",
@@ -667,6 +679,15 @@ _STRUCTURE_PREVIEW_SCHEMA = {
         "validation_hints": {
             "type": "ARRAY",
             "items": {"type": "STRING"},
+        },
+        # Optional: set when a fact belongs to an app-owned (reserved) branch
+        # and was filed in that branch's agent_memory sibling instead.
+        "reserved_offer": {
+            "type": "OBJECT",
+            "properties": {
+                "branch": {"type": "STRING"},
+                "label": {"type": "STRING"},
+            },
         },
     },
     "required": [
@@ -2048,6 +2069,7 @@ class PKMAgentLabService:
             f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
             f"Higher-level domain registry choices: {json.dumps(registry_payload)}\n"
             f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
+            f"{self._reserved_table_prompt_lines()}"
             f"Natural language message: {message}\n"
             "Rules:\n"
             "- financial_core = governed financial action or analysis request.\n"
@@ -3125,6 +3147,9 @@ class PKMAgentLabService:
                 }
             ),
             "internal_metadata_blocked": "internal_metadata_blocked" in hints,
+            # A model target inside an app-owned branch, moved to that branch's
+            # agent_memory sibling by the registry. Recorded, never silent.
+            "reserved_target_rerouted_to_sibling": "reserved_target_rerouted_to_sibling" in hints,
         }
 
     @classmethod
@@ -3598,11 +3623,161 @@ class PKMAgentLabService:
         return any(token in serialized for token in _FINANCIAL_PAYLOAD_HINTS)
 
     @classmethod
-    def _touches_source_managed_financial_branch(cls, payload: dict[str, Any]) -> bool:
-        # Any `*_v1` branch is a versioned lane record, named or not yet named.
-        return any(
-            segment in FINANCIAL_SOURCE_MANAGED_BRANCHES or segment.endswith("_v1")
-            for segment in (cls._normalize_segment(str(key)) for key in (payload or {}).keys())
+    def _reserved_payload_hits(
+        cls, *, target_domain: str, payload: dict[str, Any]
+    ) -> dict[str, ReservedEntry]:
+        """Top-level payload keys whose subtree touches an app-owned branch.
+
+        Every path of the payload is checked against the registry, not only its
+        top-level keys, so a reserved prefix below the root is still seen. The
+        map is keyed by the top-level key that carries the hit.
+        """
+        paths: dict[str, dict[str, Any]] = {}
+        cls._walk_payload(payload or {}, [], paths)
+        hits: dict[str, ReservedEntry] = {}
+        for path in [*paths, *(str(key) for key in (payload or {}))]:
+            normalized = cls._normalize_path(path)
+            entry = reserved_entry_for(target_domain, normalized)
+            if entry is None:
+                continue
+            raw_key = next(
+                (
+                    key
+                    for key in (payload or {})
+                    if cls._normalize_path(str(key)) == normalized.split(".", 1)[0]
+                ),
+                None,
+            )
+            if raw_key is not None:
+                hits.setdefault(str(raw_key), entry)
+        return hits
+
+    @classmethod
+    def _deep_merge(cls, left: Any, right: Any) -> Any:
+        if isinstance(left, dict) and isinstance(right, dict):
+            merged = deepcopy(left)
+            for key, value in right.items():
+                merged[key] = (
+                    cls._deep_merge(merged[key], value) if key in merged else deepcopy(value)
+                )
+            return merged
+        return deepcopy(right)
+
+    @classmethod
+    def _reroute_reserved_payload(
+        cls,
+        *,
+        target_domain: str,
+        payload: dict[str, Any],
+        whole_domain: bool = False,
+    ) -> tuple[str, dict[str, Any], ReservedEntry | None, str | None, str | None]:
+        """Move a payload aimed at an app-owned branch into its agent_memory sibling.
+
+        ``contracts/pkm/reserved-branches.v1.json`` is the authority: a chat fact
+        about saved places, RIA picks or a wallet card belongs to that feature's
+        screen, and is kept in the sibling (``location.agent_memory``) until the
+        owner commits it there. Returns ``(domain, payload, entry, blocked,
+        branch)``. ``entry`` is the reserved entry that triggered a move, and
+        ``branch`` the concrete branch it reserves here, both for the offer.
+        ``blocked`` is a hint when the branch keeps no chat facts at all (KYC
+        internals, runtime credentials, Secrets), or the move would have to
+        split one card across two domains.
+        """
+        if whole_domain:
+            hits = {str(key): reserved_entry_for(target_domain, "") for key in payload}
+            if not payload:
+                entry = reserved_entry_for(target_domain, "")
+                hits = {"": entry} if entry else {}
+        else:
+            hits = cls._reserved_payload_hits(target_domain=target_domain, payload=payload)
+        hits = {key: entry for key, entry in hits.items() if entry is not None}
+        if not hits:
+            return target_domain, payload, None, None, None
+        first_key, first_entry = next(iter(hits.items()))
+        branch = (
+            first_entry.branch_prefix
+            if first_entry.branch_prefix != "*"
+            else cls._normalize_segment(first_key) or first_entry.domain
+        )
+        destinations = {
+            key: sibling_for(
+                entry.domain, entry.branch_prefix if entry.branch_prefix != "*" else ""
+            )
+            for key, entry in hits.items()
+        }
+        if any(destination is None for destination in destinations.values()):
+            return target_domain, payload, first_entry, "reserved_branch_blocked", branch
+        sibling_domains = {destination[1] for destination in destinations.values() if destination}
+        if len(sibling_domains) != 1:
+            return target_domain, payload, first_entry, "reserved_branch_blocked", branch
+        sibling_domain = next(iter(sibling_domains))
+        moved_keys = set(hits)
+        remaining = {key: value for key, value in payload.items() if key not in moved_keys}
+        if sibling_domain != target_domain and remaining:
+            # One card writes one domain; never split it silently.
+            return target_domain, payload, first_entry, "reserved_branch_blocked", branch
+        next_payload = deepcopy(remaining)
+        for key in hits:
+            destination = destinations[key]
+            if destination is None:  # excluded above; keeps the type checker honest
+                continue
+            sibling_branch = destination[2]
+            subtree = payload.get(key, {}) if key else {}
+            if not isinstance(subtree, dict):
+                subtree = {cls._normalize_segment(key) or "note": subtree}
+            next_payload[sibling_branch] = cls._deep_merge(
+                next_payload.get(sibling_branch, {}), subtree
+            )
+        return sibling_domain, next_payload, first_entry, None, branch
+
+    @classmethod
+    def _reserved_offer(
+        cls,
+        *,
+        entry: ReservedEntry | None,
+        branch: str | None,
+        raw_structure: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """The card's offer to commit the fact in the owning app's own screen."""
+        raw_offer = raw_structure.get("reserved_offer")
+        raw_offer = raw_offer if isinstance(raw_offer, dict) else {}
+        if entry is None:
+            # The model filed the fact in a sibling itself and named the branch.
+            named = cls._normalize_path(str(raw_offer.get("branch") or ""))
+            domain, _, rest = named.partition(".")
+            entry = reserved_entry_for(domain, rest) if rest else None
+            branch = rest.split(".", 1)[0] if entry is not None else None
+        if entry is None or entry.offer_action is None or not entry.agent_memory_sibling:
+            return None
+        branch = branch or (entry.branch_prefix if entry.branch_prefix != "*" else entry.domain)
+        label = " ".join(str(raw_offer.get("label") or "").split())[:48]
+        if not label:
+            # Model failure only: it filed a reserved fact without naming it.
+            label = humanize_path(branch).lower()
+        return {
+            "domain": entry.domain,
+            "branch": branch,
+            "owner_feature": entry.owner_feature,
+            "agent_memory_sibling": entry.agent_memory_sibling,
+            "offer_action": {
+                "route_pattern": entry.offer_action.route_pattern,
+                "action_id": entry.offer_action.action_id,
+                "label": entry.offer_action.label(label),
+            },
+            "registry_version": reserved_registry_version(),
+        }
+
+    @staticmethod
+    def _reserved_table_prompt_lines() -> str:
+        rows = reserved_table_for_prompt()
+        return (
+            "App-owned (reserved) PKM branches. An app feature writes these through its own "
+            "screen; a chat fact never targets one:\n"
+            f"{json.dumps(rows)}\n"
+            "- When a fact belongs to a reserved branch, put it in that row's agent_memory_sibling "
+            "(for example location.agent_memory) as an entity, and return "
+            'reserved_offer {"branch": "<domain>.<reserved branch>", "label": "<2 to 4 word noun the owner would tap, e.g. Home>"}.\n'
+            "- A row whose agent_memory_sibling is null keeps no chat facts: use do_not_save.\n"
         )
 
     @classmethod
@@ -3977,14 +4152,32 @@ class PKMAgentLabService:
             or recommended_domain
             or _DEFAULT_CONFIRMATION_DOMAINS[0]
         )
+        reserved_entry: ReservedEntry | None = None
+        reserved_branch: str | None = None
         try:
             target_domain = validate_dynamic_top_level_domain(target_domain)
         except ValueError:
-            # A model-proposed reserved or malformed domain must never be
-            # silently redirected into a general domain. That would turn a
-            # policy rejection into an owner-confirmable write to the wrong
-            # place. Return a terminal preview instead; callers already omit
-            # do_not_save cards from the save path.
+            rerouted_domain, rerouted_payload, entry, blocked, branch = (
+                cls._reroute_reserved_payload(
+                    target_domain=cls._normalize_segment(target_domain),
+                    payload=candidate_payload,
+                    whole_domain=True,
+                )
+            )
+            if entry is not None and blocked is None:
+                # An app-owned domain (Wallet) with an agent_memory sibling: the
+                # fact is kept there, recorded, and offered to the app's screen.
+                # Never a general domain: the sibling is the registry's answer.
+                target_domain = rerouted_domain
+                candidate_payload = rerouted_payload
+                reserved_entry, reserved_branch = entry, branch
+                validation_hints.append("reserved_target_rerouted_to_sibling")
+        if reserved_entry is None and not is_valid_dynamic_top_level_domain(target_domain):
+            # A model-proposed reserved or malformed domain with no sibling must
+            # never be silently redirected into a general domain. That would
+            # turn a policy rejection into an owner-confirmable write to the
+            # wrong place. Return a terminal preview instead; callers already
+            # omit do_not_save cards from the save path.
             return {
                 "candidate_payload": {},
                 "structure_decision": {
@@ -4112,6 +4305,36 @@ class PKMAgentLabService:
                     from_scope=current_root_scope,
                     to_scope=preferred_scope,
                 )
+
+        reserved_blocked: str | None = None
+        if merge_mode in {"correct_entity", "delete_entity"}:
+            # A correction or deletion of an app-owned record is the app's to
+            # make; moving it into the sibling would correct nothing.
+            correction_hits = cls._reserved_payload_hits(
+                target_domain=target_domain, payload=candidate_payload
+            )
+            if correction_hits:
+                hit_key, reserved_entry = next(iter(correction_hits.items()))
+                reserved_branch = (
+                    reserved_entry.branch_prefix
+                    if reserved_entry.branch_prefix != "*"
+                    else cls._normalize_segment(hit_key)
+                )
+                reserved_blocked = "reserved_target_offered_not_saved"
+        else:
+            rerouted_domain, rerouted_payload, entry, blocked, branch = (
+                cls._reroute_reserved_payload(
+                    target_domain=target_domain, payload=candidate_payload
+                )
+            )
+            if entry is not None:
+                reserved_entry, reserved_branch = entry, branch
+                if blocked is None:
+                    target_domain = rerouted_domain
+                    candidate_payload = rerouted_payload
+                    validation_hints.append("reserved_target_rerouted_to_sibling")
+                else:
+                    reserved_blocked = blocked
 
         candidate_payload, metadata_removed = cls._strip_internal_metadata(candidate_payload)
         if metadata_removed:
@@ -4257,15 +4480,17 @@ class PKMAgentLabService:
         if write_mode == "can_save" and requires_review_for_auto_save:
             write_mode = "confirm_first"
             validation_hints.append("auto_save_requires_review")
-        if target_domain == "financial" and cls._touches_source_managed_financial_branch(
-            candidate_payload
+        if reserved_blocked or any(
+            reserved_entry_for(target_domain, path) is not None
+            for path in decision.get("json_paths") or []
         ):
-            # Authority, not meaning: the bank-connection lane rebuilds these
-            # branches whole, so a memory written into one would be silently
-            # erased on the next refresh. Last, so no later rule can reopen it.
-            # Recorded, never substituted.
+            # Authority, not meaning: contracts/pkm/reserved-branches.v1.json
+            # names the branches an app feature writes through its own screen
+            # (Finance sources, Location places, Wallet, KYC...). Whatever is
+            # still aimed at one here had no sibling to move to. Last, so no
+            # later rule can reopen it. Recorded, never substituted.
             write_mode = "do_not_save"
-            validation_hints.append("source_managed_branch_blocked")
+            validation_hints.append(reserved_blocked or "reserved_branch_blocked")
 
         if write_mode == "confirm_first":
             intent_frame["requires_confirmation"] = True
@@ -4310,6 +4535,9 @@ class PKMAgentLabService:
             "primary_json_path": primary_json_path,
             "target_entity_scope": target_entity_scope,
             "validation_hints": validation_hints,
+            "reserved_offer": cls._reserved_offer(
+                entry=reserved_entry, branch=reserved_branch, raw_structure=raw_structure
+            ),
         }
 
     @classmethod
@@ -4693,6 +4921,8 @@ class PKMAgentLabService:
             "candidate_payload": deepcopy(candidate_payload),
             "structure_decision": deepcopy(structure_decision),
             "manifest_draft": deepcopy(manifest_draft),
+            # The owning app's screen, when this fact belongs to a reserved branch.
+            "reserved_offer": deepcopy(preview.get("reserved_offer")),
         }
 
     @staticmethod
@@ -5106,6 +5336,7 @@ class PKMAgentLabService:
                 f"Soft ontology domain keys: {json.dumps(registry_payload)}\n"
                 f"Current domains: {json.dumps(current_domains)}\n"
                 f"State summary: {json.dumps(state_summary)}\n"
+                f"{self._reserved_table_prompt_lines()}"
                 f"Message: {message}\n"
                 "Rules:\n"
                 "- durable = lasting personal knowledge.\n"
@@ -5252,7 +5483,7 @@ class PKMAgentLabService:
                 "- Use a deeper nested path only when the subtree is clearly stable.\n"
                 "- If requires_confirmation is true, return write_mode=confirm_first and primary_json_path=null or empty.\n"
                 "- If save_class is ephemeral, return write_mode=do_not_save.\n"
-                "- If Financial Guard says sanctioned_financial_memory, target_domain must be financial.\n"
+                "- If Financial Guard says sanctioned_financial_memory, target_domain must be financial and the payload goes under agent_memory.\n"
                 "- candidate_payload should favor entities keyed by stable ids over anonymous statement arrays.\n"
                 "- Never use general.\n"
                 'Examples: {"message":"I usually choose Thai takeout first.","target_domain":"food","primary_json_path":"preferences"} '
@@ -5292,14 +5523,15 @@ class PKMAgentLabService:
             "- primary_json_path must identify the main path inside the domain payload. Use a top-level path when a broad root-domain write is enough; use a deeper nested path only when the subtree is clearly stable.\n"
             "- target_entity_scope should point to the stable subtree being written or changed.\n"
             "- If Financial Guard says sanctioned_financial_memory, the only valid target_domain is financial.\n"
-            "- For sanctioned financial memory, follow the Finance hierarchy in your system instruction: profile, goals, or events. Never target a source-managed branch.\n"
+            "- For sanctioned financial memory, follow the Finance rule in your system instruction: the fact goes under agent_memory, never a Finance app branch.\n"
             "- Gibberish or opaque input must return write_mode=do_not_save.\n"
             "- Never use the domain key general.\n"
             f"{small_model_rules}"
             "Examples:\n"
             'I gravitate toward Cantonese menus when I go out. -> {"candidate_payload":{"preferences":{"entities":{"mem_food_pref":{"entity_id":"mem_food_pref","kind":"preference","summary":"I gravitate toward Cantonese menus when I go out.","observations":["I gravitate toward Cantonese menus when I go out."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"food","json_paths":["preferences","preferences.entities","preferences.entities.mem_food_pref","preferences.entities.mem_food_pref.summary"],"top_level_scope_paths":["preferences"],"externalizable_paths":["preferences.entities.mem_food_pref.summary"],"summary_projection":{"intent_class":"preference","top_level_scope":"preferences"},"sensitivity_labels":{},"confidence":0.91,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"confirm_first","primary_json_path":"preferences","target_entity_scope":"preferences","validation_hints":[]}\n'
             'Circle back with my aunt this weekend. -> {"candidate_payload":{"tasks":{"entities":{"mem_social_task":{"entity_id":"mem_social_task","kind":"task_or_reminder","summary":"Circle back with my aunt this weekend.","observations":["Circle back with my aunt this weekend."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"social","json_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"top_level_scope_paths":["tasks"],"externalizable_paths":["tasks.entities.mem_social_task.summary"],"summary_projection":{"intent_class":"task_or_reminder","top_level_scope":"tasks"},"sensitivity_labels":{},"confidence":0.87,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"do_not_save","primary_json_path":"","target_entity_scope":"tasks","validation_hints":[]}\n'
-            "Remember that I prefer index funds. -> target_domain must be financial, write_mode confirm_first, and candidate_payload must use a guarded financial subtree such as profile."
+            "Remember that I prefer index funds. -> target_domain must be financial, write_mode confirm_first, and candidate_payload must use agent_memory, the Finance sibling for chat facts.\n"
+            'My home is 12 Example Street. -> target_domain location, candidate_payload under agent_memory (location.saved_places is the Location app\'s), reserved_offer {"branch":"location.saved_places","label":"Home"}.'
         )
 
     @classmethod
@@ -5591,6 +5823,7 @@ class PKMAgentLabService:
             "primary_json_path": normalized_preview["primary_json_path"],
             "target_entity_scope": normalized_preview["target_entity_scope"],
             "validation_hints": normalized_preview["validation_hints"],
+            "reserved_offer": normalized_preview.get("reserved_offer"),
             "manifest_draft": manifest,
         }
 

@@ -161,18 +161,62 @@ function propertyNamed(node: ts.ObjectLiteralExpression, name: string): ts.Objec
   return node.properties.find((property) => property.name && ts.isIdentifier(property.name) && property.name.text === name);
 }
 
+function stringInitializer(initializer: ts.Expression | undefined): string | null {
+  if (!initializer) return null;
+  // `"label" as const` and `"label" satisfies Writer` are still the label.
+  if (ts.isAsExpression(initializer) || ts.isSatisfiesExpression(initializer)) {
+    return stringInitializer(initializer.expression);
+  }
+  return ts.isStringLiteralLike(initializer) ? initializer.text : null;
+}
+
 function topLevelStringConstants(sourceFile: ts.SourceFile): Map<string, string> {
   const constants = new Map<string, string>();
   for (const statement of sourceFile.statements) {
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
-      const initializer = declaration.initializer;
-      if (ts.isIdentifier(declaration.name) && initializer && ts.isStringLiteralLike(initializer)) {
-        constants.set(declaration.name.text, initializer.text);
+      const value = stringInitializer(declaration.initializer);
+      if (ts.isIdentifier(declaration.name) && value !== null) {
+        constants.set(declaration.name.text, value);
       }
     }
   }
   return constants;
+}
+
+/** The repo-relative module an import specifier names, among the scanned files. */
+function resolveModule(importer: string, specifier: string, files: ReadonlyMap<string, ts.SourceFile>): ts.SourceFile | null {
+  const base = specifier.startsWith("@/")
+    ? path.posix.join("hushh-webapp", specifier.slice(2))
+    : specifier.startsWith(".")
+      ? path.posix.join(path.posix.dirname(importer.split(path.sep).join("/")), specifier)
+      : null;
+  if (!base) return null;
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`]) {
+    const found = files.get(candidate);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** A string constant imported by name (`import { SOURCE } from "@/lib/x"`), if any. */
+function importedStringConstant(
+  sourceFile: ts.SourceFile,
+  name: string,
+  files: ReadonlyMap<string, ts.SourceFile>,
+): string | null {
+  for (const statement of sourceFile.statements) {
+    if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      if (element.name.text !== name) continue;
+      const exported = element.propertyName?.text ?? element.name.text;
+      const module = resolveModule(sourceFile.fileName, statement.moduleSpecifier.text, files);
+      return module ? topLevelStringConstants(module).get(exported) ?? null : null;
+    }
+  }
+  return null;
 }
 
 /** The name callers use for the function that forwards `node`'s value. */
@@ -223,6 +267,8 @@ function collectWriterLabels(sources: SourceFile[]): Inventory {
       inventory.templates.push({ pattern: new RegExp(`^${escaped.join(".+")}$`), site });
     } else if (ts.isIdentifier(expression) && topLevelStringConstants(sourceFile).has(expression.text)) {
       add(topLevelStringConstants(sourceFile).get(expression.text)!, site);
+    } else if (ts.isIdentifier(expression) && importedStringConstant(sourceFile, expression.text, files) !== null) {
+      add(importedStringConstant(sourceFile, expression.text, files)!, site);
     } else {
       const forwarder = allowForward ? enclosingFunctionName(expression) : null;
       if (forwarder) forwarders.add(forwarder);
@@ -231,6 +277,7 @@ function collectWriterLabels(sources: SourceFile[]): Inventory {
   };
 
   const parsed = sources.map((source) => ({ source, sourceFile: parse(source) }));
+  const files = new Map(parsed.map(({ source, sourceFile }) => [source.file.split(path.sep).join("/"), sourceFile]));
   for (const { source, sourceFile } of parsed) {
     const visit = (node: ts.Node): void => {
       if (ts.isObjectLiteralExpression(node) && (propertyNamed(node, "confirmedByUser") || propertyNamed(node, "authorizationMode"))) {
@@ -338,15 +385,56 @@ describe("reserved-branch writer inventory", () => {
     expect(missingWriters(fixture, writerIds)).toEqual(["brand_new_forwarded_writer", "brand_new_unregistered_writer"]);
   });
 
+  it("follows a writer label imported as an `as const` constant", () => {
+    // The Settings style writer passes OWNER_STYLE_SETTINGS_SOURCE, declared
+    // `as const` in another module. Before this resolver followed imports,
+    // that label was reported unresolved instead of checked.
+    const fixture = collectWriterLabels([
+      {
+        file: "hushh-webapp/lib/fixture/style-source.ts",
+        text: `export const STYLE_SOURCE = "brand_new_imported_writer" as const;`,
+      },
+      {
+        file: "hushh-webapp/lib/fixture/style-writer.ts",
+        text: `
+          import { STYLE_SOURCE as SOURCE } from "@/lib/fixture/style-source";
+          save({ confirmation: { confirmedByUser: true, surface: "web", source: SOURCE } });
+        `,
+      },
+    ]);
+    expect(fixture.unresolved).toEqual([]);
+    expect(missingWriters(fixture, writerIds)).toEqual(["brand_new_imported_writer"]);
+  });
+
+  /**
+   * Writers catalogued ahead of the code that produces them, because that code
+   * is on a sibling lane that has not been integrated yet. Each entry names its
+   * lane. The second test below fails once the code is present, so an entry
+   * cannot outlive its reason: delete it in the integration that brings the code.
+   */
+  const AWAITING_SIBLING_LANE: Readonly<Record<string, string>> = {
+    one_settings_communication_preferences:
+      "Phase 6 style settings (lib/agent/owner-style-settings-writer.ts, commits e6a28025d and 289ebf9ea)",
+  };
+
+  const producedByCode = (corpus: string) => (writerId: string) =>
+    inventory.labels.has(writerId) ||
+    inventory.templates.some((template) => template.pattern.test(writerId)) ||
+    corpus.includes(`"${writerId}"`);
+
+  const pythonSources = readSources(path.join(REPO_ROOT, "consent-protocol"), ["hushh_mcp", "api"], /\.py$/);
+  const corpus = [...webSources, ...pythonSources].map((source) => source.text).join("\n");
+
   it("keeps no catalogued writer that no code can produce", () => {
-    const pythonSources = readSources(path.join(REPO_ROOT, "consent-protocol"), ["hushh_mcp", "api"], /\.py$/);
-    const corpus = [...webSources, ...pythonSources].map((source) => source.text).join("\n");
     const stale = writerIds.filter(
-      (writerId) =>
-        !inventory.labels.has(writerId) &&
-        !inventory.templates.some((template) => template.pattern.test(writerId)) &&
-        !corpus.includes(`"${writerId}"`),
+      (writerId) => !(writerId in AWAITING_SIBLING_LANE) && !producedByCode(corpus)(writerId),
     );
     expect(stale).toEqual([]);
+  });
+
+  it("drops an awaiting-lane writer as soon as its code is integrated", () => {
+    const arrived = Object.keys(AWAITING_SIBLING_LANE).filter(producedByCode(corpus));
+    expect(arrived, "remove these from AWAITING_SIBLING_LANE: their code is now present").toEqual([]);
+    for (const writerId of Object.keys(AWAITING_SIBLING_LANE)) expect(writerIds).toContain(writerId);
   });
 });

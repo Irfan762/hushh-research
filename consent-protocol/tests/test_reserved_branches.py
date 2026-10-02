@@ -1,11 +1,12 @@
-"""The reserved-branch registry and its shadow-mode server hook.
+"""The reserved-branch registry and its server enforcement.
 
 ``contracts/pkm/reserved-branches.v1.json`` decides which PKM branches belong to
-an app feature and which writers may change them. Phase 0 only LOGS what it would
-refuse, so these tests hold the contract and the log line to account before
-anything enforces them: the copies agree, the rules match the TypeScript loader,
-the server's own writer labels are catalogued, and the log line carries labels,
-never a person's values. The webapp side, including the writer inventory, is
+an app feature and which writers may change them. Its own ``enforcement`` value
+picks the mode: ``shadow`` only LOGS what it would refuse, ``enforce`` refuses.
+The contract ships in shadow until the migration release, so the enforce tests
+set the mode explicitly, and each one keeps a negative control: the same write
+in shadow mode, or the listed writer, goes through. The webapp side, including
+the writer inventory and the device diff, is
 ``hushh-webapp/__tests__/lib/pkm/reserved-branches.test.ts``.
 """
 
@@ -14,13 +15,18 @@ from __future__ import annotations
 import importlib
 import logging
 import pathlib
+import uuid
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from api.routes import pkm_routes_shared
 from api.routes.pkm_routes_shared import StructureDecisionPayload
 from hushh_mcp.consent import reserved_branches
+from hushh_mcp.consent.kyc_reply_authorization import issue_kyc_reply_authorization
 from hushh_mcp.consent.reserved_branches import (
     evaluate_reserved_write,
     is_reserved_path,
@@ -212,3 +218,420 @@ def test_importing_the_loader_never_reads_the_contract(monkeypatch: pytest.Monke
     importlib.reload(reserved_branches)
     monkeypatch.undo()
     assert reserved_branches.registry_version() == 1
+
+
+# ---------- enforcement (Phase 1) ----------
+
+_OWNER = "user_123"
+
+
+def test_the_contract_ships_in_shadow_mode() -> None:
+    """Phase 2 (migration) flips the switch; until then nothing may enforce."""
+    assert reserved_branches.enforcement_mode() == "shadow"
+    assert reserved_branches.memory_screen_policy() == "read_only_reserved"
+
+
+def _plan(
+    *,
+    domain: str,
+    scope: str,
+    writer_id: str,
+    client_version: str | None = "2.0.0",
+    operation: str = "create",
+) -> dict:
+    plan_id = "pkm_plan_reserved_route_001"
+    payload = {
+        "version": 2,
+        "plan_id": plan_id,
+        "operation": operation,
+        "proposed_domain": domain,
+        "proposed_scope": scope,
+        "friendly_domain_name": domain.title(),
+        "friendly_scope_name": scope.title(),
+        "confidence": 1.0,
+        "explanation": "The owner reviewed this encrypted PKM write.",
+        "writer_id": writer_id,
+        "confirmation_receipt": {
+            "version": 2,
+            "receipt_id": "pkm_receipt_reserved_route_001",
+            "plan_id": plan_id,
+            "confirmed_by_user_id": _OWNER,
+            "confirmed_at": datetime.now(UTC).isoformat(),
+            "surface": "web",
+            "displayed_domain": domain,
+            "displayed_scope": scope,
+        },
+    }
+    if operation == "delete":
+        payload["source_scope_handle"] = "pending_scope_route_001"
+    else:
+        payload["target_scope_handle"] = "pending_scope_route_001"
+    if client_version is not None:
+        payload["client_version"] = client_version
+    return payload
+
+
+def _store_body(plan: dict, *, manifest_paths: tuple[str, ...] = (), **extra) -> dict:
+    body = {
+        "user_id": _OWNER,
+        "domain": plan["proposed_domain"],
+        "encrypted_blob": {"ciphertext": "Y2lwaGVy", "iv": "aXY=", "tag": "dGFn"},
+        "summary": {},
+        "mutation_plan": plan,
+        **extra,
+    }
+    if manifest_paths:
+        body["manifest"] = {"paths": [{"json_path": path} for path in manifest_paths]}
+    return body
+
+
+class _FakePkmService:
+    def __init__(self, stored_paths: frozenset[str] | None = None) -> None:
+        self.stored_paths = stored_paths
+        self.stored: list[dict] = []
+
+    async def get_manifest_json_paths(self, _user_id: str, _domain: str):
+        return self.stored_paths
+
+    async def get_mutation_sharing_impact(self, **_kwargs):
+        return {
+            "active_recipient_count": 0,
+            "recipient_labels": [],
+            "enters_next_export_revision": False,
+            "affected_grant_ids": [],
+            "affected_export_ids": [],
+        }
+
+    async def store_domain_data(self, **kwargs):
+        self.stored.append(kwargs)
+        return {"success": True, "data_version": 1, "updated_at": None}
+
+    async def delete_domain_data(self, *_args, **_kwargs):
+        return {"success": True, "deleted": True, "data_version": 2}
+
+
+@pytest.fixture
+def enforce(monkeypatch: pytest.MonkeyPatch):
+    def _set(mode: str = "enforce") -> _FakePkmService:
+        monkeypatch.setattr(pkm_routes_shared, "enforcement_mode", lambda: mode)
+        service = _FakePkmService()
+        monkeypatch.setattr(pkm_routes_shared, "get_pkm_service", lambda: service)
+        monkeypatch.setattr(pkm_routes_shared, "_notify_location_pkm_changed", _no_push)
+        return service
+
+    return _set
+
+
+async def _no_push(*_args, **_kwargs) -> None:
+    return None
+
+
+def _client() -> TestClient:
+    app = FastAPI()
+    app.include_router(pkm_routes_shared.router)
+    app.dependency_overrides[pkm_routes_shared.require_vault_owner_token] = lambda: {
+        "user_id": _OWNER
+    }
+    return TestClient(app)
+
+
+def test_enforce_refuses_a_chat_writer_on_saved_places_with_the_offer(enforce) -> None:
+    service = enforce()
+    response = _client().post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(domain="location", scope="saved_places", writer_id="agent_chat_owner_request")
+        ),
+    )
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert {
+        "code",
+        "domain",
+        "branch",
+        "owner_feature",
+        "agent_memory_sibling",
+        "offer_action",
+        "registry_version",
+    } <= set(detail)
+    assert detail["code"] == "PKM_RESERVED_BRANCH_WRITER_FORBIDDEN"
+    assert (detail["domain"], detail["branch"]) == ("location", "saved_places")
+    assert detail["agent_memory_sibling"] == "location.agent_memory"
+    assert detail["offer_action"]["route_pattern"] == "/one/location"
+    assert detail["registry_version"] == 1
+    assert service.stored == []
+
+
+def test_enforce_accepts_the_location_writer_on_saved_places(enforce) -> None:
+    """Negative control: the writer the entry lists is untouched by enforcement."""
+    service = enforce()
+    response = _client().post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(
+                domain="location",
+                scope="saved_places",
+                writer_id="one_location_saved_place_confirm",
+            )
+        ),
+    )
+    assert response.status_code == 200, response.text
+    assert len(service.stored) == 1
+
+
+def test_shadow_mode_lets_the_same_chat_write_through(enforce, caplog) -> None:
+    """Negative control: the committed contract (shadow) never refuses, it counts."""
+    service = enforce("shadow")
+    caplog.set_level(logging.INFO, logger=pkm_routes_shared.logger.name)
+    response = _client().post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(domain="location", scope="saved_places", writer_id="agent_chat_owner_request")
+        ),
+    )
+    assert response.status_code == 200
+    assert len(service.stored) == 1
+    assert any("pkm.reserved_would_refuse" in r.getMessage() for r in caplog.records)
+
+
+def test_enforce_answers_an_unknown_writer_with_422(enforce) -> None:
+    service = enforce()
+    client = _client()
+    unknown = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(domain="location", scope="saved_places", writer_id="brand_new_writer")
+        ),
+    )
+    assert unknown.status_code == 422
+    assert unknown.json()["detail"]["code"] == "PKM_WRITER_UNKNOWN"
+    # Negative control: a catalogued writer on a branch it does not own is a 403.
+    listed_elsewhere = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(domain="location", scope="saved_places", writer_id="one_wallet_add")
+        ),
+    )
+    assert listed_elsewhere.status_code == 403
+    assert service.stored == []
+
+
+def test_enforce_refuses_a_client_older_than_the_registry(enforce) -> None:
+    service = enforce()
+    client = _client()
+    stale = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(
+                domain="location",
+                scope="saved_places",
+                writer_id="one_location_saved_place_confirm",
+                client_version=None,
+            )
+        ),
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["code"] == "PKM_RESERVED_REGISTRY_OUTDATED"
+    assert stale.json()["detail"]["min_client_version"] == "2.0.0"
+    # Negative control: a domain with no reserved branch does not need the registry.
+    unreserved = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(
+                domain="food",
+                scope="preferences",
+                writer_id="agent_chat_owner_request",
+                client_version=None,
+            )
+        ),
+    )
+    assert unreserved.status_code == 200, unreserved.text
+    assert len(service.stored) == 1
+
+
+def test_enforce_sees_a_reserved_manifest_path_behind_an_agent_memory_scope(enforce) -> None:
+    """The scope says agent_memory; the shipped manifest adds identity_documents."""
+    service = enforce()
+    service.stored_paths = frozenset({"agent_memory", "agent_memory.entities"})
+    body = _store_body(
+        _plan(domain="identity", scope="agent_memory", writer_id="agent_chat_owner_request"),
+        manifest_paths=(
+            "agent_memory",
+            "agent_memory.entities",
+            "identity_documents",
+            "identity_documents.passport_number",
+            "updated_at",
+        ),
+    )
+    smuggled = _client().post("/api/pkm/store-domain", json=body)
+    assert smuggled.status_code == 403
+    assert smuggled.json()["detail"]["branches"] == ["identity_documents"]
+    # Negative control: the same manifest, already stored, is no change at all.
+    service.stored_paths = frozenset(
+        {
+            "agent_memory",
+            "agent_memory.entities",
+            "identity_documents",
+            "identity_documents.passport_number",
+        }
+    )
+    unchanged = _client().post("/api/pkm/store-domain", json=body)
+    assert unchanged.status_code == 200, unchanged.text
+
+
+def test_enforce_applies_to_validate_and_to_whole_domain_delete(enforce) -> None:
+    enforce()
+    client = _client()
+    validated = client.post(
+        "/api/pkm/store-domain/validate",
+        json=_store_body(
+            _plan(domain="location", scope="saved_places", writer_id="agent_chat_owner_request")
+        ),
+    )
+    assert validated.status_code == 403
+    deleted = client.post(
+        "/api/pkm/delete-domain",
+        json={
+            "user_id": _OWNER,
+            "domain": "location",
+            "expected_data_version": 3,
+            "mutation_plan": _plan(
+                domain="location",
+                scope="saved_places",
+                writer_id="agent_chat_owner_request",
+                operation="delete",
+            ),
+        },
+    )
+    assert deleted.status_code == 403
+    assert deleted.json()["detail"]["branch"] in {"saved_places", "visit_notes"}
+    legacy = client.delete(f"/api/pkm/domain-data/{_OWNER}/wallet")
+    assert legacy.status_code == 422  # no plan, so no writer: unattributed
+    # Negative control: a domain with no reserved branch deletes as before.
+    unreserved = client.delete(f"/api/pkm/domain-data/{_OWNER}/food")
+    assert unreserved.status_code == 200
+
+
+class _OpenRequests:
+    def __init__(self, open_ids: set[str]) -> None:
+        self.open_ids = open_ids
+
+    async def is_open_workflow(self, *, user_id: str, workflow_id: str) -> bool:
+        return user_id == _OWNER and workflow_id in self.open_ids
+
+
+def test_the_kyc_reply_writer_needs_an_open_information_request(enforce, monkeypatch) -> None:
+    service = enforce()
+    request_id = str(uuid.uuid4())
+    requests = _OpenRequests({request_id})
+    monkeypatch.setattr(
+        "hushh_mcp.services.gmail_personal_information_request_service."
+        "get_personal_gmail_information_request_service",
+        lambda: requests,
+    )
+    client = _client()
+    plan = _plan(
+        domain="identity",
+        scope="identity_documents",
+        writer_id="agent_chat_kyc_owner_confirmed",
+    )
+    bare = client.post("/api/pkm/store-domain", json=_store_body(plan))
+    assert bare.status_code == 403
+    assert bare.json()["detail"]["reason"] == "capability_missing"
+
+    authority = issue_kyc_reply_authorization(user_id=_OWNER, information_request_id=request_id)
+    bound = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(plan, kyc_reply_authorization=authority.model_dump(mode="json")),
+    )
+    assert bound.status_code == 200, bound.text
+    assert service.stored[-1]["reserved_capabilities"] == frozenset({"information_request_id"})
+
+    forged = authority.model_dump(mode="json")
+    forged["token"] = "kycreplytoken_" + "0" * 64
+    assert (
+        client.post(
+            "/api/pkm/store-domain", json=_store_body(plan, kyc_reply_authorization=forged)
+        ).status_code
+        == 422
+    )
+    other_owner = issue_kyc_reply_authorization(
+        user_id="someone_else", information_request_id=request_id
+    )
+    assert (
+        client.post(
+            "/api/pkm/store-domain",
+            json=_store_body(plan, kyc_reply_authorization=other_owner.model_dump(mode="json")),
+        ).status_code
+        == 422
+    )
+    requests.open_ids.clear()  # the owner answered or ignored the request
+    closed = client.post(
+        "/api/pkm/store-domain",
+        json=_store_body(plan, kyc_reply_authorization=authority.model_dump(mode="json")),
+    )
+    assert closed.status_code == 422
+    assert closed.json()["detail"]["reason"] == "kyc_reply_information_request_closed"
+    expired = issue_kyc_reply_authorization(
+        user_id=_OWNER,
+        information_request_id=request_id,
+        now=datetime.now(UTC) - timedelta(hours=1),
+    )
+    requests.open_ids.add(request_id)
+    assert (
+        client.post(
+            "/api/pkm/store-domain",
+            json=_store_body(plan, kyc_reply_authorization=expired.model_dump(mode="json")),
+        ).status_code
+        == 422
+    )
+
+
+def test_the_service_refuses_too_when_called_without_the_route(monkeypatch) -> None:
+    """Defense in depth inside store_domain_data, for any caller but the route."""
+    from hushh_mcp.services import personal_knowledge_model_service as service_module
+    from hushh_mcp.services.pkm_mutation_contracts import PkmMutationPlanV2
+
+    plan = PkmMutationPlanV2.model_validate(
+        _plan(domain="location", scope="saved_places", writer_id="agent_chat_owner_request")
+    )
+    refusal = service_module.PersonalKnowledgeModelService._reserved_branch_refusal
+    monkeypatch.setattr(service_module, "reserved_enforcement_mode", lambda: "enforce")
+    detail = refusal(
+        domain="location", mutation_plan=plan, structure_decision=None, capabilities=frozenset()
+    )
+    assert detail is not None and detail["code"] == "PKM_RESERVED_BRANCH_WRITER_FORBIDDEN"
+    monkeypatch.setattr(service_module, "reserved_enforcement_mode", lambda: "shadow")
+    assert (
+        refusal(
+            domain="location",
+            mutation_plan=plan,
+            structure_decision=None,
+            capabilities=frozenset(),
+        )
+        is None
+    )
+
+
+def test_the_issuer_mints_only_for_an_open_request(monkeypatch) -> None:
+    from api.middleware import require_firebase_auth, require_vault_owner_token
+    from api.routes.one import gmail_information_requests as routes
+
+    request_id = str(uuid.uuid4())
+    monkeypatch.setattr(routes, "_service", lambda: _OpenRequests({request_id}))
+    app = FastAPI()
+    app.include_router(routes.router)
+    app.dependency_overrides[require_firebase_auth] = lambda: _OWNER
+    app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": _OWNER}
+    client = TestClient(app)
+    minted = client.post(
+        f"/api/one/email/information-requests/{request_id}/pkm-reply-authorization"
+    )
+    assert minted.status_code == 200
+    assert minted.json()["information_request_id"] == request_id
+    assert minted.json()["token"].startswith("kycreplytoken_")
+    assert minted.headers["cache-control"] == "private, no-store"
+    closed = client.post(
+        f"/api/one/email/information-requests/{uuid.uuid4()}/pkm-reply-authorization"
+    )
+    assert closed.status_code == 404

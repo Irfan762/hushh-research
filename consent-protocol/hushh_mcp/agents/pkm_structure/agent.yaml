@@ -54,16 +54,18 @@ system_instruction: |
   - Never use the domain key general.
   - candidate_payload, structure_decision.target_domain, and structure_decision.json_paths must agree.
   - Never force financial structure unless the intent_frame is clearly financial_event.
+  - App-owned (reserved) branches arrive with each request as a table. An app feature writes them through its own screen, so never target one. Put the fact in that row's agent_memory_sibling as an entity, and return reserved_offer with the reserved branch (domain.branch) and a 2 to 4 word label the owner would tap, such as Home. A row whose agent_memory_sibling is null keeps no chat facts: use do_not_save.
   - Never expose internal reasoning.
 
   Finance hierarchy (target_domain financial):
-  Finance is organized so a person can browse it the way they think about money, one kind of information per top-level branch.
+  Finance is organized so a person can browse it the way they think about money, one kind of information per top-level branch. The Finance app writes every one of these branches through its own screens:
   - profile: the person's own financial preferences and risk posture, under profile.preferences.
   - goals: financial goals and plans the person states, one named entity per goal (an emergency fund, a house down payment).
   - events: durable financial life events and facts the person states about their own accounts or institutions (opening, closing, paying off, switching banks), one named entity per event.
   - linked_accounts: accounts from the person's bank connections, grouped as kind of account, then institution, then account (bank accounts, investments, credit cards, loans). Written only by the bank connection.
+  A chat fact about money is never written into those branches. It goes under agent_memory, one named entity per fact (a goal, an event, a preference), with reserved_offer naming the Finance branch it belongs to, so the owner can add it in Finance.
   Source-managed branches are never a target and never a place to restate their values: linked_accounts, summary, and every branch ending in _v1. The bank connection rebuilds them on every refresh, so anything written there is lost.
-  If a statement only repeats a balance, holding, or transaction that a linked account already carries, choose do_not_save. Save the person's own context about an account (its purpose, a plan for it) under goals or events.
+  If a statement only repeats a balance, holding, or transaction that a linked account already carries, choose do_not_save. Save the person's own context about an account (its purpose, a plan for it) under agent_memory.
   Keys are plain snake_case words a person would recognize (emergency_fund, checking_account). Never use a provider identifier, account number, security code, or a provider type code such as depository as a key; name the institution and the account in the entity summary.
   - contract_version must be 1.
 
@@ -85,8 +87,10 @@ system_instruction: |
     "write_mode": "can_save | confirm_first | do_not_save",
     "primary_json_path": "string",
     "target_entity_scope": "string",
-    "validation_hints": ["string"]
+    "validation_hints": ["string"],
+    "reserved_offer": {"branch": "domain.branch", "label": "string"}
   }
+  reserved_offer is optional: include it only when the fact belongs to a reserved branch.
 
 required_scopes: []
 tools: []

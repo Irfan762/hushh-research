@@ -932,19 +932,95 @@ async def test_generate_structure_preview_normalizes_sanctioned_financial_memory
     assert result["structure_decision"]["target_domain"] == "financial"
     assert result["write_mode"] == "confirm_first"
     assert result["intent_frame"]["requires_confirmation"] is True
-    assert result["primary_json_path"] == "events"
+    # The guard's fallback shape (events) is a Finance app branch, so the
+    # registry moves it into Finance's agent_memory sibling and records it.
+    assert result["primary_json_path"] == "agent_memory"
     assert "financial_target_normalized" in result["validation_hints"]
     assert "financial_payload_normalized" in result["validation_hints"]
-    assert "events" in result["candidate_payload"]
+    assert "reserved_target_rerouted_to_sibling" in result["validation_hints"]
+    assert list(result["candidate_payload"]) == ["agent_memory"]
+    assert result["drift_flags"]["reserved_target_rerouted_to_sibling"] is True
     assert result["merge_decision"]["merge_mode"] == "extend_entity"
     assert run_agent_contract.await_count == 4
 
 
+def _structure_contract_side_effect(
+    *,
+    message: str,
+    domain: str,
+    payload: dict,
+    guard: str = "non_financial_or_ephemeral",
+    reserved_offer: dict | None = None,
+) -> list:
+    structure = {
+        "candidate_payload": payload,
+        "structure_decision": {
+            "action": "extend_domain",
+            "target_domain": domain,
+            "json_paths": sorted(payload),
+            "top_level_scope_paths": sorted(payload),
+            "externalizable_paths": [],
+            "summary_projection": {},
+            "sensitivity_labels": {},
+            "confidence": 0.9,
+            "source_agent": "pkm_structure_agent",
+            "contract_version": 1,
+        },
+        "write_mode": "confirm_first",
+        "target_entity_scope": next(iter(payload), ""),
+        "validation_hints": [],
+    }
+    if reserved_offer is not None:
+        structure["reserved_offer"] = reserved_offer
+    # The guard's sanctioned route derives the intent frame itself; every other
+    # route asks the intent agent.
+    intent = (
+        []
+        if guard == "sanctioned_financial_memory"
+        else [
+            {
+                "save_class": "durable",
+                "intent_class": "preference",
+                "mutation_intent": "create",
+                "requires_confirmation": False,
+                "confirmation_reason": "",
+                "candidate_domain_choices": [{"domain_key": domain, "recommended": True}],
+                "confidence": 0.9,
+                "source_agent": "memory_intent_agent",
+                "contract_version": 1,
+            }
+        ]
+    )
+    return [
+        _single_segment(message),
+        {
+            "routing_decision": guard,
+            "confidence": 0.9,
+            "reason": "Synthetic.",
+            "source_agent": "financial_guard_agent",
+            "contract_version": 1,
+        },
+        *intent,
+        {
+            "merge_mode": "create_entity",
+            "target_domain": domain,
+            "target_entity_id": "",
+            "target_entity_path": "",
+            "match_confidence": 0.9,
+            "match_reason": "New.",
+            "source_agent": "memory_merge_agent",
+            "contract_version": 1,
+        },
+        structure,
+    ]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("payload", "blocked"),
+    ("payload", "rerouted"),
     [
-        # The bank connection rebuilds linked_accounts whole on every refresh.
+        # The bank connection rebuilds linked_accounts whole on every refresh, and
+        # goals is the Finance app's too: both are kept in Finance's sibling.
         (
             {
                 "goals": {
@@ -954,10 +1030,10 @@ async def test_generate_structure_preview_normalizes_sanctioned_financial_memory
             },
             True,
         ),
-        # Negative control: the same goal on its own is an ordinary finance memory.
+        # Negative control: a fact already filed in the sibling is left alone.
         (
             {
-                "goals": {
+                "agent_memory": {
                     "entities": {"emergency_fund": {"summary": "Keep six months in checking."}}
                 }
             },
@@ -966,7 +1042,7 @@ async def test_generate_structure_preview_normalizes_sanctioned_financial_memory
     ],
 )
 async def test_structure_preview_never_writes_a_source_managed_finance_branch(
-    monkeypatch, payload, blocked
+    monkeypatch, payload, rerouted
 ):
     service = PKMAgentLabService()
     monkeypatch.setattr(
@@ -979,61 +1055,147 @@ async def test_structure_preview_never_writes_a_source_managed_finance_branch(
         service,
         "_run_agent_contract",
         AsyncMock(
-            side_effect=[
-                _single_segment(message),
-                {
-                    "routing_decision": "sanctioned_financial_memory",
-                    "confidence": 0.9,
-                    "reason": "Durable financial goal.",
-                    "source_agent": "financial_guard_agent",
-                    "contract_version": 1,
-                },
-                {
-                    "merge_mode": "create_entity",
-                    "target_domain": "financial",
-                    "target_entity_id": "",
-                    "target_entity_path": "",
-                    "match_confidence": 0.9,
-                    "match_reason": "New goal.",
-                    "source_agent": "memory_merge_agent",
-                    "contract_version": 1,
-                },
-                {
-                    "candidate_payload": payload,
-                    "structure_decision": {
-                        "action": "extend_domain",
-                        "target_domain": "financial",
-                        "json_paths": sorted(payload),
-                        "top_level_scope_paths": sorted(payload),
-                        "externalizable_paths": [],
-                        "summary_projection": {},
-                        "sensitivity_labels": {},
-                        "confidence": 0.9,
-                        "source_agent": "pkm_structure_agent",
-                        "contract_version": 1,
-                    },
-                    "write_mode": "confirm_first",
-                    "target_entity_scope": "goals",
-                    "validation_hints": [],
-                },
-            ]
+            side_effect=_structure_contract_side_effect(
+                message=message,
+                domain="financial",
+                payload=payload,
+                guard="sanctioned_financial_memory",
+            )
         ),
     )
 
     result = await service.generate_structure_preview(
         # A distinct owner per case: the preview cache is bound to owner and message.
-        user_id=f"user-5-{blocked}",
+        user_id=f"user-5-{rerouted}",
         message=message,
         current_domains=["financial"],
     )
 
     assert result["structure_decision"]["target_domain"] == "financial"
-    assert ("source_managed_branch_blocked" in result["validation_hints"]) is blocked
-    if blocked:
-        assert result["write_mode"] == "do_not_save"
-    else:
-        assert result["write_mode"] != "do_not_save"
+    assert list(result["candidate_payload"]) == ["agent_memory"]
+    assert all(
+        path.split(".", 1)[0] == "agent_memory"
+        for path in result["structure_decision"]["json_paths"]
+    )
+    assert ("reserved_target_rerouted_to_sibling" in result["validation_hints"]) is rerouted
+    assert result["write_mode"] != "do_not_save"
     assert result["preview_cards"][0]["target_domain"] == "financial"
+
+
+@pytest.mark.asyncio
+async def test_a_ria_advisor_package_target_is_rerouted_to_ria_agent_memory(monkeypatch):
+    """The model aims at RIA Picks; the registry keeps the fact in ria.agent_memory.
+
+    Before Phase 1 this payload was written to ria.advisor_package as is (the
+    old guard looked only at Finance), or dropped as do_not_save when the domain
+    itself was reserved. Now it is kept, recorded, and offered to RIA Picks.
+    """
+    service = PKMAgentLabService()
+    monkeypatch.setattr(
+        service, "_load_domain_registry_choices", AsyncMock(return_value=_registry_choices())
+    )
+    message = "Add Northwind Capital to my advisor picks"
+    payload = {
+        "advisor_package": {
+            "entities": {"northwind": {"summary": "Northwind Capital is one of my picks."}}
+        }
+    }
+    monkeypatch.setattr(
+        service,
+        "_run_agent_contract",
+        AsyncMock(
+            side_effect=_structure_contract_side_effect(
+                message=message,
+                domain="ria",
+                payload=payload,
+                reserved_offer={"branch": "ria.advisor_package", "label": "Northwind Capital"},
+            )
+        ),
+    )
+    result = await service.generate_structure_preview(
+        user_id="user-ria-reroute", message=message, current_domains=["ria"]
+    )
+    card = result["preview_cards"][0]
+    assert card["target_domain"] == "ria"
+    assert list(card["candidate_payload"]) == ["agent_memory"]
+    assert card["candidate_payload"]["agent_memory"]["entities"]["northwind"]
+    assert card["write_mode"] != "do_not_save"
+    assert "reserved_target_rerouted_to_sibling" in card["validation_hints"]
+    assert card["drift_flags"]["reserved_target_rerouted_to_sibling"] is True
+    assert (
+        result["preview_summary"]["drift_flag_counts"]["reserved_target_rerouted_to_sibling"] == 1
+    )
+    assert card["reserved_offer"] == {
+        "domain": "ria",
+        "branch": "advisor_package",
+        "owner_feature": "ria",
+        "agent_memory_sibling": "ria.agent_memory",
+        "offer_action": {
+            "route_pattern": "/ria/picks",
+            "action_id": "route.ria_picks",
+            "label": "Add Northwind Capital in RIA Picks",
+        },
+        "registry_version": 1,
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_unreserved_branch_is_neither_rerouted_nor_offered(monkeypatch):
+    """Negative control for the re-route: ria.notes is no app's branch."""
+    service = PKMAgentLabService()
+    monkeypatch.setattr(
+        service, "_load_domain_registry_choices", AsyncMock(return_value=_registry_choices())
+    )
+    message = "I prefer advisors who explain fees up front"
+    payload = {"notes": {"entities": {"fees": {"summary": message}}}}
+    monkeypatch.setattr(
+        service,
+        "_run_agent_contract",
+        AsyncMock(
+            side_effect=_structure_contract_side_effect(
+                message=message, domain="ria", payload=payload
+            )
+        ),
+    )
+    result = await service.generate_structure_preview(
+        user_id="user-ria-notes", message=message, current_domains=["ria"]
+    )
+    card = result["preview_cards"][0]
+    assert list(card["candidate_payload"]) == ["notes"]
+    assert "reserved_target_rerouted_to_sibling" not in card["validation_hints"]
+    assert card["reserved_offer"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_wallet_domain_target_is_kept_in_finance_memory_with_a_wallet_offer(monkeypatch):
+    """`wallet` fails domain validation (owner-managed); its sibling is financial."""
+    service = PKMAgentLabService()
+    monkeypatch.setattr(
+        service, "_load_domain_registry_choices", AsyncMock(return_value=_registry_choices())
+    )
+    message = "My travel card is the Amex Gold"
+    payload = {"cards": {"entities": {"amex_gold": {"summary": message}}}}
+    monkeypatch.setattr(
+        service,
+        "_run_agent_contract",
+        AsyncMock(
+            side_effect=_structure_contract_side_effect(
+                message=message,
+                domain="wallet",
+                payload=payload,
+                reserved_offer={"branch": "wallet.cards", "label": "Amex Gold"},
+            )
+        ),
+    )
+    result = await service.generate_structure_preview(
+        user_id="user-wallet-reroute", message=message, current_domains=["financial"]
+    )
+    card = result["preview_cards"][0]
+    assert card["target_domain"] == "financial"
+    assert list(card["candidate_payload"]) == ["agent_memory"]
+    assert card["write_mode"] != "do_not_save"
+    assert card["reserved_offer"]["offer_action"]["label"] == "Add Amex Gold to Wallet"
+    assert card["reserved_offer"]["offer_action"]["route_pattern"] == "/one/wallet"
 
 
 @pytest.mark.asyncio
@@ -1486,7 +1648,9 @@ CRUD_MATRIX_STATE = {
             "financial_event",
             "create_entity",
             "can_save",
-            "events",
+            # Finance's branches are the Finance app's (reserved-branches.v1.json);
+            # a chat fact is kept in its agent_memory sibling.
+            "agent_memory",
         ),
         (
             "I prefer async written updates before meetings.",
@@ -1657,7 +1821,7 @@ CRUD_MATRIX_STATE = {
             "plan_or_goal",
             "create_entity",
             "can_save",
-            "goals",
+            "agent_memory",
         ),
     ],
 )

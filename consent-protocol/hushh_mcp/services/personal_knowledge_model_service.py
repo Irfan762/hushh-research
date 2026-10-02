@@ -28,6 +28,15 @@ from hushh_mcp.consent.pkm_scope_policy import (
     is_public_pkm_projection_allowed,
     is_source_library_pkm_scope,
 )
+from hushh_mcp.consent.reserved_branches import (
+    REFUSAL_CODE_FORBIDDEN,
+    evaluate_reserved_write,
+    refusal_code,
+    refusal_detail,
+)
+from hushh_mcp.consent.reserved_branches import (
+    enforcement_mode as reserved_enforcement_mode,
+)
 from hushh_mcp.consent.scope_helpers import scope_matches
 from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
@@ -2063,6 +2072,31 @@ class PersonalKnowledgeModelService:
             )
             return None
 
+    async def get_manifest_json_paths(self, user_id: str, domain: str) -> frozenset[str] | None:
+        """The stored manifest's path set, or None when there is none to compare.
+
+        One query, for the reserved-branch manifest diff on every store. Errors
+        are raised, not swallowed: an enforcing caller must not read "no stored
+        manifest" when the read failed.
+        """
+        canonical_domain = self._canonicalize_domain_key(domain)
+        if not canonical_domain:
+            return None
+        query = (
+            self.db.table("pkm_manifest_paths")
+            .select("json_path")
+            .eq("user_id", user_id)
+            .eq("domain", canonical_domain)
+        )
+        rows = (await self._execute_query(query)).data or []
+        if not rows:
+            return None
+        return frozenset(
+            str(row.get("json_path") or "").strip().lower()
+            for row in rows
+            if str(row.get("json_path") or "").strip()
+        )
+
     async def get_domain_manifests(
         self,
         user_id: str,
@@ -3888,6 +3922,55 @@ class PersonalKnowledgeModelService:
 
     # ==================== PKM DATA OPERATIONS (BLOB-BASED) ====================
 
+    @staticmethod
+    def _reserved_branch_refusal(
+        *,
+        domain: str,
+        mutation_plan: PkmMutationPlanV2 | None,
+        structure_decision: Optional[dict],
+        capabilities: frozenset[str],
+    ) -> dict[str, Any] | None:
+        """Defense in depth for the reserved-branch registry, in enforce mode.
+
+        The store route refuses first (api/routes/pkm_routes_shared.py, with the
+        manifest diff and the client-version gate). This re-check covers any other
+        caller of store_domain_data with the declared paths alone. An upgrade-claim
+        write (no mutation plan) is the migration writer and is never refused.
+        """
+        if mutation_plan is None:
+            return None
+        try:
+            if reserved_enforcement_mode() != "enforce":
+                return None
+            decision = structure_decision or {}
+            refusals = evaluate_reserved_write(
+                domain=domain,
+                paths=[
+                    mutation_plan.proposed_scope,
+                    *(decision.get("top_level_scope_paths") or []),
+                    *(decision.get("json_paths") or []),
+                ],
+                writer_id=mutation_plan.writer_id,
+                authorization_mode=mutation_plan.confirmation_receipt.authorization_mode,
+                capabilities=capabilities,
+            )
+        except Exception as exc:
+            logger.error("store_domain_data reserved registry unavailable: %s", type(exc).__name__)
+            return {"code": "PKM_RESERVED_REGISTRY_UNAVAILABLE", "registry_version": None}
+        if not refusals:
+            return None
+        code = refusal_code(refusals)
+        logger.warning(
+            "store_domain_data refused a reserved branch domain=%s code=%s", domain, code
+        )
+        detail = refusal_detail(refusals[0], code=code)
+        detail["branches"] = sorted({item.branch for item in refusals})
+        if code == REFUSAL_CODE_FORBIDDEN:
+            detail["message"] = (
+                "This information belongs to an app feature. Save it from that feature's own screen."
+            )
+        return detail
+
     async def store_domain_data(
         self,
         user_id: str,
@@ -3904,6 +3987,7 @@ class PersonalKnowledgeModelService:
         mutation_plan: Optional[dict] = None,
         return_result: bool = False,
         location_finalize_authorization: Optional[dict] = None,
+        reserved_capabilities: frozenset[str] = frozenset(),
     ) -> bool | dict[str, Any]:
         """
         Store encrypted domain data and update index.
@@ -3989,6 +4073,26 @@ class PersonalKnowledgeModelService:
             except (ValueError, TypeError):
                 result["code"] = "LOCATION_FINALIZE_AUTHORITY_INVALID"
                 return result if return_result else False
+
+        reserved_refusal = self._reserved_branch_refusal(
+            domain=domain,
+            mutation_plan=normalized_mutation_plan,
+            structure_decision=structure_decision,
+            capabilities=frozenset(
+                {
+                    *reserved_capabilities,
+                    *(
+                        ("location_finalize_authorization",)
+                        if normalized_location_authorization is not None
+                        else ()
+                    ),
+                }
+            ),
+        )
+        if reserved_refusal is not None:
+            result["code"] = reserved_refusal["code"]
+            result["reserved_refusal"] = reserved_refusal
+            return result if return_result else False
 
         try:
             if not is_allowed_top_level_domain(domain):

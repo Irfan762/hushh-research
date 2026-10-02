@@ -689,7 +689,11 @@ async def test_real_preview_retry_reuses_only_same_request_validated_prefix(monk
     if changed == "success":
         assert second["used_fallback"] is False
         assert second["error"] is None
-        assert second["candidate_payload"]["profile"]["synthetic"]["project"] == "Cedar Lantern"
+        # professional.profile is KYC's (reserved-branches.v1.json): the retried
+        # fact is kept, in professional.agent_memory.
+        assert second["candidate_payload"]["agent_memory"]["synthetic"]["project"] == (
+            "Cedar Lantern"
+        )
         assert "__validated_preparation_prefix" not in next(iter(module._PREVIEW_CACHE.values()))[1]
     if changed == "merge_timeout":
         assert calls[-2:] == ["agent_memory_merge", "agent_pkm_structure"]

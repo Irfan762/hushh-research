@@ -219,12 +219,41 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
 - Display only: `classifyMergeOutcome` (`hushh-webapp/lib/pkm/pkm-supersede-merge.ts`)
   labels each acknowledged write as new, updated, merged or already known from the stored
   state the write merged into. It decides nothing about meaning.
-- The KYC keyword route `isExplicitKycIdentitySaveRequest` predates this contract. It is
-  narrowed to a single short section (at most 1,200 characters) so it can no longer take a
-  whole document away from the semantic agents (production, 2026-09-29).
+- The KYC keyword route `isExplicitKycIdentitySaveRequest` is retired (reserved branches,
+  Phase 1). It once sent a 17,120 character paste to the KYC extractor as one call
+  (production, 2026-09-29). An explicit save now always goes to the semantic agents; the
+  KYC writer runs only for a typed reply to an owner-selected information request, bound
+  to that request by a server-issued capability.
 - Live eval before promotion: the synthetic context-transfer run recorded in
   `personal-knowledge-model.md`; mocked contract tests in
   `hushh-webapp/__tests__/services/agent-pkm-explicit-save.test.ts`.
+
+### Declared: reserved branches in PKM structure planning
+
+- Owning agent: `agent_pkm_structure`. Its system instruction
+  (`consent-protocol/hushh_mcp/agents/pkm_structure/agent.yaml`) states the rule: an
+  app-owned branch is never a target; the fact goes in that branch's `agent_memory`
+  sibling with `reserved_offer {branch, label}`. Each request carries the table from
+  `contracts/pkm/reserved-branches.v1.json` (`reserved_table_for_prompt`).
+- Structured output: `_STRUCTURE_PREVIEW_SCHEMA` gains the optional `reserved_offer`.
+  Preview cards carry `reserved_offer {domain, branch, owner_feature, agent_memory_sibling,
+  offer_action {route_pattern, action_id, label}, registry_version}`; the chat renders it
+  as an offer to commit the fact on the owning app's screen.
+- Validator: authority, not meaning. After the model answers,
+  `_reroute_reserved_payload` checks every payload path against the registry. A path
+  still inside an app-owned branch is moved to that branch's sibling and recorded as
+  `reserved_target_rerouted_to_sibling` (validation hint and drift flag); it is never
+  silent and never a general domain. A branch with no sibling (KYC internals, runtime
+  credentials, Secrets) or a correction or deletion of an app-owned record is
+  `do_not_save` with `reserved_branch_blocked` or `reserved_target_offered_not_saved`.
+  The validator chooses no domain and no meaning the registry does not name. It replaced
+  `_touches_source_managed_financial_branch`, which saw Finance top-level keys only.
+- The rate of `reserved_target_rerouted_to_sibling` measures how often the instruction
+  and the registry disagree. When it reaches zero, the move is absorbed by the
+  instruction and becomes a pure refusal.
+- Live eval before promotion: none yet. Mocked contract tests in
+  `consent-protocol/tests/services/test_pkm_agent_lab_service.py` (RIA, Wallet, Finance,
+  and an unreserved negative control).
 
 ### Declared: consent scope catalog search (contract C4)
 

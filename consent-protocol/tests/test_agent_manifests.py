@@ -284,13 +284,23 @@ def test_single_turn_genes_leave_room_for_thinking(path: Path) -> None:
 
 
 def test_structure_agent_is_told_the_finance_hierarchy_and_its_source_managed_branches() -> None:
-    """The instruction and the validator guard must name the same branches."""
+    """The instruction and the reserved-branch registry must agree about Finance.
+
+    The registry reserves every Finance branch but agent_memory for the Finance
+    app; the instruction must send chat facts there, never into the hierarchy.
+    """
+    from hushh_mcp.consent.reserved_branches import is_reserved_path
     from hushh_mcp.services.domain_contracts import FINANCIAL_SOURCE_MANAGED_BRANCHES
 
     instruction = load("pkm_structure").system_instruction
     assert "Finance hierarchy" in instruction
     for branch in ("profile", "goals", "events", "linked_accounts"):
         assert f"- {branch}:" in instruction
+        assert is_reserved_path("financial", branch), branch
+    assert "goes under agent_memory" in instruction
+    assert not is_reserved_path("financial", "agent_memory")
+    assert "reserved_offer" in instruction
     for branch in FINANCIAL_SOURCE_MANAGED_BRANCHES:
         named = branch in instruction or (branch.endswith("_v1") and "ending in _v1" in instruction)
         assert named, branch
+        assert is_reserved_path("financial", branch), branch
