@@ -3,9 +3,9 @@
 ``contracts/pkm/reserved-branches.v1.json`` decides which PKM branches belong to
 an app feature and which writers may change them. Its own ``enforcement`` value
 picks the mode: ``shadow`` only LOGS what it would refuse, ``enforce`` refuses.
-The contract ships in shadow until the migration release, so the enforce tests
-set the mode explicitly, and each one keeps a negative control: the same write
-in shadow mode, or the listed writer, goes through. The webapp side, including
+The contract enforces since the migration release (Phase 2). The enforce tests
+still set the mode explicitly, and each one keeps a negative control: the same
+write in shadow mode (the rollback value), or the listed writer, goes through. The webapp side, including
 the writer inventory and the device diff, is
 ``hushh-webapp/__tests__/lib/pkm/reserved-branches.test.ts``.
 """
@@ -225,9 +225,12 @@ def test_importing_the_loader_never_reads_the_contract(monkeypatch: pytest.Monke
 _OWNER = "user_123"
 
 
-def test_the_contract_ships_in_shadow_mode() -> None:
-    """Phase 2 (migration) flips the switch; until then nothing may enforce."""
-    assert reserved_branches.enforcement_mode() == "shadow"
+def test_the_contract_enforces_after_the_migration_release() -> None:
+    """Phase 2 moved agent entries to their siblings (v5), then flipped the switch.
+
+    Rollback is this one contract value back to ``shadow``.
+    """
+    assert reserved_branches.enforcement_mode() == "enforce"
     assert reserved_branches.memory_screen_policy() == "read_only_reserved"
 
 

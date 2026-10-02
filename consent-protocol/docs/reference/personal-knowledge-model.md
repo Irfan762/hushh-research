@@ -231,7 +231,8 @@ makes it externalizable or any scope registry entry references it.
    affected encrypted exports. Owner-published public-profile projections are not
    automatically republished; they remain owner-approved snapshots.
 
-The mandatory gate rehearses synthetic historical versions 0 through 4, heterogeneous
+The mandatory gate rehearses synthetic historical versions 0 through 4 (and the
+version-5 reserved-branch relocation below), heterogeneous
 arrays, sparse and unknown keys, financial statement/Plaid/KYC memory, Gmail-derived
 memory, private scopes, retired aliases, encryption round trips, idempotency, and rollback.
 For selected protected UAT releases, the gate additionally requires the
@@ -441,8 +442,9 @@ same rule: `hushh_mcp/consent/reserved_branches.py` and `hushh-webapp/lib/pkm/re
 
 **The switch.** The contract's own `"enforcement"` value, `shadow` or `enforce`, decides
 what happens with a refusal. It is a reviewed contract value, not an environment flag,
-so the server and the device read one answer. It ships as `shadow`; the migration
-release (agent-written entries moved to their siblings) flips it.
+so the server and the device read one answer. It shipped as `shadow`; the migration
+release (Phase 2, below) moved agent-written entries to their siblings and set it to
+`enforce`.
 
 - `shadow`: the server logs `pkm.reserved_would_refuse domain=<d> branch=<b> writer=<w>
   reason=<r> source=<declared|manifest_diff>` and the device counts the same; nothing is
@@ -453,22 +455,44 @@ release (agent-written entries moved to their siblings) flips it.
   - 403 `PKM_RESERVED_BRANCH_WRITER_FORBIDDEN` with `{code, domain, branch, reason,
     owner_feature, agent_memory_sibling, offer_action, registry_version}`;
   - 422 `PKM_WRITER_UNKNOWN` for an uncatalogued writer;
-  - 409 `PKM_RESERVED_REGISTRY_OUTDATED` when the plan's `client_version` is missing or
-    older than `min_client_version`, on a domain that holds a reserved branch. The version
-    rides on the mutation plan because the plan reaches the server whole from the web
-    proxy and both native plugins.
+  - 409 `PKM_RESERVED_REGISTRY_OUTDATED` only for an old client whose writer the catalogue
+    does not know (the old-client policy below). The version rides on the mutation plan
+    as `client_version` because the plan reaches the server whole from the web proxy and
+    both native plugins.
 
   The device returns `blocked_reserved_branch` from `PkmWriteCoordinator` before anything
   is encrypted or sent, and a failure of the check itself fails closed.
 
-**What each side can see.** The server judges the plan's `proposed_scope`, the structure
-decision's paths, and the manifest-path diff against the stored manifest (a path that
-appears or disappears under a reserved branch, whatever the scope claims). The device
+**What each side can see.** The server judges what a write changes: the plan's
+`proposed_scope`, the structure decision's paths the stored manifest does not already
+hold, and the manifest-path diff against the stored manifest (a path that appears or
+disappears under a reserved branch, whatever the scope claims). A merged save's structure
+decision lists every branch of the whole domain, so judging those paths as-is refused a
+chat save into `location.agent_memory` as a write to `saved_places`; with no stored
+manifest every path is new and is judged. The device
 diffs every reserved branch's VALUE before and after the write
 (`assertReservedBranchesUntouched`), which catches a change smuggled behind an innocent
 scope: the server cannot, because each write re-encrypts the whole domain.
-`PersonalKnowledgeModelService.storeDomainData` adds a writer-versus-scope check for the
-Wallet and runtime-secret paths, which do not go through the coordinator.
+`PersonalKnowledgeModelService.storeDomainData` adds a writer-versus-scope check (the
+declared scope) for the Wallet and runtime-secret paths, which do not go through the
+coordinator; `store_domain_data` on the server re-checks the declared scope the same way.
+
+**Old clients.** Builds already in TestFlight and the App Store send no `client_version`.
+A blanket 409 would have broken their Finance and Location saves, so instead:
+
+- the writer catalogue still applies: a `memory_agent` writer is refused on a reserved
+  branch, and a feature writer listed on the entry is accepted;
+- only the checks that depend on the client's own code are skipped: the structure-path
+  novelty and the manifest diff, which compare a manifest built by that build's (older)
+  builder with one a newer builder stored, and the device value diff it cannot run;
+- 409 `PKM_RESERVED_REGISTRY_OUTDATED` is returned only when the writer is unknown and the
+  client is old (on store, validate and the plan-carrying whole-domain delete).
+
+The residual risk is a memory-agent write from an old build that changes a reserved branch
+behind an `agent_memory` scope: no old-build path does this, and raising
+`min_client_version` once those builds age out closes it. Every old-client write to a
+domain with a reserved branch logs `pkm.reserved_legacy_client_write domain writer
+refused` (labels only), which is the count that decides when.
 
 **The KYC reply capability.** `agent_chat_kyc_owner_confirmed` may write identity
 information only with a `kyc_reply_authorization`: an HMAC token for one owner and one
@@ -505,6 +529,64 @@ helpers), and fails when a label has no registry entry or a registry writer has 
 code behind it. `consent-protocol/tests/test_reserved_branches.py` covers the
 copies, the shared rules and the server log line. A new writer means a new
 registry entry in the same change.
+
+### Phase 2: moving agent entries out, then enforcing
+
+**The migration.** Domain contract version 5 (`RESERVED_BRANCH_MIGRATION_DOMAINS`:
+financial, identity, location, professional, ria, shopping, wallet; the TypeScript and
+Python lists are parity-tested) adds one device-side upgrade step,
+`hushh-webapp/lib/personal-knowledge-model/reserved-branch-migration.ts`. It runs through
+the ordinary upgrade gate: writer `pkm_upgrade_orchestrator` (class `migration`), an
+`upgrade_claim`, and a `preservation_receipt` with occurrence lineage. It classifies each
+member of an `entities` map inside a reserved branch:
+
+| Classification | Rule | Outcome |
+|---|---|---|
+| Agent-written | key is a memory-agent id (`mem_<hex>`, `_stable_entity_id`), or the value has the whole `_build_entity_record` shape (`summary`, `kind`, `observations`) | moved to the entry's `agent_memory` sibling, at the same path below the branch; equal copies already there are deduplicated |
+| App-written | no agent marker | kept exactly in place |
+| Ambiguous | partial shape (`observations` without `summary`/`kind`), a `mem_` key on a non-object, an agent shape stamped with a feature writer's `source`/`writer_id`/`source_agent`, a list item carrying `observations`, a different value already at the sibling target, or a sibling in another domain (Wallet's is `financial.agent_memory`) or none | preserved under `__quarantine_v1.reserved_branch_migration_v1`, keyed by source pointer, with its reason |
+
+Provenance is the decrypted blob's own writer labels: `pkm_events` records a
+`source_agent` and a path set but no per-path writer, and no client route reads it. A
+supersede history (`entities.superseded.<id>`, and the entity's own `superseded`) moves
+with its entity. A list item that leaves a list shifts the app items after it; that shift
+is recorded as lineage, never assumed. The step is idempotent on its own output.
+
+The quarantine was half-built before this release: the server's commit already required a
+`__quarantine_v1` segment for any receipt with `quarantined > 0`, but the client stripped
+the underscores from segment ids, so such an upgrade would have been refused and the key
+renamed on read. The segment id now keeps its spelling, and the manifest treats
+`__quarantine_v1` as an opaque private branch (no path walk, never exposable).
+
+Old builds cannot run the step (their version-5 transform is a copy), so the server never
+offers it to them: without `x-hushh-client-version` on the upgrade and metadata routes it
+reports the generic target, and it never reports version 5 as a future version that
+would lock them out. The web proxy forwards the header (semver only) and keys its hot
+cache on it. A manifest that omits its version is assumed not to have migrated.
+
+**Readiness, as proven on the Phase 2 copy before the flip.**
+
+- Historical corpus (`hushh-webapp/__tests__/fixtures/pkm/historical-corpus.v1.json`),
+  five new fixtures through decrypt, transform, lineage proof, encrypt, decrypt, compare,
+  rollback and idempotency (`pkm-historical-rehearsal.test.ts`, in
+  `scripts/ci/pkm-upgrade-gate.sh`): mixed `financial.profile` (2 moved: the entity and its
+  map-level history), `location.saved_places` note (1 moved), `identity.identity_profile`
+  fact with an equal sibling copy (1 deduplicated), mixed `professional.profile` (2 moved,
+  4 quarantined, 2 app occurrences re-indexed), `ria.advisor_package` (unchanged
+  byte-for-byte). Every receipt is complete with zero rejected occurrences; app-branch
+  exposable paths after the upgrade equal the original minus exactly the relocated nodes;
+  no previously exposable top-level scope disappears; the quarantine is never exposable
+  and survives the segment round trip under its own key.
+- Every writer listed on an entry replays clean against that entry, in both loaders and
+  through `/store-domain` for current and old clients (capability writers through their
+  own authority tests).
+- The Phase 0 and Phase 1 suites pass with the contract at `enforce`.
+
+**Rollback.** Set `"enforcement"` back to `"shadow"` in `contracts/pkm/reserved-branches.v1.json`
+and copy it to both mirrors (the parity tests require all three). Nothing refuses after
+the next backend and web deploy; the shadow log lines resume. No data changes: migrated
+entries stay in their siblings, which every reader already shows, and quarantined
+entries stay private and restorable from their source pointers.
 
 ## Storage rules
 

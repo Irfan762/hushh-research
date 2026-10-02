@@ -133,9 +133,35 @@ describe("reserved-branch loader", () => {
     ).toBe("capability_missing");
   });
 
-  it("ships in shadow mode with read-only reserved Memory items, from the contract", () => {
-    expect(RESERVED_ENFORCEMENT_MODE).toBe("shadow");
+  it("enforces since the migration release, with read-only reserved Memory items, from the contract", () => {
+    // Rollback is the contract's `enforcement` value back to `shadow`.
+    expect(RESERVED_ENFORCEMENT_MODE).toBe("enforce");
     expect(RESERVED_MEMORY_SCREEN_POLICY).toBe("read_only_reserved");
+  });
+
+  it("lets every listed writer write its own entries (the whole inventory, replayed)", () => {
+    let replayed = 0;
+    for (const raw of contract.entries as Array<{ domain: string; branch_prefix: string; writer_ids: string[] }>) {
+      const branch = raw.branch_prefix !== "*" ? raw.branch_prefix : raw.domain === "financial" ? "profile" : "items";
+      for (const writerId of raw.writer_ids) {
+        const catalogued = writer(writerId);
+        expect(catalogued, writerId).not.toBeNull();
+        for (const mode of catalogued!.authorizationModes) {
+          expect(
+            evaluateReservedWrite({
+              domain: raw.domain,
+              paths: [branch, `${branch}.detail`],
+              writerId,
+              authorizationMode: mode,
+              capabilities: catalogued!.requiresCapability ? [catalogued!.requiresCapability] : [],
+            }),
+            `${raw.domain}.${branch} ${writerId} ${mode}`,
+          ).toEqual([]);
+          replayed += 1;
+        }
+      }
+    }
+    expect(replayed).toBeGreaterThan(40);
   });
 
   it("throws only in enforce mode, and only on a refused change", () => {

@@ -92,6 +92,9 @@ def _confirmed_mutation_plan_payload(
         "target_scope_handle": "pending_scope_route_001",
         "proposed_domain": "financial",
         "proposed_scope": "portfolio",
+        # financial.* is reserved (contracts/pkm/reserved-branches.v1.json); in
+        # enforce mode only a catalogued Finance writer may change it.
+        "writer_id": "kai_manage_portfolio_save",
         "friendly_domain_name": "Financial",
         "friendly_scope_name": "Portfolio",
         "confidence": 1.0,
@@ -481,6 +484,11 @@ def test_confirmed_domain_delete_forwards_revision_and_plan(monkeypatch):
 
 @pytest.mark.parametrize("route_kind", ["legacy", "confirmed"])
 def test_location_domain_delete_emits_silent_metadata_only_sync(monkeypatch, route_kind):
+    # The subject is the sync push. A whole-domain Location delete spans two
+    # reserved branches no single writer owns, so enforce refuses it (no app
+    # control issues one today; test_reserved_branches covers the refusal).
+    # Shadow is the registry's rollback value, under which the push must hold.
+    monkeypatch.setattr(pkm_routes_shared, "enforcement_mode", lambda: "shadow")
     pushes: list[tuple[str, dict]] = []
     streams: list[tuple[str, dict]] = []
     push_delivered = threading.Event()
@@ -1325,6 +1333,13 @@ def test_manifest_route_recovers_from_partially_malformed_legacy_fields(monkeypa
 
 
 def test_validate_store_domain_route_accepts_payload_without_writing(monkeypatch):
+    class _NoStoredManifest:
+        # The reserved-branch guard compares a shipped manifest with the stored
+        # one; this dry run has none stored, so nothing reads as a change.
+        async def get_manifest_json_paths(self, _user_id: str, _domain: str):
+            return None
+
+    monkeypatch.setattr(pkm_routes_shared, "get_pkm_service", lambda: _NoStoredManifest())
     client = TestClient(_build_app())
     response = client.post(
         "/api/pkm/store-domain/validate",

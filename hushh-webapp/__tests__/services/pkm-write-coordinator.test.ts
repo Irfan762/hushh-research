@@ -84,14 +84,15 @@ vi.mock("@/lib/personal-knowledge-model/upgrade-contracts", () => ({
   currentDomainContractVersion: vi.fn(() => 2),
 }));
 
-const reservedMode = vi.hoisted(() => ({ value: "shadow" as "shadow" | "enforce" }));
+const reservedMode = vi.hoisted(() => ({ value: null as "shadow" | "enforce" | null }));
 vi.mock("@/lib/pkm/reserved-branches", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/pkm/reserved-branches")>();
-  // The contract ships in shadow; enforce is exercised by switching this value.
+  // Every case runs under the contract's own mode (enforce since Phase 2);
+  // the shadow block switches to the rollback value explicitly.
   return {
     ...actual,
     get RESERVED_ENFORCEMENT_MODE() {
-      return reservedMode.value;
+      return reservedMode.value ?? actual.RESERVED_ENFORCEMENT_MODE;
     },
   };
 });
@@ -388,6 +389,9 @@ describe("PkmWriteCoordinator", () => {
       await PkmWriteCoordinator.saveMergedDomain({
         ...BASE_PARAMS,
         domain: "financial",
+        // financial.* is reserved: under enforce only a catalogued Finance writer
+        // may change it, so this case uses one (the test label is uncatalogued).
+        confirmation: { ...BASE_PARAMS.confirmation, source: "kai_manage_portfolio_save" },
         build: () => ({
           domainData: {
             portfolio: { holdings: [{ symbol: "NEW" }] },
@@ -683,9 +687,13 @@ describe("PkmWriteCoordinator", () => {
       });
 
     beforeEach(() => {
+      reservedMode.value = "shadow";
       stubNoUpgradeNeeded();
       stubWriteContext({ domainData: { identity_documents: { passport_number: "STORED-A1" } } });
       pkmStorePreparedDomainMock.mockResolvedValue({ success: true, conflict: false, dataVersion: 2, fullBlob: {} });
+    });
+    afterEach(() => {
+      reservedMode.value = null;
     });
 
     it("counts a memory agent's smuggled identity_documents change, logs no value, and still saves", async () => {
@@ -718,8 +726,21 @@ describe("PkmWriteCoordinator", () => {
       beforeEach(() => {
         reservedMode.value = "enforce";
       });
-      afterEach(() => {
-        reservedMode.value = "shadow";
+
+      it("saves a chat fact into the sibling while the app's branch sits beside it", async () => {
+        const result = await PkmWriteCoordinator.savePreparedDomain({
+          ...BASE_PARAMS,
+          domain: "identity",
+          confirmation: { confirmedByUser: true, surface: "chat", source: "agent_chat_owner_confirmed_card" },
+          build: () => ({
+            domainData: { agent_memory: { entities: { mem_2: { summary: "Prefers email" } } } },
+            summary: { item_count: 1 },
+            scopePath: "agent_memory",
+          }),
+        });
+
+        expect(result.success).toBe(true);
+        expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
       });
 
       it("blocks a smuggled identity_documents change behind proposed_scope agent_memory", async () => {

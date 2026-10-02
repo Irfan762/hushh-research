@@ -756,8 +756,14 @@ def _manifest_path_diff(
 async def _stored_reserved_manifest_paths(
     request: "StoreDomainRequest", canonical_domain: str
 ) -> frozenset[str] | None:
-    """The stored manifest's paths, read once per write, for a domain with reserved branches."""
+    """The stored manifest's paths, read once per write, for a domain with reserved branches.
+
+    Read only when the write ships something to compare: a manifest or a
+    structure decision. A plan alone is judged by its declared scope.
+    """
     if not domain_has_reserved_entries(canonical_domain):
+        return None
+    if request.manifest is None and request.structure_decision is None:
         return None
     return await get_pkm_service().get_manifest_json_paths(request.user_id, canonical_domain)
 
