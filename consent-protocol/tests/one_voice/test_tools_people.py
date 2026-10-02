@@ -7,6 +7,9 @@ spoken fact asserted here is derived from what the double returned.
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
+import random
 from typing import Any
 
 import pytest
@@ -562,6 +565,49 @@ async def test_confirm_person_vanished_from_every_source():
 
 
 # -- list_people / get_person ---------------------------------------------
+
+
+@pytest.mark.parametrize("tool", ["list_people", "resolve_person", "confirm_person", "get_person"])
+async def test_people_photos_stay_on_cards_and_out_of_live_context(tool):
+    """UAT closed with 1007 when real avatar data URLs filled Live's context."""
+    ctx, connections, _ = make_ctx()
+    photo = "data:image/png;base64," + base64.b64encode(
+        random.Random(4013).randbytes(14_000)  # noqa: S311 - reproducible avatar fixture, not a key
+    ).decode("ascii")
+    connections.connections[0]["photoUrl"] = photo
+    connections.incoming[0]["counterpartPhotoUrl"] = photo
+    connections.outgoing[0]["counterpartPhotoUrl"] = photo
+    if tool == "list_people":
+        result = await people.list_people(ctx, people.ListPeopleInput())
+        card_fields = ("connected", "ready_for_location", "pending_incoming", "pending_outgoing")
+    elif tool == "resolve_person":
+        result = await people.resolve_person(ctx, people.ResolvePersonInput(spoken_name="Ayesha"))
+        card_fields = ("candidates",)
+    elif tool == "confirm_person":
+        await people.resolve_person(ctx, people.ResolvePersonInput(spoken_name="Ayesha"))
+        result = await people.confirm_person(ctx, people.ConfirmPersonInput(user_id=AYESHA))
+        card_fields = ("person",)
+    else:
+        confirm(ctx, AYESHA, "Ayesha Sharma")
+        result = await people.get_person(
+            ctx, people.GetPersonInput(person=PersonRef(user_id=AYESHA))
+        )
+        card_fields = ("person",)
+
+    client = result.public()
+    model = result.model_public()
+    assert photo in json.dumps(client), "The visible card must retain its avatar."
+    assert "photo_url" not in json.dumps(model)
+    assert photo not in json.dumps(model)
+    # Every identity, offer revision, count, relationship and spoken fact stays
+    # intact; only the display-only image field differs between the two ports.
+    expected = json.loads(json.dumps(client))
+    for field in card_fields:
+        cards = expected[field] if isinstance(expected[field], list) else [expected[field]]
+        for card in cards:
+            card.pop("photo_url")
+    assert model == expected
+    assert result.public() == client, "Projecting for the model must not mutate the UI result."
 
 
 async def test_list_people_reports_real_lists_and_counts():
