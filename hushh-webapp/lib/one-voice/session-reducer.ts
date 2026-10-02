@@ -124,6 +124,16 @@ const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_reques
  */
 export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
 
+/**
+ * A navigation the app was asked to make. It is not a success (it stays in
+ * NOT_SUCCESS_STATUSES; the ui_settled outcome decides) and not a failure: it
+ * reads as "Opening…". Not pending either -- that would hold the turn open
+ * waiting on a device step that never comes.
+ */
+export const NAVIGATION_DISPATCH_STATUSES = new Set<string>([
+  "navigation_dispatched",
+]);
+
 export function isPendingStatus(status: string | null | undefined): boolean {
   return PENDING_STATUSES.has(String(status || "").trim());
 }
@@ -140,6 +150,9 @@ export function toolResultTone(
   // The review card may already be visible after a lost acknowledgement.
   // This says nothing about a send, so avoid both success and failure claims.
   if (value === "draft_open_unconfirmed") return "neutral";
+  if (NAVIGATION_DISPATCH_STATUSES.has(value)) {
+    return ok === false ? "failure" : "neutral";
+  }
   if (
     !ok ||
     !value ||

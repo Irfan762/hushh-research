@@ -887,13 +887,26 @@ export function VoiceSessionProvider({
       dispatchServerFrame(frame, now());
       const store = useVoiceSessionStore.getState();
       switch (frame.type) {
-        case "session.ready":
+        case "session.ready": {
           sendAppContext();
+          // The reducer renders the first re-listed card. If the server never
+          // heard it was shown (its pending_action frame was lost to a
+          // reconnect), report it once painted so a later "yes" can confirm
+          // it instead of being refused as an unseen card.
+          const first = frame.pending_actions?.[0];
+          if (first && first.status === "pending" && !first.shown_at) {
+            const id = first.pending_action_id;
+            (depsRef.current?.afterPaint ?? defaultAfterPaint)(() => {
+              if (sessionRef.current === session && !session.tornDown)
+                session.client.pendingShown(id);
+            });
+          }
           // The relay being ready says nothing about whether getUserMedia has
           // completed. Keep the visible status honest until capture is live.
           if (session.paused || !session.captureReady)
             dispatch({ type: "paused" });
           return;
+        }
         case "transcript.input":
           if (
             store.state.activeInputTurnId === frame.turn_id &&

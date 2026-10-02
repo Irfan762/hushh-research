@@ -16,8 +16,17 @@
  */
 
 import type { UiDirectiveKind } from "@/lib/one-voice/protocol";
-import { requestProfilePaneOpen } from "@/lib/navigation/profile-pane";
-import { ROUTES } from "@/lib/navigation/routes";
+import {
+  decideProfileOpen,
+  normalizePathname,
+  type ProfileOpenDetail,
+} from "@/lib/one-voice/profile-open";
+import {
+  PROFILE_PANE_SHOWN_EVENT,
+  requestProfilePaneOpen,
+  type ProfilePaneOpenResult,
+} from "@/lib/navigation/profile-pane";
+import { ROUTES, buildPersonProfileRoute } from "@/lib/navigation/routes";
 import { requestInternalAppNavigation } from "@/lib/utils/browser-navigation";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 
@@ -43,6 +52,32 @@ export type OneVoiceOpenMailDetail = {
   settle: (status: "opened" | "failed", reason?: string) => void;
 };
 
+/**
+ * How long a spoken navigation waits for the screen to actually show.
+ *
+ * Like an open_mail, a navigate settles on the evidence, not the request: the
+ * Profile pane can be refused by the shell (signed-out chrome, a full-screen
+ * flow) and a route can be redirected away. Nothing observed in this window
+ * settles `failed`, so One never says "opened" for a screen nobody sees. Kept
+ * above a slow phone-network route fetch.
+ */
+export const NAVIGATE_SETTLE_TIMEOUT_MS = 10_000;
+const NAVIGATE_POLL_MS = 100;
+
+/** What counts as "shown" for a navigate: a pathname, or the Profile pane. */
+export type NavigateObservation =
+  | { kind: "path"; path: string }
+  | { kind: "profile_pane" };
+
+export type NavigateTarget =
+  | {
+      kind: "route";
+      href: string;
+      /** Absent: settles on dispatch (generic routes, not yet verified). */
+      observe?: NavigateObservation;
+    }
+  | { kind: "profile_pane" };
+
 export type OneVoiceFocusPendingDetail = { pendingActionId: string | null };
 export type OneVoiceRefreshDetail = { uiRefresh: string[] };
 
@@ -60,7 +95,17 @@ export type DirectiveHelpers = {
   /** The current app pathname (usePathname); decides pane-vs-route for Profile. */
   pathname: string | null;
   navigate?: (href: string) => boolean;
-  openProfilePane?: () => void;
+  /** The shell's synchronous answer; null means no shell listener answered. */
+  openProfilePane?: () => ProfilePaneOpenResult | null;
+  /**
+   * Resolves true once the target is showing, false on timeout or abort.
+   * Registered BEFORE the request is dispatched so a fast open is not missed.
+   */
+  observeNavigation?: (
+    target: NavigateObservation,
+    timeoutMs: number,
+    signal: AbortSignal,
+  ) => Promise<boolean>;
   share?: (data: {
     url?: string;
     text?: string;
@@ -78,6 +123,24 @@ const SCREEN_OWNED_KINDS = new Set<string>([
 const LOCATION_ROUTE_PREFIX = "/one/location";
 const PRODUCT_ROUTE_PREFIX = "/one/";
 const MAX_QUERY_ID_CHARS = 128;
+/** A server-confirmed public person ref is a UUID; nothing else fills /people. */
+const PERSON_REF_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A route template segment such as `[personRef]`: never navigable literally. */
+const ROUTE_TEMPLATE_SEGMENT = /\[[^\]]+\]/;
+
+/**
+ * The owner's Profile family. The root opens as the pane over the current
+ * screen (like the chat avatar); a detail is a route, because the pane cannot
+ * deep-link. decideProfileOpen owns that choice.
+ */
+const PROFILE_ACTION_DETAIL: Readonly<
+  Record<string, ProfileOpenDetail | null>
+> = {
+  "route.profile": null,
+  "route.profile_privacy": "access",
+  "route.voice_settings": "preferences/voice",
+};
 
 /** Kinds the provider must not run itself; a Location screen owns them. */
 export function isScreenOwnedDirective(kind: string): boolean {
@@ -116,10 +179,6 @@ export function isSafeInternalHref(href: string): boolean {
   return href.startsWith(PRODUCT_ROUTE_PREFIX) || href === "/one";
 }
 
-function isProductRoute(pathname: string | null): boolean {
-  return Boolean(pathname && pathname.startsWith(PRODUCT_ROUTE_PREFIX));
-}
-
 function isLocationRoute(href: string): boolean {
   const path = href.split("?")[0] || "";
   return (
@@ -144,6 +203,49 @@ function withEntityQuery(
   return search ? `${path}?${search}` : (path as string);
 }
 
+/** Where a Profile-family href shows: `/one/profile` redirects into the pane. */
+function observationForHref(href: string): NavigateObservation {
+  const path = normalizePathname(href);
+  return path === ROUTES.PROFILE
+    ? { kind: "profile_pane" }
+    : { kind: "path", path };
+}
+
+function resolveProfileTarget(
+  detail: ProfileOpenDetail | null,
+  pathname: string | null,
+): NavigateTarget {
+  const decision = decideProfileOpen({
+    pathname: pathname ?? "",
+    ...(detail ? { detail } : { presentation: "pane" as const }),
+  });
+  if (decision.kind === "pane") return { kind: "profile_pane" };
+  return {
+    kind: "route",
+    href: decision.href,
+    observe: observationForHref(decision.href),
+  };
+}
+
+/**
+ * Another person's profile. The ref comes only from the server-confirmed
+ * directive payload and must be a UUID; anything else fails closed rather than
+ * opening the owner's profile or a literal `/people/[personRef]`.
+ */
+function resolvePersonProfileTarget(
+  payload: Record<string, unknown>,
+  pathname: string | null,
+): NavigateTarget | null {
+  const ref = cleanString(payload.public_person_ref, 64);
+  if (!ref || !PERSON_REF_PATTERN.test(ref)) return null;
+  const href = buildPersonProfileRoute(ref, { from: pathname });
+  return {
+    kind: "route",
+    href,
+    observe: { kind: "path", path: normalizePathname(href) },
+  };
+}
+
 /**
  * Resolve a gateway action id to the href the app should open, or the Profile
  * pane. Returns null when the action is unknown, unwired, or not a route.
@@ -151,22 +253,30 @@ function withEntityQuery(
 export function resolveNavigateTarget(
   payload: Record<string, unknown>,
   pathname: string | null,
-): { kind: "route"; href: string } | { kind: "profile_pane" } | null {
+): NavigateTarget | null {
   const actionId = cleanString(payload.gateway_action_id, 120);
   if (!actionId) return null;
   const action = getKaiActionById(actionId);
   if (!action) return null;
   const target = action.execution_target;
   if (target.status !== "wired") return null;
+  if (Object.prototype.hasOwnProperty.call(PROFILE_ACTION_DETAIL, actionId)) {
+    return resolveProfileTarget(
+      PROFILE_ACTION_DETAIL[actionId] ?? null,
+      pathname,
+    );
+  }
+  if (target.path === "route" && target.target === ROUTES.PERSON_PROFILE) {
+    return resolvePersonProfileTarget(payload, pathname);
+  }
   if (target.path === "route") {
     const href = cleanString(target.target, 400);
-    if (!href || !isSafeInternalHref(href)) return null;
+    // A template segment needs an entity this branch cannot supply.
+    if (!href || ROUTE_TEMPLATE_SEGMENT.test(href)) return null;
+    if (!isSafeInternalHref(href)) return null;
+    // Generic routes (Location etc.) still settle on dispatch; verified settle
+    // for them is a separate bounded change.
     return { kind: "route", href: withEntityQuery(href, payload) };
-  }
-  if (target.path === "kai_command" && target.target === "profile") {
-    return isProductRoute(pathname)
-      ? { kind: "profile_pane" }
-      : { kind: "route", href: ROUTES.PROFILE };
   }
   return null;
 }
@@ -235,6 +345,109 @@ function outcome(
 }
 
 /**
+ * Resolve true when the target shows, false on timeout or abort. Every
+ * listener, timer and interval is released on settle.
+ */
+export function defaultObserveNavigation(
+  target: NavigateObservation,
+  timeoutMs: number,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (typeof window === "undefined" || signal.aborted) {
+    return Promise.resolve(false);
+  }
+  return new Promise<boolean>((resolve) => {
+    let done = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let poll: ReturnType<typeof setInterval> | null = null;
+    const finish = (seen: boolean): void => {
+      if (done) return;
+      done = true;
+      if (timer !== null) clearTimeout(timer);
+      if (poll !== null) clearInterval(poll);
+      window.removeEventListener(PROFILE_PANE_SHOWN_EVENT, onShown);
+      signal.removeEventListener("abort", onAbort);
+      resolve(seen);
+    };
+    const onShown = (): void => finish(true);
+    const onAbort = (): void => finish(false);
+    signal.addEventListener("abort", onAbort);
+    timer = setTimeout(() => finish(false), timeoutMs);
+    if (target.kind === "profile_pane") {
+      window.addEventListener(PROFILE_PANE_SHOWN_EVENT, onShown);
+      return;
+    }
+    poll = setInterval(() => {
+      if (normalizePathname(window.location.pathname) === target.path) {
+        finish(true);
+      }
+    }, NAVIGATE_POLL_MS);
+  });
+}
+
+/** Navigate to href and settle on the observation, never on the dispatch. */
+async function settleRoute(
+  href: string,
+  observation: NavigateObservation,
+  helpers: DirectiveHelpers,
+  reason?: string,
+): Promise<DirectiveOutcome> {
+  if (
+    observation.kind === "path" &&
+    normalizePathname(helpers.pathname ?? "") === observation.path
+  ) {
+    return outcome("opened", reason ?? "already_shown");
+  }
+  const controller = new AbortController();
+  const seen = (helpers.observeNavigation ?? defaultObserveNavigation)(
+    observation,
+    NAVIGATE_SETTLE_TIMEOUT_MS,
+    controller.signal,
+  );
+  const navigated = (helpers.navigate ?? defaultNavigate)(href);
+  if (!navigated) {
+    controller.abort();
+    await seen;
+    return outcome("failed", "navigation_unavailable");
+  }
+  return (await seen)
+    ? outcome("opened", reason)
+    : outcome("failed", "not_shown");
+}
+
+/**
+ * Ask the shell for the Profile pane and settle on its answer plus the
+ * pane-shown evidence. A refused pane falls back to the same action's
+ * canonical route, recorded as `pane_unavailable`.
+ */
+async function openProfilePaneVerified(
+  helpers: DirectiveHelpers,
+): Promise<DirectiveOutcome> {
+  const controller = new AbortController();
+  const seen = (helpers.observeNavigation ?? defaultObserveNavigation)(
+    { kind: "profile_pane" },
+    NAVIGATE_SETTLE_TIMEOUT_MS,
+    controller.signal,
+  );
+  const result = (
+    helpers.openProfilePane ?? (() => requestProfilePaneOpen("tap"))
+  )();
+  if (result === "opening") {
+    return (await seen) ? outcome("opened") : outcome("failed", "not_shown");
+  }
+  controller.abort();
+  await seen;
+  if (result === "already_open") return outcome("opened", "already_open");
+  // "unavailable", or no shell listener answered.
+  return settleRoute(
+    ROUTES.PROFILE,
+    { kind: "profile_pane" },
+    helpers,
+    "pane_unavailable",
+  );
+}
+
+/**
  * Run one generic directive. Never throws; the outcome is what the caller
  * reports as `ui.settled`. Screen-owned kinds return `handled:false`.
  */
@@ -253,8 +466,10 @@ export async function executeDirective(
         const target = resolveNavigateTarget(data, helpers.pathname);
         if (!target) return outcome("failed", "unknown_route");
         if (target.kind === "profile_pane") {
-          (helpers.openProfilePane ?? (() => requestProfilePaneOpen("tap")))();
-          return outcome("opened");
+          return await openProfilePaneVerified(helpers);
+        }
+        if (target.observe) {
+          return await settleRoute(target.href, target.observe, helpers);
         }
         const navigated = (helpers.navigate ?? defaultNavigate)(target.href);
         return navigated

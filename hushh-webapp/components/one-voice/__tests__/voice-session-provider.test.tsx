@@ -148,7 +148,8 @@ class FakeClient {
   sendAppContext() {
     this.sent.push("app_context");
   }
-  pendingShown() {
+  pendingShown(pendingActionId: string) {
+    this.sent.push(`shown:${pendingActionId}`);
     return true;
   }
   confirm() {
@@ -489,6 +490,33 @@ describe("VoiceSessionProvider ownership", () => {
     } finally {
       useVoiceSessionStore.getState().effects.delete(key);
     }
+  });
+
+  it("reports a re-listed card the server never saw shown, once painted", async () => {
+    // Regression: a pending_action frame lost to a reconnect left the card
+    // unshown on the server, so "yes" was refused and One asked again.
+    mount();
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const unshown = pendingActionFrame({ pending_action_id: "card-unshown" });
+    await act(async () => {
+      client.options.onFrame(
+        readyFrame({ pending_actions: [unshown], resumed: true }),
+      );
+    });
+    expect(client.sent).toContain("shown:card-unshown");
+
+    // Negative control: a card the server already knows is shown is not re-sent.
+    const shown = pendingActionFrame({
+      pending_action_id: "card-shown",
+      shown_at: "2026-10-02T10:00:00Z",
+    });
+    await act(async () => {
+      client.options.onFrame(
+        readyFrame({ pending_actions: [shown], resumed: true }),
+      );
+    });
+    expect(client.sent).not.toContain("shown:card-shown");
   });
 
   it("keeps an older restored card from taking over after the next answer ends", async () => {
