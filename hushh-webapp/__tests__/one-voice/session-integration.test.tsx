@@ -745,6 +745,52 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it.each([
+    ["opened", true, false], ["opened", false, false], ["failed", true, false], ["failed", false, false],
+    ["opened", false, true],
+  ] as const)("settles the navigation card as %s, before result=%s, after model end=%s", async (status, beforeResult, afterModelEnd) => {
+    let settle: ((status: "opened" | "failed" | "ignored") => void) | undefined;
+    const { server } = await startSession(mount({
+      showPanel: true,
+      effects: { onDirective: (_id, _kind, _payload, report) => { settle = report; } },
+    }));
+    await act(async () => {
+      server.push({ type: "transcript.input", turn_id: "profile-turn", text: "Open their profile", final: true });
+      server.push({ type: "tool.started", call_id: "profile-call", turn_id: "profile-turn", tool: "open_screen", args_public: {} });
+      if (afterModelEnd) {
+        server.push({
+          type: "tool.result", call_id: "profile-call", turn_id: "profile-turn", tool: "open_screen", ok: true,
+          result_public: { status: "navigation_dispatched", spoken_facts: ["Opening their profile."] },
+        });
+        server.push({ type: "turn", state: "model_end", turn_id: "profile-turn" });
+      }
+      server.push({
+        type: "ui_directive", directive_id: "profile-directive", kind: "navigate", turn_id: "profile-turn",
+        payload: { call_id: "profile-call", gateway_action_id: "route.person_profile" },
+      });
+    });
+    expect(settle).toBeDefined();
+    if (beforeResult) await act(async () => { settle!(status); });
+    await act(async () => {
+      if (!afterModelEnd) server.push({
+        type: "tool.result", call_id: "profile-call", turn_id: "profile-turn", tool: "open_screen", ok: true,
+        result_public: { status: "navigation_dispatched", spoken_facts: ["Opening their profile."] },
+      });
+      server.push({ type: "turn", state: "model_end", turn_id: "profile-turn" });
+    });
+    if (!beforeResult) {
+      expect(screen.getByText("Opening…")).toBeTruthy();
+      await act(async () => { settle!(status); });
+    }
+    expect(server.frames("ui.settled")).toEqual([
+      { type: "ui.settled", directive_id: "profile-directive", status },
+    ]);
+    expect(screen.queryByText("Opening…")).toBeNull();
+    expect(screen.queryByText("Opening their profile.")).toBeNull();
+    if (status === "failed") expect(screen.getByText("I couldn't open that screen. Please try again.")).toBeTruthy();
+    expect(selectSuccessReceipt(controller!.state)).toBeNull();
+  });
+
   it("stop sends end, closes, releases the lease and lands idle", async () => {
     const mounted = await startSession(mount());
     const { server, capture, playback } = mounted;
