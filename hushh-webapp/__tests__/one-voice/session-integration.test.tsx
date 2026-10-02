@@ -67,7 +67,8 @@ vi.mock("@/lib/utils/browser-navigation", () => ({
   requestInternalAppNavigation: (value: unknown) =>
     harness.navigate(value as never),
 }));
-vi.mock("@/lib/navigation/profile-pane", () => ({
+vi.mock("@/lib/navigation/profile-pane", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/navigation/profile-pane")>()),
   requestProfilePaneOpen: vi.fn(),
 }));
 vi.mock("@/lib/interaction/interaction-intent-coordinator", () => ({
@@ -644,6 +645,7 @@ describe("VoiceSessionProvider with a scripted relay", () => {
   it("a generic directive with no screen runs the executor and settles; a screen that ignores it falls through", async () => {
     const mounted = await startSession(mount());
     const { server } = mounted;
+    window.history.replaceState(null, "", "/one/location?view=people");
     await act(async () => {
       server.push({
         type: "ui_directive",
@@ -655,16 +657,20 @@ describe("VoiceSessionProvider with a scripted relay", () => {
         },
       });
     });
+    await waitFor(() => expect(harness.navigate).toHaveBeenCalledWith({
+      href: "/one/location?view=circles&circle=c-9",
+      source: "voice",
+      transitionMode: "contextual",
+    }));
+    expect(server.frames("ui.settled")).toHaveLength(0);
+    await act(async () => {
+      window.history.pushState(null, "", "/one/location?view=circles&circle=c-9");
+    });
     await waitFor(() => expect(server.frames("ui.settled")).toHaveLength(1));
     expect(server.frames("ui.settled")[0]).toEqual({
       type: "ui.settled",
       directive_id: "d-1",
       status: "opened",
-    });
-    expect(harness.navigate).toHaveBeenCalledWith({
-      href: "/one/location?view=circles&circle=c-9",
-      source: "voice",
-      transitionMode: "contextual",
     });
     // A screen-owned kind nobody settles is reported ignored after the step budget, never run here.
     await act(async () => {
@@ -682,6 +688,7 @@ describe("VoiceSessionProvider with a scripted relay", () => {
       status: "ignored",
     });
     expect(harness.navigate).toHaveBeenCalledTimes(1);
+    window.history.replaceState(null, "", "/");
   });
 
   it("a screen that owns request_os_permission settles it; a screen that ignores navigate hands it to the executor", async () => {
@@ -710,6 +717,7 @@ describe("VoiceSessionProvider with a scripted relay", () => {
       directive_id: "d-3",
       status: "opened",
     });
+    window.history.replaceState(null, "", "/one/location?view=people");
     await act(async () => {
       server.push({
         type: "ui_directive",
@@ -718,6 +726,15 @@ describe("VoiceSessionProvider with a scripted relay", () => {
         payload: { gateway_action_id: "location.open_settings" },
       });
     });
+    await waitFor(() => expect(harness.navigate).toHaveBeenCalledWith({
+      href: "/one/location?action=settings",
+      source: "voice",
+      transitionMode: "contextual",
+    }));
+    expect(server.frames("ui.settled")).toHaveLength(1);
+    await act(async () => {
+      window.history.pushState(null, "", "/one/location?action=settings");
+    });
     await waitFor(() => expect(server.frames("ui.settled")).toHaveLength(2));
     expect(server.frames("ui.settled")[1]).toEqual({
       type: "ui.settled",
@@ -725,6 +742,7 @@ describe("VoiceSessionProvider with a scripted relay", () => {
       status: "opened",
     });
     expect(harness.navigate).toHaveBeenCalledTimes(1);
+    window.history.replaceState(null, "", "/");
   });
 
   it("stop sends end, closes, releases the lease and lands idle", async () => {
