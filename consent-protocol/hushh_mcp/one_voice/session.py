@@ -188,6 +188,11 @@ class VoiceSession:
         self._pending_voice_turn_id: str | None = None
         self._pending_turn_ids: dict[str, str] = {}
         self._latest_input_turn_id: str | None = None
+        # Live can end a provider turn after a tool call, then continue the
+        # same person's request in a fresh provider turn. Wire frames keep
+        # that fresh turn ID so the client can display them after model_end;
+        # this map retains the input that owns its effects and stale checks.
+        self._turn_input_origins: dict[str, str] = {}
         self._directive_turn_ids: dict[str, str | None] = {}
         # A tool call can end its provider turn before Live speaks its reply.
         # Keep narration ownership through that continuation until new input
@@ -541,6 +546,7 @@ class VoiceSession:
                 input_id = self.turn.turn_id
                 self.turn.input_seen = True
             self._latest_input_turn_id = input_id
+            self._bind_turn_to_input(input_id, input_id)
             await self._send(
                 protocol.transcript(
                     "input",
@@ -623,16 +629,33 @@ class VoiceSession:
         )
 
     def _origin_is_stale(self, origin_turn_id: str | None) -> bool:
+        input_turn_id = self._turn_input_origins.get(origin_turn_id or "", origin_turn_id)
         return bool(
             origin_turn_id
             and (
                 origin_turn_id in self._superseded_turn_ids
+                or input_turn_id in self._superseded_turn_ids
                 or (
                     self._latest_input_turn_id is not None
-                    and origin_turn_id != self._latest_input_turn_id
+                    and input_turn_id != self._latest_input_turn_id
                 )
             )
         )
+
+    def _bind_turn_to_input(self, turn_id: str, input_turn_id: str) -> None:
+        if turn_id not in self._turn_input_origins and len(self._turn_input_origins) >= 512:
+            protected = {
+                *self._pending_turn_ids.values(),
+                *(str(step.get("origin_turn_id") or "") for step in self.client_steps.values()),
+                *self._directive_turn_ids.values(),
+                self.turn.turn_id,
+                self._narration_origin_turn_id,
+            }
+            for old_turn_id in self._turn_input_origins:
+                if old_turn_id not in protected:
+                    del self._turn_input_origins[old_turn_id]
+                    break
+        self._turn_input_origins[turn_id] = input_turn_id
 
     def _remember_directive(self, origin_turn_id: str | None) -> str:
         directive_id = uuid.uuid4().hex[:12]
@@ -1213,6 +1236,7 @@ class VoiceSession:
                     self._superseded_turn_ids.add(self.turn.turn_id)
                     self._pending_voice_turn_id = self._input_segment_id
             self._latest_input_turn_id = self._input_segment_id
+            self._bind_turn_to_input(self._input_segment_id, self._input_segment_id)
             if self._input_segment_id != self._narration_origin_turn_id:
                 self._narration_owns_response = False
                 self._narration_origin_turn_id = None
@@ -1280,25 +1304,33 @@ class VoiceSession:
 
     async def _advance_turn(self) -> None:
         finished_id = self.turn.turn_id
+        input_origin = self._turn_input_origins.get(finished_id)
         self._superseded_turn_ids.discard(finished_id)
         # Voice was already streamed to Live. Finish or fence that turn before
         # forwarding any typed question, otherwise its answer is mislabeled as
         # the typed question's answer.
         if self._pending_voice_turn_id:
             self.turn = TurnState(turn_id=self._pending_voice_turn_id, input_seen=True)
+            self._bind_turn_to_input(self.turn.turn_id, self.turn.turn_id)
             self._pending_voice_turn_id = None
             if self._queued_texts:
                 self._superseded_turn_ids.add(self.turn.turn_id)
         elif self._queued_texts:
             turn_id, text, _queued_at = self._queued_texts.popleft()
             self.turn = TurnState(turn_id=turn_id, input_seen=True)
+            self._bind_turn_to_input(turn_id, turn_id)
             if self._queued_texts:
                 self._superseded_turn_ids.add(turn_id)
             self._narration_owns_response = False
             self._narration_origin_turn_id = None
             await self.live.send_text(text)
         else:
-            self.turn = TurnState()
+            # No user input arrived during the provider turn. A later spoken
+            # transcript belongs to a new input segment, even though this
+            # model-only continuation has a fresh display turn ID.
+            self.turn = TurnState(input_transcript_completed=input_origin is not None)
+            if input_origin is not None:
+                self._bind_turn_to_input(self.turn.turn_id, input_origin)
 
     def _narration_guard(self) -> None:
         """Structural, not lexical: a turn that attempted a mutation which was
@@ -1478,7 +1510,7 @@ class VoiceSession:
         # is counts-only, so there is little to delay.
         narrated = (
             await self._narrate(outcome.result, origin_turn_id=origin_turn_id)
-            if origin_turn_id not in self._superseded_turn_ids
+            if not self._origin_is_stale(origin_turn_id)
             else False
         )
         response = outcome.result.model_public()
@@ -1529,7 +1561,7 @@ class VoiceSession:
         spoken = False
         try:
             async for chunk in narrate_digest_stream(digest, voice_name=voice_name()):
-                if origin_turn_id in self._superseded_turn_ids:
+                if self._origin_is_stale(origin_turn_id):
                     break
                 await self._send(
                     protocol.audio_out(

@@ -1235,6 +1235,7 @@ jobs:
           RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
           DRIVE_RUNTIME_CONFIG_SECRET: ${{ env.DRIVE_CANDIDATE_RUNTIME_SECRET }}
           ENABLE_PRODUCTION_DRIVE_LIVE: "true"
+          DRIVE_REQUEST_PAYMENTS_PROD_ENABLED: ${{ vars.DRIVE_REQUEST_PAYMENTS_PROD_ENABLED || 'false' }}
         run: |
           set -euo pipefail
           bash deploy/drive/deploy_worker_service_prod.sh

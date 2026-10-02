@@ -774,6 +774,40 @@ describe("reduceVoiceSession: tools and success", () => {
     ).toBeNull();
   });
 
+  it("retires a spoken-confirmed candidate before a later provider turn prepares mail", () => {
+    const picker = {
+      type: "candidate_picker" as const,
+      kind: "person" as const,
+      question: "Is this who you mean?",
+      candidates: [{ user_id: "u-ankit", display_name: "Ankit", relationship: "connected" }],
+    };
+    const offered = run([server(picker)], connected());
+    const unrelated = run([server({
+      type: "entity_card", kind: "person", user_id: "u-other", display_name: "Other",
+    })], offered);
+    expect(unrelated.candidatePicker).not.toBeNull();
+
+    const confirmed = run([
+      server({ type: "transcript.input", turn_id: "yes-turn", text: "Yes", final: true }),
+      server({
+        type: "entity_card", kind: "person", user_id: "u-ankit",
+        display_name: "Ankit", turn_id: "yes-turn",
+      }),
+    ], unrelated);
+    expect(confirmed.candidatePicker).toBeNull();
+    expect(confirmed.entities.some((entity) => entity.user_id === "u-ankit")).toBe(true);
+
+    const prepared = run([
+      server({ type: "turn", state: "model_end", turn_id: "yes-turn" }),
+      server(pendingActionFrame({
+        tool: "send_mail", summary: "Draft an email to Ankit",
+        turn_id: "continuation-turn",
+      })),
+    ], confirmed);
+    expect(prepared.pendingAction?.tool).toBe("send_mail");
+    expect(prepared.phase).toBe("confirming");
+  });
+
   it("(5) two pending actions in order: the newest is on screen; a stale resolution never clears it", () => {
     const first = pendingActionFrame({
       pending_action_id: "11111111-0000-4000-8000-000000000001",

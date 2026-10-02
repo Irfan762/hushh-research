@@ -1,5 +1,5 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
-import { useEffect } from "react";
+import { useEffect, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -105,6 +105,7 @@ import {
   VoiceSessionProvider,
   useVoiceSession,
 } from "@/components/one-voice/voice-session-provider";
+import { OneVoicePanel } from "@/components/one-voice/one-voice-panel";
 
 /** A client fake that answers connect() with session.ready and reports close. */
 class FakeClient {
@@ -148,7 +149,8 @@ class FakeClient {
   sendAppContext() {
     this.sent.push("app_context");
   }
-  pendingShown() {
+  pendingShown(pendingActionId: string) {
+    this.sent.push(`pending_shown:${pendingActionId}`);
     return true;
   }
   confirm() {
@@ -207,7 +209,30 @@ function Probe() {
   return <output data-testid="phase">{session.state.phase}</output>;
 }
 
-function mount(enabled = true) {
+function PendingPanelProbe() {
+  const session = useVoiceSession();
+  return session.state.pendingAction?.resolvedStatus === null
+    ? <OneVoicePanel state={session.state} controller={session} />
+    : null;
+}
+
+function mockVisiblePendingGeometry(offscreenUntilScrolled = false) {
+  const rect = (top: number, bottom: number) => ({
+    x: 0, y: top, left: 0, top, right: 320, bottom,
+    width: 320, height: bottom - top, toJSON: () => ({}),
+  }) as DOMRect;
+  return vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.matches('[data-testid="one-voice-panel"]')) return rect(50, 450);
+    if (this.matches("[data-pending-action-id]")) {
+      const panel = this.closest<HTMLElement>('[data-testid="one-voice-panel"]');
+      const top = offscreenUntilScrolled && !panel?.scrollTop ? 500 : 100;
+      return rect(top, top + 160);
+    }
+    return rect(0, 0);
+  });
+}
+
+function mount(enabled = true, children?: ReactNode) {
   const capture = new FakeCapture();
   const deps = {
     createClient: (options: OneLiveClientOptions) => new FakeClient(options),
@@ -223,6 +248,7 @@ function mount(enabled = true) {
   const view = render(
     <VoiceSessionProvider enabled={enabled} deps={deps}>
       <Probe />
+      {children}
     </VoiceSessionProvider>,
   );
   return { capture, deps, rerender: view.rerender };
@@ -414,6 +440,69 @@ describe("VoiceSessionProvider ownership", () => {
       client.options.onFrame({ type: "audio", turn_id: "b", origin_turn_id: "b", data: "AAAA", mime_type: "audio/pcm;rate=24000" });
     });
     expect(enqueue).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not acknowledge a pending action when its card is absent", async () => {
+    mount();
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const pending = pendingActionFrame();
+
+    await act(async () => client.options.onFrame(pending));
+    expect(controller!.state.pendingAction?.pending_action_id).toBe(pending.pending_action_id);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(client.sent).not.toContain(`pending_shown:${pending.pending_action_id}`);
+  });
+
+  it("acknowledges the exact pending card after React mounts it on screen", async () => {
+    mockVisiblePendingGeometry();
+    mount(true, <PendingPanelProbe />);
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const pending = pendingActionFrame();
+
+    await act(async () => client.options.onFrame(pending));
+    expect(screen.getByTestId("one-voice-pending-action").getAttribute("data-pending-action-id"))
+      .toBe(pending.pending_action_id);
+    expect(client.sent).not.toContain(`pending_shown:${pending.pending_action_id}`);
+    await waitFor(() =>
+      expect(client.sent).toContain(`pending_shown:${pending.pending_action_id}`),
+    );
+    expect(client.sent.filter((sent) => sent === `pending_shown:${pending.pending_action_id}`))
+      .toHaveLength(1);
+  });
+
+  it("scrolls a pending card below a long panel into view before acknowledging it", async () => {
+    mockVisiblePendingGeometry(true);
+    mount(true, <PendingPanelProbe />);
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const pending = pendingActionFrame();
+
+    await act(async () => client.options.onFrame(pending));
+    const panel = screen.getByTestId("one-voice-panel");
+    expect(client.sent).not.toContain(`pending_shown:${pending.pending_action_id}`);
+    await waitFor(() => expect(panel.scrollTop).toBeGreaterThan(0));
+    await waitFor(() =>
+      expect(client.sent).toContain(`pending_shown:${pending.pending_action_id}`),
+    );
+  });
+
+  it("does not acknowledge a mounted pending card hidden by its panel ancestor", async () => {
+    mockVisiblePendingGeometry();
+    mount(true, <div style={{ visibility: "hidden" }}><PendingPanelProbe /></div>);
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const pending = pendingActionFrame();
+
+    await act(async () => client.options.onFrame(pending));
+    expect(screen.getByTestId("one-voice-pending-action")).toBeTruthy();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    });
+    expect(client.sent).not.toContain(`pending_shown:${pending.pending_action_id}`);
   });
 
   it("does not deliver a superseded Mail result or directive to screen handlers", async () => {

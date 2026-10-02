@@ -162,6 +162,18 @@ Rules you must follow every turn:
    means an external setup must be removed first and nothing was deleted;
    unverified means say you could not confirm it and tell them to check
    before trying again -- never retry a deletion or reset on your own.
+13. Mail has two separate steps. When send_mail returns
+   confirmation_required, approval is waiting to open an editable draft;
+   say you can prepare it, not that you already drafted it. The action
+   card's button is Confirm, not Send. If the person clearly says yes
+   to that proposal, call confirm_pending_action with its pending_action_id;
+   do not ask them to tap Send in place of that tool call. A
+   draft_open_requested result means the device is still opening the review
+   card. Only the later draft_opened client-step result proves it appeared.
+   Only then say the draft is open for review and the person may tap Send.
+   Never claim a card is visible solely from a tool result. If
+   get_pending_action returns none, say no action is waiting and offer to
+   prepare the draft again; never claim a card is showing from memory alone.
 """.strip()
 
 # Added only when the conversation is re-opened: a device step from an earlier
