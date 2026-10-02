@@ -205,8 +205,15 @@ def _validate_connector_rollout(args: argparse.Namespace) -> None:
     if args.environment == "production" and (prod_cohort or all_prod_users) and not enabled:
         raise ValueError("Production connector audience requires enabled rollout flags")
     candidate_secret = str(getattr(args, "production_drive_candidate_secret", "") or "")
-    if args.environment == "production" and enabled and not re.fullmatch(
-        r"BACKEND_RUNTIME_CONFIG_JSON_DRIVE_[1-9][0-9]*_[1-9][0-9]*", candidate_secret
+    if args.environment == "production" and (
+        (enabled and not candidate_secret)
+        or (
+            candidate_secret
+            and not re.fullmatch(
+                r"BACKEND_RUNTIME_CONFIG_JSON_DRIVE_[1-9][0-9]*_[1-9][0-9]*",
+                candidate_secret,
+            )
+        )
     ):
         raise ValueError("Production Drive rollout requires a per-release candidate secret")
     if candidate_secret and args.environment != "production":
@@ -324,13 +331,11 @@ def _build_backend_runtime_config(args: argparse.Namespace) -> dict[str, Any]:
 def _split_production_drive_candidate_config(
     args: argparse.Namespace, config: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    if args.environment != "production" or not any(
-        getattr(args, name, "false") == "true" for name in CONNECTOR_ROLLOUT_FLAGS
-    ):
+    if args.environment != "production" or not args.production_drive_candidate_secret:
         return config, None
-    # Existing serving revisions may read canonical :latest at runtime. A
-    # candidate release must never write that secret before its runtime and
-    # worker have been attested, including on a retry of the same run ID.
+    # Existing serving revisions may read canonical :latest at runtime.
+    # Every backend release writes only its own candidate, even when Drive is
+    # disabled, so any new config flag becomes live only with the new revision.
     return None, dict(config)
 
 
@@ -618,8 +623,8 @@ def main() -> int:
         )
         sync_summary.append("BACKEND_RUNTIME_CONFIG_JSON")
     # Existing production revisions may read canonical :latest at runtime.
-    # During an enabled Drive release leave it untouched. The candidate,
-    # registry, and worker are attested before app traffic is promoted.
+    # Leave canonical :latest untouched for every candidate release. The
+    # candidate is attested before app traffic is promoted.
     if candidate_runtime_config is not None:
         _upsert_secret(
             args.project,
