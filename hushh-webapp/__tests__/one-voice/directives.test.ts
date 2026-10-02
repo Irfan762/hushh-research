@@ -125,22 +125,24 @@ describe("resolveNavigateTarget", () => {
   });
 
   it("opens Privacy at the canonical Sharing pane location", () => {
-    const privacy = resolveNavigateTarget(
-      { gateway_action_id: "route.profile_privacy" },
-      LOCATION,
-    );
-    expect(privacy).toEqual({
-      kind: "route",
-      href: "/one?from=%2Fone%2Flocation&profile_pane=1&profile_panel=my-data&profile_detail=sharing",
-      observe: {
-        kind: "profile_route",
-        path: "/one/profile/access",
-        paneKey: "my-data:sharing",
-      },
-    });
-    if (!privacy || privacy.kind !== "route") throw new Error("Privacy must have a route");
-    expect(resolveProfilePaneUrlState(new URL(privacy.href, "https://one.test").search))
-      .toEqual({ open: true, location: { panel: "my-data", detail: "sharing" } });
+    for (const actionId of ["route.profile_privacy", "route.profile_access_panel"]) {
+      const privacy = resolveNavigateTarget(
+        { gateway_action_id: actionId },
+        LOCATION,
+      );
+      expect(privacy).toEqual({
+        kind: "route",
+        href: "/one?from=%2Fone%2Flocation&profile_pane=1&profile_panel=my-data&profile_detail=sharing",
+        observe: {
+          kind: "profile_route",
+          path: "/one/profile/access",
+          paneKey: "my-data:sharing",
+        },
+      });
+      if (!privacy || privacy.kind !== "route") throw new Error("Privacy must have a route");
+      expect(resolveProfilePaneUrlState(new URL(privacy.href, "https://one.test").search))
+        .toEqual({ open: true, location: { panel: "my-data", detail: "sharing" } });
+    }
   });
 
   it("resolves Voice settings to a Profile route observed at its detail", () => {
