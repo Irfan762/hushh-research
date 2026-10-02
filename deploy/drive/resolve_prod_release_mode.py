@@ -68,7 +68,10 @@ def _active_state(revision: dict[str, Any], runtime: dict[str, Any]) -> bool:
         return True
     if (
         any(value == "true" for value in flags.values())
-        or secret_name != "BACKEND_RUNTIME_CONFIG_JSON"
+        or (
+            secret_name != "BACKEND_RUNTIME_CONFIG_JSON"
+            and not CANDIDATE_SECRET.fullmatch(secret_name)
+        )
     ):
         raise DriveReleaseStateError("Serving disabled Drive release is inconsistent")
     return False
