@@ -8657,9 +8657,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : null}
 
+              {/* While voice is live the voice card is the interface, so the
+                  welcome panel stands down rather than sharing the canvas with
+                  it. The card is an `absolute bottom-0` overlay and this panel
+                  is centred in the scroll area below it, so on a short phone
+                  viewport the two land on each other. Spacing them apart would
+                  only hold until the next shorter viewport; not rendering both
+                  cannot collide on any screen. Nothing is lost: the panel's
+                  prompts feed the text composer, which voice has already
+                  replaced and disabled. */}
               {chatOnboarding.turns.length ? (
                 renderChatOnboarding({ kind: "top" })
-              ) : !hasStartedConversation ? (
+              ) : !hasStartedConversation && !voiceActive ? (
                 <>
                   <AgentWelcomePanel
                     name={displayName}
