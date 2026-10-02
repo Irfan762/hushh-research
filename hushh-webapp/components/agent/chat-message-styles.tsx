@@ -52,9 +52,9 @@ export function OneChatBubble({
 
 /** The centered date/time marker that starts a One chat message group. */
 export function OneChatTimeSeparator({
-  accessibleLabel = label,
   dateTime,
   label,
+  accessibleLabel = label,
 }: {
   accessibleLabel?: string;
   dateTime?: string;
