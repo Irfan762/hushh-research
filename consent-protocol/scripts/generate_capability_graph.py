@@ -774,7 +774,11 @@ def _merged_workflow_predecessor_refs(base_ref: str | None = None) -> tuple[str,
     return ()
 
 
-def _merge_workflow_predecessor(graph: dict[str, Any], predecessor: dict[str, Any]) -> None:
+def _merge_workflow_predecessor(
+    graph: dict[str, Any],
+    predecessor: dict[str, Any],
+    deprecations: tuple[dict[str, Any], ...] = (),
+) -> None:
     """Preserve a merged branch's history only after proving its workflow semantics."""
 
     current = _workflow_by_id(graph)
@@ -786,6 +790,13 @@ def _merge_workflow_predecessor(graph: dict[str, Any], predecessor: dict[str, An
         equal = _semantic_index({"workflows": [old]}) == _semantic_index(
             {"workflows": [new] if new else []}
         )
+        retired = not equal and _semantic_change_has_deprecation(
+            predecessor, graph, semantic_id, deprecations
+        )
+        if retired:
+            # The exact deprecation record rejects active runs on the old graph.
+            # Do not merge that predecessor into current compatibility.
+            continue
         if not equal and not _workflow_change_is_additive(predecessor, graph, semantic_id):
             raise RuntimeError(f"Workflow predecessor is not compatible: {workflow_id}")
         entry = entries[workflow_id]
@@ -861,7 +872,11 @@ def build_payload(
         (*workflow_predecessor_refs, *_merged_workflow_predecessor_refs(base_ref))
     )
     for ref in predecessors:
-        _merge_workflow_predecessor(graph, _read_workflow_predecessor(ref))
+        _merge_workflow_predecessor(
+            graph,
+            _read_workflow_predecessor(ref),
+            deprecations,
+        )
     return graph
 
 
