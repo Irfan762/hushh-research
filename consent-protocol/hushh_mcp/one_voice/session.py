@@ -64,6 +64,7 @@ _NOT_SUCCESS = {
     "tap_required",
     "card_not_shown",
     "firebase_proof_required",
+    "draft_open_unconfirmed",
 }
 # A client-executed step is still outstanding: neither a receipt nor a
 # rejection. It never counts as ok (so the turn cannot read "complete") and
@@ -72,6 +73,7 @@ _NOT_SUCCESS = {
 # review screen is open and nothing has been accepted yet.
 _AWAITING_DEVICE = frozenset(
     {
+        "draft_open_requested",
         protocol.LOCATION_UPDATES_PENDING,
         "scope_review_required",
         protocol.SOS_GRANTS_CREATED,
@@ -81,6 +83,7 @@ _AWAITING_DEVICE = frozenset(
 )
 _CONFIRMED_CONTINUATION_STEPS = frozenset(
     {
+        "open_mail_draft",
         "publish_location_envelopes",
         "set_location_updates",
         "account_lifecycle",
@@ -404,6 +407,24 @@ class VoiceSession:
     async def _record_close(self) -> None:
         if self._conversation is None or self._ctx is None:
             return
+        # A lost socket cannot prove whether the review card appeared. Settle
+        # every outstanding mail step as unconfirmed before the session leaves.
+        for step_id, step in list(self.client_steps.items()):
+            if step.get("kind") != "open_mail_draft":
+                continue
+            self.client_steps.pop(step_id, None)
+            pending = step.get("pending")
+            if not isinstance(pending, PendingAction):
+                continue
+            try:
+                await self.pending.settle_mail_draft_step(
+                    user_id=self.ctx.user_id,
+                    pending_action_id=pending.id,
+                    opened=False,
+                    uncertain=True,
+                )
+            except Exception:  # noqa: BLE001 - close ledger still needs a chance to run
+                logger.warning("one_voice.mail_draft.close_settle_failed")
         try:
             await self.conversations.bump(
                 user_id=self.ctx.user_id,
@@ -433,6 +454,21 @@ class VoiceSession:
         while not self._closed:
             await asyncio.sleep(1.0)
             now = self.clock()
+            for step_id, step in list(self.client_steps.items()):
+                if step.get("kind") != "open_mail_draft" or now <= float(
+                    step.get("expires_at") or 0
+                ):
+                    continue
+                self.client_steps.pop(step_id, None)
+                await self._settle_mail_draft_step(
+                    step,
+                    protocol.ClientStepResultFrame(
+                        type="client_step.result",
+                        step_id=step_id,
+                        status="failed",
+                        payload={"reason": "timeout"},
+                    ),
+                )
             elapsed = now - self.started_at
             if (
                 self._queued_texts
@@ -819,6 +855,9 @@ class VoiceSession:
         if step.get("kind") == "account_lifecycle":
             await self._settle_account_lifecycle_step(step, frame)
             return
+        if step.get("kind") == "open_mail_draft":
+            await self._settle_mail_draft_step(step, frame)
+            return
         event: dict[str, Any] = {
             "kind": "client_step",
             "step": step.get("kind"),
@@ -866,6 +905,53 @@ class VoiceSession:
                 )
         if not self._origin_is_stale(str(step.get("origin_turn_id") or "") or None):
             await self._inject_event(event)
+
+    async def _settle_mail_draft_step(
+        self, step: dict[str, Any], frame: protocol.ClientStepResultFrame
+    ) -> None:
+        """A review card is open only after the owning UI confirms its mount."""
+        pending = step.get("pending")
+        if not isinstance(pending, PendingAction):
+            return
+        opened = (
+            frame.status == "ok"
+            and frame.payload.get("mounted") is True
+            and self.clock() <= float(step.get("expires_at") or 0)
+        )
+        uncertain = not opened and (
+            self.clock() > float(step.get("expires_at") or 0)
+            or frame.payload.get("reason") in {"timeout", "no_handler", "surface_unmounted"}
+        )
+        settled = await self.pending.settle_mail_draft_step(
+            user_id=self.ctx.user_id,
+            pending_action_id=pending.id,
+            opened=opened,
+            uncertain=uncertain,
+        )
+        if settled is None:
+            return
+        await self._send(
+            protocol.pending_resolved(
+                pending_action_id=settled.id,
+                status=settled.status,
+                result_public=settled.result,
+            )
+        )
+        if not self._origin_is_stale(str(step.get("origin_turn_id") or "") or None):
+            await self._inject_event(
+                {
+                    "kind": "client_step",
+                    "step": "open_mail_draft",
+                    "status": "ok" if opened else "failed",
+                    "spoken_facts": [
+                        "The draft is open for review. It has not been sent."
+                        if opened
+                        else "I couldn't confirm the draft opened. Nothing was sent."
+                        if uncertain
+                        else "The draft did not open. Nothing was sent."
+                    ],
+                }
+            )
 
     async def _settle_sos_publish_step(
         self, step: dict[str, Any], frame: protocol.ClientStepResultFrame
@@ -1241,11 +1327,15 @@ class VoiceSession:
         )
         self.turn.tool_calls += 1
         self._bump(tool_calls=1)
+        spec = registry.get_tool(name)
         await self._send(
             protocol.tool_started(
                 call_id=str(call_id or ""),
                 tool=name,
-                args_public=_public_args(args),
+                args_public=_public_args(
+                    args,
+                    hidden_fields=spec.private_args if spec is not None else (),
+                ),
                 turn_id=origin_turn_id,
             )
         )
@@ -1613,10 +1703,12 @@ class VoiceSession:
         )
 
 
-def _public_args(args: dict[str, Any]) -> dict[str, Any]:
+def _public_args(args: dict[str, Any], *, hidden_fields: tuple[str, ...] = ()) -> dict[str, Any]:
     """Arguments are canonical ids and short strings; still bound the size."""
     out: dict[str, Any] = {}
     for key, value in list(args.items())[:12]:
+        if key in hidden_fields:
+            continue
         if isinstance(value, (str, int, float, bool)) or value is None:
             out[key] = value if not isinstance(value, str) else value[:120]
         elif isinstance(value, dict):

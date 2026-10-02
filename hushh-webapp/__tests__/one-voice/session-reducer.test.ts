@@ -1099,6 +1099,7 @@ describe("reduceVoiceSession: Save My Soul", () => {
   it("classifies the delivery, stop and roster statuses: only sos_sent and sos_stopped may succeed", () => {
     expect(toolResultTone("sos_sent", true)).toBe("success");
     expect(toolResultTone("sos_stopped", true)).toBe("success");
+    expect(toolResultTone("draft_open_unconfirmed", false)).toBe("neutral");
     for (const status of [
       "sos_partial",
       "sos_not_sent",
