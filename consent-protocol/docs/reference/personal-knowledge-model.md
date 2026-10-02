@@ -407,6 +407,58 @@ implementations of one rule drift, a shared table cannot.
 application state entering the model and stops the existing rows being offered;
 evicting what is already stored is an upgrade step that has not run.
 
+## Reserved branches: what an app feature owns
+
+Some branches exist because an app feature needs them to work: Finance holdings
+and sources, RIA picks and regulator facts, Location saved places and visit
+ratings, the KYC identity profile and documents, communication preferences,
+Wallet, Gmail receipts, KYC internals and runtime credentials. Only that
+feature's own controls should change them. The private agent's memory pipeline
+should keep a chat fact about one of these areas in the area's `agent_memory`
+sibling instead, and offer to open the feature's screen.
+
+**The contract.** `contracts/pkm/reserved-branches.v1.json` is a hand-authored
+truth table, copied byte-for-byte into `consent-protocol/contracts/pkm/` (the
+backend image is built from `consent-protocol/`) and `hushh-webapp/contracts/pkm/`.
+It holds two things:
+
+- `writers`: the closed catalogue of writer ids. A writer id is the `source` of
+  a PKM write authorization, which reaches the server as `mutation_plan.writer_id`.
+  Each writer has a `class`: `feature` (an app feature's own control),
+  `memory_agent` (chat saves, auto-capture and connector memory review), or
+  `migration` (the upgrade gate, authorized by its server-verified upgrade claim).
+- `entries`: one per reserved branch, with the writers allowed to change it, the
+  `agent_memory_sibling`, the `offer_action` route (checked against the route
+  orchestration index and the action gateway), and the declared `shareable` and
+  `send_to_model` policies.
+
+**The rule.** A write is refused when it touches a reserved branch and its writer
+is unknown, is a `memory_agent`, or is not listed on that entry. `migration`
+writers are never refused by this registry. Both loaders implement the same rule:
+`hushh_mcp/consent/reserved_branches.py` and `hushh-webapp/lib/pkm/reserved-branches.ts`.
+
+**Today it only counts (shadow mode).** Nothing is refused yet.
+
+- The server (`_shadow_reserved_branch_write` in `api/routes/pkm_routes_shared.py`,
+  on `/api/pkm/store-domain`) reads the branches it can see, the mutation plan's
+  `proposed_scope` and the structure decision's paths, and logs
+  `pkm.reserved_would_refuse domain=<d> branch=<b> writer=<w> reason=<r>`.
+- The device (`PkmWriteCoordinator`) compares each reserved branch before and
+  after the write. That catches a change smuggled behind an innocent scope, which
+  the server cannot see because every segment is re-encrypted on each write. It
+  increments a session counter and writes a console debug line.
+
+Neither side logs a stored value, and a failure inside the shadow check never
+changes the outcome of a save.
+
+**Keeping the catalogue honest.** `hushh-webapp/__tests__/lib/pkm/reserved-branches.test.ts`
+parses the webapp source, collects every writer label (including labels forwarded
+through `WalletService`, saved-locations, portfolio-source and connector-review
+helpers), and fails when a label has no registry entry or a registry writer has no
+code behind it. `consent-protocol/tests/test_reserved_branches.py` covers the
+copies, the shared rules and the server log line. A new writer means a new
+registry entry in the same change.
+
 ## Storage rules
 
 - New writes are PKM-only.

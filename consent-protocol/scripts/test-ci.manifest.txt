@@ -338,6 +338,9 @@ tests/test_information_chat_service.py
 # reporting as one that ran. None of them is caught by a type error or a 500.
 tests/test_consent_lifecycle_chat.py
 tests/test_internal_path_keys.py
+# Reserved-branch registry: three identical copies, the shadow hook that logs a
+# would-be refusal with labels only, and the server writer labels it catalogues.
+tests/test_reserved_branches.py
 tests/test_scope_catalog_self_corrects_stale_rows.py
 tests/services/test_structure_decision_is_the_models.py
 tests/services/test_intent_frame_is_the_models.py

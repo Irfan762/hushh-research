@@ -84,6 +84,7 @@ vi.mock("@/lib/personal-knowledge-model/upgrade-contracts", () => ({
 }));
 
 import {
+  getReservedWouldRefuseShadowCount,
   PkmWriteCoordinator,
 } from "@/lib/services/pkm-write-coordinator";
 
@@ -634,6 +635,55 @@ describe("PkmWriteCoordinator", () => {
       expect(result.saveState).toBe("failed");
       expect(result.message).toMatch(/sharing changed/i);
       expect(result.message).toMatch(/confirm again/i);
+    });
+  });
+  describe("reserved-branch shadow (contracts/pkm/reserved-branches.v1.json)", () => {
+    const smuggledWrite = (source: string) =>
+      PkmWriteCoordinator.savePreparedDomain({
+        ...BASE_PARAMS,
+        domain: "identity",
+        confirmation: { confirmedByUser: true, surface: "chat", source },
+        build: () => ({
+          // The scope says agent_memory; the payload also rewrites a document.
+          domainData: {
+            agent_memory: { entities: { mem_1: { summary: "Prefers email" } } },
+            identity_documents: { passport_number: "SMUGGLED-B2" },
+          },
+          summary: { item_count: 1 },
+          scopePath: "agent_memory",
+        }),
+      });
+
+    beforeEach(() => {
+      stubNoUpgradeNeeded();
+      stubWriteContext({ domainData: { identity_documents: { passport_number: "STORED-A1" } } });
+      pkmStorePreparedDomainMock.mockResolvedValue({ success: true, conflict: false, dataVersion: 2, fullBlob: {} });
+    });
+
+    it("counts a memory agent's smuggled identity_documents change, logs no value, and still saves", async () => {
+      const debug = vi.spyOn(console, "debug").mockImplementation(() => {});
+      const before = getReservedWouldRefuseShadowCount();
+      const result = await smuggledWrite("agent_chat_owner_request");
+
+      expect(result.success).toBe(true);
+      expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
+      expect(getReservedWouldRefuseShadowCount() - before).toBe(1);
+      expect(debug).toHaveBeenCalledWith("[PkmWriteCoordinator] pkm.reserved_would_refuse", {
+        domain: "identity",
+        branch: "identity_documents",
+        writer: "agent_chat_owner_request",
+        reason: "memory_agent",
+      });
+      expect(JSON.stringify(debug.mock.calls)).not.toMatch(/SMUGGLED|STORED/);
+      debug.mockRestore();
+    });
+
+    it("does not count the same change from the writer the registry lists (negative control)", async () => {
+      const before = getReservedWouldRefuseShadowCount();
+      const result = await smuggledWrite("agent_chat_kyc_owner_confirmed");
+
+      expect(result.success).toBe(true);
+      expect(getReservedWouldRefuseShadowCount() - before).toBe(0);
     });
   });
 });

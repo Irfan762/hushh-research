@@ -42,6 +42,9 @@ RUNTIME_CONTRACTS = (
     # continuation strip and the Shared with you card on every request.
     ("consent", "field-sensitivity.v1.json"),
     ("consent", "field-labels.v1.json"),
+    # Reserved-branch registry (2026-10-01): read by the store-domain shadow
+    # hook on every PKM write, so it must ship inside the image.
+    ("pkm", "reserved-branches.v1.json"),
 )
 
 

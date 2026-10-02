@@ -1,0 +1,352 @@
+// @vitest-environment node
+import fs from "node:fs";
+import path from "node:path";
+import ts from "typescript";
+import { describe, expect, it } from "vitest";
+import gateway from "@/contracts/kai/kai-action-gateway.vnext.json";
+import routeIndex from "@/contracts/kai/one-route-orchestration-index.v1.json";
+import contract from "@/contracts/pkm/reserved-branches.v1.json";
+import {
+  evaluateReservedWrite,
+  isReservedPath,
+  reservedEntryFor,
+  touchedReservedBranches,
+  writer,
+} from "@/lib/pkm/reserved-branches";
+
+/**
+ * `contracts/pkm/reserved-branches.v1.json` decides which PKM branches belong to
+ * an app feature and which writers may change them. Phase 0 only counts what it
+ * WOULD refuse, so the contract has to be right before anything enforces it:
+ * every writer label in code catalogued, every copy identical, every offer
+ * pointing at a real screen.
+ */
+
+const WEB_ROOT = process.cwd();
+const REPO_ROOT = path.resolve(WEB_ROOT, "..");
+const CONTRACT_FILE = path.join("contracts", "pkm", "reserved-branches.v1.json");
+
+const writerIds = Object.keys(contract.writers).filter((key) => !key.startsWith("$"));
+
+describe("reserved-branch contract packaging", () => {
+  it("keeps all three copies byte-for-byte identical", () => {
+    const canonical = fs.readFileSync(path.join(REPO_ROOT, CONTRACT_FILE));
+    for (const mirror of [
+      path.join(WEB_ROOT, CONTRACT_FILE),
+      path.join(REPO_ROOT, "consent-protocol", CONTRACT_FILE),
+    ]) {
+      expect(fs.readFileSync(mirror).equals(canonical), mirror).toBe(true);
+    }
+  });
+
+  it("only names catalogued writers on its entries", () => {
+    for (const entry of contract.entries) {
+      for (const writerId of entry.writer_ids) {
+        expect(writerIds, `${entry.domain}.${entry.branch_prefix}`).toContain(writerId);
+      }
+    }
+  });
+
+  it("offers only routes and actions the generated contracts define", () => {
+    const routes = new Set(routeIndex.routes.map((route) => route.route_pattern));
+    const actions = new Map(
+      (gateway.actions as Array<{ action_id: string; execution_target?: { path?: string; target?: string } }>).map(
+        (action) => [action.action_id, action],
+      ),
+    );
+    for (const entry of contract.entries) {
+      const offer = entry.offer_action as { route_pattern: string; action_id: string } | null;
+      if (!offer) continue;
+      expect(routes.has(offer.route_pattern), offer.route_pattern).toBe(true);
+      const action = actions.get(offer.action_id);
+      expect(action, offer.action_id).toBeDefined();
+      if (action?.execution_target?.path === "route") {
+        expect(action.execution_target.target, offer.action_id).toBe(offer.route_pattern);
+      }
+    }
+  });
+});
+
+describe("reserved-branch loader", () => {
+  it("reserves a wildcard domain apart from its except branch", () => {
+    expect(reservedEntryFor("financial", "portfolio.holdings")?.ownerFeature).toBe("finance");
+    expect(reservedEntryFor("financial", "")?.ownerFeature).toBe("finance");
+    expect(reservedEntryFor("financial", "agent_memory")).toBeNull();
+    expect(reservedEntryFor("financial", "agent_memory.entities.mem_1")).toBeNull();
+  });
+
+  it("matches a prefix on a segment boundary, never a substring", () => {
+    expect(isReservedPath("location", "saved_places")).toBe(true);
+    expect(isReservedPath("location", "Saved_Places.home.label")).toBe(true);
+    expect(isReservedPath("location", "saved_places_archive")).toBe(false);
+    expect(isReservedPath("location", "agent_memory")).toBe(false);
+    expect(isReservedPath("food", "preferences")).toBe(false);
+  });
+
+  it("refuses an unknown writer and a memory agent, and allows a listed feature", () => {
+    expect(writer("not_a_registered_writer")).toBeNull();
+    const paths = ["saved_places.home"];
+    expect(evaluateReservedWrite({ domain: "location", paths, writerId: "not_a_registered_writer" })).toEqual([
+      { domain: "location", branch: "saved_places", writerId: "not_a_registered_writer", reason: "writer_unknown" },
+    ]);
+    expect(evaluateReservedWrite({ domain: "location", paths, writerId: "agent_chat_owner_request" })[0]?.reason).toBe(
+      "memory_agent",
+    );
+    expect(evaluateReservedWrite({ domain: "location", paths, writerId: "kai_dashboard_portfolio_save" })[0]?.reason).toBe(
+      "writer_not_listed",
+    );
+    expect(evaluateReservedWrite({ domain: "location", paths, writerId: "one_location_saved_place_confirm" })).toEqual([]);
+  });
+
+  it("never refuses the upgrade gate, and ignores non-reserved paths", () => {
+    expect(evaluateReservedWrite({ domain: "wallet", paths: ["summary"], writerId: "pkm_upgrade_orchestrator" })).toEqual([]);
+    expect(evaluateReservedWrite({ domain: "financial", paths: ["agent_memory"], writerId: "agent_chat_owner_request" })).toEqual([]);
+  });
+});
+
+describe("device-side reserved diff", () => {
+  it("catches an identity_documents change smuggled behind an agent_memory scope", () => {
+    const touched = touchedReservedBranches({
+      domain: "identity",
+      before: { identity_documents: { passport_number: "A1" }, agent_memory: {} },
+      after: {
+        agent_memory: { entities: { mem_1: { summary: "Prefers email" } } },
+        identity_documents: { passport_number: "B2" },
+      },
+    });
+    expect(touched).toEqual(["identity_documents"]);
+    expect(evaluateReservedWrite({ domain: "identity", paths: touched, writerId: "agent_chat_owner_request" })).toEqual([
+      { domain: "identity", branch: "identity_documents", writerId: "agent_chat_owner_request", reason: "memory_agent" },
+    ]);
+  });
+
+  it("does not count an unchanged reserved branch or bookkeeping keys", () => {
+    expect(
+      touchedReservedBranches({
+        domain: "financial",
+        before: { updated_at: "1", domain_intent: { source: "a" }, portfolio: { holdings: [1] } },
+        after: {
+          updated_at: "2",
+          domain_intent: { source: "b" },
+          portfolio: { holdings: [1] },
+          agent_memory: { entities: {} },
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("counts a branch dropped by replace_domain and one targeted by delete_entity", () => {
+    const before = { saved_places: { home: {} }, visit_notes: { cafe: {} } };
+    expect(
+      touchedReservedBranches({ domain: "location", before, after: { visit_notes: { cafe: {} } }, mergeMode: "replace_domain" }),
+    ).toEqual(["saved_places"]);
+    expect(
+      touchedReservedBranches({
+        domain: "location",
+        before,
+        after: {},
+        mergeMode: "delete_entity",
+        deleteTargetPath: "visit_notes.entities.cafe",
+      }),
+    ).toEqual(["visit_notes"]);
+  });
+});
+
+/* ---------- writer inventory ---------- */
+
+type SourceFile = { file: string; text: string };
+type Inventory = { labels: Map<string, string[]>; templates: Array<{ pattern: RegExp; site: string }>; unresolved: string[] };
+
+function propertyNamed(node: ts.ObjectLiteralExpression, name: string): ts.ObjectLiteralElementLike | undefined {
+  return node.properties.find((property) => property.name && ts.isIdentifier(property.name) && property.name.text === name);
+}
+
+function topLevelStringConstants(sourceFile: ts.SourceFile): Map<string, string> {
+  const constants = new Map<string, string>();
+  for (const statement of sourceFile.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      const initializer = declaration.initializer;
+      if (ts.isIdentifier(declaration.name) && initializer && ts.isStringLiteralLike(initializer)) {
+        constants.set(declaration.name.text, initializer.text);
+      }
+    }
+  }
+  return constants;
+}
+
+/** The name callers use for the function that forwards `node`'s value. */
+function enclosingFunctionName(node: ts.Node): string | null {
+  for (let cursor: ts.Node | undefined = node.parent; cursor; cursor = cursor.parent) {
+    if ((ts.isFunctionDeclaration(cursor) || ts.isMethodDeclaration(cursor)) && cursor.name && ts.isIdentifier(cursor.name)) {
+      return cursor.name.text;
+    }
+    if (ts.isArrowFunction(cursor) || ts.isFunctionExpression(cursor)) {
+      // `const f = () => ...` or a wrapped `const f = useCallback(() => ...)`.
+      // A plain `const result = await call(...)` is not a function and must
+      // not be mistaken for one, or its callers would never be scanned.
+      const holder = ts.isCallExpression(cursor.parent) ? cursor.parent.parent : cursor.parent;
+      if (holder && ts.isVariableDeclaration(holder) && ts.isIdentifier(holder.name)) return holder.name.text;
+      return null;
+    }
+  }
+  return null;
+}
+
+function parse(source: SourceFile): ts.SourceFile {
+  const kind = source.file.endsWith("x") ? ts.ScriptKind.TSX : ts.ScriptKind.TS;
+  return ts.createSourceFile(source.file, source.text, ts.ScriptTarget.Latest, true, kind);
+}
+
+/**
+ * Every writer label a PKM write authorization can carry. An authorization is
+ * any object literal with `confirmedByUser` or `authorizationMode`; its `source`
+ * is the writer id. A `source` forwarded from a parameter is resolved at the
+ * forwarding function's call sites, so a new caller with a new label is caught.
+ */
+function collectWriterLabels(sources: SourceFile[]): Inventory {
+  const inventory: Inventory = { labels: new Map(), templates: [], unresolved: [] };
+  const forwarders = new Set<string>();
+  const add = (label: string, site: string) => inventory.labels.set(label, [...(inventory.labels.get(label) ?? []), site]);
+
+  const resolve = (expression: ts.Expression, sourceFile: ts.SourceFile, site: string, allowForward: boolean): void => {
+    if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) {
+      resolve(expression.expression, sourceFile, site, allowForward);
+    } else if (ts.isStringLiteralLike(expression)) {
+      add(expression.text, site);
+    } else if (ts.isConditionalExpression(expression)) {
+      resolve(expression.whenTrue, sourceFile, site, allowForward);
+      resolve(expression.whenFalse, sourceFile, site, allowForward);
+    } else if (ts.isTemplateExpression(expression)) {
+      const parts = [expression.head.text, ...expression.templateSpans.map((span) => span.literal.text)];
+      const escaped = parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+      inventory.templates.push({ pattern: new RegExp(`^${escaped.join(".+")}$`), site });
+    } else if (ts.isIdentifier(expression) && topLevelStringConstants(sourceFile).has(expression.text)) {
+      add(topLevelStringConstants(sourceFile).get(expression.text)!, site);
+    } else {
+      const forwarder = allowForward ? enclosingFunctionName(expression) : null;
+      if (forwarder) forwarders.add(forwarder);
+      else inventory.unresolved.push(`${site} ${expression.getText(sourceFile)}`);
+    }
+  };
+
+  const parsed = sources.map((source) => ({ source, sourceFile: parse(source) }));
+  for (const { source, sourceFile } of parsed) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isObjectLiteralExpression(node) && (propertyNamed(node, "confirmedByUser") || propertyNamed(node, "authorizationMode"))) {
+        const property = propertyNamed(node, "source");
+        const line = sourceFile.getLineAndCharacterOfPosition(node.getStart()).line + 1;
+        if (property && ts.isPropertyAssignment(property)) {
+          resolve(property.initializer, sourceFile, `${source.file}:${line}`, true);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+
+  for (const { source, sourceFile } of parsed) {
+    const visit = (node: ts.Node): void => {
+      if (ts.isCallExpression(node)) {
+        const callee = node.expression;
+        const name = ts.isIdentifier(callee) ? callee.text : ts.isPropertyAccessExpression(callee) ? callee.name.text : null;
+        if (name && forwarders.has(name)) {
+          for (const argument of node.arguments) {
+            if (!ts.isObjectLiteralExpression(argument)) continue;
+            const property = propertyNamed(argument, "source");
+            const line = sourceFile.getLineAndCharacterOfPosition(argument.getStart()).line + 1;
+            if (property && ts.isPropertyAssignment(property)) {
+              resolve(property.initializer, sourceFile, `${source.file}:${line} via ${name}`, false);
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+  }
+  return inventory;
+}
+
+function missingWriters(inventory: Inventory, catalogued: readonly string[]): string[] {
+  const known = new Set(catalogued);
+  const missing = [...inventory.labels.keys()].filter((label) => !known.has(label));
+  for (const template of inventory.templates) {
+    if (!catalogued.some((writerId) => template.pattern.test(writerId))) missing.push(`${template.pattern} (${template.site})`);
+  }
+  return missing.sort();
+}
+
+function readSources(root: string, directories: string[], extension: RegExp): SourceFile[] {
+  const files: SourceFile[] = [];
+  const walk = (directory: string) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const full = path.join(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (["node_modules", "__tests__", ".next", "out", "vendor", "tests"].includes(entry.name)) continue;
+        walk(full);
+      } else if (extension.test(entry.name) && !/\.(test|spec)\.|\.d\.ts$/.test(entry.name)) {
+        files.push({ file: path.relative(REPO_ROOT, full), text: fs.readFileSync(full, "utf8") });
+      }
+    }
+  };
+  for (const directory of directories) {
+    const full = path.join(root, directory);
+    if (fs.existsSync(full)) walk(full);
+  }
+  return files;
+}
+
+describe("reserved-branch writer inventory", () => {
+  const webSources = readSources(WEB_ROOT, ["app", "components", "hooks", "lib"], /\.tsx?$/);
+  const inventory = collectWriterLabels(webSources);
+
+  it("finds the writers it is meant to find", () => {
+    // An inventory that silently found nothing would pass every check below.
+    expect(inventory.labels.size).toBeGreaterThan(40);
+    expect(inventory.labels.has("one_wallet_add")).toBe(true); // forwarded through WalletService.addCard
+    expect(inventory.labels.has("portfolio_source_change")).toBe(true); // forwarded through a useCallback
+    expect(inventory.labels.has("one_location_saved_place_confirm")).toBe(true); // a module function
+    expect(inventory.labels.has("drive_read_review")).toBe(true); // forwarded through an exported function
+    expect(inventory.labels.has("first_connect_insights")).toBe(true); // a same-file constant
+    expect(inventory.labels.has("plaid_vault_view_upgrade")).toBe(true); // a conditional
+    expect(inventory.templates.length).toBeGreaterThan(0);
+  });
+
+  it("resolves every forwarded writer label", () => {
+    expect(inventory.unresolved).toEqual([]);
+  });
+
+  it("catalogues every writer label used in code", () => {
+    expect(missingWriters(inventory, writerIds)).toEqual([]);
+  });
+
+  it("fails on a new writer label that has no registry entry (negative control)", () => {
+    const fixture = collectWriterLabels([
+      {
+        file: "fixture/new-writer.ts",
+        text: `
+          export function forward(params: { source: string }) {
+            return save({ confirmation: { confirmedByUser: true, surface: "web", source: params.source } });
+          }
+          forward({ source: "brand_new_forwarded_writer" });
+          save({ confirmation: { confirmedByUser: true, surface: "web", source: "brand_new_unregistered_writer" } });
+          save({ confirmation: { confirmedByUser: true, surface: "web", source: "one_wallet_add" } });
+        `,
+      },
+    ]);
+    expect(missingWriters(fixture, writerIds)).toEqual(["brand_new_forwarded_writer", "brand_new_unregistered_writer"]);
+  });
+
+  it("keeps no catalogued writer that no code can produce", () => {
+    const pythonSources = readSources(path.join(REPO_ROOT, "consent-protocol"), ["hushh_mcp", "api"], /\.py$/);
+    const corpus = [...webSources, ...pythonSources].map((source) => source.text).join("\n");
+    const stale = writerIds.filter(
+      (writerId) =>
+        !inventory.labels.has(writerId) &&
+        !inventory.templates.some((template) => template.pattern.test(writerId)) &&
+        !corpus.includes(`"${writerId}"`),
+    );
+    expect(stale).toEqual([]);
+  });
+});

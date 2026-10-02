@@ -11,6 +11,7 @@ Implements the current PKM architecture:
 import asyncio
 import json
 import logging
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -22,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, ValidationError
 
 from api.middleware import require_vault_owner_token
+from hushh_mcp.consent.reserved_branches import evaluate_reserved_write
 from hushh_mcp.services.domain_contracts import (
     canonical_top_level_domain,
     domain_registry_payload,
@@ -614,6 +616,61 @@ def _enforce_wallet_write_policy(request: "StoreDomainRequest", canonical_domain
         ) from exc
 
 
+_SHADOW_LOG_LABEL = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
+
+
+def _shadow_log_label(value: str) -> str:
+    # Writer ids and wildcard branch names are client-supplied strings. Only a
+    # machine-shaped label reaches the log line, so nothing a person typed can.
+    return value if _SHADOW_LOG_LABEL.fullmatch(value) else "unrecognized"
+
+
+def _effective_writer_id(request: "StoreDomainRequest") -> str:
+    """The writer the service records for this write (store_domain_data's rule)."""
+    if request.mutation_plan is not None:
+        return request.mutation_plan.writer_id
+    if request.upgrade_claim is not None:
+        return "pkm_upgrade_orchestrator"
+    if request.structure_decision is not None:
+        return request.structure_decision.source_agent or "pkm_structure_agent"
+    return "pkm_structure_agent"
+
+
+def _shadow_reserved_branch_write(request: "StoreDomainRequest", canonical_domain: str) -> None:
+    """Log, never refuse, a write the reserved-branch registry WOULD refuse.
+
+    Shadow mode for ``contracts/pkm/reserved-branches.v1.json``. The touched
+    branches are the ones the server can see: the mutation plan's
+    ``proposed_scope`` and the structure decision's paths. The ciphertext is
+    re-encrypted whole on every write, so the device runs the value-level diff.
+    The line carries labels only (domain, registry branch, writer, reason) and
+    no stored value. Any failure here is swallowed: shadow mode must not be able
+    to change the outcome of a write.
+    """
+    try:
+        paths: list[str] = []
+        if request.mutation_plan is not None:
+            paths.append(request.mutation_plan.proposed_scope)
+        if request.structure_decision is not None:
+            paths.extend(request.structure_decision.top_level_scope_paths)
+            paths.extend(request.structure_decision.json_paths)
+        refusals = evaluate_reserved_write(
+            domain=canonical_domain,
+            paths=paths,
+            writer_id=_effective_writer_id(request),
+        )
+        for refusal in refusals:
+            logger.info(
+                "pkm.reserved_would_refuse domain=%s branch=%s writer=%s reason=%s",
+                refusal.domain,
+                _shadow_log_label(refusal.branch),
+                _shadow_log_label(refusal.writer_id),
+                refusal.reason,
+            )
+    except Exception as exc:  # noqa: BLE001 - shadow mode never blocks a write
+        logger.warning("pkm.reserved_shadow_unavailable error=%s", type(exc).__name__)
+
+
 def _validate_location_finalize_request(request: StoreDomainRequest, domain: str) -> None:
     if request.location_finalize_authorization is None:
         if (
@@ -748,6 +805,7 @@ async def store_domain(
         ) from exc
 
     _enforce_wallet_write_policy(request, canonical_domain)
+    _shadow_reserved_branch_write(request, canonical_domain)
     _validate_location_finalize_request(request, canonical_domain)
 
     if request.upgrade_claim is None and request.mutation_plan is None:

@@ -20,6 +20,10 @@ import {
   currentDomainContractVersion,
 } from "@/lib/personal-knowledge-model/upgrade-contracts";
 import { PkmDomainResourceService } from "@/lib/pkm/pkm-domain-resource";
+import {
+  evaluateReservedWrite,
+  touchedReservedBranches,
+} from "@/lib/pkm/reserved-branches";
 import type {
   EncryptedDomainBlob,
   PkmMergeDecision,
@@ -189,6 +193,54 @@ function pkmWriteFailureResult(
     "failed",
     "We couldn't save this to your vault. Try again, or make sure your vault is set up.",
   );
+}
+
+let reservedWouldRefuseShadowCount = 0;
+
+/** How many writes this session the reserved-branch registry WOULD have refused. */
+export function getReservedWouldRefuseShadowCount(): number {
+  return reservedWouldRefuseShadowCount;
+}
+
+/**
+ * Shadow mode for `contracts/pkm/reserved-branches.v1.json`: count, never
+ * block, a write that changes a reserved branch its writer may not change.
+ * Only labels reach the console (domain, registry branch, writer, reason),
+ * never a stored value, and any failure here is swallowed so the shadow can
+ * never change the outcome of a save.
+ */
+function shadowReservedBranchWrite(params: {
+  domain: string;
+  context: BaseContext;
+  plan: MergedWritePlan | PreparedWritePlan;
+  writerId: string;
+}): void {
+  try {
+    const touched = touchedReservedBranches({
+      domain: params.domain,
+      before: params.context.currentDomainData,
+      after: params.plan.domainData,
+      mergeMode: params.plan.mergeDecision?.merge_mode,
+      deleteTargetPath: params.plan.mergeDecision?.target_entity_path,
+    });
+    if (touched.length === 0) return;
+    const refusals = evaluateReservedWrite({
+      domain: params.domain,
+      paths: touched,
+      writerId: params.writerId,
+    });
+    for (const refusal of refusals) {
+      reservedWouldRefuseShadowCount += 1;
+      console.debug("[PkmWriteCoordinator] pkm.reserved_would_refuse", {
+        domain: refusal.domain,
+        branch: refusal.branch,
+        writer: refusal.writerId,
+        reason: refusal.reason,
+      });
+    }
+  } catch {
+    // Shadow mode must not be able to block or fail a save.
+  }
 }
 
 async function buildWriteContext(params: {
@@ -363,6 +415,12 @@ export class PkmWriteCoordinator {
           confirmation: params.confirmation,
           idempotencyScope: params.idempotencyScope,
         });
+        shadowReservedBranchWrite({
+          domain: params.domain,
+          context,
+          plan,
+          writerId: mutationPlan.writer_id,
+        });
         const syncCheckpoint = buildSyncCheckpoint({
           source: "merged_domain",
           domain: params.domain,
@@ -497,6 +555,12 @@ export class PkmWriteCoordinator {
           scopePath: plan.scopePath,
           sourceRevision: context.currentEncryptedDomain?.dataVersion,
           confirmation: params.confirmation,
+        });
+        shadowReservedBranchWrite({
+          domain: params.domain,
+          context,
+          plan,
+          writerId: mutationPlan.writer_id,
         });
         const syncCheckpoint = buildSyncCheckpoint({
           source: "prepared_domain",
