@@ -652,6 +652,8 @@ export default function GmailReceiptsPage({
   const syncing = gmail.syncingRun;
   const isConnected = gmail.presentation.isConnected;
   const loadingStatus = gmail.loadingStatus;
+  const receiptStorageReadOnly =
+    gmail.status?.receipt_storage_mode === "legacy_read_only";
 
   useEffect(() => {
     if (journeyVariant === "onboarding" || !isConnected || !user?.uid) {
@@ -1210,6 +1212,13 @@ export default function GmailReceiptsPage({
       if (!isConnected || syncing) {
         return;
       }
+      if (receiptStorageReadOnly) {
+        toast.message(
+          gmail.status?.receipt_storage_message ||
+            "Existing receipts remain available while private on-device sync is prepared.",
+        );
+        return;
+      }
       const queued = await gmail.syncNow();
       if (!queued?.run?.run_id) {
         toast.message("We're already syncing your receipts.");
@@ -1228,7 +1237,7 @@ export default function GmailReceiptsPage({
         }),
       );
     }
-  }, [gmail, isConnected, syncing, user?.uid]);
+  }, [gmail, isConnected, receiptStorageReadOnly, syncing, user?.uid]);
 
   const progressPercent = useMemo(
     () => computeSyncProgressPercent(gmail.syncRun),
@@ -1284,6 +1293,7 @@ export default function GmailReceiptsPage({
   const canBuildReceiptMemoryPreview =
     Boolean(user?.uid) &&
     hasSealedReceiptAccess &&
+    !receiptStorageReadOnly &&
     (total > 0 || hasStoredReceipts);
   const autoReceiptSummaryKey = useMemo(() => {
     if (!user?.uid || !isConnected || !canBuildReceiptMemoryPreview) {
@@ -1342,10 +1352,14 @@ export default function GmailReceiptsPage({
       ? `${statusSummary.title}. ${statusSummary.detail}`
       : gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled"
         ? "Sync interrupted. Open receipts to retry."
-        : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
+    : receiptStorageReadOnly
+      ? "Existing receipts are available while private on-device sync is prepared."
+      : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
           ? "Your latest receipts are ready."
           : "Organize your purchases in one place.";
-  const primaryActionLabel = isConnected
+  const primaryActionLabel = receiptStorageReadOnly
+    ? "Receipt sync moving to device"
+    : isConnected
     ? syncing
       ? "Syncing receipts…"
       : "Sync receipts"
@@ -1911,7 +1925,7 @@ export default function GmailReceiptsPage({
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
                 <Button
                   onClick={() => void handleSyncNow()}
-                  disabled={syncing || gmailActionBusy !== null}
+                  disabled={syncing || receiptStorageReadOnly || gmailActionBusy !== null}
                   className="w-full sm:w-auto sm:min-w-[150px]"
                   data-voice-control-id="sync_gmail_receipts"
                   data-voice-action-id="profile.gmail.sync_now"
@@ -2363,6 +2377,13 @@ export default function GmailReceiptsPage({
             <ReceiptListSkeleton />
           ) : null}
 
+          {receiptsContentActive && isConnected && receiptStorageReadOnly ? (
+            <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
+              {gmail.status?.receipt_storage_message ||
+                "Existing receipts are available read-only while private on-device sync is prepared. No new receipt data is being copied to Hushh."}
+            </SurfaceInset>
+          ) : null}
+
           {receiptsContentActive &&
           isConnected &&
           hasSealedReceiptAccess &&
@@ -2390,9 +2411,11 @@ export default function GmailReceiptsPage({
           receipts.length === 0 &&
           !loadingStatus ? (
             <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
-              {gmail.syncRun?.synced_count
-                ? "Your receipts are still finishing up. Please try syncing again in a moment."
-                : "No receipts yet. Sync receipts to bring in your recent purchases."}
+              {receiptStorageReadOnly
+                ? "No legacy receipts are available for this account yet. New receipt sync is being moved to your device."
+                : gmail.syncRun?.synced_count
+                  ? "Your receipts are still finishing up. Please try syncing again in a moment."
+                  : "No receipts yet. Sync receipts to bring in your recent purchases."}
             </SurfaceInset>
           ) : null}
 
