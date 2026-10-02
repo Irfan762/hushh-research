@@ -46,7 +46,6 @@
     "circle_photo_erased"
   ],
   "required_tables": {
-    "one_location_circles": ["photo_url"],
     "account_deletion_tombstones": [
       "user_id_hash",
       "firebase_uid",
@@ -1277,6 +1276,9 @@
       "updated_at",
       "revoked_at",
       "metadata"
+    ],
+    "one_location_circles": [
+      "photo_url"
     ],
     "one_location_nearby_check_in_preferences": [
       "user_id",
