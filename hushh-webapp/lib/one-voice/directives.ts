@@ -70,9 +70,9 @@ export type OneVoiceOpenMailDetail = {
 export const NAVIGATE_SETTLE_TIMEOUT_MS = 10_000;
 const NAVIGATE_POLL_MS = 100;
 
-/** What counts as "shown" for a navigate: a pathname, or the Profile pane. */
+/** What counts as "shown" for a navigate: route state, or the Profile pane. */
 export type NavigateObservation =
-  | { kind: "path"; path: string }
+  | { kind: "path"; path: string; search?: string }
   | { kind: "profile_pane" }
   /**
    * A Profile screen below the root. On web, proxy.ts redirects
@@ -85,8 +85,7 @@ export type NavigateTarget =
   | {
       kind: "route";
       href: string;
-      /** Absent: settles on dispatch (generic routes, not yet verified). */
-      observe?: NavigateObservation;
+      observe: NavigateObservation;
     }
   | { kind: "profile_pane" };
 
@@ -223,7 +222,8 @@ function observationForHref(href: string): NavigateObservation {
   if (path.startsWith(`${ROUTES.PROFILE}/`)) {
     return { kind: "profile_route", path, paneKey: profilePaneKeyForPath(path) };
   }
-  return { kind: "path", path };
+  const search = href.split("?")[1];
+  return search ? { kind: "path", path, search: `?${search}` } : { kind: "path", path };
 }
 
 /** The pane location proxy.ts redirects `/one/profile/<panel>/<detail>` to. */
@@ -243,6 +243,21 @@ function profilePaneKeyForPath(path: string): string {
 function paneShowsLocation(paneKey: string): boolean {
   const state = resolveProfilePaneUrlState(window.location.search);
   return state.open && profilePaneLocationKey(state.location) === paneKey;
+}
+
+/** Query-only Location moves must reach the requested view and entity. */
+function pathShowsTarget(
+  target: Extract<NavigateObservation, { kind: "path" }>,
+  pathname: string,
+  search: string,
+): boolean {
+  if (normalizePathname(pathname) !== target.path) return false;
+  if (!target.search) return true;
+  const actual = new URLSearchParams(search);
+  for (const [key, value] of new URLSearchParams(target.search)) {
+    if (actual.get(key) !== value) return false;
+  }
+  return true;
 }
 
 function resolveProfileTarget(
@@ -325,9 +340,8 @@ export function resolveNavigateTarget(
     // A template segment needs an entity this branch cannot supply.
     if (!href || ROUTE_TEMPLATE_SEGMENT.test(href)) return null;
     if (!isSafeInternalHref(href)) return null;
-    // Generic routes (Location etc.) still settle on dispatch; verified settle
-    // for them is a separate bounded change.
-    return { kind: "route", href: withEntityQuery(href, payload) };
+    const routeHref = withEntityQuery(href, payload);
+    return { kind: "route", href: routeHref, observe: observationForHref(routeHref) };
   }
   return null;
 }
@@ -438,7 +452,9 @@ export function defaultObserveNavigation(
     }
     poll = setInterval(() => {
       if (
-        normalizePathname(window.location.pathname) === target.path ||
+        (target.kind === "path"
+          ? pathShowsTarget(target, window.location.pathname, window.location.search)
+          : normalizePathname(window.location.pathname) === target.path) ||
         (target.kind === "profile_route" && paneShowsLocation(target.paneKey))
       ) {
         finish(true);
@@ -456,7 +472,13 @@ async function settleRoute(
 ): Promise<DirectiveOutcome> {
   if (
     observation.kind !== "profile_pane" &&
-    normalizePathname(helpers.pathname ?? "") === observation.path
+    normalizePathname(helpers.pathname ?? "") === observation.path &&
+    (observation.kind !== "path" || !observation.search ||
+      (typeof window !== "undefined" && pathShowsTarget(
+        observation,
+        window.location.pathname,
+        window.location.search,
+      )))
   ) {
     return outcome("opened", reason ?? "already_shown");
   }
@@ -531,13 +553,7 @@ export async function executeDirective(
         if (target.kind === "profile_pane") {
           return await openProfilePaneVerified(helpers);
         }
-        if (target.observe) {
-          return await settleRoute(target.href, target.observe, helpers);
-        }
-        const navigated = (helpers.navigate ?? defaultNavigate)(target.href);
-        return navigated
-          ? outcome("opened")
-          : outcome("failed", "navigation_unavailable");
+        return await settleRoute(target.href, target.observe, helpers);
       }
       case "open_mail": {
         const ordinal = cleanCount(data.ordinal, 25);

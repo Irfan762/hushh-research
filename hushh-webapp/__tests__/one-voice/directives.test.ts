@@ -58,6 +58,7 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/location?action=settings",
+      observe: { kind: "path", path: LOCATION, search: "?action=settings" },
     });
   });
 
@@ -70,6 +71,7 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/location?view=circles&circle=circle-42",
+      observe: { kind: "path", path: LOCATION, search: "?view=circles&circle=circle-42" },
     });
     expect(
       resolveNavigateTarget(
@@ -79,13 +81,18 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/location?view=people&person=user_7",
+      observe: { kind: "path", path: LOCATION, search: "?view=people&person=user_7" },
     });
     expect(
       resolveNavigateTarget(
         { gateway_action_id: "location.open_people", user_id: "../etc?x=1" },
         LOCATION,
       ),
-    ).toEqual({ kind: "route", href: "/one/location?view=people" });
+    ).toEqual({
+      kind: "route",
+      href: "/one/location?view=people",
+      observe: { kind: "path", path: LOCATION, search: "?view=people" },
+    });
     // Entity ids never ride along to a non-Location route.
     expect(
       resolveNavigateTarget(
@@ -95,6 +102,7 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/setup",
+      observe: { kind: "path", path: "/one/setup" },
     });
   });
 
@@ -319,21 +327,64 @@ describe("defaultObserveNavigation", () => {
     window.dispatchEvent(new CustomEvent(PROFILE_PANE_SHOWN_EVENT));
     await expect(aborted).resolves.toBe(false);
   });
+
+  it("requires the requested Location view and person, not just its pathname", async () => {
+    const target = {
+      kind: "path" as const,
+      path: LOCATION,
+      search: "?view=people&person=user_7",
+    };
+    window.history.replaceState(null, "", "/one/location?view=people&person=other");
+    await expect(
+      defaultObserveNavigation(target, 150, new AbortController().signal),
+    ).resolves.toBe(false);
+
+    const seen = defaultObserveNavigation(target, 5_000, new AbortController().signal);
+    window.history.replaceState(
+      null, "", "/one/location?person=user_7&view=people&other=kept",
+    );
+    await expect(seen).resolves.toBe(true);
+    window.history.replaceState(null, "", "/");
+  });
 });
 
 describe("executeDirective", () => {
-  it("navigate dispatches the internal navigation request and settles opened", async () => {
+  it("generic navigate settles opened only after the requested route state is observed", async () => {
+    const { watched, observeNavigation } = observer(true);
     const outcome = await executeDirective(
       "navigate",
       { gateway_action_id: "location.open_circles", circle_id: "circle-1" },
-      { pathname: LOCATION },
+      { pathname: LOCATION, observeNavigation },
     );
     expect(outcome).toEqual({ handled: true, status: "opened" });
+    expect(watched).toEqual([{
+      kind: "path", path: LOCATION, search: "?view=circles&circle=circle-1",
+    }]);
     expect(requestInternalAppNavigation).toHaveBeenCalledWith({
       href: "/one/location?view=circles&circle=circle-1",
       source: "voice",
       transitionMode: "contextual",
     });
+  });
+
+  it("generic navigate fails when dispatch succeeds but its query state never shows", async () => {
+    window.history.replaceState(null, "", "/one/location?view=people&person=other");
+    try {
+      const navigate = vi.fn(() => true);
+      const { watched, observeNavigation } = observer(false);
+      const outcome = await executeDirective(
+        "navigate",
+        { gateway_action_id: "location.open_people", user_id: "user_7" },
+        { pathname: LOCATION, navigate, observeNavigation },
+      );
+      expect(navigate).toHaveBeenCalledWith("/one/location?view=people&person=user_7");
+      expect(watched).toEqual([{
+        kind: "path", path: LOCATION, search: "?view=people&person=user_7",
+      }]);
+      expect(outcome).toEqual({ handled: true, status: "failed", reason: "not_shown" });
+    } finally {
+      window.history.replaceState(null, "", "/");
+    }
   });
 
   it("navigate to Profile opens the pane and settles opened only once it shows", async () => {
