@@ -160,7 +160,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one",
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Consent Center" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
   });
 
@@ -172,7 +173,18 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/kai/analysis?tab=history",
       width: "profile",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Consent Center" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
+    });
+  });
+
+  it("keeps Wallet's existing page hero while removing only its compact title", () => {
+    expect(resolveTopShellBreadcrumb("/one/wallet")).toEqual({
+      backHref: "/one",
+      width: "content",
+      align: "center",
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
   });
 
@@ -224,7 +236,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one/setup",
       width: "content",
       align: "center",
-      items: [{ label: "Set up", href: "/one/setup" }, { label: "Finance" }],
+      suppressFallbackTitle: true,
+      items: [],
     });
 
     // No origin → Kai home still falls back to One home (unchanged behavior).
@@ -232,7 +245,8 @@ describe("top shell breadcrumbs", () => {
       backHref: "/one",
       width: "content",
       align: "center",
-      items: [{ label: "One", href: "/one" }, { label: "Finance" }],
+      suppressFallbackTitle: true,
+      items: [{ label: "One", href: "/one" }],
     });
 
     // Unsafe origins are rejected → One home fallback.
@@ -1120,8 +1134,8 @@ describe("top shell title slot", () => {
   }
 
   it.each([
-    // The two reported routes, and the two they must now match.
-    ["/one/pkm", "", ["Memory"]],
+    // Agent roots own their visible heading in the page body, not beside Back.
+    ["/one/pkm", "", "none"],
     ["/one/gmail", "", "title"],
     ["/one/feed", "", ["Feed"]],
     ["/one/connect", "", ["Connect"]],
@@ -1130,8 +1144,8 @@ describe("top shell title slot", () => {
     ["/one/pkm/recent", "", ["Memory", "Recently learned"]],
     // Every other nested route that used to carry a scroll chip.
     ["/one/connected-systems", "", ["Connected Systems"]],
-    ["/one/consent", "", ["Consent Center"]],
-    ["/consents", "", ["Consent Center"]],
+    ["/one/consent", "", "none"],
+    ["/consents", "", "none"],
     ["/one/kyc", "", ["KYC"]],
     ["/one/gmail", "from=/one/setup", "title"],
   ])(
@@ -1146,8 +1160,8 @@ describe("top shell title slot", () => {
       kind: "title",
       title: scrolledChip,
     });
-    // The implicit "One" root is not a trail, so a level-one surface keeps
-    // its chip.
+    // A generic level-one surface with only the implicit root still keeps its
+    // chip unless the route explicitly delegates the visible title to its body.
     expect(
       resolveTopShellTitleSlot({ items: [{ label: "One" }] }, scrolledChip),
     ).toEqual({ kind: "title", title: scrolledChip });
@@ -1159,10 +1173,10 @@ describe("top shell title slot", () => {
     });
   });
 
-  it("does not change the trail when the chip goes away", () => {
+  it("keeps an agent-root title slot empty even when a scroll chip is offered", () => {
     const breadcrumb = resolveTopShellBreadcrumb("/one/pkm");
-    expect(resolveTopShellTitleSlot(breadcrumb, scrolledChip)).toEqual(
-      resolveTopShellTitleSlot(breadcrumb, null),
-    );
+    expect(resolveTopShellTitleSlot(breadcrumb, scrolledChip)).toEqual({
+      kind: "none",
+    });
   });
 });
