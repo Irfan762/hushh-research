@@ -7424,8 +7424,8 @@
         "route": "/one/setup/email",
         "classification": "native-required-functional",
         "initialRoute": "/login?redirect=%2Fone%2Fsetup%2Femail",
-        "expectedMarker": "native-route-one-kyc",
-        "expectedRoute": "/one/kyc",
+        "expectedMarker": "native-route-one-setup-email",
+        "expectedRoute": "/one/setup/email",
         "autoReviewerLogin": true,
         "expectedAuth": "authenticated",
         "allowedDataStates": [
@@ -9544,5 +9544,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "5057165f9b86c76f91d40088302c2e2997387ac7db3f8b18905c574fe97e2332"
+  "content_sha256": "ebd45498d0bb5769f1c03cc899c67dc6d9ab0bbc0f1595b157370c7423e58cdd"
 }
