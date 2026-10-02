@@ -91,6 +91,7 @@ export function CommunicationPreferencesGroup({
   onSave,
   dirty,
   saving,
+  unavailable = false,
   suggested,
 }: {
   value: OwnerStyleSettings;
@@ -98,6 +99,8 @@ export function CommunicationPreferencesGroup({
   onSave: () => void;
   dirty: boolean;
   saving: boolean;
+  /** The stored values could not be read, so saving is held back. */
+  unavailable?: boolean;
   /** True when the values came from a chat offer and are not saved yet. */
   suggested: boolean;
 }) {
@@ -216,9 +219,11 @@ export function CommunicationPreferencesGroup({
       </SettingsGroup>
       <div className="flex min-h-11 items-center justify-between gap-4 px-4" data-testid="style-settings-footer">
         <p className="min-w-0 text-sm text-muted-foreground" role="status" data-testid="style-settings-status">
-          {suggested ? "Suggested in chat. Check it, then save." : dirty ? "Unsaved changes." : "Saved in your vault."}
+          {unavailable
+            ? "Couldn't load your writing style. Reopen to try again."
+            : suggested ? "Suggested in chat. Check it, then save." : dirty ? "Unsaved changes." : "Saved in your vault."}
         </p>
-        <MorphyButton type="button" size="sm" disabled={!dirty || saving} onClick={onSave}
+        <MorphyButton type="button" size="sm" disabled={!dirty || saving || unavailable} onClick={onSave}
           className="min-h-11 shrink-0 px-6" data-testid="style-settings-save">
           {saving ? "Saving" : "Save"}
         </MorphyButton>

@@ -114,6 +114,23 @@ describe("Settings commits through the reserved writer", () => {
     await screen.findByText("Saved in your vault.");
   });
 
+  it("never saves over a branch it could not read, and keeps edits across a token renewal", async () => {
+    mocks.getStaleFirst.mockRejectedValueOnce(new Error("offline"));
+    const { unmount } = render(<CommunicationPreferencesSection userId="owner-1" vaultKey="k" vaultOwnerToken="t" onRequestUnlock={() => undefined} />);
+    await screen.findByText("Couldn't load your writing style. Reopen to try again.");
+    fireEvent.change(screen.getByLabelText("Name One calls you"), { target: { value: "Kay" } });
+    expect(screen.getByTestId("style-settings-save")).toBeDisabled();
+    unmount();
+
+    mocks.getStaleFirst.mockResolvedValue({ data: { communication_preferences: { preferred_name: "Old" } } });
+    const view = render(<CommunicationPreferencesSection userId="owner-1" vaultKey="k" vaultOwnerToken="t1" onRequestUnlock={() => undefined} />);
+    await waitFor(() => expect(screen.getByLabelText("Name One calls you")).toHaveValue("Old"));
+    fireEvent.change(screen.getByLabelText("Name One calls you"), { target: { value: "Kay" } });
+    view.rerender(<CommunicationPreferencesSection userId="owner-1" vaultKey="k" vaultOwnerToken="t2" onRequestUnlock={() => undefined} />);
+    expect(screen.getByLabelText("Name One calls you")).toHaveValue("Kay");
+    expect(mocks.getStaleFirst).toHaveBeenCalledTimes(2);
+  });
+
   it("asks for unlock instead of reading or writing a locked vault", () => {
     render(<CommunicationPreferencesSection userId="owner-1" vaultKey={null} vaultOwnerToken={null} onRequestUnlock={() => undefined} />);
     expect(screen.getByText("Unlock to edit")).toBeTruthy();

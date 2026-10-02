@@ -182,11 +182,15 @@ export function describeOwnerStyleProposal(proposal: OwnerStyleProposal): Array<
 // --- Chat to Settings handoff, in memory only ---------------------------------
 
 const PROPOSAL_TTL_MS = 10 * 60 * 1000;
+/** Fired when a proposal is staged; it carries no values, only the nudge. */
+export const OWNER_STYLE_PROPOSAL_EVENT = "hushh:owner-style-proposal";
 let stagedProposal: { ownerUserId: string; proposal: OwnerStyleProposal; expiresAt: number } | null = null;
 
 /** Hold a chat proposal for the owner's next Settings visit in this tab. */
 export function stageOwnerStyleProposal(ownerUserId: string, proposal: OwnerStyleProposal): void {
   stagedProposal = { ownerUserId, proposal: { ...proposal }, expiresAt: Date.now() + PROPOSAL_TTL_MS };
+  // Settings may already be on screen (the profile pane beside chat).
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(OWNER_STYLE_PROPOSAL_EVENT));
 }
 
 /** Take the staged proposal once; another owner or an expired one gets nothing. */

@@ -8,7 +8,7 @@
  * edited: chat can only propose a change (its offer card hands the values here
  * in memory), and the owner commits with Save, through the Settings writer.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { CommunicationPreferencesGroup } from "@/components/profile/communication-preferences-group";
@@ -17,6 +17,7 @@ import { LockedRowIcon } from "@/components/icons/agents";
 import {
   OWNER_STYLE_BRANCH,
   OWNER_STYLE_DOMAIN,
+  OWNER_STYLE_PROPOSAL_EVENT,
   ownerStyleFromBranch,
   takeOwnerStyleProposal,
   type OwnerStyleSettings,
@@ -43,36 +44,54 @@ export function CommunicationPreferencesSection({
   const [draft, setDraft] = useState<OwnerStyleSettings>({});
   const [suggested, setSuggested] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const unlocked = Boolean(userId && vaultKey && vaultOwnerToken);
+  // The owner token renews while the screen is open; that must not reload the
+  // form and throw away unsaved edits, so credentials are read, not watched.
+  const credentials = useRef({ vaultKey, vaultOwnerToken });
+  credentials.current = { vaultKey, vaultOwnerToken };
 
   useEffect(() => {
-    if (!userId || !vaultKey || !vaultOwnerToken) return;
+    if (!userId || !unlocked) return;
     let cancelled = false;
+    setLoadFailed(false);
     void (async () => {
-      let stored: OwnerStyleSettings = {};
       try {
         const snapshot = await PkmDomainResourceService.getStaleFirst({
           userId,
           domain: OWNER_STYLE_DOMAIN,
-          vaultKey,
-          vaultOwnerToken,
+          vaultKey: credentials.current.vaultKey,
+          vaultOwnerToken: credentials.current.vaultOwnerToken,
           backgroundRefresh: false,
         });
-        stored = ownerStyleFromBranch(snapshot?.data?.[OWNER_STYLE_BRANCH]);
+        if (cancelled) return;
+        const stored = ownerStyleFromBranch(snapshot?.data?.[OWNER_STYLE_BRANCH]);
+        // A chat offer is applied over what is stored, and only shown here.
+        const proposal = takeOwnerStyleProposal(userId);
+        setSaved(stored);
+        setDraft(proposal ? { ...stored, ...proposal } : stored);
+        setSuggested(Boolean(proposal));
       } catch {
-        stored = {};
+        // Saving over a branch that could not be read would erase it.
+        if (!cancelled) setLoadFailed(true);
       }
-      if (cancelled) return;
-      // A chat offer is applied over what is stored, and only shown here.
-      const proposal = takeOwnerStyleProposal(userId);
-      setSaved(stored);
-      setDraft(proposal ? { ...stored, ...proposal } : stored);
-      setSuggested(Boolean(proposal));
     })();
     return () => {
       cancelled = true;
     };
-  }, [userId, vaultKey, vaultOwnerToken]);
+  }, [userId, unlocked]);
+
+  useEffect(() => {
+    if (!userId || saved === null) return;
+    const apply = () => {
+      const proposal = takeOwnerStyleProposal(userId);
+      if (!proposal) return;
+      setDraft((current) => ({ ...current, ...proposal }));
+      setSuggested(true);
+    };
+    window.addEventListener(OWNER_STYLE_PROPOSAL_EVENT, apply);
+    return () => window.removeEventListener(OWNER_STYLE_PROPOSAL_EVENT, apply);
+  }, [userId, saved]);
 
   const dirty = useMemo(() => saved !== null && !sameSettings(saved, draft), [saved, draft]);
 
@@ -100,12 +119,13 @@ export function CommunicationPreferencesSection({
       }}
       dirty={dirty}
       saving={saving}
+      unavailable={loadFailed}
       suggested={suggested && dirty}
       onSave={async () => {
         if (!userId) return;
         setSaving(true);
         try {
-          const ok = await saveOwnerStyleSettings({ userId, vaultKey, vaultOwnerToken, settings: draft });
+          const ok = await saveOwnerStyleSettings({ userId, ...credentials.current, settings: draft });
           if (!ok) throw new Error("save failed");
           const clean = ownerStyleFromBranch(draft);
           setSaved(clean);
