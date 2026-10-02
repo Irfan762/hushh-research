@@ -890,8 +890,12 @@ class DirectMessagesService:
                 status_code=503,
             ) from exc
 
-        assert message_row is not None
-        assert conversation_row is not None
+        if message_row is None or conversation_row is None:
+            raise DirectMessagesError(
+                "DIRECT_MESSAGE_SEND_FAILED",
+                "Message could not be sent. Please try again.",
+                status_code=503,
+            )
         conversation = self._public_conversation(self._conversation_projection(conversation_row, sender))
         message = self._message_projection(message_row, sender)
         # The message INSERT trigger emits the recipient's transactional,
