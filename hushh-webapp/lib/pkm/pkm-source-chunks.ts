@@ -45,6 +45,16 @@ function headingLevel(line: string): number | null {
   return STANDALONE_LABEL.test(line) ? 6 : null;
 }
 
+/** A heading or standalone label line: it attributes the lines below it. */
+export function isPkmSourceHeadingLine(line: string): boolean {
+  return headingLevel(line) !== null;
+}
+
+/** Whole-line spans (each including its newline) over `[start, end)`. */
+export function pkmSourceLineSpans(source: string, start = 0, end = source.length): PkmSourceSpan[] {
+  return lineSpans(source, start, end);
+}
+
 function lineSpans(source: string, start: number, end: number): PkmSourceSpan[] {
   const spans: PkmSourceSpan[] = [];
   let cursor = start;

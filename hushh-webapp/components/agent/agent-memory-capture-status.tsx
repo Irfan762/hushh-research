@@ -60,11 +60,14 @@ function MemorySaveCardWithOffers({
 export function AgentMemoryCaptureStatus({
   status,
   onConfirmNeedsOwner,
+  onRetry,
   onUnlock,
   pendingCards,
 }: {
   status: AgentPkmCaptureStatus;
   onConfirmNeedsOwner?: () => Promise<void>;
+  /** Continue the save job behind this receipt (lines not yet saved). */
+  onRetry?: () => Promise<void>;
   onUnlock?: () => void;
   pendingCards?: readonly AgentPkmPreviewCard[];
 }) {
@@ -88,6 +91,7 @@ export function AgentMemoryCaptureStatus({
           <Link href={href} className={className}>{children}</Link>
         )}
         onConfirmNeedsOwner={onConfirmNeedsOwner}
+        onRetry={onRetry}
         pendingCards={pendingCards}
       />
     );

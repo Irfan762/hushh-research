@@ -2,13 +2,22 @@
 
 import { useState, type ReactNode } from "react";
 
-import { CaretDownIcon, MemoryAgentIcon } from "@/components/icons";
+import {
+  ArrowsClockwiseIcon,
+  CaretDownIcon,
+  CheckCircleIcon,
+  InfoIcon,
+  MemoryAgentIcon,
+  WarningIcon,
+} from "@/components/icons";
 import { ReservedOfferRows } from "@/components/agent/reserved-offer-rows";
 import { Button } from "@/components/ui/button";
 import type { AgentPkmPreviewCard } from "@/lib/agent/agent-pkm-memory";
 import {
   pkmSaveReceiptWrote,
   type PkmSaveReceipt,
+  type PkmSaveReceiptCoverage,
+  type PkmSaveReceiptCoverageLine,
   type PkmSaveReceiptItemOutcome,
 } from "@/lib/agent/pkm-save-receipt";
 import type { ReservedOfferItem } from "@/lib/pkm/reserved-offer";
@@ -21,6 +30,10 @@ import type { ReservedOfferItem } from "@/lib/pkm/reserved-offer";
  * contract, checked by e2e/memory-save-card.layout.spec.ts: 16 px symmetric
  * insets, 8 px gaps, a 4-column count grid of equal tiles, tabular numerals,
  * and category counts in fixed-width columns so digits line up row to row.
+ *
+ * A save that ran as a resumable job also carries line coverage: every line of
+ * the owner's text, where it was saved, why it was not, or "Not yet saved"
+ * with Retry. Checked by e2e/memory-save-coverage.layout.spec.ts.
  */
 
 const OUTCOME_LABEL: Record<PkmSaveReceiptItemOutcome, string> = {
@@ -37,6 +50,10 @@ function plural(count: number, one: string, many: string): string {
 }
 
 function title(receipt: PkmSaveReceipt): string {
+  const state = receipt.coverage?.jobState;
+  if (state === "paused_locked" || state === "paused_offline" || state === "running") {
+    return pkmSaveReceiptWrote(receipt) > 0 ? "Saving paused, partly saved" : "Saving paused";
+  }
   if (pkmSaveReceiptWrote(receipt) > 0) {
     return receipt.failed || receipt.unprepared || receipt.unreadable || receipt.excluded || receipt.needsOwner
       ? "Partly saved to Memory"
@@ -68,6 +85,58 @@ const COUNT_TILES: Array<{ key: "saved" | "updated" | "merged" | "skipped"; labe
   { key: "skipped", label: "Skipped" },
 ];
 
+const LINE_STATUS: Record<PkmSaveReceiptCoverageLine["status"], string> = {
+  saved: "Saved",
+  not_memory: "Not saved",
+  structure: "Heading",
+  held: "Held back",
+  not_yet_saved: "Not yet saved",
+};
+
+const LINE_REASON: Record<NonNullable<PkmSaveReceiptCoverageLine["reason"]>, string> = {
+  duplicate: "Repeats another line",
+  disclaimer: "A disclaimer, not a detail",
+  already_known: "Already in Memory",
+  heading: "Section heading, kept as context",
+  formatting: "Formatting only",
+  needs_owner: "Waiting for your OK",
+  excluded: "Kept out for safety",
+  left_out: "One left this out",
+};
+
+/** Where the line went, or why it did not, in one short phrase. */
+function lineDetail(line: PkmSaveReceiptCoverageLine): string {
+  if (line.status === "saved") {
+    const places = [...new Set(line.savedTo.map((place) => place.path ? `${place.domainLabel} > ${place.path}` : place.domainLabel))];
+    return places.length ? `Saved in ${places.join(", ")}` : "Saved";
+  }
+  if (line.status === "not_yet_saved") return "Not yet saved";
+  return line.reason ? LINE_REASON[line.reason] : LINE_STATUS[line.status];
+}
+
+function LineGlyph({ status }: { status: PkmSaveReceiptCoverageLine["status"] }) {
+  const common = { size: 20, "aria-hidden": true as const, className: "shrink-0" };
+  if (status === "saved") return <CheckCircleIcon {...common} className="shrink-0 text-[color:var(--tone-green)]" />;
+  if (status === "held") return <WarningIcon {...common} className="shrink-0 text-[color:var(--tone-orange)]" />;
+  if (status === "not_yet_saved") {
+    return <ArrowsClockwiseIcon {...common} weight="duotone" className="shrink-0 text-[color:var(--tone-orange)]" />;
+  }
+  return <InfoIcon {...common} className="shrink-0 text-foreground/50" />;
+}
+
+function coverageSummary(coverage: PkmSaveReceiptCoverage): string {
+  return `${coverage.accountedLines} of ${plural(coverage.totalLines, "line", "lines")} accounted for`;
+}
+
+function gapPrompt(coverage: PkmSaveReceiptCoverage): string {
+  const paused = coverage.jobState === "paused_locked"
+    ? " Saving continues when you unlock."
+    : coverage.jobState === "paused_offline"
+      ? " Saving continues when you are back online."
+      : "";
+  return `${plural(coverage.notYetSavedLines, "line is", "lines are")} not yet saved.${paused}`;
+}
+
 // The shared flat app-card contract (app/globals.css), theme-aware in light and dark.
 const SURFACE =
   "rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-4 text-foreground";
@@ -81,6 +150,7 @@ export function AgentMemorySaveCard({
   renderLink,
   onConfirmNeedsOwner,
   onOpenOffer,
+  onRetry,
   pendingCards = [],
 }: {
   receipt: PkmSaveReceipt;
@@ -90,12 +160,29 @@ export function AgentMemorySaveCard({
   onConfirmNeedsOwner?: () => Promise<void>;
   /** Opens the app screen that owns a fact; the prefill travels in memory only. */
   onOpenOffer?: (offer: ReservedOfferItem) => void;
+  /** Continue the save job for the lines not yet saved. */
+  onRetry?: () => Promise<void>;
   /** Full proposed details, held only in this unlocked chat session. */
   pendingCards?: readonly AgentPkmPreviewCard[];
 }) {
   const [confirming, setConfirming] = useState(false);
   const [confirmError, setConfirmError] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState(false);
   const notes = footnotes(receipt);
+  const coverage = receipt.coverage;
+  const retry = async () => {
+    if (!onRetry) return;
+    setRetrying(true);
+    setRetryError(false);
+    try {
+      await onRetry();
+    } catch {
+      setRetryError(true);
+    } finally {
+      setRetrying(false);
+    }
+  };
   const linkClass =
     "inline-flex min-h-12 items-center text-sm font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary";
   const confirm = async () => {
@@ -195,6 +282,22 @@ export function AgentMemorySaveCard({
         </div>
       ) : null}
 
+      {coverage && coverage.notYetSavedLines > 0 ? (
+        <div className={`${INSET} flex flex-col gap-2 p-3`} data-testid="memory-save-gaps">
+          <p className="text-sm leading-5">{gapPrompt(coverage)}</p>
+          {retryError ? (
+            <p className="text-xs leading-4 text-destructive" role="alert">
+              That didn’t continue. Nothing was lost. Try again.
+            </p>
+          ) : null}
+          {onRetry ? (
+            <Button size="standard" variant="secondary" onClick={() => void retry()} isLoading={retrying} disabled={retrying}>
+              {`Retry ${plural(coverage.notYetSavedLines, "line", "lines")}`}
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
+
       {receipt.items.length ? (
         <details className="group" data-testid="memory-save-details">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-1 text-sm font-medium text-primary marker:content-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-details-marker]:hidden">
@@ -245,6 +348,46 @@ export function AgentMemorySaveCard({
               </li>
             ))}
           </ul>
+        </details>
+      ) : null}
+
+      {coverage && coverage.lines.length ? (
+        <details className="group/coverage" data-testid="memory-save-coverage">
+          <summary className="flex min-h-12 cursor-pointer list-none items-center gap-1 text-sm font-medium text-primary marker:content-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary [&::-webkit-details-marker]:hidden">
+            Show line by line
+            <CaretDownIcon
+              aria-hidden="true"
+              className="size-4 transition-transform duration-150 group-open/coverage:rotate-180 motion-reduce:transition-none"
+            />
+          </summary>
+          <p className="flex h-8 items-center text-xs leading-4 text-foreground/70 tabular-nums" data-testid="memory-save-coverage-summary">
+            {coverageSummary(coverage)}
+          </p>
+          <ol
+            className="max-h-96 overflow-y-auto rounded-xl bg-[color:var(--app-card-surface-data)] px-3 dark:bg-[color:var(--app-neutral-fill)]"
+            aria-label="Each line of your text"
+            data-testid="memory-save-coverage-lines"
+          >
+            {coverage.lines.map((line) => (
+              <li
+                key={line.line}
+                className="grid grid-cols-[1.25rem_minmax(0,1fr)] items-start gap-x-2 py-2 shadow-[inset_0_1px_0_0_var(--app-card-border-standard)] first:shadow-none"
+                data-testid="memory-save-coverage-line"
+                data-status={line.status}
+              >
+                <span className="flex h-5 items-center"><LineGlyph status={line.status} /></span>
+                <span className="flex min-w-0 flex-col gap-1">
+                  <span className="break-words text-xs leading-5 text-foreground/85">
+                    <span className="sr-only">{`Line ${line.line}: `}</span>
+                    {line.text}
+                  </span>
+                  <span className="text-xs leading-4 text-foreground/70" data-testid="memory-save-coverage-detail">
+                    {lineDetail(line)}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ol>
         </details>
       ) : null}
 

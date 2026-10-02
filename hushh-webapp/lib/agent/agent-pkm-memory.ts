@@ -49,6 +49,13 @@ export type AgentPkmIntentFrame = {
 export type AgentPkmPreviewCard = {
   card_id: string;
   source_text: string;
+  /**
+   * The segment's exact quote of the text that was sent, before the Markdown
+   * cleanup applied to `source_text`. Coverage maps it back to source offsets.
+   */
+  source_quote?: string;
+  /** Exact supporting quotes the segment relied on (added by later agents; optional). */
+  context_quotes?: string[];
   save_class?: string;
   intent_class?: string;
   mutation_intent?: string;
@@ -196,6 +203,7 @@ function titleize(value: string | null | undefined): string {
 function withPlainMemoryText(card: AgentPkmPreviewCard): AgentPkmPreviewCard {
   return {
     ...card,
+    source_quote: card.source_quote ?? String(card.source_text || ""),
     source_text: toPlainMemoryText(String(card.source_text || "")),
     ...(card.candidate_payload
       ? { candidate_payload: toPlainMemoryValue(card.candidate_payload) }
@@ -471,6 +479,11 @@ export async function addToPKM(params: {
    * and rewriting the same domain for every field.
    */
   batchSimpleDomainExtensions?: boolean;
+  /**
+   * One stable scope per card (same order as `cards`). The commit id is derived
+   * from it, so replaying the same card after an interruption cannot write it twice.
+   */
+  idempotencyScopes?: readonly (string | undefined)[];
 }): Promise<AgentPkmSaveResult> {
   // Writes to a single domain must stay ordered: each write reads and merges
   // the result of the preceding one. Independent domains have no such
@@ -618,6 +631,7 @@ export async function addToPKM(params: {
         domain: targetDomain,
         vaultKey: params.vaultKey,
         vaultOwnerToken: params.vaultOwnerToken,
+        idempotencyScope: params.idempotencyScopes?.[index],
         beforeEffect: params.beforeEffect,
         mayPublish: params.mayPublish,
         confirmation: automatic

@@ -559,6 +559,8 @@ export class PkmWriteCoordinator {
     vaultKey?: string | null;
     vaultOwnerToken?: string | null;
     confirmation: PkmWriteAuthorization;
+    /** Deterministic plan id (and so commit id) for a replay-safe write. */
+    idempotencyScope?: string;
     beforeEffect?: () => Promise<void>;
     mayPublish?: () => boolean;
     build: (context: BaseContext) => Promise<PreparedWritePlan> | PreparedWritePlan;
@@ -616,6 +618,7 @@ export class PkmWriteCoordinator {
           scopePath: plan.scopePath,
           sourceRevision: context.currentEncryptedDomain?.dataVersion,
           confirmation: params.confirmation,
+          idempotencyScope: params.idempotencyScope,
         });
         const reservedBlock = guardReservedBranchWrite({
           domain: params.domain,

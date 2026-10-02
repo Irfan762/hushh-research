@@ -21,10 +21,16 @@ import {
   applyOwnerConfirmedSave,
   formatPkmSaveReceiptForAgent,
   pkmSaveReceiptWrote,
-  runExplicitPkmSave,
   saveOwnerConfirmedCards,
   type PkmSaveReceipt,
 } from "@/lib/agent/agent-pkm-explicit-save";
+import { explicitSaveReceiptPhase } from "@/lib/agent/pkm-save-receipt";
+import {
+  listResumablePkmSaveJobs,
+  resumeExplicitPkmSaveJob,
+  startExplicitPkmSaveJob,
+  type ExplicitPkmSaveJobResult,
+} from "@/lib/pkm/pkm-save-job";
 import { isCommittedPkmSave, type AgentPkmPreviewCard } from "@/lib/agent/agent-pkm-memory";
 import {
   AgentConsentContinuationContext,
@@ -426,6 +432,10 @@ import {
 // explicit save of a long document within 300 s, and each leaves time to write.
 const AGENT_PKM_CAPTURE_DEADLINE_MS = 4 * 60_000;
 const AGENT_PKM_EXPLICIT_SAVE_DEADLINE_MS = 8 * 60_000;
+// An explicit save runs as a resumable job (lib/pkm/pkm-save-job.ts): it
+// pauses this long before the deadline and continues later, so the deadline
+// ends the progress line without dropping any section.
+const AGENT_PKM_EXPLICIT_SAVE_PAUSE_MARGIN_MS = 20_000;
 
 type AgentMessage = {
   id: string;
@@ -1778,6 +1788,7 @@ export function AgentBubble({
   driveMemoryReview,
   onResendAttachment,
   onConfirmMemoryNeedsOwner,
+  onRetryMemorySave,
   pendingMemoryCards,
   onUnlockVault,
 }: {
@@ -1808,6 +1819,8 @@ export function AgentBubble({
   /** "Edit and send again" on a sent paste: a new turn, never an edit of this one. */
   onResendAttachment?: (index: number, editedText: string) => boolean | void;
   onConfirmMemoryNeedsOwner?: () => Promise<void>;
+  /** Continue a paused or gapped memory save job for this message. */
+  onRetryMemorySave?: () => Promise<void>;
   pendingMemoryCards?: readonly AgentPkmPreviewCard[];
   onUnlockVault?: () => void;
 }) {
@@ -2071,7 +2084,7 @@ export function AgentBubble({
           ) : null}
         </div>
         {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
-        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} pendingCards={pendingMemoryCards} onUnlock={onUnlockVault} /> : null}
+        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} onRetry={onRetryMemorySave} pendingCards={pendingMemoryCards} onUnlock={onUnlockVault} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
         {showResponseActions ? (
         <div
@@ -5189,19 +5202,24 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           if (explicitRequest) {
             const labContext = await loadPkmAgentLabContext({ userId, vaultOwnerToken: token });
             await guard.assertCurrent();
-            const { receipt, needsOwnerCards } = await runExplicitPkmSave({
+            // A resumable job: a relock, reconnect or the deadline pauses it,
+            // and it continues on unlock or Retry without losing a section.
+            const { receipt, needsOwnerCards } = await startExplicitPkmSaveJob({
               userId,
               message: params.sourceMessage,
               currentDomains: params.currentDomains,
               currentManifests: Object.values(labContext.manifests || {}).filter(Boolean),
               vaultKey,
               vaultOwnerToken: token,
+              assistantMessageId: params.assistantMessageId,
               findDuplicate: (candidate) => AgentPkmContextStore.findLocalDuplicate({ userId, candidate }),
               findReconciliationCandidates: (passage) =>
                 AgentPkmContextStore.findReconciliationCandidates({ userId, text: passage }),
               beforeEffect: guard.assertCurrent,
               isEffectCurrent: guard.isCurrent,
               mayPublish: guard.isCurrent,
+              signal: controller.signal,
+              pauseAt: Date.now() + AGENT_PKM_EXPLICIT_SAVE_DEADLINE_MS - AGENT_PKM_EXPLICIT_SAVE_PAUSE_MARGIN_MS,
               onProgress: (progress) => {
                 settle({ phase: progress.stage === "saving" ? "saving" : "preparing", saved: 0, progress });
               },
@@ -5223,14 +5241,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               saved_count_bucket: toPkmFactCountBucket(wrote), failed_count_bucket: toPkmFactCountBucket(receipt.failed),
               has_active_recipients: false,
             });
-            const incomplete = receipt.failed + receipt.unprepared + receipt.unreadable + receipt.excluded + receipt.needsOwner > 0;
-            return settle({
-              phase: wrote > 0 || receipt.unchanged > 0
-                ? (incomplete ? "partial" : "saved")
-                : incomplete ? "failed" : "skipped",
-              saved: wrote,
-              receipt,
-            });
+            return settle({ phase: explicitSaveReceiptPhase(receipt), saved: wrote, receipt });
           }
           const labContext = await loadPkmAgentLabContext({ userId, vaultOwnerToken: token });
           await guard.assertCurrent();
@@ -5320,6 +5331,70 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       return { ...message, memoryCapture: { ...message.memoryCapture, receipt: next, saved: pkmSaveReceiptWrote(next) } };
     }));
   }, [getVaultOwnerToken, user?.uid, vaultKey]);
+
+  // Continue a persisted memory save job: on unlock, on reconnect, after a
+  // reload, or when the owner taps Retry. The job's Web Lock keeps a second
+  // runner (another tab, or the original run) from starting it twice.
+  const resumeMemorySaveJob = useCallback(async (
+    jobId: string,
+    options: { retry?: boolean; messageId?: string } = {},
+  ) => {
+    const token = getVaultOwnerToken();
+    if (!user?.uid || !vaultKey || !token) throw new Error("Unlock your vault to continue saving.");
+    const userId = user.uid;
+    const guard = createAgentPkmCaptureGuard({
+      userId, signal: new AbortController().signal,
+      isEnabled: () => isAgentPkmProcessingReady(pkmCaptureReadinessRef.current, token),
+    });
+    const labContext = await loadPkmAgentLabContext({ userId, vaultOwnerToken: token });
+    const outcome: ExplicitPkmSaveJobResult | null = await resumeExplicitPkmSaveJob({
+      userId, jobId, retry: options.retry, vaultKey, vaultOwnerToken: token,
+      currentManifests: Object.values(labContext.manifests || {}).filter(Boolean),
+      findDuplicate: (candidate) => AgentPkmContextStore.findLocalDuplicate({ userId, candidate }),
+      findReconciliationCandidates: (passage) =>
+        AgentPkmContextStore.findReconciliationCandidates({ userId, text: passage }),
+      beforeEffect: guard.assertCurrent, isEffectCurrent: guard.isCurrent, mayPublish: guard.isCurrent,
+    });
+    const messageId = options.messageId ?? outcome?.assistantMessageId;
+    if (!outcome || !messageId) return;
+    if (outcome.needsOwnerCards.length) {
+      pkmNeedsOwnerCardsRef.current.set(messageId, { cards: outcome.needsOwnerCards, sourceMessage: outcome.sourceMessage });
+    }
+    latestPkmSaveReceiptRef.current = outcome.receipt;
+    setMessages((current) => current.map((message) => message.id === messageId
+      ? {
+          ...message,
+          memoryCapture: {
+            phase: explicitSaveReceiptPhase(outcome.receipt),
+            saved: pkmSaveReceiptWrote(outcome.receipt),
+            receipt: outcome.receipt,
+          },
+        }
+      : message));
+  }, [getVaultOwnerToken, user?.uid, vaultKey]);
+
+  // The vault key changes exactly when the vault unlocks (vault-context
+  // dispatches "vault-unlocked" alongside it): resume paused jobs then, and
+  // again whenever the device comes back online.
+  useEffect(() => {
+    const userId = user?.uid;
+    if (!userId || !vaultKey) return;
+    let active = true;
+    const resumeAll = () => {
+      void listResumablePkmSaveJobs({ userId, vaultKey }).then((jobs) => {
+        for (const job of jobs) {
+          if (!active) return;
+          void resumeMemorySaveJob(job.id, { messageId: job.assistantMessageId }).catch(() => undefined);
+        }
+      });
+    };
+    resumeAll();
+    window.addEventListener("online", resumeAll);
+    return () => {
+      active = false;
+      window.removeEventListener("online", resumeAll);
+    };
+  }, [resumeMemorySaveJob, user?.uid, vaultKey]);
 
   const runAgentTurn = async (
     textInput: string,
@@ -8756,6 +8831,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           : undefined
                       }
                       onConfirmMemoryNeedsOwner={() => confirmMemoryNeedsOwner(message.id)}
+                      onRetryMemorySave={message.memoryCapture?.receipt?.coverage
+                        ? () => resumeMemorySaveJob(message.memoryCapture!.receipt!.coverage!.jobId, { retry: true, messageId: message.id })
+                        : undefined}
                       pendingMemoryCards={pkmNeedsOwnerCardsRef.current.get(message.id)?.cards}
                       onUnlockVault={() => setVaultDialogOpen(true)}
                       onInformationRequestSubmitted={async (activityId, receipt) => {
