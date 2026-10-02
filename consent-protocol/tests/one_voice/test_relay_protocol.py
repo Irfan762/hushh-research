@@ -1252,6 +1252,46 @@ async def test_card_shown_without_a_refused_yes_tells_the_model_nothing():
     assert pending.rows[card].shown_at is not None
 
 
+async def test_card_shown_after_the_person_moved_on_does_not_revive_the_old_yes():
+    """A refused yes answers its own turn only. Once the person has moved on,
+    the card appearing later is not news to the model."""
+    session, transport, fake, pending = await _voice_card_session()
+    await _model_calls(session, "c1", "ask", {"person": {"user_id": "u-priya"}})
+    card = transport.frames("pending_action")[-1]["pending_action_id"]
+    await _model_calls(session, "c2", "confirm_pending_action", {"pending_action_id": card})
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="What's the weather?"))
+
+    await session._handle_client_frame(
+        protocol.PendingShownFrame(type="pending_action.shown", pending_action_id=card)
+    )
+    assert fake.events_sent == []
+    assert pending.rows[card].status == "pending"
+
+
+async def test_tap_on_a_reused_card_reports_to_the_turn_it_was_reshown_on():
+    """The card a repeated proposal re-showed answers the newer turn: a tap on
+    it must reach the model and the screen, not be fenced as the old turn's."""
+    session, transport, fake, pending = await _voice_card_session()
+    ask = {"person": {"user_id": "u-priya"}}
+    await _model_calls(session, "c1", "ask", ask)
+    card = transport.frames("pending_action")[-1]["pending_action_id"]
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Yes"))
+    yes_turn = session.turn.turn_id
+    await _model_calls(session, "c2", "ask", ask)
+    assert _responses(fake, "ask")[-1]["status"] == "confirmation_waiting"
+
+    await session._confirm_by_tap(
+        protocol.ConfirmActionFrame(type="confirm_action", pending_action_id=card)
+    )
+    assert pending.rows[card].status == "executed"
+    result = transport.frames("tool.result")[-1]
+    assert result["pending_action_id"] == card and result["turn_id"] == yes_turn
+    event = json.loads(fake.events_sent[-1].removeprefix("[ONE_EVENT] "))
+    assert event["kind"] == "tool_result"
+
+
 async def test_tap_tier_requires_receipt_and_rejects_spoken_yes():
     transport = FakeTransport([AUTH])
     fake = FakeLive(

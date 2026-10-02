@@ -123,7 +123,7 @@ describe("resolveNavigateTarget", () => {
     });
   });
 
-  it("resolves Profile detail screens to decideProfileOpen routes observed by path", () => {
+  it("resolves Profile detail screens to decideProfileOpen routes observed as a Profile route", () => {
     expect(
       resolveNavigateTarget(
         { gateway_action_id: "route.profile_privacy" },
@@ -132,7 +132,10 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/profile/access?from=%2Fone%2Flocation",
-      observe: { kind: "path", path: "/one/profile/access" },
+      observe: expect.objectContaining({
+        kind: "profile_route",
+        path: "/one/profile/access",
+      }),
     });
     expect(
       resolveNavigateTarget(
@@ -142,7 +145,10 @@ describe("resolveNavigateTarget", () => {
     ).toEqual({
       kind: "route",
       href: "/one/profile/preferences/voice?from=%2Fone%2Flocation",
-      observe: { kind: "path", path: "/one/profile/preferences/voice" },
+      observe: expect.objectContaining({
+        kind: "profile_route",
+        path: "/one/profile/preferences/voice",
+      }),
     });
   });
 
@@ -212,6 +218,39 @@ describe("resolveNavigateTarget", () => {
 });
 
 describe("defaultObserveNavigation", () => {
+  it("sees a Profile screen the web proxy redirected into the pane at that location", async () => {
+    // proxy.ts sends /one/profile/preferences/voice to the pane on /one.
+    const target = resolveNavigateTarget(
+      { gateway_action_id: "route.voice_settings" },
+      LOCATION,
+    );
+    if (!target || target.kind !== "route" || !target.observe) {
+      throw new Error("voice settings must resolve to an observed route");
+    }
+    const seen = defaultObserveNavigation(
+      target.observe,
+      5_000,
+      new AbortController().signal,
+    );
+    window.history.pushState(
+      null,
+      "",
+      "/one?profile_pane=1&profile_panel=preferences&profile_detail=voice",
+    );
+    await expect(seen).resolves.toBe(true);
+
+    // Negative control: the pane open somewhere else is not that screen.
+    window.history.replaceState(
+      null,
+      "",
+      "/one?profile_pane=1&profile_panel=security",
+    );
+    await expect(
+      defaultObserveNavigation(target.observe, 300, new AbortController().signal),
+    ).resolves.toBe(false);
+    window.history.replaceState(null, "", "/");
+  });
+
   it("sees the pane-shown event and the target path; timeout and abort read as not shown", async () => {
     const pane = defaultObserveNavigation(
       { kind: "profile_pane" },

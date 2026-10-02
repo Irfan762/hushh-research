@@ -22,8 +22,13 @@ import {
   type ProfileOpenDetail,
 } from "@/lib/one-voice/profile-open";
 import {
+  PROFILE_PANE_DETAIL_QUERY,
+  PROFILE_PANE_PANEL_QUERY,
+  PROFILE_PANE_QUERY,
   PROFILE_PANE_SHOWN_EVENT,
+  profilePaneLocationKey,
   requestProfilePaneOpen,
+  resolveProfilePaneUrlState,
   type ProfilePaneOpenResult,
 } from "@/lib/navigation/profile-pane";
 import { ROUTES, buildPersonProfileRoute } from "@/lib/navigation/routes";
@@ -67,7 +72,13 @@ const NAVIGATE_POLL_MS = 100;
 /** What counts as "shown" for a navigate: a pathname, or the Profile pane. */
 export type NavigateObservation =
   | { kind: "path"; path: string }
-  | { kind: "profile_pane" };
+  | { kind: "profile_pane" }
+  /**
+   * A Profile screen below the root. On web, proxy.ts redirects
+   * `/one/profile/<panel>/<detail>` into the pane on `/one` at that location;
+   * a native build renders the path in place. Either counts as shown.
+   */
+  | { kind: "profile_route"; path: string; paneKey: string };
 
 export type NavigateTarget =
   | {
@@ -206,9 +217,30 @@ function withEntityQuery(
 /** Where a Profile-family href shows: `/one/profile` redirects into the pane. */
 function observationForHref(href: string): NavigateObservation {
   const path = normalizePathname(href);
-  return path === ROUTES.PROFILE
-    ? { kind: "profile_pane" }
-    : { kind: "path", path };
+  if (path === ROUTES.PROFILE) return { kind: "profile_pane" };
+  if (path.startsWith(`${ROUTES.PROFILE}/`)) {
+    return { kind: "profile_route", path, paneKey: profilePaneKeyForPath(path) };
+  }
+  return { kind: "path", path };
+}
+
+/** The pane location proxy.ts redirects `/one/profile/<panel>/<detail>` to. */
+function profilePaneKeyForPath(path: string): string {
+  const [panel = "", ...detail] = path
+    .slice(ROUTES.PROFILE.length + 1)
+    .split("/");
+  const query = new URLSearchParams({
+    [PROFILE_PANE_QUERY]: "1",
+    [PROFILE_PANE_PANEL_QUERY]: panel,
+  });
+  if (detail.length) query.set(PROFILE_PANE_DETAIL_QUERY, detail.join("/"));
+  return profilePaneLocationKey(resolveProfilePaneUrlState(query).location);
+}
+
+/** True when the address bar shows the pane open at that location. */
+function paneShowsLocation(paneKey: string): boolean {
+  const state = resolveProfilePaneUrlState(window.location.search);
+  return state.open && profilePaneLocationKey(state.location) === paneKey;
 }
 
 function resolveProfileTarget(
@@ -377,8 +409,16 @@ export function defaultObserveNavigation(
       window.addEventListener(PROFILE_PANE_SHOWN_EVENT, onShown);
       return;
     }
+    if (target.kind === "profile_route") {
+      // A fresh open mounts the pane body; an already-open pane only moves,
+      // which the address bar shows.
+      window.addEventListener(PROFILE_PANE_SHOWN_EVENT, onShown);
+    }
     poll = setInterval(() => {
-      if (normalizePathname(window.location.pathname) === target.path) {
+      if (
+        normalizePathname(window.location.pathname) === target.path ||
+        (target.kind === "profile_route" && paneShowsLocation(target.paneKey))
+      ) {
         finish(true);
       }
     }, NAVIGATE_POLL_MS);
@@ -393,7 +433,7 @@ async function settleRoute(
   reason?: string,
 ): Promise<DirectiveOutcome> {
   if (
-    observation.kind === "path" &&
+    observation.kind !== "profile_pane" &&
     normalizePathname(helpers.pathname ?? "") === observation.path
   ) {
     return outcome("opened", reason ?? "already_shown");
@@ -418,7 +458,8 @@ async function settleRoute(
 /**
  * Ask the shell for the Profile pane and settle on its answer plus the
  * pane-shown evidence. A refused pane falls back to the same action's
- * canonical route, recorded as `pane_unavailable`.
+ * canonical route; the outcome reason says `pane_unavailable` (client side
+ * only: ui.settled carries the status, not the reason).
  */
 async function openProfilePaneVerified(
   helpers: DirectiveHelpers,

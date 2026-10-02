@@ -202,7 +202,7 @@ class VoiceSession:
         self._directive_meta: dict[str, dict[str, str]] = {}
         # Cards whose spoken confirm was refused as card_not_shown. When the
         # client reports one shown, the model is told (it still decides).
-        self._shown_waiters: dict[str, None] = {}
+        self._shown_waiters: dict[str, str | None] = {}
         # A tool call can end its provider turn before Live speaks its reply.
         # Keep narration ownership through that continuation until new input
         # actually reaches Live.
@@ -575,11 +575,18 @@ class VoiceSession:
                 user_id=self.ctx.user_id, pending_action_id=frame.pending_action_id
             )
             if shown is not None and shown.id in self._shown_waiters:
-                del self._shown_waiters[shown.id]
-                # A spoken yes was refused because the card was not on screen.
-                # Tell the model it is now; it decides whether to confirm.
-                self._bump(pending_shown_late=1)
-                await self._inject_event({"kind": "pending_shown", "pending_action_id": shown.id})
+                refused_turn_id = self._shown_waiters.pop(shown.id)
+                if self._origin_is_stale(refused_turn_id):
+                    # The person moved on after the refused yes; that yes no
+                    # longer answers this card. Never revive it in a new turn.
+                    self._bump(pending_shown_stale=1)
+                else:
+                    # A spoken yes was refused because the card was not on
+                    # screen. Tell the model it is now; it decides.
+                    self._bump(pending_shown_late=1)
+                    await self._inject_event(
+                        {"kind": "pending_shown", "pending_action_id": shown.id}
+                    )
         elif isinstance(frame, protocol.ConfirmActionFrame):
             await self._confirm_by_tap(frame)
         elif isinstance(frame, protocol.CancelActionFrame):
@@ -719,8 +726,10 @@ class VoiceSession:
                 )
             )
             return
-        origin_turn_id = confirmed.origin_turn_id or self._pending_turn_ids.get(
-            frame.pending_action_id
+        # This session's binding first: a card re-shown for a repeated proposal
+        # belongs to the turn it was re-shown on, not the turn that created it.
+        origin_turn_id = (
+            self._pending_turn_ids.get(frame.pending_action_id) or confirmed.origin_turn_id
         )
         if origin_turn_id is not None:
             await self._send(protocol.voice_state("executing", turn_id=origin_turn_id))
@@ -1381,7 +1390,7 @@ class VoiceSession:
                 self._bump(confirm_not_shown=1)
                 if len(self._shown_waiters) >= _SHOWN_WAITERS_MAX:
                     self._shown_waiters.pop(next(iter(self._shown_waiters)))
-                self._shown_waiters[waiting_id] = None
+                self._shown_waiters[waiting_id] = origin_turn_id
         for stale in outcome.superseded:
             # A card the client is still showing no longer means anything: a
             # newer proposal replaced it, or a fresh lookup made its target
@@ -1456,6 +1465,8 @@ class VoiceSession:
             self._bump(pending_created=1)
         elif outcome.pending is not None and outcome.result.status == CONFIRMATION_WAITING:
             # The same proposal is already open: no new row, no side effects.
+            # The card now answers this turn, so a tap on it reports here.
+            self._pending_turn_ids[outcome.pending.id] = origin_turn_id
             self._bump(pending_reused=1)
             if outcome.pending.shown_at is None:
                 # Repair, not a new card: the same row and id, carried on the
