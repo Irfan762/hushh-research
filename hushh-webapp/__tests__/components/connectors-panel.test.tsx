@@ -148,7 +148,7 @@ describe("supported connector catalog", () => {
     expect(screen.getByRole("heading", { name: "Available" })).toBeInTheDocument();
     expect(screen.queryByText(/Google Workspace MCP|Finance connection|Read access after connection/)).not.toBeInTheDocument();
     expect(screen.queryByText("Read selected files")).not.toBeInTheDocument();
-    for (const label of ["Coming soon", "Notion", "HubSpot", "Shopify", "Circle"]) {
+    for (const label of ["Coming soon", "Notion", "HubSpot", "Attio", "Shopify", "Circle"]) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
   });
@@ -300,7 +300,10 @@ describe("supported connector catalog", () => {
       displayName: "HubSpot",
       available: true,
       curatedOAuth: true,
-    } as typeof catalogItem & { available: boolean; curatedOAuth: boolean };
+      catalogCard: true,
+    } as typeof catalogItem & { available: boolean; curatedOAuth: boolean; catalogCard: boolean };
+    const notion = { ...hubspot, connectorId: "notion", displayName: "Notion" };
+    const attio = { ...hubspot, connectorId: "attio", displayName: "Attio" };
     const withFlag = (connectors: object[], enabled = true) => ({
       connectors,
       features: { connections_panel_v2: true, curated_mcp_connectors: enabled },
@@ -327,11 +330,54 @@ describe("supported connector catalog", () => {
       sessionStorage.clear();
     });
 
-    it("stays hidden while the rollout flag is off", async () => {
-      state.overview.mockResolvedValue(withFlag([hubspot, catalogItem], false));
+    it("keeps a server-declared unavailable card visible while the rollout flag is off", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, available: false, catalogState: "unavailable" }, catalogItem], false));
       render(panel());
       expect(await screen.findByText("Example Docs")).toBeInTheDocument();
-      expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
+      expect(screen.getByText("HubSpot")).toBeInTheDocument();
+      expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: "Connect HubSpot" })).not.toBeInTheDocument();
+      expect(state.startOAuthConnect).not.toHaveBeenCalled();
+    });
+
+    it("renders server-declared catalog cards with their pending states and no OAuth action", async () => {
+      state.overview.mockResolvedValue(withFlag([
+        { ...hubspot, curatedOAuth: false, available: false, catalogState: "setup_pending" },
+        { ...notion, curatedOAuth: false, available: false, catalogState: "discovery_pending" },
+        { ...attio, available: false, catalogState: "unavailable" },
+      ]));
+      render(panel());
+      for (const [provider, state] of [
+        ["HubSpot", "Setup pending"],
+        ["Notion", "Discovery pending"],
+        ["Attio", "Unavailable"],
+      ]) {
+        expect(await screen.findByText(provider)).toBeInTheDocument();
+        expect(screen.getAllByText(state).length).toBeGreaterThan(0);
+        expect(screen.queryByRole("button", { name: `Connect ${provider}` })).not.toBeInTheDocument();
+      }
+      expect(state.startOAuthConnect).not.toHaveBeenCalled();
+    });
+
+    it("shows catalog loading and retries before enabling a server-approved card", async () => {
+      let rejectOverview!: (reason?: unknown) => void;
+      state.overview
+        .mockImplementationOnce(() => new Promise<ReturnType<typeof withFlag>>((_, reject) => {
+          rejectOverview = reject;
+      }))
+        .mockResolvedValueOnce(withFlag([hubspot]));
+      render(panel());
+      const loadingStatus = await screen.findByText("Loading connector catalog…");
+      expect(loadingStatus).toHaveAttribute("role", "status");
+
+      await act(async () => rejectOverview(new Error("synthetic unavailable")));
+      const unavailableStatus = await screen.findByText("Connector catalog unavailable. Try again.");
+      expect(unavailableStatus).toHaveAttribute("role", "status");
+
+      fireEvent.click(screen.getByRole("button", { name: "Retry connector catalog" }));
+      expect(await screen.findByRole("button", { name: "Connect HubSpot" })).toBeEnabled();
+      expect(state.overview).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText("Connector catalog unavailable. Try again.")).not.toBeInTheDocument();
     });
 
     it("keeps a connected connector reachable for disconnect while rollout is off", async () => {
@@ -361,11 +407,14 @@ describe("supported connector catalog", () => {
       expect(state.startOAuthConnect).not.toHaveBeenCalled();
     });
 
-    it("stays hidden when unavailable and not connected", async () => {
-      state.overview.mockResolvedValue(withFlag([{ ...hubspot, available: false }, catalogItem]));
+    it("keeps an unavailable server-declared card visible without a connect action", async () => {
+      state.overview.mockResolvedValue(withFlag([{ ...hubspot, available: false, catalogState: "unavailable" }, catalogItem]));
       render(panel());
       expect(await screen.findByText("Example Docs")).toBeInTheDocument();
-      expect(screen.queryByText("HubSpot")).not.toBeInTheDocument();
+      expect(screen.getByText("HubSpot")).toBeInTheDocument();
+      expect(screen.getAllByText("Unavailable").length).toBeGreaterThan(0);
+      expect(screen.queryByRole("button", { name: "Connect HubSpot" })).not.toBeInTheDocument();
+      expect(state.startOAuthConnect).not.toHaveBeenCalled();
     });
 
     it("starts the web sign-in with a curated handoff marker", async () => {
@@ -392,7 +441,6 @@ describe("supported connector catalog", () => {
     });
 
     it("offers a second curated provider with no provider-specific frontend code", async () => {
-      const notion = { ...hubspot, connectorId: "notion", displayName: "Notion" };
       state.overview.mockResolvedValue(withFlag([hubspot, notion]));
       state.startOAuthConnect.mockReset().mockResolvedValue({
         authorizeUrl: "https://mcp.notion.com/authorize?state=signed",

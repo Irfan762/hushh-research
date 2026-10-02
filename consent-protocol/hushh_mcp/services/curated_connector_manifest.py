@@ -31,7 +31,7 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from hushh_mcp.services.mcp_public_http import UnsafeMcpEndpoint, validate_mcp_endpoint
 
@@ -69,6 +69,8 @@ _REGISTRATION_SPEC_TOP_LEVEL_KEYS = frozenset(
     {
         "version",
         "connectorId",
+        "displayName",
+        "description",
         "mcpEndpoint",
         "oauth",
         "environments",
@@ -162,10 +164,13 @@ class CuratedConnectorRegistrationSpec:
 
     This has only the OAuth and redirect pins needed to register a client and
     discover its authenticated MCP tools. It intentionally has no descriptor,
-    tool policy, display metadata, or deploy-secret surface.
+    tool policy, descriptor, or deploy-secret surface. Display metadata is
+    presentation-only and cannot make this registration contract executable.
     """
 
     connector_id: str
+    display_name: str
+    description: str
     mcp_endpoint: str
     authorize_url: str
     token_url: str
@@ -183,6 +188,21 @@ class CuratedConnectorRegistrationSpec:
     def secret_env_names(self) -> tuple[str, ...]:
         """The sole public identifier an operator may store during bootstrap."""
         return (self.client_id_env,)
+
+
+@dataclass(frozen=True)
+class CuratedConnectorCatalogEntry:
+    """A reviewed, non-actionable catalog projection.
+
+    This deliberately exposes only cosmetic information and the setup state.
+    It has no endpoint, OAuth, secret, tool, or descriptor fields, so rendering
+    a card can never widen a provider's runtime authority.
+    """
+
+    connector_id: str
+    display_name: str
+    description: str
+    catalog_state: Literal["setup_pending", "discovery_pending"]
 
 
 def _text(value: Any) -> str:
@@ -350,8 +370,8 @@ def parse_registration_spec(raw: Any) -> CuratedConnectorRegistrationSpec:
     runtime_shape = {
         "version": MANIFEST_VERSION,
         "connectorId": raw.get("connectorId"),
-        "displayName": "Registration-only connector",
-        "description": "",
+        "displayName": raw.get("displayName"),
+        "description": raw.get("description"),
         "mcpEndpoint": raw.get("mcpEndpoint"),
         "oauth": oauth,
         # The runtime parser requires a nonempty tool list. This private
@@ -367,6 +387,8 @@ def parse_registration_spec(raw: Any) -> CuratedConnectorRegistrationSpec:
         )
     return CuratedConnectorRegistrationSpec(
         connector_id=contract.connector_id,
+        display_name=contract.display_name,
+        description=contract.description,
         mcp_endpoint=contract.mcp_endpoint,
         authorize_url=contract.authorize_url,
         token_url=contract.token_url,
@@ -486,6 +508,37 @@ def registration_spec_errors() -> dict[str, str]:
 def all_registration_specs() -> dict[str, CuratedConnectorRegistrationSpec]:
     """Every valid registration-only contract; never a runtime provider list."""
     return dict(_load_registration_specs()[0])
+
+
+def all_catalog_entries() -> dict[str, CuratedConnectorCatalogEntry]:
+    """Every reviewed connector card that may be presented to an owner.
+
+    Runtime manifests stay fail-closed until an exact, active registry row and
+    runtime configuration pass their existing checks. Registration-only specs
+    stay non-actionable until authenticated tool discovery produces a runtime
+    manifest. This is a display projection, never an OAuth or deploy input.
+    """
+    entries = {
+        connector_id: CuratedConnectorCatalogEntry(
+            connector_id=manifest.connector_id,
+            display_name=manifest.display_name,
+            description=manifest.description,
+            catalog_state="setup_pending",
+        )
+        for connector_id, manifest in all_manifests().items()
+    }
+    entries.update(
+        {
+            connector_id: CuratedConnectorCatalogEntry(
+                connector_id=spec.connector_id,
+                display_name=spec.display_name,
+                description=spec.description,
+                catalog_state="discovery_pending",
+            )
+            for connector_id, spec in all_registration_specs().items()
+        }
+    )
+    return entries
 
 
 def get_registration_spec(connector_id: str) -> CuratedConnectorRegistrationSpec | None:

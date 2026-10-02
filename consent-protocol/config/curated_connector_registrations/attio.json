@@ -1,6 +1,8 @@
 {
   "version": "curated-connector-registration.v1",
   "connectorId": "attio",
+  "displayName": "Attio",
+  "description": "Connect Attio after setup is complete.",
   "mcpEndpoint": "https://mcp.attio.com/mcp",
   "oauth": {
     "authorizeUrl": "https://app.attio.com/oidc/authorize",

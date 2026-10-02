@@ -376,6 +376,7 @@ function OwnerConnectorsPanel({
   const [liveBackgroundError, setLiveBackgroundError] = useState(false);
   const [liveBackgroundRead, retryLiveBackground] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [catalogLoadFailed, setCatalogLoadFailed] = useState(false);
   const [statusChecked, setStatusChecked] = useState(false);
   const [driveMessage, setDriveMessage] = useState("");
   const [mailMessage, setMailMessage] = useState("");
@@ -535,6 +536,7 @@ function OwnerConnectorsPanel({
     }
     const request = ++overviewRead.current;
     setStatusChecked(false);
+    setCatalogLoadFailed(false);
     setLoading(true);
     onCatalogStateChange?.("loading");
     try {
@@ -546,6 +548,7 @@ function OwnerConnectorsPanel({
       )
         return false;
       setOverview(result);
+      setCatalogLoadFailed(false);
       setStatusChecked(true);
       onCatalogStateChange?.("loaded");
       return true;
@@ -554,10 +557,12 @@ function OwnerConnectorsPanel({
         !signal?.aborted &&
         currentToken.current === token &&
         request === overviewRead.current
-      )
+      ) {
+        setCatalogLoadFailed(true);
         setDriveMessage(
           "Could not check Drive. Retry before starting another connection.",
         );
+      }
       if (!signal?.aborted && currentToken.current === token && request === overviewRead.current) {
         onCatalogStateChange?.("unavailable-valid");
       }
@@ -1544,7 +1549,7 @@ function OwnerConnectorsPanel({
       !connector ||
       connector.curatedOAuth !== true ||
       !curatedRolloutEnabled ||
-      connector.available === false
+      connector.available !== true
     ) {
       setCuratedMessage(name + " is unavailable here.");
       return;
@@ -1873,11 +1878,14 @@ function OwnerConnectorsPanel({
       .filter((item, index, items) => {
         if (["google_drive", "gmail", "calendar", "plaid"].includes(item.connectorId)) return false;
         if (items.findIndex((candidate) => candidate.connectorId === item.connectorId) !== index) return false;
+        // A reviewed manifest may request a card before its runtime row is
+        // actionable. It is still rendered, but can never grant OAuth itself.
+        if (item.catalogCard === true) return true;
         // A curated connector shows when it can accept a new grant, or while
         // an existing owner grant still needs a Disconnect/recovery path.
         if (item.curatedOAuth === true) {
           const hasExistingGrant = !["not_connected", "revoked"].includes(item.status);
-          return (curatedRolloutEnabled && item.available !== false) || hasExistingGrant;
+          return (curatedRolloutEnabled && item.available === true) || hasExistingGrant;
         }
         return true;
       })
@@ -1885,7 +1893,15 @@ function OwnerConnectorsPanel({
         const storedGrant = !["not_connected", "revoked"].includes(item.status);
         const curated = item.curatedOAuth === true;
         const canStartCurated =
-          curated && curatedRolloutEnabled && item.available !== false;
+          curated && curatedRolloutEnabled && item.available === true;
+        const catalogStateLabel =
+          item.catalogState === "setup_pending"
+            ? "Setup pending"
+            : item.catalogState === "discovery_pending"
+              ? "Discovery pending"
+              : item.catalogState === "unavailable"
+                ? "Unavailable"
+                : undefined;
         // A curated connection stuck before verification cannot be used by Kai,
         // so it reads as needing sign-in rather than as connected.
         const signInNeeded =
@@ -1894,13 +1910,14 @@ function OwnerConnectorsPanel({
           id: item.connectorId,
           name: item.displayName,
           detail:
-            signInNeeded && canStartCurated
+            catalogStateLabel ??
+            (signInNeeded && canStartCurated
               ? "Sign-in needed"
               : curated && storedGrant && !canStartCurated
                 ? "Unavailable"
-                : undefined,
+                : undefined),
           connected: curated ? item.status === "connected" : storedGrant,
-          onOpen: storedGrant || curated ? () => showConnector(item.connectorId) : undefined,
+          onOpen: storedGrant || canStartCurated ? () => showConnector(item.connectorId) : undefined,
           pending: disconnecting[item.connectorId] ? "disconnect" : undefined,
           failure: disconnectFailures[item.connectorId],
           action: !curated
@@ -1911,15 +1928,19 @@ function OwnerConnectorsPanel({
                   onClick: () => {
                     showConnector(item.connectorId);
                     connectCurated(item.connectorId, item.displayName);
-                  },
-                  disabled: curatedBusy || loading,
-                }
-              : {
+                },
+                disabled: curatedBusy || loading,
+              }
+              : storedGrant
+                ? {
                   label: `Disconnect ${item.displayName}`,
                   onClick: () => askToDisconnect(item.connectorId, `curated:${item.connectorId}`, true),
                   disabled: curatedBusy,
-                },
-          trailingText: !storedGrant && !curated ? labels[item.status] : undefined,
+                }
+                : undefined,
+          trailingText:
+            catalogStateLabel ??
+            (!storedGrant && !curated ? labels[item.status] : undefined),
         };
       }),
   ];
@@ -1942,7 +1963,7 @@ function OwnerConnectorsPanel({
     selectedCatalog &&
       selectedCatalog.curatedOAuth === true &&
       curatedRolloutEnabled &&
-      selectedCatalog.available !== false,
+      selectedCatalog.available === true,
   );
 
   const inProfile = surface === "profile";
@@ -1950,6 +1971,26 @@ function OwnerConnectorsPanel({
     ["Connected", connectedEntries],
     ["Available", availableEntries],
   ] as const;
+  const catalogState = !overview && loading ? (
+    <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+      Loading connector catalog…
+    </p>
+  ) : catalogLoadFailed ? (
+    <div className="flex items-center justify-between gap-3 rounded-xl bg-foreground/10 px-3 py-2">
+      <p role="status" aria-live="polite" className="text-sm text-muted-foreground">
+        Connector catalog unavailable. Try again.
+      </p>
+      <Button
+        size="compact"
+        variant="ghost"
+        className={touch}
+        onClick={() => void refresh(controller.current?.signal)}
+        disabled={loading}
+      >
+        Retry connector catalog
+      </Button>
+    </div>
+  ) : null;
   return (
     <div
       ref={panelRootRef}
@@ -2006,6 +2047,7 @@ function OwnerConnectorsPanel({
           </p>
         ) : !activeConnector && inProfile ? (
           <>
+            {catalogState}
             {listSections.map(([heading, items]) =>
               items.length === 0 ? null : (
                 <SettingsGroup key={heading} title={heading} testId={`profile-connectors-${heading.toLowerCase()}`}>
@@ -2033,6 +2075,7 @@ function OwnerConnectorsPanel({
                 className="min-h-11 min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
               />
             </label>
+            {catalogState}
             {listSections.map(([heading, items]) =>
               query && items.length === 0 ? null : (
                 <section key={heading} aria-label={heading} className="space-y-2">

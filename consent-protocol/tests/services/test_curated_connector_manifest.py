@@ -23,6 +23,7 @@ from hushh_mcp.services.curated_connector_manifest import (
     MANIFEST_DIR,
     REGISTRATION_SPEC_DIR,
     CuratedConnectorManifestError,
+    all_catalog_entries,
     all_manifests,
     all_registration_specs,
     clear_manifest_cache,
@@ -64,6 +65,8 @@ def test_attio_registration_spec_is_valid_but_never_becomes_a_runtime_manifest()
     assert not (MANIFEST_DIR / "attio.json").exists()
 
     spec = REGISTRATION_SPECS["attio"]
+    assert spec.display_name == "Attio"
+    assert spec.description == "Connect Attio after setup is complete."
     assert spec.is_public_client is True
     assert spec.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
     assert spec.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
@@ -71,6 +74,17 @@ def test_attio_registration_spec_is_valid_but_never_becomes_a_runtime_manifest()
     assert spec.redirect_uris["uat"] == (
         "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
     )
+
+
+def test_catalog_entries_project_only_reviewed_display_metadata_and_setup_state():
+    entries = all_catalog_entries()
+    assert set(entries) == {"hubspot", "notion", "attio"}
+    assert entries["hubspot"].catalog_state == "setup_pending"
+    assert entries["notion"].catalog_state == "setup_pending"
+    assert entries["attio"].catalog_state == "discovery_pending"
+    assert entries["attio"].display_name == "Attio"
+    assert entries["attio"].description == "Connect Attio after setup is complete."
+    assert not hasattr(entries["attio"], "mcp_endpoint")
 
 
 @pytest.fixture
@@ -252,6 +266,7 @@ def test_a_public_client_must_pin_a_public_registration_endpoint():
     "mutate,message",
     [
         (lambda spec: spec.update(tools={"allowlist": ["guessed"]}), "unknown keys"),
+        (lambda spec: spec.update(displayName=""), "displayName"),
         (
             lambda spec: spec["oauth"].update(tokenEndpointAuth="client_secret_post"),
             "registration-only spec",
