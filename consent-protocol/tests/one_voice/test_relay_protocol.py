@@ -498,6 +498,122 @@ async def test_superseded_confirmation_is_cancelled_before_it_can_be_relisted():
     assert await pending.list_open(user_id=USER, conversation_id=CONV) == []
 
 
+async def test_provider_continuation_can_prepare_a_card_for_the_same_input():
+    transport = FakeTransport()
+    fake = FakeLive([])
+    pending = MemoryPendingStore()
+    session = _session(transport, fake, pending=pending)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    session.ctx.entities.remember_person(
+        ConfirmedPerson(user_id="u-priya", display_name="Priya", confirmed_at=now_iso())
+    )
+
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Ask Priya for her location"))
+    input_turn = session.turn.turn_id
+    await session._dispatch_tool_call({"id": "c1", "name": "echo", "args": {"text": "Priya"}})
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    continuation_turn = session.turn.turn_id
+    assert continuation_turn != input_turn
+
+    await session._handle_live_event(
+        LiveEvent(
+            kind="tool_call",
+            function_calls=[
+                {"id": "c2", "name": "ask", "args": {"person": {"user_id": "u-priya"}}}
+            ],
+        )
+    )
+    cards = transport.frames("pending_action")
+    assert len(cards) == 1
+    assert cards[0]["turn_id"] == continuation_turn
+    assert fake.tool_responses[-1]["response"]["status"] == "confirmation_required"
+    assert len(await pending.list_open(user_id=USER, conversation_id=CONV)) == 1
+
+
+async def test_new_spoken_input_does_not_reuse_a_model_continuation_turn():
+    transport = FakeTransport()
+    fake = FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+
+    await session._handle_live_event(
+        LiveEvent(kind="input_transcript", text="First question", finished=True)
+    )
+    first_input = transport.frames("transcript.input")[-1]["turn_id"]
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    continuation_turn = session.turn.turn_id
+    assert session._origin_is_stale(continuation_turn) is False
+
+    await session._handle_live_event(
+        LiveEvent(kind="output_transcript", text="One is still answering", finished=False)
+    )
+    await session._handle_live_event(
+        LiveEvent(kind="input_transcript", text="Different question", finished=True)
+    )
+    next_input = transport.frames("transcript.input")[-1]["turn_id"]
+    assert next_input not in {first_input, continuation_turn}
+    assert session._origin_is_stale(continuation_turn) is True
+
+
+async def test_new_input_still_supersedes_a_delayed_continuation_card():
+    transport = FakeTransport()
+    fake = FakeLive([])
+    pending = MemoryPendingStore()
+    session = _session(transport, fake, pending=pending)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class DelayedConfirmation:
+        async def call(self, _ctx, _name, _args, *, origin_turn_id=None):
+            row, receipt = await pending.create(
+                user_id=USER,
+                conversation_id=CONV,
+                tool_name="ask",
+                gateway_action_id="location.send_request",
+                tier="voice",
+                args={},
+                summary="Ask for location",
+            )
+            started.set()
+            await release.wait()
+            return ToolCallOutcome(
+                result=ConfirmationRequired(
+                    pending_action_id=row.id, tier="voice", summary="Ask for location"
+                ),
+                pending=row,
+                receipt_token=receipt,
+            )
+
+    session.executor = DelayedConfirmation()
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="First question"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    continuation_turn = session.turn.turn_id
+    call = asyncio.create_task(
+        session._handle_live_event(
+            LiveEvent(kind="tool_call", function_calls=[{"id": "c1", "name": "ask", "args": {}}])
+        )
+    )
+    await asyncio.wait_for(started.wait(), 1)
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Second question"))
+    release.set()
+    await asyncio.wait_for(call, 1)
+
+    assert transport.frames("tool.started")[-1]["turn_id"] == continuation_turn
+    assert transport.frames("pending_action") == []
+    assert fake.tool_responses[-1]["response"]["status"] == "superseded"
+    assert await pending.list_open(user_id=USER, conversation_id=CONV) == []
+
+
 @pytest.mark.parametrize("operation", ["get_pending_action", "confirm_pending_action"])
 async def test_superseded_existing_card_keeps_its_true_status(operation):
     pending = MemoryPendingStore()
