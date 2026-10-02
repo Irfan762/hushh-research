@@ -499,10 +499,7 @@ describe("reserved-branch writer inventory", () => {
    * lane. The second test below fails once the code is present, so an entry
    * cannot outlive its reason: delete it in the integration that brings the code.
    */
-  const AWAITING_SIBLING_LANE: Readonly<Record<string, string>> = {
-    one_settings_communication_preferences:
-      "Phase 6 style settings (lib/agent/owner-style-settings-writer.ts, commits e6a28025d and 289ebf9ea)",
-  };
+  const AWAITING_SIBLING_LANE: Readonly<Record<string, string>> = {};
 
   const producedByCode = (corpus: string) => (writerId: string) =>
     inventory.labels.has(writerId) ||
