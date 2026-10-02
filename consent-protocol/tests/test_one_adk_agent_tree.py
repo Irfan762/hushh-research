@@ -335,7 +335,8 @@ class TestAgentTreeShape:
         assert "Use your intelligence in the current turn" in ONE_IDENTITY_INSTRUCTION
         assert "it is not semantic authority" in ONE_IDENTITY_INSTRUCTION
         assert "Deterministic policy may validate" in ONE_IDENTITY_INSTRUCTION
-        assert "KYC app surface" in ONE_IDENTITY_INSTRUCTION
+        assert "Gmail information requests" in ONE_IDENTITY_INSTRUCTION
+        assert "retired KYC route" in ONE_IDENTITY_INSTRUCTION
         assert "Gmail receipt sync is not part of One's chat read lane" in ONE_IDENTITY_INSTRUCTION
         assert "MAIL READ ADMISSION below explicitly enables it" in ONE_IDENTITY_INSTRUCTION
         assert (

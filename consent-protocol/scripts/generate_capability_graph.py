@@ -429,6 +429,16 @@ def _workflow_change_is_additive(
     new = deepcopy(_semantic_node(graph, semantic_id))
     if not old or not new or _node_version(old) != _node_version(new):
         return False
+    # These digests fingerprint the wider capability catalog rather than this
+    # workflow's behavior. A catalog-only refresh must not require a workflow
+    # migration when every executable workflow field remains unchanged.
+    old_without_digests = deepcopy(old)
+    new_without_digests = deepcopy(new)
+    for workflow in (old_without_digests, new_without_digests):
+        workflow.get("plan", {}).pop("knowledge_package_digest", None)
+        workflow.get("knowledge_package", {}).pop("source_digest", None)
+    if old != new and old_without_digests == new_without_digests:
+        return True
     # New command schemas may add a client completion recipe while legacy
     # durable workflow cursors stay identical. Each referenced action retains
     # its own independently versioned admission and settlement contract.

@@ -171,8 +171,9 @@ import { ConnectorBrandMark, type ConnectorBrand } from "@/components/agent/conn
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import {
-  CHAT_USER_BUBBLE_CLASSNAME,
   ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME,
+  OneChatBubble,
+  OneChatTimeSeparator,
 } from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
@@ -2007,16 +2008,12 @@ export function AgentBubble({
           isUser && "sm:max-w-[min(76%,42rem)]",
         )}
       >
-        <div
+        <OneChatBubble
           aria-live={!isUser && isStreaming ? "polite" : undefined}
           data-agent-streaming={!isUser && isStreaming ? "true" : undefined}
+          tone={isUser ? "user" : showAssistantBubble ? "assistant" : "plain"}
           className={cn(
-            "text-sm leading-6",
-            isUser
-              ? cn(CHAT_USER_BUBBLE_CLASSNAME, "relative")
-              : showAssistantBubble
-                ? cn(ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME, "relative")
-                : "px-0 py-1 text-foreground",
+            (isUser || showAssistantBubble) && "relative",
             isError &&
               "rounded-2xl border border-destructive/20 bg-destructive/[0.06] px-4 py-2.5 text-foreground",
           )}
@@ -2082,7 +2079,7 @@ export function AgentBubble({
               {message.errorNotice}
             </p>
           ) : null}
-        </div>
+        </OneChatBubble>
         {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
         {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} pendingCards={pendingMemoryCards} onUnlock={onUnlockVault} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
@@ -2137,25 +2134,12 @@ export function AgentBubble({
 /** The centered date/time line that opens a group of messages. */
 function ChatTimeSeparatorRow({ separator }: { separator: ChatTimeSeparator }) {
   return (
-    <div
-      data-testid="agent-chat-time-separator"
-      className="flex justify-center whitespace-nowrap pb-0.5 pt-2 first:pt-0"
-    >
-      {separator.dateTime ? (
-        <time
-          dateTime={separator.dateTime}
-          title={separator.accessibleLabel}
-          className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]"
-        >
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </time>
-      ) : (
-        <span className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]">
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </span>
-      )}
+    <div data-testid="agent-chat-time-separator">
+      <OneChatTimeSeparator
+        accessibleLabel={separator.accessibleLabel}
+        dateTime={separator.dateTime}
+        label={separator.text}
+      />
     </div>
   );
 }

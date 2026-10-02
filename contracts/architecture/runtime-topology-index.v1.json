@@ -786,6 +786,27 @@
       "primary_access_path": "developer app registration, token issuance, and MCP/developer API access"
     },
     {
+      "data_class": "personal_encrypted",
+      "exact_tables": [
+        "messages"
+      ],
+      "id": "direct_message_encrypted_content",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Participant-scoped conversation history, latest-message inbox projection, unread-count/read-receipt updates, and transactionally committed recipient doorbells from the Direct Messages service."
+    },
+    {
+      "data_class": "personal_metadata",
+      "exact_tables": [
+        "conversations",
+        "direct_message_blocks"
+      ],
+      "id": "direct_message_relationship_state",
+      "lifecycle_status": "current",
+      "owner": "iam-consent-governance",
+      "primary_access_path": "Firebase-authenticated Direct Messages service and /api/one/messages routes. Conversation creation and message insertion lock and verify only the canonical active connections pair; they never infer eligibility from Circle membership, trusted_connections, or a connection origin. Read paths remain participant-scoped after a connection ends."
+    },
+    {
       "data_class": "reference",
       "exact_tables": [
         "domain_registry"
@@ -3675,6 +3696,29 @@
       "api_dependencies": [],
       "cache": {
         "policy": "memory-only",
+        "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+        "resource_classes": [
+          "unknown"
+        ]
+      },
+      "implementation_override": null,
+      "lifecycle": "canonical",
+      "native_surface_id": null,
+      "page_file": "app/one/messages/page.tsx",
+      "pathname": "/one/messages",
+      "route_mode": "standard",
+      "semantic_routes": [],
+      "voice": {
+        "action_ids": [],
+        "delegate_agent_ids": [],
+        "playbook_id": "route.one.messages"
+      }
+    },
+    {
+      "alias": null,
+      "api_dependencies": [],
+      "cache": {
+        "policy": "memory-only",
         "refresh_trigger": "pkm-domain-changed subscription seeded by the PKM invalidation epoch (forces a fresh read after a write on another route); explicit user refresh may force",
         "resource_classes": [
           "unknown"
@@ -5736,13 +5780,13 @@
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
     "agent_registry": "1363b2d630b8f985f19549a79a974f2769683950ab02d6f4a0ca91589624012b",
-    "cache_manifest": "9f19ca3738aec55f7b572ddb5f99ef513ec9177cc38a37e3bec76dc9bb3cf1f9",
-    "data_plane": "9d175a41a92d3813e684ebfff7ba497af36bd52d0aed2f6f536dc8644cc21de0",
+    "cache_manifest": "bb1fd935f1fb2ee571f6cafbc49689dea661b71993550797b779784735e57886",
+    "data_plane": "461ecb8cbd26c6b9b85a57e19f4aa5291a8c7a91a02a949409b7afba828691d0",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "3dc81d307ef8cf9932ca3f80c2d54915515161968d0303feccea401e8afebce9",
-    "route_index": "bc6f4d1018e15a2c50474ad85ea48cf2a53c016158edeaba5c2b023309672e11",
-    "route_layout": "57993df945d3b7923000063c7cc7826dc21ac179f110ef289df64319d088e435",
-    "surface_map": "08dc32342b60438d325b07e45eab815abb798a89c7a91deb220363b6dfa88833",
+    "route_index": "1b6229b2fd4f758ecdb385dcbd352432b56bc4ef058010e204e177bd971c2c58",
+    "route_layout": "467ac69cd8610e2c9299202b97fad06587d347c55835ea46e117668ac5e53849",
+    "surface_map": "297418f9ab9ace2f783f02d9f63d3aadc2a1e53c165569573df0edd7d98ec01d",
     "topology_contract": "2731deba853b10ca369d14e98e8e5b414c13fab0667d08357e272c6dca6ea3dc",
     "world_model_compat": "10fc27eefad30ff56c69ef71a8953b727ab323a6e982ec783711fbbe1c1ee425"
   },
@@ -5754,8 +5798,8 @@
     "decision_required": 2,
     "in_process_specialists": 5,
     "one_specialist_tools": 6,
-    "physical_routes": 141,
+    "physical_routes": 142,
     "semantic_routes": 14,
-    "table_families": 80
+    "table_families": 82
   }
 }

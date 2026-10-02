@@ -28,6 +28,7 @@ from .location_chat import router as location_chat_router
 from .location_settings import router as location_settings_router
 from .marketplace_catalog import router as marketplace_catalog_router
 from .marketplace_requests import router as marketplace_requests_router
+from .messages import router as messages_router
 from .models import router as models_router
 from .opportunity_signals import router as opportunity_signals_router
 from .people import public_router as public_people_router
@@ -45,6 +46,7 @@ router.include_router(retired_voice_router)
 router.include_router(advisors_router)
 router.include_router(agent_chat_router)
 router.include_router(connections_router)
+router.include_router(messages_router)
 router.include_router(calendar_router)
 router.include_router(drive_actions_router)
 router.include_router(capability_runtime_router)

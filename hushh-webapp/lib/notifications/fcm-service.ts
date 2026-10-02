@@ -14,7 +14,10 @@
 
 import { Capacitor } from "@capacitor/core";
 import { ApiService } from "@/lib/services/api-service";
-import { ROUTES } from "@/lib/navigation/routes";
+import {
+  buildDirectMessageRoute,
+  ROUTES,
+} from "@/lib/navigation/routes";
 import { isAgentConversationId } from "@/lib/agent/agent-chat-turn-watch";
 import { feedAttentionTapTarget } from "@/lib/agent/feed-attention";
 import {
@@ -204,9 +207,26 @@ export function informationRequestAnswerTapTarget(
   return `${ROUTES.HOME}?${new URLSearchParams({ informationRequest: bundleId }).toString()}`;
 }
 
+/** A direct-message push carries opaque ids only; the authenticated inbox reloads the body. */
+export function directMessageNotificationTapTarget(
+  data: Record<string, unknown> | undefined,
+): string | null {
+  const type = String(data?.type || "").trim().toLowerCase();
+  if (type !== "direct_message") return null;
+  const conversationId = String(
+    data?.conversation_id || data?.conversationId || "",
+  ).trim();
+  if (!conversationId || conversationId.length > 256 || /[\x00-\x1f]/.test(conversationId)) {
+    return ROUTES.ONE_MESSAGES;
+  }
+  return buildDirectMessageRoute({ conversationId });
+}
+
 export function buildNotificationTapTarget(
   data: Record<string, unknown> | undefined,
 ): string {
+  const directMessageTarget = directMessageNotificationTapTarget(data);
+  if (directMessageTarget) return directMessageTarget;
   const oneReplyTarget = oneReplyNotificationTapTarget(data);
   if (oneReplyTarget) return oneReplyTarget;
   const answerTarget = informationRequestAnswerTapTarget(data);
@@ -241,6 +261,8 @@ function resolveNotificationClickTarget(
 ): string {
   // Older workers send a Feed URL but retain the original typed payload.
   // Only this known event family may bypass the existing Feed URL boundary.
+  const directMessageTarget = directMessageNotificationTapTarget(data);
+  if (directMessageTarget) return directMessageTarget;
   const locationTarget = incomingLocationShareTarget(data);
   if (locationTarget) return locationTarget;
   const documentShareTarget = documentShareNotificationTapTarget(data);

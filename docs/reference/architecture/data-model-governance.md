@@ -138,7 +138,7 @@ Provider-derived data becomes durable user memory only after a consented, encryp
 
 `kai_gmail_receipts` and `kai_receipt_memory_artifacts` are in a
 **read-only cutover**. Existing rows are retained temporarily so people do not
-lose their visible receipt history, but migration 264 and the Gmail service both
+lose their visible receipt history, but migration 265 and the Gmail service both
 reject new receipt or preview writes. This is deliberately not a table-drop
 migration.
 

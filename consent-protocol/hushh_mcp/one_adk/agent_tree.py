@@ -274,7 +274,7 @@ APP_ROUTES: dict[str, str] = {
     "setup": "/one/setup",
     "finance": "/one/kai",
     "ria": "/ria",
-    "email": "/one/kyc",
+    "email": "/one/email",
     "location": "/one/location",
     "personal_data": "/one/pkm",
     "consent": "/one/consent",
@@ -481,9 +481,9 @@ ONE_IDENTITY_INSTRUCTION: str = (
     "a review card only; tell the person it will run only after they press its explicit "
     "confirmation control. If Calendar asks for a connection or permission, direct the "
     "person to the Connect Calendar control.\n"
-    "- KYC: approval-gated identity and client-request work lives in the KYC "
-    "app surface. Navigate there with route.one_kyc; do not invent a direct "
-    "conversational KYC tool or claim a workflow changed before the app confirms it.\n"
+    "- Gmail information requests: approval-gated client-request work lives in the "
+    "Email app surface. Navigate there with open_screen for email; do not invent a "
+    "direct conversational KYC tool or claim a workflow changed before the app confirms it.\n"
     "- Location: live sharing with trusted people and local context.\n"
     "- Memory: the person's own private memory, saved knowledge they can review "
     "(internally called PKM). When the person says 'my memory', 'what you know about "
@@ -504,14 +504,14 @@ ONE_IDENTITY_INSTRUCTION: str = (
     "Delegate naturally: when a request belongs to a specialist's domain, call "
     "that specialist's tool with the user's request, except KYC which is an "
     "in-app workflow rather than a direct conversational tool. When the user asks to go "
-    "somewhere in the app ('take me to profile', 'open location'), call "
+    "somewhere in the app ('take me to profile', 'open email'), call "
     "run_app_action with the matching navigation action id (route.profile, "
     "route.one_location, and similar route actions); navigation actions work "
     "from every screen and are always available even when not listed in the "
     "current inventory. Treat route language separately from domain work: "
     "'take me to location' selects route.one_location, while 'share my location' "
-    "selects the governed location action below; 'take me to KYC' selects "
-    "route.one_kyc, while a question about KYC workflow status is not navigation. "
+    "selects the governed location action below; questions about Gmail information "
+    "requests belong in Email rather than a retired KYC route. "
     "When the user "
     "asks to analyze, "
     "research, or run a debate on a stock or company ('analyze Nvidia'), act "

@@ -2517,6 +2517,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
       {
         connectionId: "c-1",
         userId: "u-rashid",
+        publicPersonRef: "person-ref-rashid",
         displayName: "Abdul Rashid",
         maskedEmail: "r***d@gmail.com",
       },
@@ -2524,7 +2525,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
     render(<ConnectPageClient />);
 
     const message = await screen.findByRole("button", {
-      name: "Message Abdul Rashid (coming soon)",
+      name: "Message Abdul Rashid",
     });
     const remove = await screen.findByRole("button", {
       name: "Remove connection with Abdul Rashid",
@@ -2535,7 +2536,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(remove.className).toContain("min-h-11");
     expect(remove.querySelector("svg")).toBeTruthy();
     expect(remove).not.toHaveTextContent("Remove");
-    expect(screen.getByRole("button", { name: /Message Abdul Rashid/ })).toBeDisabled();
+    expect(message).toBeEnabled();
     expect(remove.className).not.toContain("h-9");
     expect(remove.className).not.toContain("before:-inset-y-1.5");
     const trailing = remove.closest("div");
@@ -2545,7 +2546,9 @@ describe("Connect — the phone-width geometry QA reported", () => {
     fireEvent.click(message);
     expect(mocks.toastInfo).not.toHaveBeenCalled();
     expect(mocks.removeConnection).not.toHaveBeenCalled();
-    expect(mocks.routerPush).not.toHaveBeenCalled();
+    expect(mocks.routerPush).toHaveBeenCalledWith(
+      "/one/messages?person=person-ref-rashid",
+    );
 
     // Whole class tokens, not substrings: this wrapper already carries
     // `max-w-full`, which contains "w-full" and would make a `toContain` check
