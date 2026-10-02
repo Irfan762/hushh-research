@@ -3972,6 +3972,12 @@
           "required_scope": "vault.owner"
         },
         {
+          "description": "Add one optional contextual emoji to the latest typed-chat user message; presentation only, never ends the answer or persists a reaction.",
+          "name": "react_to_message",
+          "py_func": "hushh_mcp.one_adk.message_reactions.react_to_message",
+          "required_scope": "cap.one.invoke"
+        },
+        {
           "description": "Offer two or three short next questions after a substantive typed-chat answer, in the same response; the app shows them as tappable chips that fill the composer and reads or changes nothing.",
           "name": "suggest_follow_ups",
           "py_func": "hushh_mcp.one_adk.follow_up_suggestions.suggest_follow_ups",
