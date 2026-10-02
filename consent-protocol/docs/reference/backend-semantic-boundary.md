@@ -306,3 +306,20 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
   timezone, partial-category failure, and the continuous One Voice conversation
   across in-app navigation. Synthetic contract tests prove the safety boundary;
   they do not establish classification accuracy on a live mailbox.
+
+
+### Declared: typed-chat message reactions
+
+- Owner: One, `react_to_message` in `hushh_mcp/agents/one/agent.yaml`.
+- One chooses an optional contextual emoji during its normal turn. Host code
+  only validates the allowed single emoji, typed-chat surface and once-per-turn
+  limit; no keywords classify emotion. Vulnerable news is instructed to use 💛.
+- The model accepts only emoji, never a target ID. Joined messages use the
+  server-owned queued-input reference; ordinary turns use the captured client
+  user message. No consent, feed or external action authority is added.
+- AG-UI carries the ordinary tool result. The tool never ends the turn.
+  Reaction calls/results are removed from the sealed session projection and
+  remain live-session presentation only; no history badge restoration or logging.
+- Validation: real ADK/AG-UI scripted-model contract, sealed-history exclusion,
+  client parsing/deduplication and exact user attachment. Live semantic quality
+  is not established by scripted tests and requires authenticated evaluation.
