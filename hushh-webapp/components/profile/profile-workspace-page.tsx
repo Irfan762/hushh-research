@@ -75,6 +75,7 @@ import {
   type ProfileStackEntry,
 } from "@/components/profile/profile-stack-navigator";
 import { ProfileKaiPreferencesPanel } from "@/components/profile/profile-kai-preferences-panel";
+import { CommunicationPreferencesSection } from "@/components/profile/communication-preferences-section";
 import { GeminiLogo } from "@/components/brand/gemini-logo";
 import { GeminiRuntimeSettingsCard } from "@/components/connections/gemini-runtime-settings-card";
 import { VoicePreferencesPanel } from "@/components/profile/voice-preferences-panel";
@@ -3606,6 +3607,12 @@ function ProfilePageContent({
           }
         />
       </SettingsGroup>
+      <CommunicationPreferencesSection
+        userId={user?.uid ?? null}
+        vaultKey={vaultKey}
+        vaultOwnerToken={vaultOwnerToken}
+        onRequestUnlock={() => requestVaultUnlock("profile_data")}
+      />
     </div>
   );
 
@@ -4365,7 +4372,7 @@ function ProfilePageContent({
     profileStackEntries.push({
       key: "panel:preferences",
       title: PROFILE_LABELS.preferences,
-      description: "Theme and accent.",
+      description: "Theme, accent and how One writes.",
       content: preferencesContent,
     });
     if (activeDetail === "kai-preferences") {

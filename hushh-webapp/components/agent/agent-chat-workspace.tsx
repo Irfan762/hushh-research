@@ -32,6 +32,7 @@ import {
   type ExplicitPkmSaveJobResult,
 } from "@/lib/pkm/pkm-save-job";
 import { isCommittedPkmSave, type AgentPkmPreviewCard } from "@/lib/agent/agent-pkm-memory";
+import type { OwnerStyleSettings } from "@/lib/agent/owner-style-settings";
 import {
   AgentConsentContinuationContext,
   AgentPersonSelectionContext,
@@ -6106,6 +6107,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             : "",
           agentPkmContext.text || "",
         ].filter(Boolean).join("\n\n") || undefined,
+        // Settings style choices ride beside the packet, never inside it.
+        communicationPreferences: agentPkmContext.communicationPreferences,
         personSelectionHandle: options.personSelectionHandle,
         gmailInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
         driveSearchSelection: options.driveSearchSelection,
@@ -6476,6 +6479,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       consentContinuation?: AgentChatConsentContinuation;
       feedAttention?: { itemId: string };
       pkmContext?: string;
+      communicationPreferences?: OwnerStyleSettings;
     } = {},
   ): Promise<FollowUpTurnResult> => {
     if (!hasChatAccess || !user?.uid) return "failed";
@@ -6572,6 +6576,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         ...(extra.consentContinuation ? { consentContinuation: extra.consentContinuation } : {}),
         ...(extra.feedAttention ? { feedAttention: extra.feedAttention } : {}),
         ...(extra.pkmContext ? { pkmContext: extra.pkmContext } : {}),
+        ...(extra.communicationPreferences ? { communicationPreferences: extra.communicationPreferences } : {}),
         conversationId: conversationIdRef.current,
         vaultOwnerToken: token,
         vaultKey: vaultKeyRef.current ?? "",
@@ -7598,6 +7603,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           await sendFollowUpTurn(FEED_ATTENTION_LABEL, {
             feedAttention: { itemId },
             pkmContext: memory.text || undefined,
+            communicationPreferences: memory.communicationPreferences,
           });
         },
       });

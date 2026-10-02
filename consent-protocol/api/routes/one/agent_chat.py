@@ -69,6 +69,7 @@ from hushh_mcp.one_adk.feed_attention import (
 )
 from hushh_mcp.one_adk.mcp_call_approval import STATE_MCP_APPROVAL, admit_resume_receipt
 from hushh_mcp.one_adk.mcp_turn_scope import STATE_MCP_CONFIGURATION, admit_turn_configurations
+from hushh_mcp.one_adk.owner_style import STATE_OWNER_STYLE, OwnerStyleError, admit_owner_style
 from hushh_mcp.one_adk.pending_email_draft import (
     STATE_PENDING_EMAIL_DRAFT,
     admit_pending_email_draft,
@@ -357,6 +358,14 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
     # The person's unsent draft card, so a follow-up can revise it. Only an
     # unlocked owner turn keeps it; it never becomes conversation state.
     pending_email_draft = admit_pending_email_draft(forwarded)
+    # The owner's Settings style choices, sent apart from the memory packet.
+    # Closed schema: anything outside it refuses the turn instead of clipping.
+    try:
+        owner_style = admit_owner_style(forwarded, owner_admitted=bool(token and user_id))
+    except OwnerStyleError:
+        raise HTTPException(
+            status_code=400, detail="Communication preferences are invalid."
+        ) from None
     if not (token and user_id):
         consume_request_secret(turn_location)
         turn_location = ""
@@ -389,6 +398,7 @@ async def _extract_state(request: Request, input_data: RunAgentInput) -> dict[st
         STATE_SCREEN: str(screen_context.get("screen") or "")[:64],
         STATE_VOICE_CONTEXT: screen_context,
         STATE_PKM_CONTEXT: store_request_secret(str(forwarded.get("pkmContext") or "")[:20000]),
+        STATE_OWNER_STYLE: owner_style,
         STATE_GMAIL_INFORMATION_REQUEST_WORKFLOW_ID: workflow_id,
         STATE_GMAIL_INFORMATION_REQUEST_CONTEXT: store_request_secret(
             gmail_information_request_context
@@ -1360,6 +1370,7 @@ _ACTIVITY_TOOLS = frozenset(
         "propose_document_request",
         "list_available_models",
         "set_preferred_model",
+        "propose_style_settings",
         "calendar_summary",
         "calendar_events",
         "calendar_availability",

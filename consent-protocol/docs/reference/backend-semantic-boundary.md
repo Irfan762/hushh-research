@@ -254,6 +254,24 @@ If a feature cannot provide that declaration, it is not agent-only compliant.
 - Live eval before promotion: none yet. Mocked contract tests in
   `consent-protocol/tests/services/test_pkm_agent_lab_service.py` (RIA, Wallet, Finance,
   and an unreserved negative control).
+### Declared: owner standing style settings
+
+- Owning agent: `agent_one` decides whether the owner stated a lasting writing
+  preference and calls `propose_style_settings`
+  (`consent-protocol/hushh_mcp/agents/one/agent.yaml`). No keyword or regex route
+  detects a style request.
+- Structured output: the tool's `proposed` object, closed to `preferred_name`,
+  `tone`, `length`, `language` and `avoid_em_dashes`
+  (`hushh_mcp/one_adk/owner_style.py`). Chat cannot propose `owner_style_note`.
+- Validator: `validate_owner_style` refuses unknown keys, wrong types and oversize
+  values (400 on the chat route, `invalid` from the tool); it never clips or
+  substitutes a value. Sanitizing removes control and format characters only.
+- Authority: none. The tool writes nothing; the owner commits in Settings. The
+  prompt section is rendered from server templates, owner text is a quoted
+  literal, and no tool gate reads the style state
+  (`tests/test_one_owner_style.py` asserts unchanged authorization decisions).
+- Live eval before promotion: none yet. Mocked contract tests only; whether One
+  follows each template turn after turn is unmeasured.
 
 ### Declared: consent scope catalog search (contract C4)
 

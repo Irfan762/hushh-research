@@ -3672,7 +3672,8 @@
       "privacy": {
         "context_allowlist": [
           "hussh:voice_context",
-          "hussh:pkm_context"
+          "hussh:pkm_context",
+          "temp:hussh:owner_style"
         ],
         "plaintext_telemetry": false
       },
@@ -3908,7 +3909,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "9243a1a9afd33725174d2be4323b93375806866e7b19f67ebc4bc6fb83ffe1da",
+      "system_instruction_sha256": "df85aef793c99a9a9324844afd1d372dcf9ea1dfb93f0a34e75b5ed7a5707e74",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
@@ -3969,6 +3970,12 @@
           "description": "Prepare a reviewed move of one Drive file to the trash; nothing is trashed until the owner confirms the exact card.",
           "name": "propose_drive_file_trash",
           "py_func": "hushh_mcp.one_adk.drive_write_tools.propose_drive_file_trash",
+          "required_scope": "vault.owner"
+        },
+        {
+          "description": "Offer the owner a change to how One writes to them (name, tone, length, language, em dashes). Saves nothing; returns an offer card that opens Settings prefilled, where the owner commits with the Settings writer.",
+          "name": "propose_style_settings",
+          "py_func": "hushh_mcp.one_adk.owner_style.propose_style_settings",
           "required_scope": "vault.owner"
         },
         {

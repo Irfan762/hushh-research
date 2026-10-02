@@ -762,6 +762,49 @@ describe("agent PKM memory helpers", () => {
     expect(context.text).not.toContain("must-not-reach-agent-context");
   });
 
+  it("sends communication preferences as standing style, never inside the memory packet", async () => {
+    pkmBlob = {
+      preferences: { writing: { default_style: "concise summaries" } },
+      identity: {
+        identity_profile: { city: "Synthetic City" },
+        communication_preferences: {
+          preferred_name: "Kay",
+          tone: "executive",
+          reply_style: "Short and direct replies",
+          owner_style_note: "Write Hussh with two s's.",
+          unknown_key: "dropped",
+          updated_at: "2026-10-01T00:00:00.000Z",
+        },
+      },
+    };
+    pkmGetMetadataMock.mockResolvedValue({
+      ...METADATA,
+      domains: [...METADATA.domains, { ...METADATA.domains[0], key: "identity", displayName: "Identity" }],
+    });
+
+    const context = await loadAgentPkmContext({
+      userId: "user_1",
+      vaultOwnerToken: "vault_token",
+      vaultKey: "vault_key",
+      message: "hello",
+    });
+
+    // Other identity facts stay in the packet; the reserved style branch does not.
+    expect(context.text).toContain("Synthetic City");
+    expect(context.text).not.toMatch(/Communication Preferences/i);
+    for (const value of ["Kay", "two s's", "Short and direct"]) expect(context.text).not.toContain(value);
+    // Closed to the request schema: legacy sentence read as enums, unknown keys dropped.
+    expect(context.communicationPreferences).toEqual({
+      preferred_name: "Kay",
+      tone: "executive",
+      length: "short",
+      owner_style_note: "Write Hussh with two s's.",
+    });
+    expect(
+      AgentPkmContextStore.findLocalDuplicate({ userId: "user_1", candidate: "Kay" }),
+    ).toBeNull();
+  });
+
   it("keeps a bounded local inventory and reports safety omissions", async () => {
     const deeplyNested: Record<string, unknown> = { favorite: "tea" };
     let cursor = deeplyNested;

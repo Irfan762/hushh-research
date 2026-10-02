@@ -149,6 +149,9 @@ export default defineConfig({
         // secrets-card: the secure Secrets card (reveal, copy, offers) is met
         // on an iPhone first; its 4/8 pt grid is asserted in the shipped engine.
         /secrets-card\.layout\.spec\.ts/,
+        // style-settings: the owner's writing-style rows, 44 px controls and the
+        // 12 px phone step are tapped on an iPhone first; own document.
+        /style-settings\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,

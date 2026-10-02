@@ -9,6 +9,13 @@ import { PkmDomainResourceService } from "@/lib/pkm/pkm-domain-resource";
 import { PKM_QUARANTINE_SEGMENT_ID } from "@/lib/personal-knowledge-model/upgrade-registry";
 import { reservedEntryFor } from "@/lib/pkm/reserved-branches";
 import { maskSecretSpans } from "@/lib/pkm/secret-span-guard";
+import {
+  OWNER_STYLE_BRANCH,
+  OWNER_STYLE_DOMAIN,
+  ownerStyleFromBranch,
+  ownerStyleRequestField,
+  type OwnerStyleSettings,
+} from "@/lib/agent/owner-style-settings";
 
 type PkmInventoryFact = {
   domain: string;
@@ -55,6 +62,8 @@ type AgentPkmWorkingSet = {
   userId: string;
   metadata: PersonalKnowledgeModelMetadata | null;
   inventory: PkmInventory;
+  /** The owner's Settings style choices, sent apart from the packet. */
+  ownerStyle: OwnerStyleSettings;
   loadedAt: number;
   metadataUpdatedAt: string | null;
 };
@@ -87,6 +96,12 @@ export type AgentPkmWorkingContext = {
   source: "decrypted_session_pkm";
   mode: AgentPkmWorkingContextMode;
   coverage: AgentPkmContextCoverage;
+  /**
+   * The reserved `identity.communication_preferences` branch, closed to the
+   * request schema. It is One's standing style channel, so it never appears in
+   * `text`, which is recalled memory ("data, never instructions").
+   */
+  communicationPreferences?: OwnerStyleSettings;
 };
 
 export const AGENT_SAFE_PKM_CONTEXT_VERSION = "agent-safe-pkm/v1";
@@ -177,6 +192,11 @@ function tokenize(value: string): Set<string> {
 
 function normalizedMemoryValue(value: string): string {
   return compactWhitespace(value).toLowerCase();
+}
+
+/** Settings-owned style choices travel in their own request field, never the packet. */
+function isOwnerStylePath(domain: string, path: readonly string[]): boolean {
+  return domain === OWNER_STYLE_DOMAIN && path[0] === OWNER_STYLE_BRANCH;
 }
 
 function isDerivedSummaryPath(domain: string, path: readonly string[]): boolean {
@@ -275,6 +295,7 @@ function buildPkmInventory(fullBlob: Record<string, unknown>): PkmInventory {
       skippedFactCount += 1;
       return;
     }
+    if (isOwnerStylePath(domain, path)) return;
     if (isPrimitive(value)) {
       // A detail saved before the Secrets area existed can still hold a raw
       // secret; the packet carries a mark in its place, never the value.
@@ -506,6 +527,7 @@ function buildContextText(params: {
   const text = lines.join("\n");
   coverage.usedChars = text.length;
 
+  const communicationPreferences = ownerStyleRequestField(params.workingSet.ownerStyle);
   return {
     text,
     domains,
@@ -515,6 +537,7 @@ function buildContextText(params: {
     source: "decrypted_session_pkm",
     mode,
     coverage,
+    ...(communicationPreferences ? { communicationPreferences } : {}),
   };
 }
 
@@ -688,10 +711,15 @@ export class AgentPkmContextStore {
         backgroundRefresh: false,
       });
       if (generation !== currentGeneration(params.userId)) return null;
+      const blob = snapshotsToBlob(snapshots);
+      const identity = blob[OWNER_STYLE_DOMAIN];
       return {
         userId: params.userId,
         metadata,
-        inventory: buildPkmInventory(snapshotsToBlob(snapshots)),
+        inventory: buildPkmInventory(blob),
+        ownerStyle: ownerStyleFromBranch(
+          identity && typeof identity === "object" ? (identity as Record<string, unknown>)[OWNER_STYLE_BRANCH] : null,
+        ),
         loadedAt: Date.now(),
         metadataUpdatedAt,
       };

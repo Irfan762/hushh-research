@@ -133,6 +133,7 @@ from hushh_mcp.one_adk.finance_market_tools import (
 )
 from hushh_mcp.one_adk.follow_up_suggestions import follow_up_instruction, suggest_follow_ups
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
+from hushh_mcp.one_adk.owner_style import owner_style_instruction, propose_style_settings
 from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instruction
 from hushh_mcp.one_adk.queued_input import club_queued_input
 from hushh_mcp.one_adk.registered_mcp_toolset import (
@@ -976,6 +977,9 @@ def _compose_one_runtime_instruction(context: Any) -> str:
     # A push tap about one feed update: grounded only in that item, no tools.
     consent_continuation_block += feed_attention_instruction(state_getter)
     pending_draft_instruction = pending_email_draft_instruction(state_getter)
+    # The owner's Settings choices: a trusted style channel, separate from the
+    # recalled-memory packet above, rendered only from server templates.
+    style_instruction = owner_style_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
         return (
@@ -983,6 +987,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
             + mail_instruction
             + selected_drive_instruction
             + pkm_instruction
+            + style_instruction
             + gmail_information_request_instruction
             + consent_continuation_block
             + pending_draft_instruction
@@ -1168,6 +1173,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
             + action_inventory
             + screen_state_instruction
             + pkm_instruction
+            + style_instruction
             + gmail_information_request_instruction
             + consent_continuation_block
             + pending_draft_instruction
@@ -1196,6 +1202,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
         + action_inventory
         + screen_state_instruction
         + pkm_instruction
+        + style_instruction
         + gmail_information_request_instruction
         + consent_continuation_block
         + pending_draft_instruction
@@ -2412,6 +2419,7 @@ def _one_roster_tools(
         propose_drive_bulk_share,
         propose_drive_share,
         set_preferred_model,
+        propose_style_settings,
         list_pending_connection_requests,
         get_current_time,
         get_my_location,

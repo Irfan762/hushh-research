@@ -24,6 +24,7 @@ import {
   type AgentPkmContextCoverage,
   type PkmReconciliationCandidate,
 } from "@/lib/agent/agent-pkm-context-store";
+import type { OwnerStyleSettings } from "@/lib/agent/owner-style-settings";
 import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
 import { humanizeMemorySegment } from "@/lib/pkm/humanize-segment";
 import { toPlainMemoryText, toPlainMemoryValue } from "@/lib/pkm/memory-plain-text";
@@ -132,6 +133,8 @@ export type AgentPkmContext = {
   source?: "metadata" | "decrypted_session_pkm";
   mode?: "summary" | "full";
   coverage?: AgentPkmContextCoverage;
+  /** Settings style choices for the separate `communicationPreferences` field. */
+  communicationPreferences?: OwnerStyleSettings;
 };
 
 export type AgentPkmSaveResult = {

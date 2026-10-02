@@ -51,6 +51,7 @@ import {
   parseAgentToolResultExperience,
   type AgentStructuredExperience,
 } from "@/lib/agent/agui-structured-experiences";
+import { ownerStyleRequestField, type OwnerStyleSettings } from "@/lib/agent/owner-style-settings";
 
 export type AgentChatMessage = {
   id: string;
@@ -739,6 +740,11 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Updating your preferred model.",
     activity: "Updating your model",
   },
+  propose_style_settings: {
+    label: "Writing style",
+    message: "Preparing a writing style change for you to review in Settings.",
+    activity: "Preparing a style change",
+  },
   calendar_summary: {
     label: "Google Calendar",
     message: "Summarizing your calendar.",
@@ -1150,6 +1156,11 @@ export async function streamAgentChat(input: {
   vaultKey: string;
   loadConnectorConfigurations?: () => Promise<CustomConnectorConfiguration[]>;
   pkmContext?: string;
+  /**
+   * The owner's Settings style choices (reserved `identity.communication_preferences`),
+   * sent apart from `pkmContext` so One reads them as standing style, never as recalled data.
+   */
+  communicationPreferences?: OwnerStyleSettings;
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
@@ -1186,6 +1197,8 @@ export async function streamAgentChat(input: {
   // a turn that still carries a raw one is refused before any request exists.
   assertNoUnguardedSecrets([input.message, ...(input.attachments ?? []).map((attachment) => attachment.text)]);
   const timezone = resolveBrowserTimeZone();
+  // Closed to the server's schema here, so a stale branch never refuses the turn.
+  const communicationPreferences = ownerStyleRequestField(input.communicationPreferences);
   const threadId = input.conversationId || crypto.randomUUID();
   const handlers = input.handlers ?? {};
   const mcpOwner = snapshotValidatedAuthSessionOwner();
@@ -1394,6 +1407,7 @@ export async function streamAgentChat(input: {
               timezone,
               turnLocation,
               pkmContext: input.pkmContext,
+              communicationPreferences,
               personSelectionHandle: input.personSelectionHandle,
               gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
               ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
@@ -1824,7 +1838,7 @@ export async function streamAgentChat(input: {
                   tools, context: [],
                   forwardedProps: {
                     ...await connectorProjection(),
-                    timezone, turnLocation, pkmContext: input.pkmContext,
+                    timezone, turnLocation, pkmContext: input.pkmContext, communicationPreferences,
                     personSelectionHandle: input.personSelectionHandle,
                     gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
                     ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
@@ -1921,6 +1935,7 @@ export async function streamAgentChat(input: {
         timezone,
         turnLocation,
         pkmContext: input.pkmContext,
+        communicationPreferences,
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
         ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
