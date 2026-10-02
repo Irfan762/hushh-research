@@ -43,6 +43,11 @@ ACTIONS = [
 def test_trusted_roster_requires_owner_authored_admission(db, monkeypatch, provenance, admitted):
     service, binding = circle_fixture(db, monkeypatch, "remove_from_circle")
     circle_id = binding["circleId"]
+    # The real presentation migration also evolves this adjacent chat table.
+    # Roster readers consume its Circle photo column, not chat content.
+    db.execute_raw("CREATE TABLE circle_chat_messages(id UUID PRIMARY KEY)")
+    migrations = Path(__file__).resolve().parents[2] / "db/migrations"
+    db.execute_raw((migrations / "266_circle_chat_presentation.sql").read_text())
     db.execute_raw("""
         ALTER TABLE actor_identity_cache ADD COLUMN phone_verified BOOLEAN DEFAULT FALSE;
         ALTER TABLE actor_profiles ADD COLUMN public_person_ref TEXT;
