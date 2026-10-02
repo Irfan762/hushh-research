@@ -1,6 +1,6 @@
 /** Shared with the browser layout contract so it measures the shipped classes. */
 export const CONNECT_HERO_CLASSNAME =
-  "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] px-4 pb-3 pt-2 sm:px-7 sm:py-6";
+  "rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-4 sm:p-6";
 
 export const CONNECT_CIRCLE_GRID_CLASSNAME =
   "flex flex-col divide-y divide-[color:var(--app-card-border-standard)]";

@@ -518,7 +518,7 @@ describe("ApiService.apiFetch", () => {
           : {}),
       });
       expect(capacitorMocks.request.mock.calls[0]?.[0]).toEqual(
-        expect.objectContaining({ readTimeout: expected }),
+        expect.objectContaining({ connectTimeout: expected, readTimeout: expected }),
       );
     } finally {
       if (previousBackendUrl === undefined) {
@@ -527,6 +527,28 @@ describe("ApiService.apiFetch", () => {
         process.env.NEXT_PUBLIC_BACKEND_URL = previousBackendUrl;
       }
     }
+  });
+
+  it.each([
+    ["ios", "/api/one/connections/directory?page=1", 60_000],
+    ["android", "/api/one/connections/directory?page=1", 60_000],
+    ["ios", "/api/ria/onboarding/verify", 90_000],
+    ["android", "/api/ria/onboarding/verify", 90_000],
+    ["android", "/api/connectors/google_drive/searches", 180_000],
+  ] as const)("preserves the response budget on %s for %s", async (platform, path, timeout) => {
+    capacitorMocks.isNativePlatform.mockReturnValue(true);
+    capacitorMocks.getPlatform.mockReturnValue(platform);
+    capacitorMocks.request.mockResolvedValueOnce({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      data: { items: [] },
+    });
+    vi.stubEnv("NEXT_PUBLIC_BACKEND_URL", "https://uat.example");
+    await ApiService.apiFetch(path);
+    expect(capacitorMocks.request).toHaveBeenCalledWith(expect.objectContaining({
+      connectTimeout: platform === "ios" ? timeout : 15_000,
+      readTimeout: timeout,
+    }));
   });
 
   it("retries native Firebase requests with a forced fresh token on 401", async () => {

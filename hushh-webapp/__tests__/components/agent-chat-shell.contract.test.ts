@@ -318,4 +318,26 @@ describe("private-agent chat shell contract", () => {
     expect(styles).toContain("--app-accent-selection-bg:");
     expect(styles).toContain("--app-accent-selection-fg:");
   });
+
+  it("does not render the welcome panel while voice is live", () => {
+    // Regression (phone browser, 2026-10-02): on a fresh conversation the
+    // "One workspace" welcome panel and the "Voice connecting" card both
+    // rendered, and the card -- an `absolute bottom-0` overlay in the composer
+    // stack -- cut through the panel centred in the scroll area behind it.
+    // Desktop had the vertical room to hide it; a short phone viewport did not.
+    //
+    // The guard is co-rendering, not spacing: two states that both claim the
+    // canvas must not both be on it, because any gap we leave holds only until
+    // the next shorter viewport. Both gates have to stay on this condition.
+    const workspace = read("components/agent/agent-chat-workspace.tsx");
+
+    expect(workspace).toMatch(
+      /:\s*!hasStartedConversation\s*&&\s*!voiceActive\s*\?/,
+    );
+    // The two facts that made them collide, so this reads as a real constraint
+    // rather than a copy of the line above: the card is a bottom overlay, and
+    // `voiceActive` is the same gate the card itself renders on.
+    expect(workspace).toContain("absolute inset-x-0 bottom-0 z-10");
+    expect(workspace).toContain('const voiceActive = voiceState !== "idle"');
+  });
 });

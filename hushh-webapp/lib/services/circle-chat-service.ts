@@ -1,4 +1,6 @@
 import { apiJson } from "@/lib/services/api-client";
+import { Capacitor } from "@capacitor/core";
+import { CacheSyncService } from "@/lib/cache/cache-sync-service";
 import { bootstrapCurrentUserLocationRecipientKey } from "@/lib/one-location/key-bootstrap";
 import { dispatchFeedStateChanged } from "@/lib/feed/feed-events";
 import { RecipientPayloadKeyUnavailableError } from "@/lib/one-location/encryption";
@@ -39,8 +41,10 @@ export const CircleChatService = {
       vaultOwnerToken: session.vaultOwnerToken, vaultKey: session.vaultKey, strictRecovery: true });
   },
   state: (session: CircleChatSession, signal?: AbortSignal) => apiJson<CircleChatState>(root(session), options(session, signal)),
-  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number; changed: boolean }>(
-    `${root(session)}/wait?after=${after}`, options(session, signal)),
+  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number; changed: boolean; readChanged?: boolean }>(
+    // Native HTTP cannot cancel an underlying request. Keep it awaited through
+    // a pause/resume instead of abandoning it and consuming another wait slot.
+    `${root(session)}/wait?after=${after}`, options(session, Capacitor.isNativePlatform() ? undefined : signal)),
   messages: (session: CircleChatSession, page: { before?: number; after?: number } = {}, signal?: AbortSignal) => {
     const query = new URLSearchParams();
     if (page.before !== undefined) query.set("before", String(page.before));
@@ -61,7 +65,11 @@ export const CircleChatService = {
   },
   async read(session: CircleChatSession, sequence: number): Promise<void> {
     await apiJson(`${root(session)}/read`, { ...options(session), method: "POST", body: JSON.stringify({ sequence }) });
-    dispatchFeedStateChanged("read");
+    CircleChatService.refreshFeedRead(session.userId);
+  },
+  refreshFeedRead(userId: string): void {
+    CacheSyncService.onFeedExternalReadChanged(userId);
+    dispatchFeedStateChanged("action");
   },
   mute: (session: CircleChatSession, muted: boolean) => apiJson<{ muted: boolean }>(`${root(session)}/preferences`,
     { ...options(session), method: "PUT", body: JSON.stringify({ muted }) }),

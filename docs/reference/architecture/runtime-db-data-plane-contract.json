@@ -20,6 +20,7 @@
     "google_calendar_action_proposals",
     "gmail_mailbox_action_proposals",
     "agent_chat_messages",
+    "messages",
     "one_action_directive_ledger",
     "one_capability_runs",
     "one_kyc_workflows",
@@ -243,6 +244,37 @@
       "trust_boundary": "Session documents, command checkpoints, titles and messages persist as AES-GCM ciphertext sealed with the owner's chat key (HKDF-SHA256 of the vault key, label hussh-one-chat-v1), marked by the plaintext prefix hussh-chat-v1: and bound to their row. The browser sends only the derived key (X-Hussh-Chat-Key) and the backend holds it for that request alone; without it every read and write refuses. Platform-key rows from before the cutover are invisible to the code and deleted by migration 249. Frontend tool debug events remain live-only and are not stored.",
       "plaintext_posture": "ciphertext_and_metadata",
       "expected_row_growth": "high_per_user_chat"
+    },
+    {
+      "id": "direct_message_relationship_state",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "conversations",
+        "direct_message_blocks"
+      ],
+      "primary_access_path": "Firebase-authenticated Direct Messages service and /api/one/messages routes. Conversation creation and message insertion lock and verify only the canonical active connections pair; they never infer eligibility from Circle membership, trusted_connections, or a connection origin. Read paths remain participant-scoped after a connection ends.",
+      "retention_policy": "Conversation-pair and directed block metadata remain while both accounts exist. Ending a connection does not delete a conversation; it changes the write gate to read-only. A directed block remains until its blocker explicitly removes it or either account is deleted, including through a later reconnection.",
+      "deletion_behavior": "Actor-profile foreign keys cascade conversation and directed block rows on account deletion; message rows cascade from a deleted conversation. AccountService also removes the participant graph explicitly so no relationship history is retained for an erased account.",
+      "trust_boundary": "Only canonical participant IDs, opaque UUIDs and timestamps are plaintext. RLS is default-deny with no client-table policies; authenticated routes/service enforce participant reads, block ownership and response shaping. The database trigger locks the canonical connection row and rejects new writes after revocation or either directed block, while history remains readable through the participant API.",
+      "plaintext_posture": "relationship_metadata_only",
+      "expected_row_growth": "low_per_unique_participant_pair_and_directed_block"
+    },
+    {
+      "id": "direct_message_encrypted_content",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_encrypted",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "messages"
+      ],
+      "primary_access_path": "Participant-scoped conversation history, latest-message inbox projection, unread-count/read-receipt updates, and transactionally committed recipient doorbells from the Direct Messages service.",
+      "retention_policy": "Retain encrypted message history while its participant accounts exist. Disconnect and block preserve history but prohibit new message envelopes; no automatic disconnect deletion occurs.",
+      "deletion_behavior": "Delete with the parent conversation or either actor account through foreign-key cascades and AccountService account-erasure cleanup. Never delete history merely because a connection is removed or blocked.",
+      "trust_boundary": "Each text body is an AES-256-GCM envelope under server-managed DIRECT_MESSAGE_ENCRYPTION_KEY_V1. content_ciphertext contains the GCM tag and AAD binds direct-message-v1, conversation id, message id and sender id; plaintext is never stored. The transactional one_user_state_changed doorbell carries only opaque ids, time and a deep link—never content, cipher fields, sender identity or an unread count. This is encrypted-at-rest server-readable messaging, not client-key end-to-end encryption.",
+      "plaintext_posture": "ciphertext_and_minimal_message_metadata",
+      "expected_row_growth": "high_per_participant_conversation"
     },
     {
       "id": "one_person_information_requests",

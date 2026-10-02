@@ -21,6 +21,10 @@ from hushh_mcp.services.circle_chat_service import MAX_SEQUENCE, CircleChatError
 
 logger = logging.getLogger(__name__)
 MAX_REQUEST_BYTES = 7_250_000
+# Authenticated automatic reads: 4 sessions x 4 coalesced refreshes/sec x
+# 60 seconds = 960, plus manual pagination/roster headroom. Write/image abuse
+# budgets remain independent; every read still authorizes membership.
+AUTOMATIC_READ_LIMIT = "1200/minute"
 _waiting: dict[str, int] = {}
 
 
@@ -136,14 +140,14 @@ def _call(response: Response, method: str, owner: dict, circle: UUID, *args, **k
 
 
 @router.get("/{circle}/chat")
-@limiter.limit("60/minute")
+@limiter.limit(AUTOMATIC_READ_LIMIT)
 def chat_state(request: Request, response: Response, circle: UUID,
                owner: dict = Depends(require_vault_owner_token)):
     return _call(response, "state", owner, circle)
 
 
 @router.get("/{circle}/chat/messages")
-@limiter.limit("60/minute")
+@limiter.limit(AUTOMATIC_READ_LIMIT)
 def chat_messages(request: Request, response: Response, circle: UUID,
                   before: Annotated[int | None, Query(gt=0, le=MAX_SEQUENCE)] = None,
                   after: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
@@ -155,7 +159,7 @@ def chat_messages(request: Request, response: Response, circle: UUID,
 
 
 @router.get("/{circle}/chat/wait")
-@limiter.limit("60/minute")
+@limiter.limit(AUTOMATIC_READ_LIMIT)
 async def chat_wait(request: Request, response: Response, circle: UUID,
                     after: Annotated[int, Query(ge=0, le=MAX_SEQUENCE)] = 0,
                     owner: dict = Depends(require_vault_owner_token)):
@@ -171,6 +175,7 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
     _waiting[user] = _waiting.get(user, 0) + 1
     queue = None
     changed = False
+    read_changed = False
     try:
         queue = await subscribe_consent_queue(user)
         current = await asyncio.to_thread(_call, response, "revision", owner, circle)
@@ -186,10 +191,12 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
                             continue
                         if str(event.get("circle_id") or "") == str(circle):
                             changed = True
+                            read_changed = event.get("type") == "location_circle_chat_read"
                             break
             except TimeoutError:
                 pass
-        return {**await asyncio.to_thread(_call, response, "revision", owner, circle), "changed": changed}
+        return {**await asyncio.to_thread(_call, response, "revision", owner, circle),
+                "changed": changed, "readChanged": read_changed}
     finally:
         if queue is not None:
             await unsubscribe_consent_queue(user, queue)
@@ -222,7 +229,7 @@ def chat_key(request: Request, response: Response, circle: UUID,
 
 
 @router.post("/{circle}/chat/read")
-@limiter.limit("60/minute")
+@limiter.limit(AUTOMATIC_READ_LIMIT)
 def chat_read(request: Request, response: Response, circle: UUID, payload: ReadMessage,
               owner: dict = Depends(require_vault_owner_token)):
     return _call(response, "read", owner, circle, payload.sequence)

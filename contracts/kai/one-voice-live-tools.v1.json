@@ -1508,7 +1508,7 @@
     },
     {
       "circle_args": [],
-      "description": "Open a screen in the app. Navigation only; it changes nothing. Use it for 'show my map', 'open Location settings', 'show my people', 'open my profile', 'open Save My Soul', 'start location setup'.",
+      "description": "Open a screen in the app. Navigation only; it changes nothing. Use it for 'show my map', 'open Location settings', 'show my people', 'open my profile', 'open Save My Soul', 'start location setup'. 'Open Priya's profile' is person_profile with the confirmed user_id; 'profile' is your own profile.",
       "firebase_plane": false,
       "gateway_action_id": "route.one_location",
       "name": "open_screen",
@@ -1553,7 +1553,8 @@
               "connections",
               "profile",
               "profile_privacy",
-              "profile_voice_preferences"
+              "profile_voice_preferences",
+              "person_profile"
             ],
             "title": "Screen",
             "type": "string"
@@ -2277,6 +2278,63 @@
       "ui_refresh": [
         "location_links"
       ]
+    },
+    {
+      "circle_args": [],
+      "description": "Prepare an email the owner dictates to a confirmed person. Use when they ask to send, write, or draft mail to a person by name. First resolve_person and confirm_person; pass only that canonical PersonRef as recipient. Preserve their dictated message in message and never invent an address, subject, or body. This tool opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send in that card can deliver the email.",
+      "firebase_plane": false,
+      "gateway_action_id": "email.chat.turn",
+      "name": "send_mail",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "description": "The owner's dictated email message, preserved exactly; never invent it.",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "recipient": {
+            "additionalProperties": false,
+            "description": "Canonical person from resolve_person and confirm_person.",
+            "properties": {
+              "user_id": {
+                "description": "Canonical user id from resolve_person/confirm_person.",
+                "maxLength": 128,
+                "minLength": 1,
+                "title": "User Id",
+                "type": "string"
+              }
+            },
+            "required": [
+              "user_id"
+            ],
+            "type": "object"
+          },
+          "subject": {
+            "default": "",
+            "description": "Subject the owner dictated; leave empty if they gave none.",
+            "maxLength": 256,
+            "title": "Subject",
+            "type": "string"
+          }
+        },
+        "required": [
+          "recipient",
+          "message"
+        ],
+        "type": "object"
+      },
+      "person_args": [
+        "recipient"
+      ],
+      "policy": "confirm_voice",
+      "result_statuses": [
+        "draft_open_requested"
+      ],
+      "tier": "voice",
+      "ui_refresh": []
     },
     {
       "circle_args": [],

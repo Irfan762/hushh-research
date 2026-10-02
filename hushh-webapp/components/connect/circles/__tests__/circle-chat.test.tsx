@@ -98,3 +98,81 @@ it("unlocks the unchanged draft after a definite validation rejection", async ()
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("editable draft");
   expect(screen.queryByText(/Delivery is unconfirmed/)).not.toBeInTheDocument();
 });
+
+it("coalesces matching busy doorbells into an immediate trailing transcript and state refresh", async () => {
+  api.open.mockImplementation(async (_session, item) => ({ text: `Message ${item.sequence}`, image: null }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Message 1");
+  let settleMessages!: (value: unknown) => void;
+  let settleState!: (value: unknown) => void;
+  api.messages.mockImplementationOnce(() => new Promise((resolve) => { settleMessages = resolve; }))
+    .mockResolvedValue({ items: [{ ...message, id: "m3", sequence: 3 }], hasMore: false });
+  api.state.mockImplementationOnce(() => new Promise((resolve) => { settleState = resolve; }))
+    .mockResolvedValue({ unreadCount: 3, latestSequence: 3, members: [], rosterVersion: "v", muted: false });
+  const doorbell = () => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } }));
+  act(doorbell);
+  await waitFor(() => expect(settleMessages).toBeDefined());
+  await waitFor(() => expect(settleState).toBeDefined());
+  act(() => {
+    for (let i = 0; i < 8; i++) doorbell();
+    window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: "outsider", circleId: session.circleId } }));
+  });
+  await act(async () => {
+    settleMessages({ items: [{ ...message, id: "m2", sequence: 2 }], hasMore: false });
+    settleState({ unreadCount: 2, latestSequence: 2, members: [], rosterVersion: "v", muted: false });
+  });
+  await screen.findByText("Message 3", {}, { timeout: 1000 });
+  await screen.findByLabelText("3 unread messages", {}, { timeout: 1000 });
+  expect(api.messages).toHaveBeenCalledTimes(3);
+  expect(api.state).toHaveBeenCalledTimes(3);
+});
+
+it("acknowledges a message arriving during an outstanding read without another focus event", async () => {
+  let settle!: () => void;
+  api.read.mockImplementationOnce(() => new Promise<void>((resolve) => { settle = resolve; }));
+  api.open.mockImplementation(async (_session, item) => ({ text: `Message ${item.sequence}`, image: null }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Message 1");
+  observe(true);
+  await waitFor(() => expect(api.read).toHaveBeenCalledWith(session, 1));
+  api.messages.mockResolvedValue({ items: [{ ...message, id: "m2", sequence: 2 }], hasMore: false });
+  act(() => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } })));
+  await screen.findByText("Message 2");
+  expect(api.read).toHaveBeenCalledTimes(1);
+  await act(async () => settle());
+  await waitFor(() => expect(api.read).toHaveBeenLastCalledWith(session, 2));
+});
+
+it("keeps a non-cancelable wait single-flight through rapid pause/resume and reconnects when it settles", async () => {
+  let settle!: (value: unknown) => void;
+  api.wait.mockImplementationOnce(() => new Promise((resolve) => { settle = resolve; }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Incoming private message");
+  act(() => {
+    for (let i = 0; i < 5; i++) {
+      appInteractionCoordinator.handleLifecycle("background");
+      appInteractionCoordinator.handleLifecycle("active");
+    }
+  });
+  expect(api.wait).toHaveBeenCalledTimes(1);
+  await act(async () => settle({ latestSequence: 1, changed: false }));
+  await waitFor(() => expect(api.wait).toHaveBeenCalledTimes(2), { timeout: 1000 });
+});
+
+it("continues reconnect catch-up beyond the first five pages without waiting for a fallback timer", async () => {
+  api.open.mockImplementation(async (_session, item) => ({ text: `Message ${item.sequence}`, image: null }));
+  render(<CircleChat session={session} circleName="Family" initialOpen />);
+  await screen.findByText("Message 1");
+  api.messages.mockImplementation(async (_session, page) => {
+    const after = page.after ?? 0;
+    return {
+      items: Array.from({ length: Math.min(40, 206 - after) }, (_, i) => ({ ...message, id: `m${after + i + 1}`, sequence: after + i + 1 })),
+      hasMore: after + 40 < 206,
+    };
+  });
+  act(() => window.dispatchEvent(new CustomEvent("hushh:circle-chat-changed", { detail: { userId: session.userId, circleId: session.circleId } })));
+  await screen.findByText("Message 206", {}, { timeout: 1500 });
+  const transcript = screen.getByRole("list");
+  expect(transcript.children).toHaveLength(206);
+  expect(api.messages).toHaveBeenCalledTimes(7);
+});

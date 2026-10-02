@@ -58,6 +58,7 @@ import {
   isDocumentShareNotificationCandidate,
 } from "@/lib/consent/document-share-consent";
 import { CacheSyncService } from "@/lib/cache/cache-sync-service";
+import { dispatchDirectMessagesUpdated } from "@/lib/direct-messages/direct-message-events";
 import { subscribeToRemotePkmDomainChanges } from "@/lib/pkm/pkm-domain-change-events";
 import { subscribeToRemoteOneLocationStateChanges } from "@/lib/one-location/one-location-state-events";
 import { resolveConsentRequesterLabel } from "@/lib/consent/consent-display";
@@ -1699,7 +1700,8 @@ export function ConsentNotificationProvider({
         const circleId = String(data.circle_id || "").trim();
         if (data.user_id === user.uid && /^[0-9a-f-]{36}$/i.test(circleId)) {
           dispatchCircleChatChanged(user.uid, circleId);
-          dispatchFeedStateChanged(msgType === "location_circle_chat_read" ? "read" : "arrived");
+          if (msgType === "location_circle_chat_read") CacheSyncService.onFeedExternalReadChanged(user.uid);
+          dispatchFeedStateChanged(msgType === "location_circle_chat_read" ? "action" : "arrived");
         }
         return;
       }
@@ -1729,6 +1731,21 @@ export function ConsentNotificationProvider({
             messageId: data.message_id,
           });
         }
+        return;
+      }
+
+      if (msgType === "direct_message" && user?.uid) {
+        // The push is only a metadata doorbell. The inbox/chat owner performs
+        // an authenticated reread, so no message body crosses the FCM boundary.
+        dispatchDirectMessagesUpdated({
+          userId: user.uid,
+          conversationId:
+            String(data.conversation_id || data.conversationId || "").trim() ||
+            null,
+          messageId:
+            String(data.message_id || data.messageId || "").trim() || null,
+          source: "fcm",
+        });
         return;
       }
 

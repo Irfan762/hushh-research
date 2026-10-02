@@ -633,6 +633,7 @@ class DriveOwnerSearchService:
         timezone="UTC",
         authority_mode="owner",
         requested_at: datetime | None = None,
+        after_page=None,
     ):
         """Start or resume the owner-approved request's durable metadata search."""
         if authority_mode not in {"owner", "trusted_auto"}:
@@ -702,6 +703,7 @@ class DriveOwnerSearchService:
                 deadline_seconds=15,
                 initial_page_size=PAGE_SIZE,
                 require_current=require_current,
+                **({"after_page": after_page} if after_page is not None else {}),
             )
         await wake_drive_work("suggestions")
         return await self.status(
@@ -1234,6 +1236,7 @@ class DriveOwnerSearchService:
         deadline_seconds=SLICE_SECONDS,
         initial_page_size=None,
         require_current=None,
+        after_page=None,
     ):
         if (
             type(max_pages) is not int
@@ -1250,6 +1253,7 @@ class DriveOwnerSearchService:
         pages = 0
         found = 0
         outcome = "failed"
+        handing_off = False
 
         def finish(status):
             nonlocal outcome
@@ -1301,10 +1305,34 @@ class DriveOwnerSearchService:
                     job["checkpoint"] = checkpoint
                     pages += 1
                     found = result["matched"]
+                    if after_page is not None and result["status"] in {"running", "completed"}:
+                        # commit_page has returned: no DB lock spans this
+                        # orchestration. Freeze/queue the committed matches
+                        # before another provider read can consume the slice.
+                        # Even an empty final page must flush/resume a batch.
+                        try:
+                            handing_off = True
+                            await after_page(user_id=user_id, job_id=job_id)
+                            handing_off = False
+                        except Exception:  # noqa: BLE001 - durable pages remain resumable
+                            logger.warning("drive_search.page_handoff status=deferred")
+                            state = (
+                                result["status"]
+                                if result["status"] != "running"
+                                else await self.store.release(job)
+                            )
+                            await wake_drive_work("suggestions")
+                            return finish(state)
                     if result["status"] != "running":
                         return finish(result["status"])
             return finish(await self.store.release(job))
         except TimeoutError:
+            if handing_off:
+                # An orchestration deadline is not a failed provider page.
+                # The checkpoint is durable; resume that same frozen batch.
+                state = await self.store.release(job)
+                await wake_drive_work("suggestions")
+                return finish(state)
             return finish(
                 await self.store.release(job, error="provider_unavailable", retryable=True)
             )

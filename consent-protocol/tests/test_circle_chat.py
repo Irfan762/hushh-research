@@ -62,7 +62,7 @@ def chat_db():
         with raw.cursor() as cursor:
             cursor.execute((ROOT / "db/migrations/201_account_deletion_tombstones.sql").read_text())
             for _ in range(2):
-                cursor.execute((ROOT / "db/migrations/264_circle_chat.sql").read_text())
+                cursor.execute((ROOT / "db/migrations/265_circle_chat.sql").read_text())
         raw.close()
         yield SimpleNamespace(engine=engine)
     finally:
@@ -202,7 +202,7 @@ def test_key_rotation_pagination_push_lease_and_soft_delete(chat_db, monkeypatch
     raw = chat_db.engine.raw_connection()
     raw.autocommit = True
     with raw.cursor() as cursor:
-        cursor.execute((ROOT / "db/migrations/rollback/264_circle_chat.rollback.sql").read_text())
+        cursor.execute((ROOT / "db/migrations/rollback/265_circle_chat.rollback.sql").read_text())
     raw.close()
 
 
@@ -217,6 +217,30 @@ def test_route_validation_does_not_echo_private_input():
     assert "PRIVATE_INPUT" not in response.text
     assert "no-store" in response.headers["cache-control"]
     assert client.post(endpoint, content=b"{}", headers={"Content-Length": str(MAX_REQUEST_BYTES + 1)}).status_code == 413
+
+
+def test_large_reconnect_gap_is_ordered_unique_and_independent_of_doorbell_delivery(chat_db, monkeypatch):
+    service = CircleChatService(chat_db)
+    circle = _seed(chat_db)
+    # A NOTIFY is a wake-up hint, never message storage. Losing every wake-up
+    # must still leave an independently recoverable history beyond 5x40 pages.
+    monkeypatch.setattr(service, "_notify", lambda *args: None)
+    sent = [service.send("alice", circle, _payload(service, circle)) for _ in range(205)]
+    assert service.revision("bob", circle)["latestSequence"] == sent[-1]["sequence"]
+    recovered, cursor = [], 0
+    while True:
+        page = service.messages("bob", circle, after=cursor)
+        recovered.extend(page["items"])
+        if not page["hasMore"]:
+            break
+        cursor = page["items"][-1]["sequence"]
+    assert [item["id"] for item in recovered] == [item["id"] for item in sent]
+    assert len({item["sequence"] for item in recovered}) == 205
+    with chat_db.engine.begin() as conn:
+        conn.execute(text("UPDATE one_location_circle_memberships SET status='left' WHERE user_id='bob'"))
+    with pytest.raises(CircleChatError) as lost:
+        service.messages("bob", circle, after=cursor)
+    assert lost.value.status == 404
 
 
 @pytest.mark.asyncio
@@ -263,3 +287,10 @@ async def test_wait_reauthorizes_and_releases_disconnected_subscriptions(chat_db
         await asyncio.wait_for(task, timeout=2)
     assert closed.value.status_code == 499
     assert removed == [queue, queue] and "bob" not in chat_routes._waiting
+    disconnected = False
+    subscribed.clear()
+    task = asyncio.create_task(wait(request, Response(), uuid.UUID(circle), after=0, owner={"user_id": "bob"}))
+    await subscribed.wait()
+    await queue.put({"circle_id": circle, "type": "location_circle_chat_read"})
+    assert await task == {"latestSequence": 0, "changed": True, "readChanged": True}
+    assert removed == [queue, queue, queue] and "bob" not in chat_routes._waiting

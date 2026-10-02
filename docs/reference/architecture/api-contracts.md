@@ -752,6 +752,36 @@ budget to Redis/Memorystore later without changing the API contract.
 | GET | `/api/iam/contact-discoverability` | Firebase Bearer | Read effective contact-directory eligibility plus `stored_contact_discoverable`, `directory_visible`, `contact_sync_preference_state` (`default`, `enabled`, `disabled`, or `invalid`), and `contact_sync_match_policy_version`. Untouched accounts follow the visible Connect-directory default; explicit opt-outs and marketplace hides remain disabled. Historical explicit enablement timestamp, rule version, and consent-contract version are reported as stored, never fabricated for default eligibility |
 | POST | `/api/iam/contact-discoverability` | Firebase Bearer | Atomically set the combined preference. Enabling requires `{enabled:true, consent_version:"contact_find_auto_connect_v1"}`; a missing/stale marker returns `409`, so an older findability-only client cannot broaden authority. Disabling accepts `{enabled:false}` and blocks future new-person discovery and automatic edge creation without erasing or hiding existing active connections. The relationship grants no location or information access |
 
+### Direct Messages
+
+Direct Messages are a separate one-to-one relationship surface. Every route is
+Firebase-authenticated and derives the caller from the bearer token; the client
+never supplies a sender identity. A new conversation or message is admitted
+only when the canonical `connections` pair is currently `active` and neither
+participant has a directed direct-message block. This database gate locks the
+connection row, so a revoke or block cannot race a send. It does **not** query
+Circle membership, trusted-edge membership, or Circle provenance. Conversation
+history remains participant-readable after disconnect or block, with
+`canSend:false` and a disconnected notice; it is not deleted merely because the
+connection ended.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/one/messages/conversations` | Participant-only inbox with latest decrypted message projection, timestamp, unread count, peer-safe profile projection, and `canSend`. |
+| GET | `/api/one/messages/with/person/{personRef}` | Open the viewer's existing conversation with an opaque public person reference, or return a no-conversation draft state. Internal `/with/{userId}` compatibility remains Firebase-authenticated and is never exposed as a profile route. |
+| POST | `/api/one/messages` | Send `{recipientPersonRef|recipientUserId, content}`. Creates the canonical pair conversation on first message and returns the conversation plus sender/receiver-safe message projection. Empty text, self-send, unconnected pair, and a block fail closed. |
+| GET | `/api/one/messages/conversations/{conversationId}/messages?before=&limit=` | Participant-only chronological history page; `before` is an opaque message id and `limit` is bounded. |
+| POST | `/api/one/messages/conversations/{conversationId}/read` | Mark the viewer's received unread messages as read. This remains available for preserved history after a connection ends. |
+| GET | `/api/one/messages/events` and `/stream` | Authenticated metadata-only realtime subscription. The event is a doorbell; clients re-read the inbox/history instead of trusting an event payload. |
+| POST / DELETE | `/api/one/messages/blocks` | Create/remove the caller's directed block using `{blockedPersonRef|blockedUserId}`. Blocking does not revoke the canonical connection or delete history, but either direction disables future sends. |
+
+Persisted body text is AES-256-GCM ciphertext under the server-managed
+direct-message envelope key. API responses decrypt only inside the authenticated
+service boundary and expose `senderIsViewer`, never a peer's raw user id. Push
+and realtime payloads contain no message content. Stable `403` failures are
+`DIRECT_MESSAGE_CONNECTION_REQUIRED`, `DIRECT_MESSAGE_BLOCKED`, and
+`DIRECT_MESSAGE_SENDER_FORBIDDEN`; malformed/self/empty requests are `422`.
+
 ### One Location Agent
 
 One Location Agent is One-owned live-location sharing for trusted people. The
@@ -2212,7 +2242,16 @@ Validation and database errors never echo rejected payloads. Responses are
 private/no-store. Native long polling receives complete JSON, so it does not
 depend on streamed fetch through the native bridge. Five-second foreground
 polling repairs missing events; native lifecycle and browser visibility suspend
-work, with catch-up on resume.
+work, with catch-up on resume. Busy doorbells coalesce at a 250 ms cadence with
+one trailing refresh; gaps beyond five pages continue immediately. Automatic
+state/message/wait/read budgets are 1,200 per minute per authenticated owner
+(four sessions at four refreshes per second, plus manual headroom). Sending
+retains 30/minute and 1,000/day; image downloads retain 30/minute. These are
+bounded budgets, not an unlimited throughput or global latency guarantee.
+Native waits stay awaited after a pause because Capacitor cannot cancel the
+underlying request. Read doorbells expose only `readChanged` metadata and
+invalidate subset-read Feed projections; pre-read responses cannot restore
+cleared cache or clear unrelated unread activity.
 
 Identical retries return the existing message; altered payloads or membership
 generations reject that UUID. Membership and nonblocking key locks serialize
@@ -2223,7 +2262,7 @@ recipient read receipt. Leaving suppresses old unread Feed activity and pushes;
 deleting a Circle erases its message/image store. Reset/full-account cleanup
 also erases authored messages and recipient-owned wraps/preferences.
 
-Migration `264_circle_chat.sql`, its rollback, the release manifest and UAT
+Migration `265_circle_chat.sql`, its rollback, the release manifest and UAT
 schema contract travel together. Deploy the migration before the updated
 backend, then the web/native bundle. The rollback removes chat and its derived
 Feed projections; restoring erased history requires a database backup.
@@ -2273,3 +2312,18 @@ a nonexistent anchor; the parity document is now the canonical definition.
 - [Architecture](./architecture.md) -- System overview and tri-flow
 - [Personal Knowledge Model](../../../consent-protocol/docs/reference/personal-knowledge-model.md) -- Data storage endpoints
 - [Consent Protocol](../../../consent-protocol/docs/reference/consent-protocol.md) -- Token lifecycle
+
+### Connect directory mutual connections
+
+Directory rows additionally return `mutualConnectionCount` and optional
+`mutualConnectionPreview` (`displayName`, `photoUrl`, `publicPersonRef`). Counts use distinct shared
+neighbors across active canonical connections, scoped to the returned page,
+excluding blocked relationships. A bounded batch lookup resolves shared peers
+through the canonical directory's live visibility and account checks, independent
+of the current page or search. Eligible previews show an avatar and name; the
+public person reference opens the existing profile route. If the selected peer
+is hidden or disabled, only the count is shown. No raw peer IDs or contact details
+are added. Existing
+masked email/phone visibility remains unchanged. The Next proxy and native HTTP
+transport forward these additive fields. Older servers omit them; clients omit
+the badge rather than inventing a mutual relationship. No migration is required.

@@ -263,6 +263,25 @@ describe("native system-notification routing", () => {
     });
   });
 
+  it("opens the authenticated direct-message thread from an opaque message push", async () => {
+    await prepareFCMListeners();
+    mocks.listeners.get("notificationActionPerformed")?.({
+      actionId: "tap",
+      notification: {
+        data: {
+          type: "direct_message",
+          conversation_id: "conversation-opaque-1",
+          message_id: "message-opaque-1",
+        },
+      },
+    });
+
+    expect(mocks.requestInternalAppNavigation).toHaveBeenCalledWith({
+      href: "/one/messages?conversation=conversation-opaque-1",
+      scroll: false,
+    });
+  });
+
   it("ignores dismiss actions", async () => {
     await prepareFCMListeners();
     const onAction = mocks.listeners.get("notificationActionPerformed");

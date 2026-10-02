@@ -18,6 +18,18 @@ const unavailable = (error: unknown) => error instanceof ApiError &&
   ([401, 403, 423].includes(error.status) || apiErrorCode(error) === "CIRCLE_CHAT_UNAVAILABLE");
 const errorText = (error: unknown) => error instanceof Error ? error.message : "Chat could not connect. Try again.";
 const foreground = () => document.visibilityState === "visible" && appInteractionCoordinator.getLifecycleSnapshot().state === "active";
+// Coalesce busy-group doorbells within a quarter-second refresh cadence.
+// Four sessions at four refreshes/sec fit the API's 1200/min owner read budget.
+const REFRESH_CADENCE_MS = 250;
+function cadence(signal: AbortSignal, earliest: number): Promise<void> {
+  const delay = earliest - performance.now();
+  if (delay <= 0 || signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => { clearTimeout(timer); signal.removeEventListener("abort", finish); resolve(); };
+    const timer = window.setTimeout(finish, delay);
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
 
 export function CircleChat({ session, circleName, initialOpen = false, onOpenIntentConsumed }: {
   session: CircleChatSession; circleName: string; initialOpen?: boolean; onOpenIntentConsumed?: () => void;
@@ -42,17 +54,25 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
       abort = new AbortController();
       try {
         while (active && foreground()) {
+          const startedAt = performance.now();
           const next = await CircleChatService.wait(session, cursor, abort.signal);
           if (!active || abort.signal.aborted || !foreground()) break;
           if (next.latestSequence !== cursor || next.changed) {
             dispatchCircleChatChanged(session.userId, session.circleId);
-            dispatchFeedStateChanged("arrived");
+            if (next.readChanged) CircleChatService.refreshFeedRead(session.userId);
+            else dispatchFeedStateChanged("arrived");
           }
           cursor = next.latestSequence;
+          await cadence(abort.signal, startedAt + REFRESH_CADENCE_MS);
         }
       } catch (err) {
         if (active && !abort.signal.aborted && unavailable(err)) { setRevoked(true); setState(null); setOpen(false); }
-      } finally { running = false; }
+      } finally {
+        running = false;
+        // On native, the physical HTTP request stayed awaited after a logical
+        // pause. Resume only once it settles, without orphaning another wait.
+        if (active && foreground() && abort.signal.aborted) void listen();
+      }
     };
     const resume = () => { if (!foreground()) abort?.abort(); else void listen(); };
     void listen();
@@ -66,16 +86,25 @@ export function CircleChat({ session, circleName, initialOpen = false, onOpenInt
     let active = true;
     let running = false;
     let ready = false;
+    let dirty = false;
+    let nextRefreshAt = 0;
     const abort = new AbortController();
     setState(null); setError(null); setRevoked(false);
     const refresh = async () => {
-      if (!active || running || !foreground()) return;
+      if (!active || !foreground()) return;
+      if (running) { dirty = true; return; }
       running = true;
       try {
+        do {
+        dirty = false;
+        await cadence(abort.signal, nextRefreshAt);
+        if (!active || abort.signal.aborted || !foreground()) break;
+        nextRefreshAt = performance.now() + REFRESH_CADENCE_MS;
         if (!ready) { await CircleChatService.initialize(session); ready = true; }
         if (!active) return;
         const next = await CircleChatService.state(session, abort.signal);
         if (active) { setState(next.latestSequence <= acknowledgedRead.current ? { ...next, unreadCount: 0 } : next); setError(null); }
+        } while (dirty && active && foreground());
       } catch (err) {
         if (active && !abort.signal.aborted) {
           setError(errorText(err));
@@ -148,6 +177,7 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
   const visibleRef = useRef(visible); visibleRef.current = visible;
   const messagesRef = useRef(messages); messagesRef.current = messages;
   const running = useRef(false);
+  const refreshPending = useRef(false);
   const sendLock = useRef(false);
   const atBottomRef = useRef(true);
   const bottomInViewport = useRef(false);
@@ -178,11 +208,18 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
   useEffect(() => {
     active.current = true;
     const abort = new AbortController();
+    let nextRefreshAt = 0;
     const refresh = async () => {
-      if (!active.current || !visibleRef.current || running.current || !foreground()
+      if (!active.current || !visibleRef.current || !foreground()
           || !atBottomRef.current && messagesRef.current.length >= 300) return;
+      if (running.current) { refreshPending.current = true; return; }
       running.current = true;
       try {
+        do {
+        refreshPending.current = false;
+        await cadence(abort.signal, nextRefreshAt);
+        if (!active.current || abort.signal.aborted || !visibleRef.current || !foreground()) break;
+        nextRefreshAt = performance.now() + REFRESH_CADENCE_MS;
         const incremental = last.current > 0;
         let page = await CircleChatService.messages(session, incremental ? { after: last.current } : {}, abort.signal);
         if (!active.current) return;
@@ -195,7 +232,10 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
           append(await decrypt(page.items));
           if (active.current && page.items.length) last.current = Math.max(last.current, ...page.items.map((item) => item.sequence));
         }
+        if (incremental && page.hasMore) refreshPending.current = true;
         if (active.current) { setLoading(false); if (!sendLock.current) setError(null); setReadRevision((n) => n + 1); }
+        } while (refreshPending.current && active.current && visibleRef.current && foreground()
+                 && (atBottomRef.current || messagesRef.current.length < 300));
       } catch (err) { if (!abort.signal.aborted) fail(err); }
       finally { running.current = false; if (active.current) setLoading(false); }
     };
@@ -248,7 +288,10 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
       reading.current = true;
       try { await CircleChatService.read(session, sequence); if (active.current) { readThrough.current = Math.max(readThrough.current, sequence); onReadRef.current(sequence); } }
       catch (err) { fail(err); }
-      finally { reading.current = false; }
+      finally {
+        reading.current = false;
+        if (active.current && last.current > sequence && readThrough.current >= sequence) setReadRevision((n) => n + 1);
+      }
     };
     void read();
     window.addEventListener("focus", read); document.addEventListener("visibilitychange", read);
@@ -292,7 +335,13 @@ function CircleChatThread({ session, visible, onRead, onRevoked }: {
           setHasOlder(page.hasMore); setMessages(window);
           last.current = window.at(-1)?.sequence ?? 0;
           requestAnimationFrame(() => { if (active.current && transcript.current) transcript.current.scrollTop += transcript.current.scrollHeight - height; });
-        } catch (err) { fail(err); } finally { running.current = false; if (active.current) setLoadingOlder(false); }
+        } catch (err) { fail(err); } finally {
+          running.current = false;
+          if (active.current) {
+            setLoadingOlder(false);
+            if (refreshPending.current) dispatchCircleChatChanged(session.userId, session.circleId);
+          }
+        }
       }}>Load earlier messages</Button> : null}
       {loading ? <p role="status" className="text-sm text-muted-foreground">Loading messages…</p> : !messages.length ? <p className="py-8 text-center text-sm text-muted-foreground">Start the conversation. Say hello or share an image.</p> : null}
       <ol ref={messageList} className="space-y-3">{messages.map((message) => <li key={message.id} className={`flex ${message.senderUserId === session.userId ? "justify-end" : "justify-start"}`}>

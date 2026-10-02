@@ -508,6 +508,25 @@ describe("P0 connection reconciliation", () => {
     await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalled());
   });
 
+  it("keeps directory cards visible during a background graph refresh", async () => {
+    const refreshed = deferred<{ items: ReturnType<typeof person>[]; hasMore: boolean }>();
+    mocks.searchDirectory.mockResolvedValueOnce({
+      items: [person("first", "Visible Person")],
+      hasMore: false,
+    }).mockImplementation(() => refreshed.promise);
+    render(<ConnectPageClient />);
+    await screen.findByText("Visible Person");
+    act(() => dispatchConnectionGraphChanged("me"));
+    await waitFor(() => expect(mocks.searchDirectory).toHaveBeenCalledTimes(2));
+    expect(screen.getByText("Visible Person")).toBeVisible();
+    expect(screen.queryByText("Finding people…")).toBeNull();
+    await act(async () => {
+      refreshed.resolve({ items: [person("next", "Updated Person")], hasMore: false });
+    });
+    await screen.findByText("Updated Person");
+    expect(screen.queryByText("Visible Person")).toBeNull();
+  });
+
   it("reconciles on foreground focus and coalesces a duplicate focus burst", async () => {
     const visibility = vi
       .spyOn(document, "visibilityState", "get")
@@ -600,22 +619,18 @@ describe("Connect — People", () => {
     render(<ConnectPageClient />);
 
     expect(await screen.findByRole("heading", { name: "Circles" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Add connection" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Find people to connect with" })).toBeTruthy();
     expect(screen.getByRole("textbox", { name: "Search people" })).toBeTruthy();
     expect(
       await screen.findByText(
-        /Send a request, then add people after they accept/,
+        /Find people to connect with/,
       ),
     ).toBeTruthy();
     fireEvent.click(
       screen.getByRole("button", { name: "Create your own circle" }),
     );
-    expect(mocks.routerPush).toHaveBeenCalledWith(
-      "/one/connect?tab=circles&action=create-circle",
-      {
-        scroll: false,
-      },
-    );
+    expect(await screen.findByRole("dialog", { name: "Create a Circle" })).toBeTruthy();
+    expect(mocks.routerPush).not.toHaveBeenCalled();
   });
 
   it("places one directory selector below connections and keeps every directory reachable", async () => {
@@ -1236,7 +1251,7 @@ describe("Connect — People", () => {
       name: "Remove connection with Remove Me",
     });
     fireEvent.click(remove);
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
 
     expect(await screen.findByText("Shifted Boundary")).toBeTruthy();
     expect(mocks.onConnectionGraphMutated).toHaveBeenCalledWith("me");
@@ -1907,7 +1922,7 @@ describe("Connect — People", () => {
     expect(mocks.sendRequest).not.toHaveBeenCalled();
   });
 
-  it("keeps directory rows name-only while preserving duplicate disambiguation", async () => {
+  it("shows directory emails while preserving duplicate disambiguation", async () => {
     mocks.searchDirectory.mockResolvedValue({
       items: [
         {
@@ -1931,8 +1946,8 @@ describe("Connect — People", () => {
 
     const directory = screen.getByTestId("connect-directory-group");
     expect(within(directory).getAllByText("Ankit Kumar Singh")).toHaveLength(2);
-    expect(within(directory).queryByText("a***t@hushh.ai")).toBeNull();
-    expect(within(directory).queryByText("a***3@gmail.com")).toBeNull();
+    expect(within(directory).getByText("a***t@hushh.ai")).toBeVisible();
+    expect(within(directory).getByText("a***3@gmail.com")).toBeVisible();
 
     const sendRequest = resolveLocalOnboardingHandler("connect.send_request");
     const result = await sendRequest!({ person: "Ankit Kumar Singh" });
@@ -2502,6 +2517,7 @@ describe("Connect — the phone-width geometry QA reported", () => {
       {
         connectionId: "c-1",
         userId: "u-rashid",
+        publicPersonRef: "person-ref-rashid",
         displayName: "Abdul Rashid",
         maskedEmail: "r***d@gmail.com",
       },
@@ -2518,9 +2534,9 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(message.className).toContain("h-11");
     expect(remove.className).toContain("h-11");
     expect(remove.className).toContain("min-h-11");
-    expect(remove.className).toContain("w-11");
     expect(remove.querySelector("svg")).toBeTruthy();
-    expect(remove.textContent).not.toContain("Remove");
+    expect(remove).not.toHaveTextContent("Remove");
+    expect(message).toBeEnabled();
     expect(remove.className).not.toContain("h-9");
     expect(remove.className).not.toContain("before:-inset-y-1.5");
     const trailing = remove.closest("div");
@@ -2528,9 +2544,11 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(trailing).toContainElement(message);
 
     fireEvent.click(message);
-    expect(mocks.toastInfo).toHaveBeenCalledWith("Coming soon");
+    expect(mocks.toastInfo).not.toHaveBeenCalled();
     expect(mocks.removeConnection).not.toHaveBeenCalled();
-    expect(mocks.routerPush).not.toHaveBeenCalled();
+    expect(mocks.routerPush).toHaveBeenCalledWith(
+      "/one/messages?person=person-ref-rashid",
+    );
 
     // Whole class tokens, not substrings: this wrapper already carries
     // `max-w-full`, which contains "w-full" and would make a `toContain` check
@@ -2545,16 +2563,17 @@ describe("Connect — the phone-width geometry QA reported", () => {
     expect(classes.has("justify-end")).toBe(true);
 
     fireEvent.click(remove);
-    expect(screen.queryByRole("button", { name: "Message Abdul Rashid" })).toBeNull();
-    const confirm = screen.getByRole("button", { name: "Confirm" });
+    const confirm = screen.getByRole("button", { name: "Delete" });
     const cancel = screen.getByRole("button", { name: "Cancel" });
-    expect(confirm.className).toContain("bg-destructive/10");
-    expect(new Set(confirm.className.split(/\s+/)).has("bg-destructive")).toBe(
-      false,
-    );
-    expect(confirm.className).toContain("h-11");
-    expect(cancel.className).toContain("h-11");
+    const dialog = screen.getByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Remove connection?");
+    expect(dialog).toContainElement(confirm);
+    expect(dialog).toContainElement(cancel);
+    expect(trailing).not.toContainElement(confirm);
     expect(confirm.parentElement).toBe(cancel.parentElement);
+    fireEvent.click(cancel);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(remove).toBeVisible();
   });
 
   it("caps My connections on every viewport, phones included", async () => {
