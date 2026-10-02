@@ -15,7 +15,7 @@ from hushh_mcp.services.domain_contracts import (
     CURRENT_READABLE_PROJECTION_VERSION,
     CURRENT_READABLE_SUMMARY_VERSION,
     current_domain_contract_version,
-    highest_known_domain_contract_version,
+    needs_reserved_branch_migration,
 )
 from hushh_mcp.services.personal_knowledge_model_service import (
     PersonalKnowledgeModelIndex,
@@ -389,8 +389,10 @@ class PkmUpgradeService:
         """Upgrade status for ``user_id`` as ``legacy_client`` should see it.
 
         A legacy client (no ``x-hushh-client-version`` on the upgrade routes)
-        predates the reserved-branch relocation, so it is offered the generic
-        domain target and never the version-5 step it cannot perform.
+        predates the reserved-branch relocation. It is never offered an upgrade
+        whose only reason is the missing relocation marker: its upgrade would
+        be a copy that never stamps the marker, so it would run on every
+        entry without moving anything.
         """
         index = resolved_index or index or await self.pkm_service.get_index_v2(user_id)
         manifests_by_domain = {
@@ -461,9 +463,7 @@ class PkmUpgradeService:
                 else summary_readable_version,
                 0,
             )
-            target_domain_version = current_domain_contract_version(
-                domain, legacy_client=legacy_client
-            )
+            target_domain_version = current_domain_contract_version(domain)
             target_readable_version = CURRENT_READABLE_SUMMARY_VERSION
             current_pkm_contract_version = (
                 manifest.get("pkm_contract_version")
@@ -478,7 +478,7 @@ class PkmUpgradeService:
                 or "0.0.0"
             )
             future_reasons: list[str] = []
-            if current_domain_version > highest_known_domain_contract_version(domain):
+            if current_domain_version > target_domain_version:
                 future_reasons.append("future_domain_contract_version")
             if current_readable_version > target_readable_version:
                 future_reasons.append("future_readable_summary_version")
@@ -490,8 +490,12 @@ class PkmUpgradeService:
                 CURRENT_READABLE_PROJECTION_VERSION
             ):
                 future_reasons.append("future_readable_projection_version")
+            needs_reserved_migration = not legacy_client and needs_reserved_branch_migration(
+                domain, summary_projection
+            )
             needs_upgrade = (
-                current_domain_version < target_domain_version
+                needs_reserved_migration
+                or current_domain_version < target_domain_version
                 or current_readable_version < target_readable_version
                 or self._semantic_version(current_pkm_contract_version)
                 < self._semantic_version(CURRENT_PKM_CONTRACT_VERSION)

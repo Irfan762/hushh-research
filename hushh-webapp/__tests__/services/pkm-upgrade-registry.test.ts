@@ -48,7 +48,7 @@ describe("runDomainUpgrade", () => {
         },
       },
     });
-    expect(result.newDomainContractVersion).toBe(5);
+    expect(result.newDomainContractVersion).toBe(4);
     expect(result.pkmContractVersion).toBe("6.0.0");
     expect(result.losslessValidation.preserved).toBe(true);
     expect(result.capabilitiesApplied).toContain("encrypted_payload_structure");
@@ -243,10 +243,19 @@ describe("runDomainUpgrade", () => {
     ).toBeNull();
   });
 
-  it("relocates agent entries only for domains that hold a reserved branch with a sibling", () => {
-    expect(currentDomainContractVersion("financial")).toBe(5);
-    expect(currentDomainContractVersion("wallet")).toBe(5);
+  it("relocates agent entries only for domains that hold a reserved branch, without a version bump", () => {
+    // Shipped builds refuse to write a domain stored at a newer version than
+    // their own, so the relocation is recorded by a manifest marker instead.
+    expect(currentDomainContractVersion("financial")).toBe(4);
+    expect(currentDomainContractVersion("wallet")).toBe(4);
     expect(currentDomainContractVersion("food")).toBe(4);
+    const financial = runDomainUpgrade({
+      domain: "financial",
+      domainData: { profile: { entities: { mem_eeeeeeeeeeee: agentEntity("mem_eeeeeeeeeeee", "index funds") } } },
+      currentVersion: 4,
+    });
+    expect(financial.newDomainContractVersion).toBe(4);
+    expect(financial.reservedMigration).toMatchObject({ moved: 1 });
     const food = {
       preferences: { entities: { mem_aaaaaaaaaaaa: agentEntity("mem_aaaaaaaaaaaa", "likes ramen") } },
     };

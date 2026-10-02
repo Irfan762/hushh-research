@@ -5,7 +5,6 @@ import {
   CURRENT_READABLE_PROJECTION_VERSION,
   PKM_QUARANTINE_SEGMENT_ID,
   RESERVED_BRANCH_MIGRATION_DOMAINS,
-  RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION,
   comparePkmSemanticVersions,
   currentDomainContractVersion,
 } from "@/lib/personal-knowledge-model/upgrade-contracts";
@@ -47,7 +46,7 @@ export type PkmDomainUpgradeResult = {
   losslessValidation: PkmLosslessValidation;
   /** Every original occurrence that changed place, from the stored data to `domainData`. */
   lineage: PkmOccurrenceLineage[];
-  /** Present when the reserved-branch relocation (version 5) ran for this domain. */
+  /** Present when the reserved-branch relocation ran for this domain (`RESERVED_BRANCH_MIGRATION_DOMAINS`). */
   reservedMigration?: ReservedMigrationReport;
 };
 
@@ -253,7 +252,6 @@ type PkmDomainUpgradeStepResult = {
   domainData: Record<string, unknown>;
   /** Every occurrence the step put somewhere else; unlisted ones must stay put. */
   lineage: PkmOccurrenceLineage[];
-  reservedMigration?: ReservedMigrationReport;
 };
 
 type PkmDomainUpgradeStep = {
@@ -273,18 +271,6 @@ const LOSSLESS_DOMAIN_UPGRADE_STEPS: Record<number, PkmDomainUpgradeStep> = {
   2: { toVersion: 2, transform: cloneStep },
   3: { toVersion: 3, transform: cloneStep },
   4: { toVersion: 4, transform: cloneStep },
-  [RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION]: {
-    toVersion: RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION,
-    transform: ({ domain, domainData }) => {
-      if (!RESERVED_BRANCH_MIGRATION_DOMAIN_SET.has(domain)) return cloneStep({ domainData });
-      const relocated = relocateAgentEntriesFromReservedBranches({ domain, domainData });
-      return {
-        domainData: relocated.domainData,
-        lineage: relocated.lineage,
-        reservedMigration: relocated.report,
-      };
-    },
-  },
 };
 
 /**
@@ -464,8 +450,7 @@ export function runDomainUpgrade(params: {
     domainData: params.domainData,
     manifest: params.manifest || null,
   });
-  // Unversioned or legacy information bootstraps through every step, so the
-  // reserved-branch relocation runs for it exactly as for a stored version.
+  // Unversioned or legacy information bootstraps through every step.
   const notes: string[] = fromVersion <= 0
     ? [`Rebuilt ${titleize(domain)} into the current Personal Knowledge Model contract from legacy or unversioned information.`]
     : [];
@@ -488,14 +473,33 @@ export function runDomainUpgrade(params: {
     nextDomainData = candidate.domainData;
     nextVersion = toVersion;
     stepLineages.push(candidate.lineage);
-    if (candidate.reservedMigration) {
-      reservedMigration = candidate.reservedMigration;
-      notes.push(
-        `Moved ${candidate.reservedMigration.moved} agent-written ${titleize(domain)} entries out of app-owned branches; ` +
-          `${candidate.reservedMigration.quarantined} ambiguous entries were preserved privately.`
-      );
-    } else if (fromVersion > 0) {
+    if (fromVersion > 0) {
       notes.push(`Refreshed ${titleize(domain)} with the generic dynamic PKM capability pipeline.`);
+    }
+  }
+
+  // The reserved-branch relocation is not a version step: it runs on every
+  // upgrade of a domain that holds a reserved branch, and is idempotent, so a
+  // domain already relocated passes through unchanged. Its completion is the
+  // manifest marker the orchestrator stamps (RESERVED_BRANCH_MIGRATION_MARKER).
+  if (RESERVED_BRANCH_MIGRATION_DOMAIN_SET.has(domain)) {
+    const relocated = relocateAgentEntriesFromReservedBranches({ domain, domainData: nextDomainData });
+    const relocationValidation = validateLosslessDomainUpgrade(
+      nextDomainData,
+      relocated.domainData,
+      relocated.lineage,
+    );
+    if (!relocationValidation.preserved) {
+      throw new PkmLosslessUpgradeError(relocationValidation);
+    }
+    nextDomainData = relocated.domainData;
+    stepLineages.push(relocated.lineage);
+    reservedMigration = relocated.report;
+    if (relocated.lineage.length > 0) {
+      notes.push(
+        `Moved ${relocated.report.moved} agent-written ${titleize(domain)} entries out of app-owned branches; ` +
+          `${relocated.report.quarantined} ambiguous entries were preserved privately.`
+      );
     }
   }
 

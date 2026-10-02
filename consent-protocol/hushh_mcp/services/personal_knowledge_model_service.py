@@ -42,6 +42,7 @@ from hushh_mcp.services.domain_contracts import (
     CANONICAL_DOMAIN_REGISTRY,
     CURRENT_PKM_MODEL_VERSION,
     CURRENT_READABLE_SUMMARY_VERSION,
+    RESERVED_BRANCH_MIGRATION_MARKER,
     RETIRED_DOMAIN_REGISTRY_KEYS,
     canonical_top_level_domain,
     current_domain_contract_version,
@@ -263,6 +264,7 @@ class PersonalKnowledgeModelService:
         "updated_at",
         "upgraded_at",
         "latest_upgrade_commit_id",
+        RESERVED_BRANCH_MIGRATION_MARKER,
     }
     _FINANCIAL_ENRICHMENT_INT_KEYS = {"investable_positions_count", "cash_positions_count"}
     _FINANCIAL_ENRICHMENT_STR_KEYS = {"risk_profile"}
@@ -594,6 +596,7 @@ class PersonalKnowledgeModelService:
             "path_count",
             "readable_summary_version",
             "top_level_scope_count",
+            RESERVED_BRANCH_MIGRATION_MARKER,
         }
         token_keys = {
             "intent_class",
@@ -749,7 +752,15 @@ class PersonalKnowledgeModelService:
         payload: dict | None,
         structure_decision: dict | None,
         prior_manifest: dict | None = None,
+        upgrade_commit: bool | None = None,
     ) -> DomainManifest:
+        """Normalize a client manifest for storage.
+
+        ``upgrade_commit`` decides who owns the reserved-branch relocation
+        marker: ``True`` (an upgrade-claim commit) takes the client's marker,
+        ``False`` (an ordinary write) keeps the prior manifest's and ignores the
+        client's, ``None`` (re-normalizing a stored manifest) keeps the payload's.
+        """
         source = payload if isinstance(payload, dict) else {}
         decision = self._normalize_structure_decision(domain, structure_decision)
         source_agent = self._clean_text(
@@ -853,10 +864,7 @@ class PersonalKnowledgeModelService:
         domain_contract_version = (
             self._to_non_negative_int(source.get("domain_contract_version"))
             or self._to_non_negative_int(summary_projection.get("domain_contract_version"))
-            # A manifest that does not state its version has not proved it ran
-            # the reserved-branch relocation; assume it did not, so the next
-            # capable client re-runs the idempotent upgrade rather than skip it.
-            or current_domain_contract_version(domain, legacy_client=True)
+            or current_domain_contract_version(domain)
         )
         pkm_contract_version = self._normalize_semantic_version(
             source.get("pkm_contract_version")
@@ -909,6 +917,19 @@ class PersonalKnowledgeModelService:
             summary_projection["latest_upgrade_commit_id"] = latest_upgrade_commit_id
         if upgraded_at_value:
             summary_projection["upgraded_at"] = upgraded_at_value
+        if upgrade_commit is not None:
+            prior_projection = (prior_manifest or {}).get("summary_projection")
+            prior_marker = self._to_non_negative_int(
+                (prior_projection if isinstance(prior_projection, dict) else {}).get(
+                    RESERVED_BRANCH_MIGRATION_MARKER
+                )
+            )
+            claimed_marker = self._to_non_negative_int(
+                summary_projection.pop(RESERVED_BRANCH_MIGRATION_MARKER, None)
+            )
+            marker = (claimed_marker if upgrade_commit else None) or prior_marker
+            if marker:
+                summary_projection[RESERVED_BRANCH_MIGRATION_MARKER] = marker
 
         last_structured_at = datetime.now(UTC)
         last_content_at = datetime.now(UTC)
@@ -4178,6 +4199,7 @@ class PersonalKnowledgeModelService:
                 manifest,
                 normalized_decision,
                 prior_manifest,
+                upgrade_commit=upgrade_claim is not None,
             )
             self._preserve_scope_registry_posture(normalized_manifest, prior_manifest)
 

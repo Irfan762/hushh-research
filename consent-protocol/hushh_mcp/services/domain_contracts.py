@@ -206,18 +206,21 @@ CURRENT_READABLE_PROJECTION_VERSION = "6.0.0"
 CURRENT_READABLE_SUMMARY_VERSION = 6
 GENERIC_DOMAIN_CONTRACT_VERSION = 4
 DYNAMIC_DOMAIN_CONTRACT_VERSION = 4
-# Version 5 moves agent-written entries out of app-owned branches into their
-# agent_memory sibling (contracts/pkm/reserved-branches.v1.json), on the device,
-# through the PKM upgrade gate. Only domains that hold a reserved branch move to
-# it. The TypeScript twin is RESERVED_BRANCH_MIGRATION_DOMAINS in
+# The reserved-branch relocation moves agent-written entries out of app-owned
+# branches into their agent_memory sibling (contracts/pkm/reserved-branches.v1.json),
+# on the device, through the PKM upgrade gate. It is recorded by a manifest
+# summary marker, not a domain contract version: shipped builds refuse to write a
+# domain stored at a newer version than their own, so a version bump would lock
+# their Finance and Location saves. The TypeScript twin is in
 # hushh-webapp/lib/personal-knowledge-model/upgrade-contracts.ts; a parity test
 # reads both.
-RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION = 5
+RESERVED_BRANCH_MIGRATION_VERSION = 1
+RESERVED_BRANCH_MIGRATION_MARKER = "reserved_branch_migration_version"
 RESERVED_BRANCH_MIGRATION_DOMAINS: frozenset[str] = frozenset(
     {"financial", "identity", "location", "professional", "ria", "shopping", "wallet"}
 )
 FINANCIAL_DOMAIN_SCHEMA_VERSION = 3
-FINANCIAL_DOMAIN_CONTRACT_VERSION = RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION
+FINANCIAL_DOMAIN_CONTRACT_VERSION = GENERIC_DOMAIN_CONTRACT_VERSION
 FINANCIAL_INTENT_MAP: tuple[str, ...] = (
     "portfolio",
     "profile",
@@ -622,29 +625,26 @@ def is_allowed_top_level_domain(domain: str) -> bool:
     return canonical_top_level_domain(domain) in CANONICAL_DOMAIN_KEYS
 
 
-def current_domain_contract_version(domain: str, *, legacy_client: bool = False) -> int:
-    """The domain contract version an upgrade should bring ``domain`` to.
-
-    ``legacy_client`` is a client that predates the reserved-branch migration
-    (it reports no ``x-hushh-client-version`` on the upgrade routes). Its
-    transform for version 5 would be a plain copy, so it is never offered the
-    migration: it would stamp version 5 without moving anything, and the
-    client that can move the entries would then never be asked to.
-    """
-    canonical = canonical_top_level_domain(domain)
-    if canonical in RESERVED_BRANCH_MIGRATION_DOMAINS and not legacy_client:
-        return RESERVED_BRANCH_MIGRATION_DOMAIN_CONTRACT_VERSION
+def current_domain_contract_version(domain: str) -> int:
+    _canonical = canonical_top_level_domain(domain)
     return GENERIC_DOMAIN_CONTRACT_VERSION
 
 
-def highest_known_domain_contract_version(domain: str) -> int:
-    """The newest stored version this server understands, for any client.
+def needs_reserved_branch_migration(domain: str, summary_projection: object) -> bool:
+    """True when ``domain`` holds a reserved branch and its manifest lacks the marker.
 
-    A legacy client reads and writes a version-5 domain safely (the relocation
-    changes where entries live, not the shape any app branch has), so version 5
-    is never reported to it as a future version that needs an app update.
+    The marker is set by an upgrade-claim commit from a client that ran the
+    relocation, and the server carries it across ordinary writes
+    (``PersonalKnowledgeModelService._normalize_manifest_payload``).
     """
-    return current_domain_contract_version(domain)
+    if canonical_top_level_domain(domain) not in RESERVED_BRANCH_MIGRATION_DOMAINS:
+        return False
+    projection = summary_projection if isinstance(summary_projection, dict) else {}
+    try:
+        recorded = int(projection.get(RESERVED_BRANCH_MIGRATION_MARKER) or 0)
+    except (TypeError, ValueError):
+        recorded = 0
+    return recorded < RESERVED_BRANCH_MIGRATION_VERSION
 
 
 def get_canonical_domain_metadata(domain_key: str) -> DomainContractEntry | None:

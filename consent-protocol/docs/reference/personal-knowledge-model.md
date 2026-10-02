@@ -232,7 +232,7 @@ makes it externalizable or any scope registry entry references it.
    automatically republished; they remain owner-approved snapshots.
 
 The mandatory gate rehearses synthetic historical versions 0 through 4 (and the
-version-5 reserved-branch relocation below), heterogeneous
+reserved-branch relocation below), heterogeneous
 arrays, sparse and unknown keys, financial statement/Plaid/KYC memory, Gmail-derived
 memory, private scopes, retired aliases, encryption round trips, idempotency, and rollback.
 For selected protected UAT releases, the gate additionally requires the
@@ -532,11 +532,11 @@ registry entry in the same change.
 
 ### Phase 2: moving agent entries out, then enforcing
 
-**The migration.** Domain contract version 5 (`RESERVED_BRANCH_MIGRATION_DOMAINS`:
-financial, identity, location, professional, ria, shopping, wallet; the TypeScript and
-Python lists are parity-tested) adds one device-side upgrade step,
-`hushh-webapp/lib/personal-knowledge-model/reserved-branch-migration.ts`. It runs through
-the ordinary upgrade gate: writer `pkm_upgrade_orchestrator` (class `migration`), an
+**The migration.** Every upgrade of a domain in `RESERVED_BRANCH_MIGRATION_DOMAINS`
+(financial, identity, location, professional, ria, shopping, wallet; the TypeScript and
+Python lists are parity-tested) runs one device-side relocation,
+`hushh-webapp/lib/personal-knowledge-model/reserved-branch-migration.ts`, after its
+version steps. It runs through the ordinary upgrade gate: writer `pkm_upgrade_orchestrator` (class `migration`), an
 `upgrade_claim`, and a `preservation_receipt` with occurrence lineage. It classifies each
 member of an `entities` map inside a reserved branch:
 
@@ -558,11 +558,24 @@ the underscores from segment ids, so such an upgrade would have been refused and
 renamed on read. The segment id now keeps its spelling, and the manifest treats
 `__quarantine_v1` as an opaque private branch (no path walk, never exposable).
 
-Old builds cannot run the step (their version-5 transform is a copy), so the server never
-offers it to them: without `x-hushh-client-version` on the upgrade and metadata routes it
-reports the generic target, and it never reports version 5 as a future version that
-would lock them out. The web proxy forwards the header (semver only) and keys its hot
-cache on it. A manifest that omits its version is assumed not to have migrated.
+**Why a marker and not a version bump.** The plan bumped the domain contract version.
+Every build since 2026-07-14 refuses to write a domain whose stored
+`domain_contract_version` is newer than its own (`ensureWritableVersion` in
+`pkm-write-coordinator.ts`: "Update the app before changing it"), and current clients
+stamp their version on every write. A bump would have locked a person's TestFlight or App
+Store build out of Finance and Location the moment the web app touched those domains. So
+the domain version stays at 4, and completion is the manifest summary marker
+`reserved_branch_migration_version` (1). Old builds never read it.
+
+The server owns the marker: only an upgrade-claim commit records it, and an ordinary
+write keeps the prior manifest's value and cannot set or clear it
+(`_normalize_manifest_payload`). `build_status` schedules an upgrade for a migration
+domain whose manifest lacks it, for current clients only: without `x-hushh-client-version`
+on the upgrade and metadata routes a client is a legacy build, whose upgrade would be a
+copy that never records the marker and would rerun on every entry. The web proxy forwards
+the header (semver only) and keys its hot cache on it. Current clients reach the
+relocation before their first write to such a domain, because a write first runs any
+scheduled upgrade.
 
 **Readiness, as proven on the Phase 2 copy before the flip.**
 
@@ -586,7 +599,9 @@ cache on it. A manifest that omits its version is assumed not to have migrated.
 and copy it to both mirrors (the parity tests require all three). Nothing refuses after
 the next backend and web deploy; the shadow log lines resume. No data changes: migrated
 entries stay in their siblings, which every reader already shows, and quarantined
-entries stay private and restorable from their source pointers.
+entries stay private and restorable from their source pointers. Because no domain
+contract version moved, reverting the whole release is also safe for every client: an
+older server ignores the marker, and no build is told its information is newer than it.
 
 ## Storage rules
 

@@ -89,8 +89,9 @@ def _is_legacy_upgrade_client(client_version: str | None) -> bool:
     """True for a client that cannot run the reserved-branch relocation.
 
     Builds before the migration release never send the header on these routes,
-    so they keep the generic upgrade target and are never asked to stamp a
-    version-5 domain they did not migrate. A registry that cannot be read
+    so they are never offered an upgrade whose only reason is the missing
+    relocation marker: their upgrade is a copy that would never record it, and
+    would rerun on every entry. A registry that cannot be read
     treats every client as legacy: the safe default delays a migration, it
     never fakes one.
     """
