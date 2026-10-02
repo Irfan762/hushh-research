@@ -145,7 +145,7 @@ def test_shadow_logs_a_memory_agent_write_to_saved_places(caplog: pytest.LogCapt
     )
     assert _shadow_lines(caplog) == [
         "pkm.reserved_would_refuse domain=location branch=saved_places "
-        "writer=agent_chat_owner_request reason=memory_agent"
+        "writer=agent_chat_owner_request reason=memory_agent source=declared"
     ]
 
 
@@ -477,6 +477,25 @@ def test_enforce_sees_a_reserved_manifest_path_behind_an_agent_memory_scope(enfo
     )
     unchanged = _client().post("/api/pkm/store-domain", json=body)
     assert unchanged.status_code == 200, unchanged.text
+
+
+def test_shadow_names_a_manifest_diff_as_its_source(enforce, caplog) -> None:
+    """Before the flip, shadow counts must separate a claim from a manifest change."""
+    service = enforce("shadow")
+    service.stored_paths = frozenset({"agent_memory"})
+    caplog.set_level(logging.INFO, logger=pkm_routes_shared.logger.name)
+    response = _client().post(
+        "/api/pkm/store-domain",
+        json=_store_body(
+            _plan(domain="identity", scope="agent_memory", writer_id="agent_chat_owner_request"),
+            manifest_paths=("agent_memory", "identity_documents"),
+        ),
+    )
+    assert response.status_code == 200
+    assert _shadow_lines(caplog) == [
+        "pkm.reserved_would_refuse domain=identity branch=identity_documents "
+        "writer=agent_chat_owner_request reason=memory_agent source=manifest_diff"
+    ]
 
 
 def test_enforce_applies_to_validate_and_to_whole_domain_delete(enforce) -> None:

@@ -760,7 +760,9 @@ async def _verified_reserved_capabilities(
     return frozenset(held)
 
 
-def _log_reserved_refusals(refusals: list[ReservedRefusal], *, outcome: str) -> None:
+def _log_reserved_refusals(
+    refusals: list[ReservedRefusal], *, outcome: str, source: str = "declared"
+) -> None:
     for refusal in refusals:
         # Labels are format text, not arguments: the process-wide redactor
         # (mcp_modules/log_redaction.py) scrubs any underscored argument of
@@ -772,6 +774,7 @@ def _log_reserved_refusals(refusals: list[ReservedRefusal], *, outcome: str) -> 
             f" branch={_shadow_log_label(refusal.branch)}"
             f" writer={_shadow_log_label(refusal.writer_id)}"
             f" reason={refusal.reason}"
+            f" source={source}"
         )
 
 
@@ -793,14 +796,29 @@ def _shadow_reserved_branch_write(
     mode must not be able to change the outcome of a write.
     """
     try:
-        refusals = evaluate_reserved_write(
-            domain=canonical_domain,
-            paths=[*_reserved_request_paths(request), *(extra_paths or [])],
-            writer_id=_effective_writer_id(request),
-            authorization_mode=_authorization_mode(request),
-            capabilities=capabilities,
-        )
-        _log_reserved_refusals(refusals, outcome="reserved_would_refuse")
+        # Declared paths and the manifest diff are judged and logged apart, so
+        # the shadow counts show whether a would-refuse comes from what a
+        # client claims or from a manifest that changed under a reserved branch
+        # (path-convention drift would show up only on the second).
+        def judge(paths: list[str]) -> list[ReservedRefusal]:
+            judged: list[ReservedRefusal] = evaluate_reserved_write(
+                domain=canonical_domain,
+                paths=paths,
+                writer_id=_effective_writer_id(request),
+                authorization_mode=_authorization_mode(request),
+                capabilities=capabilities,
+            )
+            return judged
+
+        declared = judge(_reserved_request_paths(request))
+        _log_reserved_refusals(declared, outcome="reserved_would_refuse", source="declared")
+        seen = {(item.branch, item.reason) for item in declared}
+        diffed = [
+            item
+            for item in judge(list(extra_paths or []))
+            if (item.branch, item.reason) not in seen
+        ]
+        _log_reserved_refusals(diffed, outcome="reserved_would_refuse", source="manifest_diff")
     except Exception as exc:  # shadow mode never blocks a write
         logger.warning("pkm.reserved_shadow_unavailable error=%s", type(exc).__name__)
 
@@ -831,7 +849,7 @@ def _reserved_refusal_exception(refusals: list[ReservedRefusal]) -> HTTPExceptio
 def _reserved_enforcement_mode() -> str:
     """The contract's mode. An unreadable registry fails closed, in every mode."""
     try:
-        return enforcement_mode()
+        return str(enforcement_mode())
     except Exception as exc:
         logger.error("pkm.reserved_registry_unavailable error=%s", type(exc).__name__)
         raise HTTPException(

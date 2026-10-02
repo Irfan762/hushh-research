@@ -445,7 +445,9 @@ so the server and the device read one answer. It ships as `shadow`; the migratio
 release (agent-written entries moved to their siblings) flips it.
 
 - `shadow`: the server logs `pkm.reserved_would_refuse domain=<d> branch=<b> writer=<w>
-  reason=<r>` and the device counts the same; nothing is refused.
+  reason=<r> source=<declared|manifest_diff>` and the device counts the same; nothing is
+  refused. The `source` separates what a client claimed from a manifest that changed
+  under a reserved branch, so manifest-path drift is visible before the flip.
 - `enforce`: the server refuses on `/api/pkm/store-domain`, `/store-domain/validate` and
   both whole-domain delete routes, and `store_domain_data` re-checks as defense in depth.
   - 403 `PKM_RESERVED_BRANCH_WRITER_FORBIDDEN` with `{code, domain, branch, reason,

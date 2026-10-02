@@ -454,7 +454,8 @@ async def issue_information_request_pkm_reply_authorization(
     authorization = issue_kyc_reply_authorization(
         user_id=user_id, information_request_id=workflow_id
     )
-    return authorization.model_dump(mode="json")
+    payload: dict[str, Any] = authorization.model_dump(mode="json")
+    return payload
 
 
 @router.post("/{workflow_id}/send-reply")
