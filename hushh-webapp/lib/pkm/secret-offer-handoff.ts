@@ -2,14 +2,26 @@
  * Hands a Secrets item to the screen that files it, in memory only.
  *
  * "Add this card to Wallet" and "Add passport to Identity documents" open the
- * Wallet add form or the KYC screen through Next client navigation, which keeps
- * this module's state. What crosses is a reference (the owner and the secret
- * id), never the value, and never through the URL, history or storage: the
- * target screen decrypts the value from the vault itself, and the owner then
- * commits with that feature's own writer. A reload drops the offer, by design.
+ * Wallet add form, or the identity-documents filing card on the Profile Secrets
+ * list, through Next client navigation, which keeps this module's state. What
+ * crosses is a reference (the owner and the secret id), never the value, and
+ * never through the URL, history or storage: the target screen decrypts the
+ * value from the vault itself, and the owner then commits with that feature's
+ * own writer. A reload drops the offer, by design.
  */
 
+import { ROUTES } from "@/lib/navigation/routes";
+
 export type SecretOfferTarget = "wallet" | "kyc_identity_documents";
+
+/**
+ * The screen that files each target. Identity documents are filed from the
+ * Profile Secrets list: the /one/kyc screen was retired on 2026-09-27.
+ */
+export const SECRET_OFFER_ROUTES: Readonly<Record<SecretOfferTarget, string>> = {
+  wallet: ROUTES.ONE_WALLET,
+  kyc_identity_documents: ROUTES.PROFILE,
+};
 
 type StagedSecretOffer = {
   ownerUserId: string;

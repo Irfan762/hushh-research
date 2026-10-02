@@ -3,6 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
+import { IdentityDocumentsFilingCard } from "@/components/secrets/identity-documents-filing-card";
 import { SECRET_KIND_LABELS, SecretItemsPanel, type SecretPanelItem } from "@/components/secrets/secret-items-panel";
 import { useSecretReveal } from "@/components/secrets/use-secret-reveal";
 import {
@@ -15,12 +16,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { stageSecretOffer } from "@/lib/pkm/secret-offer-handoff";
+import { SECRET_OFFER_ROUTES, stageSecretOffer } from "@/lib/pkm/secret-offer-handoff";
 import { secretOfferFor } from "@/lib/pkm/secret-span-guard";
 import { SecretsVaultService, type SecretItemSummary } from "@/lib/pkm/secrets-vault-service";
 
 const FILED_LABELS = { wallet: "Filed in Wallet", kyc_identity_documents: "Filed in Identity documents" } as const;
-const OFFER_ROUTES = { wallet: "/one/wallet", kyc_identity_documents: "/one/kyc" } as const;
 
 function panelItem(item: SecretItemSummary): SecretPanelItem {
   return {
@@ -42,6 +42,8 @@ export function SecretsListGroup({ onUnlock }: { onUnlock: () => void }) {
   const { locked, revealed, busyId, reveal, hide, vaultContext } = useSecretReveal();
   const [items, setItems] = useState<SecretItemSummary[]>([]);
   const [removeTarget, setRemoveTarget] = useState<SecretPanelItem | null>(null);
+  // Remounts the filing card so it reads an offer staged on this screen.
+  const [filingKey, setFilingKey] = useState(0);
   const { userId, vaultKey, vaultOwnerToken } = vaultContext;
 
   const load = useCallback(async () => {
@@ -61,6 +63,7 @@ export function SecretsListGroup({ onUnlock }: { onUnlock: () => void }) {
 
   return (
     <>
+      <IdentityDocumentsFilingCard key={filingKey} onFiled={() => void load()} />
       <SecretItemsPanel
         testId="profile-secrets-list"
         title="Secrets"
@@ -75,7 +78,12 @@ export function SecretsListGroup({ onUnlock }: { onUnlock: () => void }) {
         onOffer={(item) => {
           if (!item.offer) return;
           stageSecretOffer({ ownerUserId: userId, secretId: item.id, fileTo: item.offer.fileTo });
-          router.push(OFFER_ROUTES[item.offer.fileTo]);
+          // Identity documents are filed right here, on the Profile Secrets list.
+          if (item.offer.fileTo === "kyc_identity_documents") {
+            setFilingKey((key) => key + 1);
+            return;
+          }
+          router.push(SECRET_OFFER_ROUTES[item.offer.fileTo]);
         }}
         onRemove={setRemoveTarget}
       />

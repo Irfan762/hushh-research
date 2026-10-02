@@ -665,10 +665,16 @@ the owner-initiated grant flow itself is not built yet, so today every
 
 **Filing offers.** "Add this card to Wallet" and "Add passport to Identity
 documents" hand a reference (owner and secret id, never the value, never the
-URL) to the Wallet add form or the KYC screen in memory
-(`hushh-webapp/lib/pkm/secret-offer-handoff.ts`). The target screen decrypts the
-value itself, and the owner commits with that feature's writer: `one_wallet_add`,
-or `kyc_identity_document_file` for `identity.identity_documents`.
+URL) in memory to the Wallet add form, or to the identity-documents filing card
+on the Profile Secrets list (`hushh-webapp/lib/pkm/secret-offer-handoff.ts`,
+`SECRET_OFFER_ROUTES`). The target decrypts the value itself, and the owner
+commits with that feature's writer: `one_wallet_add`, or
+`kyc_identity_document_file` for `identity.identity_documents`. The filing card
+lives on Profile because the `/one/kyc` screen was retired on 2026-09-27; for
+the same reason the `identity.identity_profile`, `identity.identity_documents`
+and `professional.profile` entries carry no `offer_action`. A chat fact for those
+branches still lands in the `agent_memory` sibling, with nothing lost, but has no
+screen to open until an identity screen with a route action exists again.
 
 ## Storage rules
 

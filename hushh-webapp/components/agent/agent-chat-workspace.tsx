@@ -144,7 +144,7 @@ import { SecureCardReveal } from "@/components/wallet/secure-card-reveal";
 import { SecretCaptureCard, type KeptSecretRef } from "@/components/secrets/secret-capture-card";
 import { SecretPlaceholderText } from "@/components/secrets/secret-placeholder-text";
 import { containsSecretSpan } from "@/lib/pkm/secret-patterns";
-import { stageSecretOffer } from "@/lib/pkm/secret-offer-handoff";
+import { SECRET_OFFER_ROUTES, stageSecretOffer } from "@/lib/pkm/secret-offer-handoff";
 import { planSecretCaptures } from "@/lib/pkm/secret-span-guard";
 import { SecretsVaultService } from "@/lib/pkm/secrets-vault-service";
 import {
@@ -9142,7 +9142,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                       // A reference only, in memory: the target screen decrypts
                       // the value itself and the owner commits there.
                       stageSecretOffer({ ownerUserId: user.uid, secretId, fileTo: offer.fileTo });
-                      router.push(offer.fileTo === "wallet" ? "/one/wallet" : "/one/kyc");
+                      router.push(SECRET_OFFER_ROUTES[offer.fileTo]);
                     }}
                   />
                 ) : widget.kind === "list" ? (

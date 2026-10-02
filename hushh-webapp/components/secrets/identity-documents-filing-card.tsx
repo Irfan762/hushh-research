@@ -14,12 +14,13 @@ const SURFACE =
   "rounded-[var(--app-card-radius-compact)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-4 text-foreground";
 
 /**
- * The KYC end of "Add passport to Identity documents". Shown only when the
- * owner chose that offer on a Secrets card in this session. The number is
+ * The KYC end of "Add passport to Identity documents", on the Profile Secrets
+ * list. Shown only when the owner chose that offer on a Secrets card in this
+ * session. The number is
  * decrypted from the vault at the moment of the owner's tap and written by the
  * KYC feature writer; One never sees it, only its label.
  */
-export function IdentityDocumentsFilingCard() {
+export function IdentityDocumentsFilingCard({ onFiled }: { onFiled?: () => void } = {}) {
   const { user } = useAuth();
   const { vaultKey, vaultOwnerToken, getVaultOwnerToken } = useVault();
   const [item, setItem] = useState<SecretItemSummary | null>(null);
@@ -60,6 +61,7 @@ export function IdentityDocumentsFilingCard() {
       await SecretsVaultService.markFiled({ userId: user.uid, vaultKey, vaultOwnerToken: token, secretId: item.id, filedTo: "kyc_identity_documents" }).catch(() => undefined);
       clearSecretOffer();
       setState("filed");
+      onFiled?.();
     } catch {
       setState("failed");
     }
