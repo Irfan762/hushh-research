@@ -29,13 +29,16 @@ def test_small_compressed_file_cannot_expand_beyond_pixel_limit(size):
         validate_circle_photo(_photo(size=size))
 
 
-@pytest.mark.parametrize("value", [
-    "https://example.test/photo.png",
-    "data:image/svg+xml;base64,PHN2Zz4=",
-    "data:image/png;base64,not-base64",
-    "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\ninvalid").decode(),
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5KsAAAAASUVORK5CYII=",
-])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/photo.png",
+        "data:image/svg+xml;base64,PHN2Zz4=",
+        "data:image/png;base64,not-base64",
+        "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\ninvalid").decode(),
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5KsAAAAASUVORK5CYII=",
+    ],
+)
 def test_rejects_non_raster_and_corrupt_input(value):
     with pytest.raises(ValueError):
         validate_circle_photo(value)

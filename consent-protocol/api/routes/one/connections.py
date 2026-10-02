@@ -95,9 +95,16 @@ def _directory_daily_budget_key(request: Request) -> str:
     return f"{get_rate_limit_key(request)}:directory:{mode}"
 
 
+def _directory_daily_limit(key: str) -> str:
+    # slowapi passes the bucket key built above, so the budget follows the mode.
+    if key.endswith(":directory:browse"):
+        return RateLimits.ONE_CONNECT_DIRECTORY_BROWSE_DAILY
+    return RateLimits.ONE_CONNECT_DIRECTORY_READ_DAILY
+
+
 @router.get("/connections/directory")
 @limiter.limit(
-    RateLimits.ONE_CONNECT_DIRECTORY_READ_DAILY,
+    _directory_daily_limit,
     key_func=_directory_daily_budget_key,
 )
 @limiter.limit(RateLimits.ONE_CONNECT_DIRECTORY_READ)

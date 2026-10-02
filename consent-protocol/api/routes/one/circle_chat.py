@@ -49,7 +49,9 @@ class PrivateChatRoute(APIRoute):
                         async for chunk in request.stream():
                             size += len(chunk)
                             if size > maximum:
-                                raise HTTPException(413, "Chat request is too large.", headers=headers)
+                                raise HTTPException(
+                                    413, "Chat request is too large.", headers=headers
+                                )
                             chunks.append(chunk)
                     request._body = b"".join(chunks)
                 response = await handler(request)
@@ -103,7 +105,9 @@ class SendMessage(StrictModel):
     rosterVersion: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]+$")
     ciphertext: str = Field(min_length=22, max_length=24000, pattern=_B64)
     iv: str = Field(min_length=16, max_length=16, pattern=_B64)
-    imageCiphertext: str | None = Field(default=None, min_length=22, max_length=6990530, pattern=_B64)
+    imageCiphertext: str | None = Field(
+        default=None, min_length=22, max_length=6990530, pattern=_B64
+    )
     imageIv: str | None = Field(default=None, min_length=16, max_length=16, pattern=_B64)
     recipients: list[Recipient] = Field(min_length=1, max_length=100)
 
@@ -140,60 +144,98 @@ def _call(response: Response, method: str, owner: dict, circle: UUID, *args, **k
     try:
         return getattr(CircleChatService(), method)(owner["user_id"], str(circle), *args, **kwargs)
     except CircleChatError as exc:
-        raise HTTPException(exc.status, detail={"code": exc.code, "message": exc.message},
-                            headers={"Cache-Control": "private, no-store"}) from exc
+        raise HTTPException(
+            exc.status,
+            detail={"code": exc.code, "message": exc.message},
+            headers={"Cache-Control": "private, no-store"},
+        ) from exc
     except SQLAlchemyError as exc:
         logger.warning("circle_chat.request_failed error_type=%s", type(exc).__name__)
-        raise HTTPException(503, detail={"code": "CIRCLE_CHAT_RETRY", "message": "Chat is temporarily unavailable. Retry safely."},
-                            headers={"Cache-Control": "private, no-store"}) from None
+        raise HTTPException(
+            503,
+            detail={
+                "code": "CIRCLE_CHAT_RETRY",
+                "message": "Chat is temporarily unavailable. Retry safely.",
+            },
+            headers={"Cache-Control": "private, no-store"},
+        ) from None
 
 
 @router.get("/{circle}/chat")
 @limiter.limit(AUTOMATIC_READ_LIMIT)
-def chat_state(request: Request, response: Response, circle: UUID,
-               owner: dict = Depends(require_vault_owner_token)):
+def chat_state(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "state", owner, circle)
 
 
 @router.put("/{circle}/photo")
 @limiter.limit("10/minute")
-def circle_photo(request: Request, response: Response, circle: UUID, payload: CirclePhoto,
-                 owner: dict = Depends(require_vault_owner_token)):
+def circle_photo(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    payload: CirclePhoto,
+    owner: dict = Depends(require_vault_owner_token),
+):
     response.headers["Cache-Control"] = "private, no-store"
     try:
         result = OneLocationCircleService().update_circle_photo(
-            owner_user_id=owner["user_id"], circle_id=str(circle), photo_url=payload.photoUrl)
+            owner_user_id=owner["user_id"], circle_id=str(circle), photo_url=payload.photoUrl
+        )
         return {"circle": result}
     except OneLocationCircleError as exc:
-        raise HTTPException(exc.status_code, detail={"code": exc.code, "message": exc.message}) from exc
+        raise HTTPException(
+            exc.status_code, detail={"code": exc.code, "message": exc.message}
+        ) from exc
     except SQLAlchemyError:
         raise HTTPException(503, "Circle photo could not be saved. Try again.") from None
 
 
 @router.get("/{circle}/chat/messages")
 @limiter.limit(AUTOMATIC_READ_LIMIT)
-def chat_messages(request: Request, response: Response, circle: UUID,
-                  before: Annotated[int | None, Query(gt=0, le=MAX_SEQUENCE)] = None,
-                  after: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
-                  limit: Annotated[int, Query(ge=1, le=50)] = 40,
-                  receiptAfter: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
-                  receiptThrough: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
-                  owner: dict = Depends(require_vault_owner_token)):
+def chat_messages(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    before: Annotated[int | None, Query(gt=0, le=MAX_SEQUENCE)] = None,
+    after: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
+    limit: Annotated[int, Query(ge=1, le=50)] = 40,
+    receiptAfter: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
+    receiptThrough: Annotated[int | None, Query(ge=0, le=MAX_SEQUENCE)] = None,
+    owner: dict = Depends(require_vault_owner_token),
+):
     if before is not None and after is not None:
         raise HTTPException(422, "Choose one pagination direction.")
     if (receiptAfter is None) != (receiptThrough is None) or (
         receiptAfter is not None and receiptThrough is not None and receiptThrough < receiptAfter
     ):
         raise HTTPException(422, "Choose a valid receipt range.")
-    return _call(response, "messages", owner, circle, before=before, after=after, limit=limit,
-                 receipt_after=receiptAfter, receipt_through=receiptThrough)
+    return _call(
+        response,
+        "messages",
+        owner,
+        circle,
+        before=before,
+        after=after,
+        limit=limit,
+        receipt_after=receiptAfter,
+        receipt_through=receiptThrough,
+    )
 
 
 @router.get("/{circle}/chat/wait")
 @limiter.limit(AUTOMATIC_READ_LIMIT)
-async def chat_wait(request: Request, response: Response, circle: UUID,
-                    after: Annotated[int, Query(ge=0, le=MAX_SEQUENCE)] = 0,
-                    owner: dict = Depends(require_vault_owner_token)):
+async def chat_wait(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    after: Annotated[int, Query(ge=0, le=MAX_SEQUENCE)] = 0,
+    owner: dict = Depends(require_vault_owner_token),
+):
     """Bounded JSON long poll works through Capacitor without an SSE buffer.
 
     Subscribe before reading the revision to close the commit/subscribe gap.
@@ -230,9 +272,13 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
                             break
             except TimeoutError:
                 pass
-        return {**await asyncio.to_thread(_call, response, "revision", owner, circle),
-                "changed": changed, "readChanged": read_changed, "receiptsChanged": receipts_changed,
-                "photoChanged": photo_changed}
+        return {
+            **await asyncio.to_thread(_call, response, "revision", owner, circle),
+            "changed": changed,
+            "readChanged": read_changed,
+            "receiptsChanged": receipts_changed,
+            "photoChanged": photo_changed,
+        }
     finally:
         if queue is not None:
             await unsubscribe_consent_queue(user, queue)
@@ -244,35 +290,59 @@ async def chat_wait(request: Request, response: Response, circle: UUID,
 @router.post("/{circle}/chat/messages")
 @limiter.limit("30/minute")
 @limiter.limit("1000/day")
-def chat_send(request: Request, response: Response, circle: UUID, payload: SendMessage,
-              owner: dict = Depends(require_vault_owner_token)):
+def chat_send(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    payload: SendMessage,
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "send", owner, circle, payload.model_dump(mode="json"))
 
 
 @router.get("/{circle}/chat/messages/{message}/image")
 @limiter.limit("120/minute")
-def chat_image(request: Request, response: Response, circle: UUID, message: UUID,
-               owner: dict = Depends(require_vault_owner_token)):
+def chat_image(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    message: UUID,
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "image", owner, circle, str(message))
 
 
 @router.get("/{circle}/chat/keys/{key}")
 @limiter.limit("60/minute")
-def chat_key(request: Request, response: Response, circle: UUID,
-             key: Annotated[str, Path(min_length=8, max_length=160)],
-             owner: dict = Depends(require_vault_owner_token)):
+def chat_key(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    key: Annotated[str, Path(min_length=8, max_length=160)],
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "key", owner, circle, key)
 
 
 @router.post("/{circle}/chat/read")
 @limiter.limit(AUTOMATIC_READ_LIMIT)
-def chat_read(request: Request, response: Response, circle: UUID, payload: ReadMessage,
-              owner: dict = Depends(require_vault_owner_token)):
+def chat_read(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    payload: ReadMessage,
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "read", owner, circle, payload.sequence)
 
 
 @router.put("/{circle}/chat/preferences")
 @limiter.limit("20/minute")
-def chat_preferences(request: Request, response: Response, circle: UUID, payload: Preference,
-                     owner: dict = Depends(require_vault_owner_token)):
+def chat_preferences(
+    request: Request,
+    response: Response,
+    circle: UUID,
+    payload: Preference,
+    owner: dict = Depends(require_vault_owner_token),
+):
     return _call(response, "mute", owner, circle, payload.muted)

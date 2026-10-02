@@ -558,7 +558,7 @@ HTML; Gmail send uses multipart/alternative while preserving the plain-text
 fallback and original-thread reply headers. The
 `agent_kyc.approved_disclosure_formatter.v1` contract owns the render model;
 the vault-unlocked browser executes it against decrypted scoped exports. The
-maintained architecture reference is [One Email KYC](./one-email-kyc.md).
+legacy mailbox-KYC architecture has been retired.
 
 Inbound user resolution uses exact verified sender evidence. The resolver binds
 an actionable request only to the `From` sender when that sender matches a
@@ -2348,11 +2348,25 @@ a nonexistent anchor; the parity document is now the canonical definition.
 
 ### Connect directory request budgets
 
-Directory browsing (empty or whitespace query) and nonempty searches each have a
-500-per-day budget per caller. Both modes share the 60-per-minute ceiling. The
-existing visibility rules and 50-profile page bound are unchanged. Idle Connect
-repair polls refresh connections without issuing another directory search; graph
-changes, foreground refreshes and explicit actions still refresh the directory.
+Directory browsing (empty or whitespace query) and nonempty searches have
+separate daily budgets per caller: 3,000 per day for browsing and 500 per day for
+search. Both modes share the 60-per-minute ceiling. The existing visibility rules
+and 50-profile page bound are unchanged. Browsing pages the list the person
+already sees and is not a lookup by email or phone, so it carries the larger
+budget; it has to outlast a foregrounded client that refreshes the list on a timer
+(two pages a minute is 2,880 a day).
+
+Idle Connect repair polls refresh connections without issuing another directory
+search. Passive triggers (window focus, reconnect, returning to the app) reread the
+directory only when its last read is more than two minutes old; graph changes,
+mutations and explicit actions always refresh it. The client keeps the last
+browse first page for the session, paints it on a revisit, and keeps it on screen
+when a refresh is refused (HTTP 429), so people already shown are never replaced
+by an error. The People list is never padded with the person's own connections:
+it lists people they are not yet connected to. With nothing saved, a refused read
+shows a neutral "taking a moment" row and is retried quietly with growing pauses;
+there is no retry button for a rate limit. Only a real failure shows an
+unavailable row with a retry action.
 
 ### Connect directory mutual connections
 
