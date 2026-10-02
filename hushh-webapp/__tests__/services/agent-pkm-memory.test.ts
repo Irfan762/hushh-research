@@ -805,6 +805,38 @@ describe("agent PKM memory helpers", () => {
     ).toBeNull();
   });
 
+  it("keeps style out of the packet and Secrets label-only in the same identity domain", async () => {
+    // Cross-lane: the style channel (communication_preferences) and label-only
+    // Secrets (identity_documents, secrets.*) share the identity domain. A style
+    // note holding a secret must not reach One through the style channel either.
+    pkmBlob = {
+      secrets: { items: { sec_00000000000000a1: { label: "openai API key ending 9f2a", kind: "credential", value: FAKE_API_KEY } } },
+      identity: {
+        identity_profile: { city: "Synthetic City" },
+        identity_documents: { doc_1: { document_type: "passport", label: "Passport ending 4567", number: FAKE_PASSPORT } },
+        communication_preferences: {
+          preferred_name: "Kay",
+          tone: "executive",
+          owner_style_note: `Sign off with my key ${FAKE_API_KEY}`,
+        },
+      },
+    };
+    pkmGetMetadataMock.mockResolvedValue({
+      ...METADATA,
+      domains: [...METADATA.domains, ...["secrets", "identity"].map((key) => ({ ...METADATA.domains[0], key, displayName: key }))],
+    });
+
+    const context = await loadAgentPkmContext({ userId: "user_1", vaultKey: "k", vaultOwnerToken: "t", message: "hello" });
+
+    expect(context.text).toContain("Synthetic City");
+    expect(context.text).toContain("- Secret exists: Passport ending 4567");
+    expect(context.text).toContain("- Secret exists: openai API key ending 9f2a");
+    expect(context.text).not.toMatch(/Communication Preferences|Kay|Sign off/i);
+    expect(context.communicationPreferences).toEqual({ preferred_name: "Kay", tone: "executive" });
+    const wire = JSON.stringify([context.text, context.communicationPreferences]);
+    for (const value of FAKE_VALUES) expect(wire).not.toContain(value);
+  });
+
   it("keeps a bounded local inventory and reports safety omissions", async () => {
     const deeplyNested: Record<string, unknown> = { favorite: "tea" };
     let cursor = deeplyNested;

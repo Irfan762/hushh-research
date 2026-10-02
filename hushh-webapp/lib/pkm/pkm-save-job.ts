@@ -69,6 +69,7 @@ import {
 } from "@/lib/pkm/pkm-source-chunks";
 import type { PkmMergeOutcome } from "@/lib/pkm/pkm-supersede-merge";
 import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
+import { assertNoUnguardedSecrets } from "@/lib/pkm/secret-span-guard";
 import { SecureResourceCacheService } from "@/lib/services/secure-resource-cache-service";
 
 export const PKM_SAVE_JOB_RESOURCE_PREFIX = "pkm_save_job:v1:";
@@ -214,6 +215,9 @@ export async function createPkmSaveJob(params: {
 }): Promise<PkmSaveJob> {
   const source = params.message.trim();
   if (!source) throw new Error("A memory save needs some text to process.");
+  // The job record outlives the turn: it must hold Secrets placeholders only,
+  // never a raw value the device guard should already have kept.
+  assertNoUnguardedSecrets([source]);
   const createdAt = params.now ?? Date.now();
   const id = globalThis.crypto?.randomUUID?.() ?? `pkm_job_${createdAt.toString(36)}`;
   const steps = await Promise.all(planExplicitSaveSourceChunks(source).map((chunk) => newStep(id, chunk)));

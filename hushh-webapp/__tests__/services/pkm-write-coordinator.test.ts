@@ -770,6 +770,41 @@ describe("PkmWriteCoordinator", () => {
         expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
       });
 
+      it("lands a resumable save job's commit in the sibling under its idempotency scope, and blocks one that touches the app's branch", async () => {
+        // Cross-lane: pkm-save-job.ts commits as the explicit-save memory agent
+        // with a per-step idempotency scope. Enforce mode must take that write
+        // into agent_memory and refuse it the moment it reaches saved_places.
+        stubWriteContext({ domainData: { saved_places: { home: { label: "Home" } } } });
+        const jobWrite = (domainData: Record<string, unknown>) =>
+          PkmWriteCoordinator.savePreparedDomain({
+            ...BASE_PARAMS,
+            domain: "location",
+            confirmation: { confirmedByUser: true, surface: "chat", source: "agent_chat_owner_request" },
+            idempotencyScope: "job_1:step_a:0",
+            build: () => ({ domainData, summary: { item_count: 1 }, scopePath: "agent_memory" }),
+          });
+
+        const sibling = await jobWrite({
+          saved_places: { home: { label: "Home" } },
+          agent_memory: { entities: { mem_3: { summary: "Gym near the office" } } },
+        });
+        expect(sibling.success).toBe(true);
+        expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
+        const plan = (pkmStorePreparedDomainMock.mock.calls[0]?.[0] as { mutationPlan: { plan_id: string; writer_id: string } }).mutationPlan;
+        expect(plan.writer_id).toBe("agent_chat_owner_request");
+        expect(plan.plan_id).toMatch(/^pkm_plan_[0-9a-f]{32}$/);
+
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const reserved = await jobWrite({
+          saved_places: { home: { label: "Home" }, gym: { label: "Gym" } },
+          agent_memory: { entities: { mem_3: { summary: "Gym near the office" } } },
+        });
+        expect(reserved.saveState).toBe("blocked_reserved_branch");
+        expect(reserved.reservedRefusals?.[0]).toMatchObject({ domain: "location", branch: "saved_places", reason: "memory_agent" });
+        expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
+        warn.mockRestore();
+      });
+
       it("still saves a memory agent's write that leaves reserved branches untouched", async () => {
         const result = await PkmWriteCoordinator.savePreparedDomain({
           ...BASE_PARAMS,

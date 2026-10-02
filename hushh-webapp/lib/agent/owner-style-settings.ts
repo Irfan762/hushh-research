@@ -19,6 +19,8 @@
  * (`owner-style-settings-writer.ts`). This module stays pure so the chat
  * client can import it without the PKM write path.
  */
+import { containsSecretSpan } from "@/lib/pkm/secret-patterns";
+
 export const OWNER_STYLE_DOMAIN = "identity" as const;
 export const OWNER_STYLE_BRANCH = "communication_preferences" as const;
 /** The Settings writer's identity in PKM receipts and the reserved-branch registry. */
@@ -137,9 +139,15 @@ export function ownerStyleFromBranch(raw: unknown): OwnerStyleSettings {
   return settings;
 }
 
-/** The request field, or undefined when nothing is set. */
+/**
+ * The request field, or undefined when nothing is set. The style text goes into
+ * One's prompt verbatim, so a name or note that holds a secret (Secrets:
+ * never sent to a model) is left out of the turn; Settings still shows it.
+ */
 export function ownerStyleRequestField(settings: OwnerStyleSettings | null | undefined): OwnerStyleSettings | undefined {
   const clean = ownerStyleFromBranch(settings);
+  if (containsSecretSpan(clean.preferred_name)) delete clean.preferred_name;
+  if (containsSecretSpan(clean.owner_style_note)) delete clean.owner_style_note;
   return Object.keys(clean).length ? clean : undefined;
 }
 

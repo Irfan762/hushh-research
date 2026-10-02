@@ -37,6 +37,7 @@ import {
   type PkmSaveJobDeps,
 } from "@/lib/pkm/pkm-save-job";
 import { sourceChunkRange } from "@/lib/pkm/pkm-source-chunks";
+import { planSecretCaptures, UnguardedSecretError } from "@/lib/pkm/secret-span-guard";
 
 const USER = "owner-synthetic";
 const VAULT_KEY = "ab".repeat(32);
@@ -434,5 +435,59 @@ describe("resumable explicit save job", () => {
     expect(localStorage.length).toBe(0);
     expect(sessionStorage.length).toBe(0);
     setItem.mockRestore();
+  });
+});
+
+/**
+ * Secrets meet the save job. The device guard keeps a pasted secret in Secrets
+ * and leaves a placeholder; the job record, every preparation call and every
+ * commit must carry that placeholder only. Values are assembled from parts.
+ */
+describe("Secrets placeholders through the resumable save job", () => {
+  const join = (...parts: string[]) => parts.join("");
+  const TOKEN = join("gh", "p_", "fakefake0000fakefake0000fakefake4f2a");
+  const PASSPORT = join("X12", "34567");
+  const RAW = [
+    "# Work context",
+    `- CI deploy token: ${TOKEN}`,
+    `- My passport ${PASSPORT} is renewed every ten years`,
+    "- The product runs on Postgres and Next.js",
+  ].join("\n");
+
+  it("persists, prepares and commits only the placeholders the guard left", async () => {
+    let counter = 0;
+    const plan = planSecretCaptures([RAW], { idFactory: () => `sec_${(counter += 1).toString(16).padStart(16, "0")}` });
+    expect(plan.captures).toHaveLength(2);
+    const [guarded] = plan.render();
+    mocks.preview.mockImplementation(async ({ message }: { message: string }) => simulatedAgent(message));
+    const server = fakeServer();
+    mocks.add.mockImplementation(server.commit);
+
+    const started = await startExplicitPkmSaveJob({
+      userId: USER, message: guarded!, currentDomains: [], vaultKey: VAULT_KEY, vaultOwnerToken: "token",
+      assistantMessageId: "message-secrets", pauseAt: Date.now() - 1,
+    });
+    const stored = JSON.stringify(await loadPkmSaveJob(USER, started.jobId, VAULT_KEY));
+    expect(stored).toContain("⟦secret:sec_0000000000000001");
+    for (const value of [TOKEN, PASSPORT]) expect(stored).not.toContain(value);
+
+    const finished = (await resumeExplicitPkmSaveJob({
+      userId: USER, jobId: started.jobId, vaultKey: VAULT_KEY, vaultOwnerToken: "token",
+    }))!;
+    expect(finished.jobState).toBe("completed");
+    expect(finished.receipt.coverage!.notYetSavedLines).toBe(0);
+    const sent = JSON.stringify([mocks.preview.mock.calls, mocks.add.mock.calls]);
+    expect(sent).toContain("⟦secret:");
+    for (const value of [TOKEN, PASSPORT]) expect(sent).not.toContain(value);
+  });
+
+  it("refuses to open a job, or write its record, for text that still holds a raw secret", async () => {
+    await expect(
+      startExplicitPkmSaveJob({
+        userId: USER, message: RAW, currentDomains: [], vaultKey: VAULT_KEY, vaultOwnerToken: "token",
+      }),
+    ).rejects.toBeInstanceOf(UnguardedSecretError);
+    expect(await rawCacheRecords()).toEqual([]);
+    expect(mocks.preview).not.toHaveBeenCalled();
   });
 });
