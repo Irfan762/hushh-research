@@ -288,7 +288,7 @@ class DriveBulkShareStore(DriveLivePreferences):
             ).scalar_one()
         )
 
-    def _share_recipient_current(self, connection, share, owner, recipient):
+    def _share_recipient_current(self, connection, share, owner, recipient, *, for_retry=False):
         if share["origin_request_id"] is None:
             return self._recipient_current(connection, owner, recipient)
         request = self._row(
@@ -303,8 +303,11 @@ class DriveBulkShareStore(DriveLivePreferences):
         allowed_status = (
             share["progressive_batch"] is True
             and share["approved_at"] is not None
-            and request["status"] == "pending"
-        ) or (not share["progressive_batch"] and request["status"] == "approved")
+            and request["status"] in ({"pending", "partial"} if for_retry else {"pending"})
+        ) or (
+            not share["progressive_batch"]
+            and request["status"] == ("partial" if for_retry else "approved")
+        )
         if not allowed_status:
             return False
         private = self._open(
@@ -477,11 +480,23 @@ class DriveBulkShareStore(DriveLivePreferences):
             )
             retry_origin_current = bool(
                 origin
-                and origin["status"] == ("pending" if row["progressive_batch"] else "partial")
+                and origin["status"]
+                in ({"pending", "partial"} if row["progressive_batch"] else {"partial"})
                 and origin["revision"] == row["origin_request_revision"]
                 and origin["expires_at"] > datetime.now(UTC)
             )
         recipients = self._recipients(connection, row)
+        if retryable_count and row["origin_request_id"] is not None:
+            try:
+                self._require_paid_for_origin(connection, row["origin_request_id"])
+            except DriveSharingError:
+                retry_origin_current = False
+            retry_origin_current = retry_origin_current and all(
+                self._share_recipient_current(
+                    connection, row, row["user_id"], item["user_id"], for_retry=True
+                )
+                for item in recipients
+            )
         notice_states = dict(
             connection.execute(
                 text(
@@ -1519,16 +1534,20 @@ class DriveBulkShareStore(DriveLivePreferences):
                 )
                 if (
                     origin is None
-                    or origin["status"] != ("pending" if row["progressive_batch"] else "partial")
+                    or origin["status"]
+                    not in ({"pending", "partial"} if row["progressive_batch"] else {"partial"})
                     or origin["revision"] != row["origin_request_revision"]
                     or origin["expires_at"]
                     <= connection.execute(text("SELECT clock_timestamp()")).scalar_one()
                 ):
                     raise DriveSharingError("request_changed")
+                self._require_paid_for_origin(connection, origin["request_id"])
             recipients = self._recipients(connection, row)
             if len(recipients) != row["recipient_count"] or any(
                 not (
-                    self._request_recipient_current(connection, user_id, item["user_id"])
+                    self._share_recipient_current(
+                        connection, row, user_id, item["user_id"], for_retry=True
+                    )
                     if origin is not None
                     else self._recipient_current(connection, user_id, item["user_id"])
                 )
@@ -1539,6 +1558,15 @@ class DriveBulkShareStore(DriveLivePreferences):
                 len(recipients) != 1 or recipients[0]["user_id"] != origin["recipient_user_id"]
             ):
                 raise DriveSharingError("recipient_changed")
+            if origin is not None and row["progressive_batch"] and origin["status"] == "partial":
+                # Reuse the frozen approval. Its revision also binds sibling
+                # batches and the search checkpoint; recovery must not rotate it.
+                connection.execute(
+                    text("""UPDATE drive_share_requests
+                    SET status='pending',updated_at=clock_timestamp()
+                    WHERE request_id=:request"""),
+                    {"request": origin["request_id"]},
+                )
             changed = connection.execute(
                 text("""UPDATE drive_bulk_share_effects
             SET state='queued',safe_error_code=NULL,attempts=0,next_at=clock_timestamp(),
@@ -1846,6 +1874,15 @@ class DriveBulkShareStore(DriveLivePreferences):
             {"status": outcome, "request": request_id},
         )
         if updated:
+            # Outcome revisions deduplicate notifications, not grant authority.
+            # Preserve the request/search/batch revision while giving each real
+            # terminal transition (including recovery) a fresh Feed/outbox event.
+            outcome_revision = connection.execute(
+                text("""SELECT GREATEST(:revision,COALESCE(MAX(revision)+1,:revision))
+                FROM drive_share_events
+                WHERE request_id=:request AND event_type='document_share_outcome'"""),
+                {"request": request_id, "revision": updated["revision"]},
+            ).scalar_one()
             for audience in (updated["user_id"], updated["recipient_user_id"]):
                 connection.execute(
                     text("""INSERT INTO drive_share_events(
@@ -1856,7 +1893,7 @@ class DriveBulkShareStore(DriveLivePreferences):
                         "id": str(uuid4()),
                         "request": request_id,
                         "user": audience,
-                        "revision": updated["revision"],
+                        "revision": outcome_revision,
                     },
                 )
 

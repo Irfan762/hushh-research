@@ -40,6 +40,16 @@ behavior because `payment_required` defaults to false and is set only on new
 eligible requests while the rollout switch is on. The selected-file indexing
 lane and the owner-reviewed question lane are outside this gate.
 
+Request-bound searches hand each committed Drive page to the batch orchestrator
+before reading the next page. Each immutable batch contains at most 25 files;
+a sparse page or final remainder is handed off immediately. The first nonempty
+batch creates the single payment item. Once paid, committed batches can queue
+for sharing while discovery continues. A payment or restart wake drains those
+committed results before starting another search slice. An interrupted handoff
+retains its saved cursor and frozen batch; it does not restart discovery or
+create another charge. The existing recipient view refreshes confirmed results
+during discovery and paginates them in groups of 25.
+
 The payment layer exposes only opaque workflow identifiers to Stripe. The
 existing live Drive search still runs on the backend with Manish's delegated
 Google access and server-readable encrypted metadata. It should not be described
@@ -79,6 +89,36 @@ as end-to-end or strict cryptographic zero knowledge of the Drive documents.
    refund, reconciles the Stripe PaymentIntent on retry, and sends Chris a
    durable refund Feed update after Stripe confirms success. A payment arriving
    after authority is lost is held for the same reconciliation path.
+
+### Concurrent Google credential refresh
+
+Parallel file jobs can encounter `refresh_in_progress` while another job renews
+the owner's Google credential. The sharing worker treats that exact OAuth 409
+as temporary contention: it waits briefly for the refresh, rechecks current
+authority, and uses the refreshed credential only for the same connection
+generation. Persistent contention returns to the durable retry schedule.
+It must not become a terminal "not shared" result after one attempt. A provider
+write with an uncertain outcome still follows read-only reconciliation.
+
+The regression runs the production OAuth adapter and Google permission adapter
+with a controlled provider transport, reproducing two simultaneous file jobs
+and one expired credential. It verifies one token refresh, one necessary grant,
+and recognition of the other file's existing access. This protects the race
+that service-level adapter stubs previously missed.
+
+### Recovering a partial request
+
+The existing retry operation can reopen a completed progressive request marked
+`partial`, retaining its paid order, frozen files, recipient and approval source.
+Only skipped effects that never reached a provider write and have no receipt or
+active lease can be requeued. Current payment, dates, trust/background authority,
+connection generation, expiry and review digest are checked again. Confirmed
+files and uncertain provider writes are excluded from this retry.
+
+The request revision continues to bind its search and sibling batches. Recovery
+increments the retried batch revision; a later terminal transition emits a fresh
+outcome event for Feed and notifications without replacing those authority
+bindings. This recovery does not create another payment order or charge.
 
 ## Configuration and rollout
 
