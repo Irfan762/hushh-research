@@ -146,6 +146,9 @@ export default defineConfig({
         // reserved-offer-card: the receipt's "Add as Home in Location" rows and
         // Memory's read-only "Open in" row, tapped on an iPhone first.
         /reserved-offer-card\.layout\.spec\.ts/,
+        // secrets-card: the secure Secrets card (reveal, copy, offers) is met
+        // on an iPhone first; its 4/8 pt grid is asserted in the shipped engine.
+        /secrets-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,

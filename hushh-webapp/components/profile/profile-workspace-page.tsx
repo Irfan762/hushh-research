@@ -69,6 +69,7 @@ import {
   PkmDomainDetailPanel,
 } from "@/components/profile/pkm-data-manager";
 import { SharedWithYouGroup } from "@/components/profile/shared-with-you-group";
+import { SecretsListGroup } from "@/components/secrets/secrets-list-group";
 import {
   ProfileStackNavigator,
   type ProfileStackEntry,
@@ -3332,6 +3333,7 @@ function ProfilePageContent({
         }
       />
       {isVaultUnlocked ? <SharedWithYouGroup vaultOwnerToken={vaultOwnerToken} /> : null}
+      {isVaultUnlocked ? <SecretsListGroup onUnlock={() => undefined} /> : null}
     </div>
   );
 

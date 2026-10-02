@@ -602,6 +602,73 @@ entries stay in their siblings, which every reader already shows, and quarantine
 entries stay private and restorable from their source pointers. Because no domain
 contract version moved, reverting the whole release is also safe for every client: an
 older server ignores the marker, and no build is told its information is newer than it.
+## The Secrets area: kept, never sent to a model
+
+API keys, passwords, tokens and private keys the owner types, pastes or asks One
+to save are kept in the reserved `secrets` domain and are never sent to the AI.
+Card numbers and government id numbers (passport, SSN, Aadhaar) are held there
+too, with an offer to file them in Wallet or the KYC identity documents. Things
+that only NAME a secret (environment variable names, a secret-store path, a GCP
+project id, an OAuth URL, an app id) are not secrets and are saved as ordinary
+work context.
+
+**One contract, two loaders.** `contracts/pkm/secret-patterns.v1.json` (with
+byte-identical copies in `consent-protocol/contracts/pkm/` and
+`hushh-webapp/contracts/pkm/`) lists each pattern with its `kind`, the place the
+owner may file it (`file_to`: `wallet`, `kyc_identity_documents` or `none`), and
+shared cases, positive and negative, that both loaders run:
+`hushh-webapp/lib/pkm/secret-patterns.ts` and
+`consent-protocol/hushh_mcp/consent/secret_patterns.py`. The fixtures are
+assembled from parts, so the repository holds no credential-shaped literal. The
+root and backend `.gitignore` files carry an exact-path exception for this file
+under their `*secret*.json` rule.
+
+**The device guard runs first.** `hushh-webapp/lib/pkm/secret-span-guard.ts`
+runs in the chat composer's send path (typed text and every pasted attachment,
+including "Edit and send again" and a queued edit) before anything reaches chat,
+a memory proposal, history or telemetry. Each secret span is saved through the
+feature writer `secrets_vault` (an owner-confirmed plan through
+`PkmWriteCoordinator`, `hushh-webapp/lib/pkm/secrets-vault-service.ts`) and
+replaced by `⟦secret:<id> <label>⟧`. The label is built on the device from the
+words before the secret, with the value masked ("GitHub token ending 4f2a"). The
+text is rendered only after the save settles; if the vault is locked or the save
+fails, nothing is sent and the draft is restored. `streamAgentChat`, the queued
+input transport and `previewAgentPkmMemory` refuse any text that still holds a
+raw secret (`UnguardedSecretError`), before a request exists.
+
+**The server is the second net.** `PKMAgentLabService._contains_sensitive_secret`
+now delegates to `secret_patterns.find_secret_spans`, which returns offsets and
+kinds and has no way to return a value. A `/store-domain` write to `secrets`
+must carry a bookkeeping-only plaintext summary
+(`hushh_mcp/services/secrets_domain_validation.py`); a label, an item, nested
+content or a secret-shaped string is refused with
+`422 SECRETS_SUMMARY_ENVELOPE_INVALID`.
+
+**Label only, everywhere a model reads.** Any branch whose registry entry says
+`send_to_model: label_only` (`secrets.*`, `wallet.*`,
+`identity.identity_documents`) reaches One's context packet and the merge
+agent's reconciliation candidates only as `Secret exists: <label>`
+(`hushh-webapp/lib/agent/agent-pkm-context-store.ts`). A detail saved before
+this release that still holds a raw secret is printed with `[hidden secret]` in
+its place. `secrets` is identifier-class in all three `field-sensitivity.v1.json`
+copies (`identifier_domains`).
+
+**Reveal and sharing.** The value is decrypted on the device only after the
+vault is unlocked, held in component memory, hidden after 45 seconds, on Hide or
+when the app leaves the screen, and copied only after a second, confirming tap
+(`hushh-webapp/components/secrets/`). The `secrets` sharing policy
+(`domain_contracts.py`) makes nothing requestable: no wildcard, no branch, no
+exact path. The only shareable unit is one item, `attr.secrets.items.<sec_id>`
+(`pkm_scope_policy.is_owner_item_grant_scope`), in a grant the owner starts;
+the owner-initiated grant flow itself is not built yet, so today every
+`attr.secrets.*` scope is refused at approval and export.
+
+**Filing offers.** "Add this card to Wallet" and "Add passport to Identity
+documents" hand a reference (owner and secret id, never the value, never the
+URL) to the Wallet add form or the KYC screen in memory
+(`hushh-webapp/lib/pkm/secret-offer-handoff.ts`). The target screen decrypts the
+value itself, and the owner commits with that feature's writer: `one_wallet_add`,
+or `kyc_identity_document_file` for `identity.identity_documents`.
 
 ## Storage rules
 

@@ -49,6 +49,8 @@
     "agent_chat_kyc_owner_confirmed": {"feature": "kyc", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"], "requires_capability": "information_request_id"},
     "kyc_workflow_owner_action": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
     "kyc_connector_owner_setup": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
+    "$comment_kyc_document_file": "The owner's tap on the KYC screen that files a passport or other government id number, held in Secrets, into their identity documents.",
+    "kyc_identity_document_file": {"feature": "kyc", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
 
     "one_chat_onboarding": {"feature": "settings", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"]},
     "$comment_style_settings": "Settings > Preferences > How One writes to you (hushh-webapp/lib/agent/owner-style-settings-writer.ts, OWNER_STYLE_SETTINGS_SOURCE). Chat only proposes a style change; the owner commits it here.",
@@ -59,6 +61,10 @@
     "agent_chat_wallet_add": {"feature": "wallet", "class": "feature", "surfaces": ["chat"], "authorization_modes": ["owner_confirmed"]},
 
     "gmail_receipt_memory_save_button": {"feature": "gmail_receipts", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
+
+    "$comment_secrets": "The device guard (hushh-webapp/lib/pkm/secret-span-guard.ts) saves a secret the owner sends, pastes or asks to save; sending it is the owner's act. secrets_vault_remove is the owner's delete on the Secrets list.",
+    "secrets_vault": {"feature": "secrets", "class": "feature", "surfaces": ["chat", "web", "ios", "android"], "authorization_modes": ["owner_confirmed"]},
+    "secrets_vault_remove": {"feature": "secrets", "class": "feature", "surfaces": ["web", "ios", "android"], "authorization_modes": ["owner_confirmed"]},
 
     "runtime_secret_save_button": {"feature": "runtime_credentials", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
     "runtime_secret_delete_button": {"feature": "runtime_credentials", "class": "feature", "surfaces": ["web"], "authorization_modes": ["owner_confirmed"]},
@@ -186,7 +192,7 @@
       "branch_prefix": "identity_documents",
       "except": [],
       "owner_feature": "kyc",
-      "writer_ids": ["agent_chat_kyc_owner_confirmed"],
+      "writer_ids": ["agent_chat_kyc_owner_confirmed", "kyc_identity_document_file"],
       "agent_memory_sibling": "identity.agent_memory",
       "offer_action": {"route_pattern": "/one/kyc", "action_id": "route.one_kyc", "label_template": "File {label} with your identity documents"},
       "shareable": "policy",
@@ -237,12 +243,12 @@
       "send_to_model": "full"
     },
     {
-      "$comment": "A new domain, declared now so the shadow counts start before anything writes it. Its writer arrives with the Secrets release.",
+      "$comment": "API keys, passwords, tokens, private keys and card and government id numbers, held for the owner. One only knows an item exists, by its label; the value is revealed only on the device after unlock and shared only by a per-item grant the owner starts.",
       "domain": "secrets",
       "branch_prefix": "*",
       "except": [],
       "owner_feature": "secrets",
-      "writer_ids": [],
+      "writer_ids": ["secrets_vault", "secrets_vault_remove"],
       "agent_memory_sibling": null,
       "offer_action": null,
       "shareable": "per_item_grant",

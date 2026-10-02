@@ -59,6 +59,7 @@ from hushh_mcp.services.pkm_mutation_contracts import (
 )
 from hushh_mcp.services.pkm_upgrade_service import get_pkm_upgrade_service
 from hushh_mcp.services.push_notifications import send_user_data_push
+from hushh_mcp.services.secrets_domain_validation import validate_secrets_summary_envelope
 from hushh_mcp.services.trusted_device_service import TrustedDeviceService
 from hushh_mcp.services.wallet_card_validation import validate_wallet_card_envelope
 
@@ -674,6 +675,29 @@ def _enforce_wallet_write_policy(request: "StoreDomainRequest", canonical_domain
         ) from exc
 
 
+def _enforce_secrets_write_policy(request: "StoreDomainRequest", canonical_domain: str) -> None:
+    """Reserved secrets writes: the plaintext summary carries bookkeeping only.
+
+    Same posture as the wallet envelope: the blob is ciphertext, so the summary
+    is the one place a faulty client could put a secret or its label onto the
+    server in plaintext, and that is refused outright.
+    """
+    if canonical_domain != "secrets":
+        return
+    try:
+        validate_secrets_summary_envelope(request.summary)
+    except ValueError as exc:
+        logger.warning("[PKM] secrets write refused: envelope reason=%s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "code": "SECRETS_SUMMARY_ENVELOPE_INVALID",
+                "message": "The Secrets summary may carry bookkeeping only.",
+                "reason": str(exc),
+            },
+        ) from exc
+
+
 _SHADOW_LOG_LABEL = re.compile(r"^[a-z][a-z0-9_.:-]{0,127}$")
 
 
@@ -1145,6 +1169,7 @@ async def validate_store_domain(
             },
         ) from exc
     _enforce_wallet_write_policy(request, canonical_domain)
+    _enforce_secrets_write_policy(request, canonical_domain)
     _validate_location_finalize_request(request, canonical_domain)
     await _guard_reserved_branch_write(request, canonical_domain)
     if request.mutation_plan is not None:
@@ -1206,6 +1231,7 @@ async def store_domain(
         ) from exc
 
     _enforce_wallet_write_policy(request, canonical_domain)
+    _enforce_secrets_write_policy(request, canonical_domain)
     _validate_location_finalize_request(request, canonical_domain)
     reserved_capabilities = await _guard_reserved_branch_write(request, canonical_domain)
 

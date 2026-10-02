@@ -2551,8 +2551,19 @@ class TestSensitiveSecretRejection:
             S._contains_sensitive_secret("Passport number: X12345678 renew soon") == "government_id"
         )
         assert (
-            S._contains_sensitive_secret("routing number: 021000021 for payroll") == "bank_account"
+            S._contains_sensitive_secret("account number: 12345678901 for payroll")
+            == "bank_account"
         )
+
+    def test_public_identifiers_are_work_context_not_secrets(self):
+        from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService as S
+
+        # A routing number is printed on every cheque and names a bank, not an
+        # account; env var NAMES and secret-store paths name a secret without
+        # holding it. All are saved as ordinary context (founder decision).
+        assert S._contains_sensitive_secret("routing number: 021000021 for payroll") is None
+        assert S._contains_sensitive_secret("Set STRIPE_SECRET_KEY in Secret Manager") is None
+        assert S._contains_sensitive_secret("api_key: ${OPENAI_API_KEY}") is None
 
     def test_ordinary_numbers_and_prose_pass(self):
         from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService as S

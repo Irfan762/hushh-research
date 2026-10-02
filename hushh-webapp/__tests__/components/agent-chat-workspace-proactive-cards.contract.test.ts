@@ -101,7 +101,7 @@ describe("Agent One chat workspace wiring contract", () => {
 
     const runTurnGuard = source.slice(
       source.indexOf("if (!text.trim()"),
-      source.indexOf("// Pre-model paste guard"),
+      source.indexOf("// Last line before the model"),
     );
     expect(runTurnGuard).not.toContain("isLoadingHistory");
 

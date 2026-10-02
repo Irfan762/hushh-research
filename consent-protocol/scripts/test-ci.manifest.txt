@@ -341,6 +341,10 @@ tests/test_internal_path_keys.py
 # Reserved-branch registry: three identical copies, the shadow hook that logs a
 # would-be refusal with labels only, and the server writer labels it catalogues.
 tests/test_reserved_branches.py
+# Secrets area: the shared secret-pattern contract (three copies, the same cases
+# on both sides), spans without values, the per-item grant shape, and the
+# plaintext summary envelope that refuses a leaked label or value.
+tests/test_secrets_area.py
 tests/test_scope_catalog_self_corrects_stale_rows.py
 tests/services/test_structure_decision_is_the_models.py
 tests/services/test_intent_frame_is_the_models.py

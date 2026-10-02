@@ -22,6 +22,7 @@ from hushh_mcp.consent.reserved_branches import (
 from hushh_mcp.consent.reserved_branches import (
     registry_version as reserved_registry_version,
 )
+from hushh_mcp.consent.secret_patterns import first_secret_kind
 from hushh_mcp.consent.segment_labels import humanize_path
 from hushh_mcp.constants import GEMINI_MODEL
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
@@ -347,31 +348,10 @@ Choose exactly one mutation:
 - no_op: ephemeral, ambiguous, unsupported, unsafe, or no stable target
 
 Output JSON only. Follow the schema exactly. If unsure, choose confirm_first or no_op."""
-_SENSITIVE_VALUE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    (
-        "card_security_code",
-        re.compile(r"\b(?:cvv|cvc|cvv2|pin)\b\s*(?:is|:|=|-)?\s*\d{3,6}\b", re.I),
-    ),
-    (
-        "credential",
-        re.compile(
-            r"\b(?:password|passwd|passphrase|api[ _-]?key|secret[ _-]?key|access[ _-]?token|"
-            r"refresh[ _-]?token|private[ _-]?key|client[ _-]?secret)\b\s*(?:is|:|=|-)\s*\S+",
-            re.I,
-        ),
-    ),
-    ("credential", re.compile(r"\b(?:sk|pk|rk)_(?:live|test|prod)_[A-Za-z0-9]{8,}\b")),
-    ("government_id", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
-    ("government_id", re.compile(r"\b\d{4}\s\d{4}\s\d{4}\b")),
-    ("government_id", re.compile(r"\bpassport\b[^\n]{0,24}\b[A-Z]{1,2}\d{6,8}\b", re.I)),
-    (
-        "bank_account",
-        re.compile(
-            r"\b(?:account|routing|iban)\s*(?:number|no\.?|#)?\s*(?:is|:|=|-)?\s*[A-Z]{0,2}\d{8,}\b",
-            re.I,
-        ),
-    ),
-)
+# The secret-span patterns (API keys, passwords, tokens, private keys, card
+# numbers, government ids) live in contracts/pkm/secret-patterns.v1.json, read
+# by hushh_mcp.consent.secret_patterns here and by the device guard that runs
+# before any text leaves the phone. This service is the second net behind it.
 _RESTRICTED_KYC_IDENTIFIER_KIND = "government_id"
 
 _INTERNAL_METADATA_SCOPE_TOKENS = {
@@ -1101,18 +1081,6 @@ class PKMAgentLabService:
             unique.append(normalized)
         return unique
 
-    @staticmethod
-    def _luhn_ok(digits: str) -> bool:
-        total = 0
-        for index, char in enumerate(reversed(digits)):
-            value = ord(char) - 48
-            if index % 2 == 1:
-                value *= 2
-                if value > 9:
-                    value -= 9
-            total += value
-        return total % 10 == 0
-
     @classmethod
     def _contains_sensitive_secret(cls, message: str) -> str | None:
         """Name the kind of secret a passage carries, or None.
@@ -1123,18 +1091,12 @@ class PKMAgentLabService:
         has a fixed restricted-field path for supported government identifiers.
         General dynamic-memory extraction rejects this before any agent runs;
         the restricted KYC exception remains fixed-schema and owner-confirmed.
+
+        Delegates to the shared pattern contract, which reports spans and kinds
+        and never a value; a text that already carries the device's
+        ``⟦secret:...⟧`` placeholders has nothing left to find.
         """
-        text = str(message or "")
-        if not text.strip():
-            return None
-        for run in re.findall(r"(?<!\d)(?:\d[ -]?){13,19}(?!\d)", text):
-            digits = re.sub(r"[ -]", "", run)
-            if 13 <= len(digits) <= 19 and cls._luhn_ok(digits):
-                return "card_number"
-        for kind, pattern in _SENSITIVE_VALUE_PATTERNS:
-            if pattern.search(text):
-                return kind
-        return None
+        return first_secret_kind(message)
 
     @classmethod
     def _looks_opaque_or_nonsense(cls, message: str) -> bool:

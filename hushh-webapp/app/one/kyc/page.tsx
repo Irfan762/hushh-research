@@ -40,6 +40,7 @@ import { AsyncActionStatus } from "@/components/system/async-action-status";
 import { CapabilityExploreCard } from "@/components/onboarding/setup/capability-explore-card";
 import { PkmSectionPreview } from "@/components/profile/pkm-section-preview";
 import { KycIdentityPreface } from "@/components/onboarding/setup/kyc-identity-preface";
+import { IdentityDocumentsFilingCard } from "@/components/secrets/identity-documents-filing-card";
 import {
   isKycIdentityPrefaceComplete,
 } from "@/lib/services/kyc-identity-profile-pkm-service";
@@ -1992,6 +1993,7 @@ export function OneKycWorkspace({
       </AppPageHeaderRegion>
 
       <AppPageContentRegion className="w-full space-y-3">
+        <IdentityDocumentsFilingCard />
         {error || busyLabel || listRefreshLabel ? (
           <div>
             {error ? (

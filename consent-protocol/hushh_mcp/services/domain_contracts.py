@@ -48,6 +48,11 @@ class DomainSharingPolicy:
     denied_manifest_path_parts: frozenset[str] = frozenset()
     requestable_scopes: frozenset[str] | None = None
     allow_public_projection: bool = True
+    # Per-item sharing: the only shareable unit is one item under this branch,
+    # ``attr.<domain>.<branch>.<item_id>``, and only when the OWNER starts the
+    # grant. A requester can never ask for it, by wildcard or by exact path.
+    per_item_grant_branch: str | None = None
+    per_item_id_pattern: str | None = None
 
 
 CANONICAL_DOMAIN_REGISTRY: tuple[DomainContractEntry, ...] = (
@@ -415,7 +420,7 @@ CANONICAL_REGISTRY_KEYS = tuple(sorted({*CANONICAL_DOMAIN_KEYS, *CANONICAL_SUBIN
 # These domains are protocol-reserved and writable only through first-party
 # owner-authorized PKM paths.  They must never be invented or repurposed by the
 # semantic structure agent as arbitrary user domains.
-OWNER_MANAGED_RESERVED_DOMAIN_SLUGS = frozenset({"source_library", "wallet"})
+OWNER_MANAGED_RESERVED_DOMAIN_SLUGS = frozenset({"secrets", "source_library", "wallet"})
 
 DOMAIN_SHARING_POLICY_REGISTRY: dict[str, DomainSharingPolicy] = {
     "identity": DomainSharingPolicy(
@@ -508,6 +513,21 @@ DOMAIN_SHARING_POLICY_REGISTRY: dict[str, DomainSharingPolicy] = {
             }
         ),
         allow_public_projection=False,
+    ),
+    "secrets": DomainSharingPolicy(
+        domain_key="secrets",
+        allow_domain_wildcard=False,
+        # API keys, passwords, tokens, private keys, and card and government id
+        # numbers held for the owner (contracts/pkm/secret-patterns.v1.json).
+        # One only ever knows an item exists, by its label. Nothing here is
+        # requestable: no wildcard, no branch, no exact path. The one way out
+        # is a grant the owner starts for a single item, whose scope is exactly
+        # ``attr.secrets.items.<sec_id>`` (pkm_scope_policy.is_owner_item_grant_scope).
+        allowed_manifest_path_prefixes=("items",),
+        requestable_scopes=frozenset(),
+        allow_public_projection=False,
+        per_item_grant_branch="items",
+        per_item_id_pattern=r"^sec_[a-f0-9]{16}$",
     ),
 }
 

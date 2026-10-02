@@ -1,4 +1,5 @@
 import { ApiService } from "@/lib/services/api-service";
+import { assertNoUnguardedSecrets } from "@/lib/pkm/secret-span-guard";
 import { serverNow } from "@/lib/agent/server-clock";
 import { projectCustomConnectorTurnConfigurations, type CustomConnectorConfiguration } from "@/lib/connections/custom-connector-schema";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
@@ -1180,6 +1181,10 @@ export async function streamAgentChat(input: {
    */
   detached: boolean;
 }> {
+  // Last line before the wire. The composer already kept every secret in
+  // Secrets and left only its placeholder (lib/pkm/secret-span-guard.ts);
+  // a turn that still carries a raw one is refused before any request exists.
+  assertNoUnguardedSecrets([input.message, ...(input.attachments ?? []).map((attachment) => attachment.text)]);
   const timezone = resolveBrowserTimeZone();
   const threadId = input.conversationId || crypto.randomUUID();
   const handlers = input.handlers ?? {};
@@ -2055,11 +2060,14 @@ export function createQueuedInputPorts(getVaultOwnerToken: () => string | null):
   const base = (conversationId: string) =>
     `/api/one/agent-chat/runs/${encodeURIComponent(conversationId)}`;
   return {
-    enqueue: async (conversationId, clientMessageId, text) =>
-      parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
+    enqueue: async (conversationId, clientMessageId, text) => {
+      // The same last line as streamAgentChat: a raw secret never leaves.
+      assertNoUnguardedSecrets([text]);
+      return parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
         method: "POST",
         body: JSON.stringify({ client_message_id: clientMessageId, text }),
-      })).status),
+      })).status);
+    },
     withdraw: async (conversationId, clientMessageId) =>
       parseQueuedInputStatus((await call(
         `${base(conversationId)}/queue/${encodeURIComponent(clientMessageId)}`,

@@ -5,6 +5,7 @@ import type { AgentPkmReservedOffer } from "@/lib/pkm/reserved-offer";
 import type { DomainManifest } from "@/lib/personal-knowledge-model/manifest";
 import { buildReadablePkmMetadata } from "@/lib/personal-knowledge-model/natural-language";
 import { ApiService } from "@/lib/services/api-service";
+import { assertNoUnguardedSecrets } from "@/lib/pkm/secret-span-guard";
 import {
   PersonalKnowledgeModelService,
   type PersonalKnowledgeModelMetadata,
@@ -321,6 +322,13 @@ export async function previewAgentPkmMemory(params: {
   signal?: AbortSignal;
   isEffectCurrent?: () => boolean;
 }): Promise<AgentPkmPreviewResponse & { cards: AgentPkmPreviewCard[] }> {
+  // Last line before a memory proposal: the text was guarded on the device and
+  // carries placeholders only. A raw secret here is refused, never sent; the
+  // server's own net (secret_patterns.py) stays behind this one.
+  assertNoUnguardedSecrets([
+    params.message,
+    ...(params.reconciliationCandidates ?? []).map((candidate) => candidate.message),
+  ]);
   const response = await ApiService.apiFetch("/api/pkm/memory/proposals", {
     method: "POST",
     signal: params.signal,

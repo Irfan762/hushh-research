@@ -129,10 +129,12 @@ import { loadPkmAgentLabContext } from "@/lib/profile/pkm-agent-lab-capture";
 import { AgentPkmContextStore } from "@/lib/agent/agent-pkm-context-store";
 import { SecureCardAddForm } from "@/components/wallet/secure-card-add-form";
 import { SecureCardReveal } from "@/components/wallet/secure-card-reveal";
-import {
-  detectLikelyPan,
-  redactLikelyPans,
-} from "@/lib/wallet/pan-paste-guard";
+import { SecretCaptureCard, type KeptSecretRef } from "@/components/secrets/secret-capture-card";
+import { SecretPlaceholderText } from "@/components/secrets/secret-placeholder-text";
+import { containsSecretSpan } from "@/lib/pkm/secret-patterns";
+import { stageSecretOffer } from "@/lib/pkm/secret-offer-handoff";
+import { planSecretCaptures } from "@/lib/pkm/secret-span-guard";
+import { SecretsVaultService } from "@/lib/pkm/secrets-vault-service";
 import {
   WalletService,
   type WalletCardSecrets,
@@ -656,6 +658,8 @@ function clearDriveCompilationFromMessages(messages: AgentMessage[]): AgentMessa
  */
 type AgentWalletWidget =
   | { id: string; kind: "add" }
+  /** Secrets the device guard kept from an outgoing turn: ids and labels only. */
+  | { id: string; kind: "secrets"; items: KeptSecretRef[] }
   | { id: string; kind: "list"; summaries: WalletCardSummary[] }
   | {
       id: string;
@@ -2008,7 +2012,7 @@ export function AgentBubble({
           {isUser ? (
             <>
               {message.text ? (
-                <span className="whitespace-pre-wrap break-words">{message.text}</span>
+                <span className="whitespace-pre-wrap break-words"><SecretPlaceholderText text={message.text} /></span>
               ) : null}
               {message.attachments?.length ? (
                 <div className={cn(message.text && "mt-2")}>
@@ -5338,24 +5342,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     // lookup and memory capture -- use this. The wire and the transcript keep
     // the attachment separate from the typed text.
     const turnSourceText = composeTurnSourceText(text, attachments);
-    // Pre-model paste guard: a message that appears to contain a full card
-    // number must never reach /api/one/agent-chat, history, or telemetry.
-    // Block before ANY network call and route to the secure add form.
-    if (detectLikelyPan(turnSourceText)) {
+    // Last line before the model: a composer turn arrives here with every
+    // secret already kept in Secrets and replaced by its placeholder
+    // (keepSecretsFromTurn). Any other path that still carries a raw secret
+    // (a handed-off prompt, a voice transcript) is stopped here, before ANY
+    // network call, history or telemetry.
+    if (containsSecretSpan(turnSourceText)) {
       appendMessage({
-        id: `msg-${Date.now()}-pan-blocked`,
+        id: `msg-${Date.now()}-secret-blocked`,
         role: "assistant",
-        text: "That looked like a full card number, so it was blocked on this device and never sent. Use the secure form to save a card.",
+        text: "That message holds a secret, so it stayed on this device and was not sent. Type or paste it into the chat box to keep it in Secrets.",
         ...stampNow(),
         status: "done",
         renderAsPlainAssistantMessage: true,
       });
-      if (WalletService.isEnabled()) {
-        setWalletWidgets((current) => [
-          ...current,
-          { id: `pan-guard-${Date.now()}`, kind: "add" },
-        ]);
-      }
       return;
     }
     // A person starting a new turn owns the workspace. Invalidate any ambient
@@ -7037,13 +7037,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const editQueuedPrompt = async (id: string, textInput: string) => {
     const text = textInput.trim();
     if (!text) return;
-    if (detectLikelyPan(text)) {
-      // An edit is screened like a fresh message: the guard blocks it and
-      // opens the secure form; the queued message keeps its previous text.
-      enqueueGuardedTurn({ typedText: text, attachments: [], fromPaste: false });
+    if (containsSecretSpan(text)) {
+      // An edit is screened like a fresh message: its secrets are kept in
+      // Secrets and the queued message takes the guarded text, or keeps its
+      // previous text when nothing may be sent.
+      const kept = await keepSecretsFromTurn([text]);
       setEditingQueuedPromptId(null);
       setEditingQueuedPromptText("");
-      return;
+      if (!kept?.[0]) return;
+      return editQueuedPrompt(id, kept[0]);
     }
     const held = liveTurnQueueRef.current?.holds(id) ?? false;
     if (!(await reclaimQueuedPrompt(id))) return;
@@ -7569,7 +7571,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     generatedDriveSearchDraftRef.current = false;
     setLongPromptAttachment(null);
     setComposerExpanded(false);
-    enqueueGuardedTurn({
+    void enqueueGuardedTurn({
       typedText,
       // The paste leaves as its own attachment part: a chip in the transcript
       // and a separate document for One, never text folded into the message.
@@ -7578,56 +7580,94 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         : [],
       fromPaste: attachment !== null,
       driveSearchSelection,
+      // Nothing was sent: give the person their draft back, untouched.
+      onRefused: () => {
+        setInput((current) => current || typedText);
+        if (attachmentText?.trim()) {
+          setLongPromptAttachment((current) => current ?? createPendingTextAttachment(attachmentText));
+        }
+      },
     });
   };
 
   /**
-   * The card-number guard and the queue, shared by the composer and by
-   * "Edit and send again" on a sent paste, so an edited copy is screened
-   * exactly like a fresh one.
+   * The device guard for an outgoing turn (lib/pkm/secret-span-guard.ts).
+   * Every secret in the typed text and pasted attachments is saved to the
+   * reserved Secrets area and replaced with its placeholder BEFORE the turn is
+   * queued, so chat, memory capture, history and telemetry only ever see its
+   * label. Returns the texts to send, or null when nothing may be sent.
    */
-  const enqueueGuardedTurn = ({
+  const keepSecretsFromTurn = async (texts: string[]): Promise<string[] | null> => {
+    const plan = planSecretCaptures(texts);
+    if (plan.captures.length === 0) return texts;
+    const saved = await SecretsVaultService.saveCaptures({
+      userId: user?.uid ?? "",
+      vaultKey,
+      vaultOwnerToken: getVaultOwnerToken(),
+      captures: plan.captures,
+      surface: "chat",
+    });
+    if (!saved.ok) {
+      appendMessage({
+        id: `msg-${Date.now()}-secret-held`,
+        role: "assistant",
+        text: saved.reason === "locked"
+          ? "That message holds a secret, so it stayed on this device and was not sent. Unlock your vault, then send it again to keep it in Secrets."
+          : saved.message,
+        ...stampNow(),
+        status: "done",
+        renderAsPlainAssistantMessage: true,
+      });
+      if (saved.reason === "locked") setVaultDialogOpen(true);
+      return null;
+    }
+    const resolve = (capture: (typeof plan.captures)[number]) =>
+      saved.resolved.get(capture.id) ?? { id: capture.id, label: capture.label };
+    setWalletWidgets((current) => [
+      ...current,
+      {
+        id: `secrets-${Date.now()}`,
+        kind: "secrets",
+        items: plan.captures.map((capture) => ({
+          ...resolve(capture),
+          kind: capture.kind,
+          fileTo: capture.fileTo,
+          offerNoun: capture.offerNoun,
+        })),
+      },
+    ]);
+    return plan.render(resolve);
+  };
+
+  /**
+   * The secret guard and the queue, shared by the composer and by "Edit and
+   * send again" on a sent paste, so an edited copy is screened exactly like a
+   * fresh one. Typed text and every pasted attachment go through
+   * keepSecretsFromTurn, so the queued turn, its transcript bubble and the
+   * memory capture it starts hold placeholders, never a value.
+   */
+  const enqueueGuardedTurn = async ({
     typedText,
     attachments,
     fromPaste,
     driveSearchSelection,
+    onRefused,
   }: {
     typedText: string;
     attachments: AgentTextAttachment[];
     fromPaste: boolean;
     driveSearchSelection?: AgentRunTurnOptions["driveSearchSelection"];
+    onRefused?: () => void;
   }) => {
-    // A large paste is a dedicated browser-memory import lane. Redact payment
-    // card numbers before the text can enter Chat, history, telemetry, or the
-    // guarded background PKM proposal flow; ordinary typed PAN input remains a
-    // hard block and is routed to the secure card form.
-    const redactPaste =
-      fromPaste &&
-      detectLikelyPan([typedText, ...attachments.map((item) => item.text)].join("\n\n"));
-    const submittedText = redactPaste ? redactLikelyPans(typedText) : typedText;
-    const submittedAttachments = redactPaste
-      ? attachments.map((item) => createAgentTextAttachment(redactLikelyPans(item.text), item.name))
-      : attachments;
-    if (
-      detectLikelyPan(submittedText) ||
-      submittedAttachments.some((item) => detectLikelyPan(item.text))
-    ) {
-      appendMessage({
-        id: `msg-${Date.now()}-pan-blocked`,
-        role: "assistant",
-        text: "That looked like a full card number, so it was blocked on this device and never sent. Use the secure form to save a card.",
-        ...stampNow(),
-        status: "done",
-        renderAsPlainAssistantMessage: true,
-      });
-      if (WalletService.isEnabled()) {
-        setWalletWidgets((current) => [
-          ...current,
-          { id: `pan-guard-${Date.now()}`, kind: "add" },
-        ]);
-      }
+    const kept = await keepSecretsFromTurn([typedText, ...attachments.map((item) => item.text)]);
+    if (!kept) {
+      onRefused?.();
       return;
     }
+    const [submittedText = "", ...attachmentTexts] = kept;
+    const submittedAttachments = attachments.map((item, index) =>
+      attachmentTexts[index] === item.text ? item : createAgentTextAttachment(attachmentTexts[index] ?? "", item.name),
+    );
     enqueuePrompt(submittedText, undefined, {
       deferPkmContext: fromPaste,
       driveSearchSelection,
@@ -7642,7 +7682,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     if (!attachments) return false;
     transcriptUserScrollRef.current = false;
     scrollToSubmittedTurnRef.current = true;
-    enqueueGuardedTurn({ typedText: message.text, attachments, fromPaste: true });
+    void enqueueGuardedTurn({ typedText: message.text, attachments, fromPaste: true });
     return true;
   };
 
@@ -8992,7 +9032,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               {renderChatOnboarding({ kind: "end", visibleMessageIds })}
 
               {walletWidgets.map((widget) =>
-                widget.kind === "list" ? (
+                widget.kind === "secrets" ? (
+                  <SecretCaptureCard
+                    key={widget.id}
+                    items={widget.items}
+                    onUnlock={() => setVaultDialogOpen(true)}
+                    onOffer={(secretId, offer) => {
+                      if (!user?.uid) return;
+                      // A reference only, in memory: the target screen decrypts
+                      // the value itself and the owner commits there.
+                      stageSecretOffer({ ownerUserId: user.uid, secretId, fileTo: offer.fileTo });
+                      router.push(offer.fileTo === "wallet" ? "/one/wallet" : "/one/kyc");
+                    }}
+                  />
+                ) : widget.kind === "list" ? (
                   <div
                     key={widget.id}
                     data-testid="agent-chat-wallet-list"
