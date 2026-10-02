@@ -33,9 +33,9 @@ const ONE_STREAM_TIMEOUT_MS = resolveSlowRequestTimeoutMs(285_000, {
 });
 
 const CIRCLE_CHAT_MAX_REQUEST_BYTES = 7_250_000;
-async function readCircleChatBody(request: NextRequest): Promise<string> {
+async function readCircleChatBody(request: NextRequest, maximum = CIRCLE_CHAT_MAX_REQUEST_BYTES): Promise<string> {
   const declared = request.headers.get("content-length");
-  if (declared && (!/^\d+$/.test(declared) || Number(declared) > CIRCLE_CHAT_MAX_REQUEST_BYTES)) {
+  if (declared && (!/^\d+$/.test(declared) || Number(declared) > maximum)) {
     throw new RangeError("Chat request is too large");
   }
   const reader = request.body?.getReader();
@@ -49,7 +49,7 @@ async function readCircleChatBody(request: NextRequest): Promise<string> {
       const chunk = await reader.read();
       if (chunk.done) break;
       size += chunk.value.byteLength;
-      if (size > CIRCLE_CHAT_MAX_REQUEST_BYTES) throw new RangeError("Chat request is too large");
+      if (size > maximum) throw new RangeError("Chat request is too large");
       chunks.push(chunk.value);
     }
     if (timedOut) throw new DOMException("Chat request timed out", "TimeoutError");
@@ -123,8 +123,8 @@ async function proxyRequest(request: NextRequest, params: { path: string[] }) {
     let body: BodyInit | undefined;
     if (request.method !== "GET" && request.method !== "HEAD") {
       headers.set("Content-Type", contentType || "application/json");
-      body = (await (/^circles\/[^/]+\/chat(?:\/|$)/.test(path)
-        ? readCircleChatBody(request) : request.text())) || undefined;
+      body = (await (/^circles\/[^/]+\/photo$/.test(path) ? readCircleChatBody(request, 430000) :
+        /^circles\/[^/]+\/chat(?:\/|$)/.test(path) ? readCircleChatBody(request) : request.text())) || undefined;
     }
 
     // Agent chat is an SSE connection. An AbortSignal.timeout stays attached to

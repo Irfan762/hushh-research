@@ -48,6 +48,9 @@ def _wire(row: dict) -> dict:
         "clientMessageId": str(row["client_message_id"]),
         "senderUserId": row["sender_user_id"],
         "senderName": row.get("sender_name") or "Circle member",
+        **({"senderPhotoUrl": row.get("sender_photo_url")} if "sender_photo_url" in row else {}),
+        **({"receipt": {"recipientCount": row["original_recipient_count"],
+                        "readCount": row.get("read_count", 0)}} if "original_recipient_count" in row else {}),
         "createdAt": row["created_at"].isoformat(),
         "ciphertext": row["ciphertext"], "iv": row["iv"],
         "hasImage": row["image_iv"] is not None,
@@ -150,14 +153,17 @@ class CircleChatService:
                     "encryptedPrivateKeyJwk": _json(rows[0]["encrypted_private_key_jwk"])}
 
     def messages(self, user: str, circle: str, *, before: int | None = None,
-                 after: int | None = None, limit: int = 40) -> dict:
+                 after: int | None = None, limit: int = 40,
+                 receipt_after: int | None = None, receipt_through: int | None = None) -> dict:
         params = {"user": user, "circle": circle, "before": before, "after": after, "limit": limit + 1}
         with self.db.engine.begin() as conn:
             self._circle(conn, user, circle)
             rows = _rows(conn, _visible_sql("""
                 SELECT m.id, m.sequence, m.client_message_id, m.sender_user_id,
                   m.created_at, m.ciphertext, m.iv, m.image_iv, r.envelope,
-                  NULLIF(identity.display_name, m.sender_user_id) AS sender_name
+                  NULLIF(identity.display_name, m.sender_user_id) AS sender_name,
+                  COALESCE(NULLIF(BTRIM(identity.custom_photo_url), ''),
+                           NULLIF(BTRIM(identity.photo_url), '')) AS sender_photo_url
                 FROM circle_chat_messages m
             """, """
                 AND (:before IS NULL OR m.sequence < :before)
@@ -166,7 +172,51 @@ class CircleChatService:
                 + " LIMIT :limit"), params)
             more = len(rows) > limit
             rows = rows[:limit]
-            return {"items": [_wire(r) for r in sorted(rows, key=lambda r: r["sequence"])], "hasMore": more}
+            rows.sort(key=lambda r: r["sequence"])
+            # Inline avatars may be 300 KiB; serialize a sender only once/page.
+            senders = {r["sender_user_id"]: {"userId": r["sender_user_id"],
+                       "name": r["sender_name"] or "Circle member", "photoUrl": r["sender_photo_url"]}
+                       for r in rows}
+            # Keep diverse inline profile photos below the native/web JSON
+            # response ceiling. Omitted photos use the shared initials fallback.
+            photo_budget = 2_000_000
+            for sender in senders.values():
+                photo = sender["photoUrl"]
+                size = len(photo.encode("utf-8")) if photo else 0
+                if size > photo_budget:
+                    sender["photoUrl"] = None
+                else:
+                    photo_budget -= size
+            items = [_wire({k: v for k, v in r.items() if k != "sender_photo_url"}) for r in rows]
+            low = receipt_after if receipt_after is not None else (rows[0]["sequence"] - 1 if rows else 0)
+            high = max(receipt_through or 0, rows[-1]["sequence"] if rows else 0)
+            receipts = self._receipts(conn, user, circle, low, high) if high > low else []
+            return {"items": items, "hasMore": more, "senders": list(senders.values()), "receipts": receipts}
+
+    @staticmethod
+    def _receipts(conn: Any, user: str, circle: str, after: int, through: int) -> list[dict]:
+        rows = _rows(conn, _visible_sql("""
+            SELECT m.id, m.original_recipient_count,
+              (SELECT count(*) FROM circle_chat_recipients peer
+               WHERE peer.message_id = m.id AND peer.recipient_user_id <> :user
+                 AND peer.read_at IS NOT NULL) AS read_count
+            FROM circle_chat_messages m
+        """, " AND m.sender_user_id = :user AND m.sequence > :after AND m.sequence <= :through "
+             "ORDER BY m.sequence DESC LIMIT 300"),
+            {"user": user, "circle": circle, "after": after, "through": through})
+        return [{"id": str(r["id"]), "recipientCount": r["original_recipient_count"],
+                 "readCount": r["read_count"]} for r in rows]
+
+    @staticmethod
+    def _sender_identity(conn: Any, row: dict) -> None:
+        identity = _rows(conn, """SELECT NULLIF(display_name, :user) AS name,
+          COALESCE(NULLIF(BTRIM(custom_photo_url), ''), NULLIF(BTRIM(photo_url), '')) AS photo
+          FROM actor_identity_cache WHERE user_id = :user""", {"user": row["sender_user_id"]})
+        row["sender_name"] = identity[0]["name"] if identity else None
+        row["sender_photo_url"] = identity[0]["photo"] if identity else None
+        row["read_count"] = conn.execute(text("SELECT count(*) FROM circle_chat_recipients "
+            "WHERE message_id = CAST(:id AS uuid) AND recipient_user_id <> :user AND read_at IS NOT NULL"),
+            {"id": str(row["id"]), "user": row["sender_user_id"]}).scalar()
 
     def send(self, user: str, circle: str, payload: dict) -> dict:
         digest = hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -186,6 +236,7 @@ class CircleChatService:
             if previous:
                 if previous[0]["request_digest"] != digest or previous[0]["membership_joined_at"] != info["joined_at"]:
                     raise CircleChatError("CIRCLE_CHAT_RETRY_CONFLICT", "This message retry changed. Start a new message.")
+                self._sender_identity(conn, previous[0])
                 return _wire(previous[0])
             roster = self._roster(conn, circle, lock_keys=True)
             if not {row["user_id"] for row in roster}.issubset(locked_users):
@@ -201,12 +252,12 @@ class CircleChatService:
             params = {"id": message, "user": user, "circle": circle, "digest": digest,
                       "client": payload["clientMessageId"], "ciphertext": payload["ciphertext"],
                       "iv": payload["iv"], "image": payload.get("imageCiphertext"),
-                      "image_iv": payload.get("imageIv")}
+                      "image_iv": payload.get("imageIv"), "recipient_count": len(roster) - 1}
             row = _rows(conn, """
                 INSERT INTO circle_chat_messages(id, circle_id, sender_user_id, client_message_id,
-                  ciphertext, iv, image_ciphertext, image_iv, request_digest)
+                  ciphertext, iv, image_ciphertext, image_iv, request_digest, original_recipient_count)
                 VALUES(CAST(:id AS uuid), CAST(:circle AS uuid), :user, CAST(:client AS uuid),
-                  :ciphertext, :iv, :image, :image_iv, :digest) RETURNING *
+                  :ciphertext, :iv, :image, :image_iv, :digest, :recipient_count) RETURNING *
             """, params)[0]
             by_user = {r["userId"]: r["envelope"] for r in envelopes}
             for member in roster:
@@ -231,6 +282,7 @@ class CircleChatService:
                        "self": recipient == user, "feed": feed_id})
                 self._notify(conn, recipient, circle, message)
             row["envelope"] = by_user[user]
+            self._sender_identity(conn, row)
             return _wire(row)
 
     @staticmethod
@@ -262,7 +314,8 @@ class CircleChatService:
                 UPDATE circle_chat_recipients target SET read_at = now(), push_status = 'suppressed'
                 WHERE target.read_at IS NULL AND target.message_id IN (
                   SELECT m.id FROM circle_chat_messages m
-            """, " AND m.sequence <= :sequence) AND target.recipient_user_id = :user RETURNING feed_event_id"),
+            """, " AND m.sequence <= :sequence) AND target.recipient_user_id = :user "
+                 "RETURNING feed_event_id, message_id"),
                 {"user": user, "circle": circle, "sequence": sequence})
             for row in changed:
                 if row["feed_event_id"]:
@@ -270,6 +323,17 @@ class CircleChatService:
                                       "WHERE id = :id AND user_id = :user"), {"id": row["feed_event_id"], "user": user})
             if changed:
                 self._notify(conn, user, circle, str(sequence), "location_circle_chat_read")
+                senders = _rows(conn, """SELECT DISTINCT m.sender_user_id FROM circle_chat_messages m
+                  JOIN circle_chat_recipients sender ON sender.message_id = m.id
+                    AND sender.recipient_user_id = m.sender_user_id
+                  JOIN one_location_circle_memberships membership ON membership.circle_id = m.circle_id
+                    AND membership.user_id = m.sender_user_id AND membership.status = 'active'
+                    AND membership.joined_at = sender.membership_joined_at
+                  WHERE m.id = ANY(CAST(:ids AS uuid[])) AND m.sender_user_id <> :user""",
+                                {"ids": [str(row["message_id"]) for row in changed], "user": user})
+                for sender in senders:
+                    self._notify(conn, sender["sender_user_id"], circle, f"{user}:{sequence}",
+                                 "location_circle_chat_receipts")
             return {"readThrough": sequence}
 
     def mute(self, user: str, circle: str, muted: bool) -> dict:

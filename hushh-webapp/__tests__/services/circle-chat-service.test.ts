@@ -10,6 +10,7 @@ vi.mock("@/lib/cache/cache-sync-service", () => ({ CacheSyncService: {} }));
 vi.mock("@/lib/one-location/key-bootstrap", () => ({ bootstrapCurrentUserLocationRecipientKey: vi.fn() }));
 
 import { CircleChatService } from "@/lib/services/circle-chat-service";
+import type { ChatMessage } from "@/lib/circle-chat/crypto";
 
 it("awaits a non-cancelable native wait through caller abort while still propagating web cancellation", async () => {
   let finish!: (value: unknown) => void;
@@ -31,4 +32,24 @@ it("awaits a non-cancelable native wait through caller abort while still propaga
   const web = CircleChatService.wait(session, 1, webAbort.signal);
   webAbort.abort();
   await expect(web).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it("keeps a native image transport awaited after abort and discards late bytes before decryption", async () => {
+  mocks.native = true;
+  let finish!: (value: unknown) => void;
+  mocks.json.mockImplementation((_url, options: RequestInit) => {
+    expect(options.signal).toBeUndefined();
+    return new Promise((resolve) => { finish = resolve; });
+  });
+  const abort = new AbortController();
+  const session = { userId: "alice", circleId: "circle", vaultKey: "fixture", vaultOwnerToken: "fixture" };
+  let settled = false;
+  const image = CircleChatService.image(session, { id: "image" } as ChatMessage, "image/png", abort.signal)
+    .finally(() => { settled = true; });
+  const rejected = expect(image).rejects.toMatchObject({ name: "AbortError" });
+  abort.abort();
+  await Promise.resolve();
+  expect(settled).toBe(false);
+  finish({ ciphertext: "late opaque bytes", iv: "opaque" });
+  await rejected;
 });
