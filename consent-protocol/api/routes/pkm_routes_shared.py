@@ -660,14 +660,18 @@ def _shadow_reserved_branch_write(request: "StoreDomainRequest", canonical_domai
             writer_id=_effective_writer_id(request),
         )
         for refusal in refusals:
+            # Labels are format text, not arguments: the process-wide redactor
+            # (mcp_modules/log_redaction.py) scrubs any underscored argument of
+            # 24+ characters as a uid, which erased `agent_chat_owner_request`.
+            # Every label here is already restricted to a machine shape above.
             logger.info(
-                "pkm.reserved_would_refuse domain=%s branch=%s writer=%s reason=%s",
-                refusal.domain,
-                _shadow_log_label(refusal.branch),
-                _shadow_log_label(refusal.writer_id),
-                refusal.reason,
+                "pkm.reserved_would_refuse"
+                f" domain={_shadow_log_label(refusal.domain)}"
+                f" branch={_shadow_log_label(refusal.branch)}"
+                f" writer={_shadow_log_label(refusal.writer_id)}"
+                f" reason={refusal.reason}"
             )
-    except Exception as exc:  # noqa: BLE001 - shadow mode never blocks a write
+    except Exception as exc:  # shadow mode never blocks a write
         logger.warning("pkm.reserved_shadow_unavailable error=%s", type(exc).__name__)
 
 

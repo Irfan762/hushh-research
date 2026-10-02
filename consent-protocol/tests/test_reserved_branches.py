@@ -29,6 +29,7 @@ from hushh_mcp.consent.reserved_branches import (
 )
 from hushh_mcp.services.generated_contracts import BACKEND_ROOT, REPO_ROOT
 from hushh_mcp.services.pkm_mutation_contracts import PkmMutationPlanV2
+from mcp_modules.log_redaction import SensitiveLogFilter
 
 _RELATIVE = ("contracts", "pkm", "reserved-branches.v1.json")
 
@@ -116,7 +117,19 @@ def _request(*, writer_id: str, scope: str, json_paths: tuple[str, ...] = ()) ->
 
 
 def _shadow_lines(caplog: pytest.LogCaptureFixture) -> list[str]:
-    return [r.getMessage() for r in caplog.records if "pkm.reserved_would_refuse" in r.getMessage()]
+    """The shadow lines as production writes them, after the runtime redactor.
+
+    ``server.py`` installs ``SensitiveLogFilter`` process-wide. It once turned
+    ``writer=agent_chat_owner_request`` into ``writer=[REDACTED]`` (an argument
+    of 24+ underscored characters reads as a uid), so the line is checked after
+    the filter has run, not before.
+    """
+    lines = []
+    for record in caplog.records:
+        SensitiveLogFilter().filter(record)
+        if "pkm.reserved_would_refuse" in record.getMessage():
+            lines.append(record.getMessage())
+    return lines
 
 
 def test_shadow_logs_a_memory_agent_write_to_saved_places(caplog: pytest.LogCaptureFixture) -> None:
