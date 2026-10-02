@@ -13,7 +13,12 @@ import pytest
 from hushh_mcp.one_voice import protocol
 from hushh_mcp.one_voice.config import OneVoiceLiveConfig
 from hushh_mcp.one_voice.live_client import LiveEvent, translate_message
-from hushh_mcp.one_voice.session import AuthResult, SessionClosed, VoiceSession
+from hushh_mcp.one_voice.session import (
+    AuthResult,
+    SessionClosed,
+    VoiceSession,
+    _failure_fingerprints,
+)
 from hushh_mcp.one_voice.tickets import TicketClaims
 from hushh_mcp.one_voice.tools import location_state, registry
 from hushh_mcp.one_voice.tools.base import (
@@ -216,6 +221,22 @@ async def _run(session, timeout=3.0):
 
 
 # --- auth ------------------------------------------------------------------
+
+
+def test_grouped_failure_identifies_leaf_without_recording_private_error_text():
+    try:
+        raise ValueError("private mail body and token must not be logged")
+    except ValueError as leaf:
+        group = ExceptionGroup("private outer detail", [ExceptionGroup("nested", [leaf])])
+    details = _failure_fingerprints(group)
+    assert details[0]["type"] == "ValueError"
+    assert details[0]["frames"][-1].startswith(
+        "test_relay_protocol.py:test_grouped_failure_identifies_leaf_without_recording_private_error_text:"
+    )
+    assert "private" not in json.dumps(details).replace(
+        "test_grouped_failure_identifies_leaf_without_recording_private_error_text", "test"
+    )
+    assert "token" not in json.dumps(details)
 
 
 async def test_first_frame_must_be_auth():
@@ -475,10 +496,12 @@ async def test_ui_settled_tells_the_model_which_screen_it_was_about():
                 public_person_ref=ref,
             )
         ),
+        call_id="call-profile",
         origin_turn_id=session.turn.turn_id,
     )
     directive = transport.frames("ui_directive")[-1]
     assert directive["payload"]["public_person_ref"] == ref
+    assert directive["payload"]["call_id"] == "call-profile"
     assert directive["payload"]["gateway_action_id"] == "route.person_profile"
     await session._handle_client_frame(
         protocol.UiSettledFrame(
