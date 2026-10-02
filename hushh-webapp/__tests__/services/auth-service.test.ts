@@ -607,7 +607,8 @@ describe("AuthService.restoreNativeSession", () => {
           uid: "native-provider-user",
           email: "owner@example.test",
           providerId: "firebase",
-          providerData: [{ providerId }],
+          // Native Firebase includes its internal provider before linked ones.
+          providerData: [{ providerId: "firebase" }, { providerId }],
         },
       } as any);
       vi.mocked(FirebaseAuthentication.getIdToken).mockResolvedValue({
