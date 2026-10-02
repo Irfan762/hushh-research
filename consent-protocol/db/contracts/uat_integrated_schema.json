@@ -349,29 +349,6 @@
       "revoked_by_side",
       "revoked_by_at"
     ],
-    "conversations": [
-      "id",
-      "participant_a_user_id",
-      "participant_b_user_id",
-      "created_at",
-      "last_message_at"
-    ],
-    "direct_message_blocks": [
-      "id",
-      "blocker_user_id",
-      "blocked_user_id",
-      "created_at"
-    ],
-    "messages": [
-      "id",
-      "conversation_id",
-      "sender_user_id",
-      "content_ciphertext",
-      "content_iv",
-      "content_algorithm",
-      "created_at",
-      "read_at"
-    ],
     "consent_audit": [
       "id",
       "token_id",
@@ -441,6 +418,13 @@
       "bucket_start",
       "lookup_count",
       "updated_at"
+    ],
+    "conversations": [
+      "id",
+      "participant_a_user_id",
+      "participant_b_user_id",
+      "created_at",
+      "last_message_at"
     ],
     "crm_encrypted_fields_recipient_keys": [
       "crm_id",
@@ -611,6 +595,12 @@
       "created_at",
       "revoked_at",
       "last_used_at"
+    ],
+    "direct_message_blocks": [
+      "id",
+      "blocker_user_id",
+      "blocked_user_id",
+      "created_at"
     ],
     "document_chunks": [
       "document_id",
@@ -1346,6 +1336,16 @@
       "error_count",
       "source_errors",
       "metadata"
+    ],
+    "messages": [
+      "id",
+      "conversation_id",
+      "sender_user_id",
+      "content_ciphertext",
+      "content_iv",
+      "content_algorithm",
+      "created_at",
+      "read_at"
     ],
     "one_action_directive_ledger": [
       "adk_app_name",
