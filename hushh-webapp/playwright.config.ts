@@ -118,6 +118,7 @@ export default defineConfig({
       // that matters is the WKWebView the app ships in. Its fixture builds its
       // own document.
       testMatch: [
+        /connect-page-grid\.layout\.spec\.ts/,
         /first-connect-insights\.layout\.spec\.ts/,
         /chat-onboarding\.layout\.spec\.ts/,
         // agent-markdown: One's answers are read on an iPhone first; the code
@@ -153,6 +154,7 @@ export default defineConfig({
         // 12 px phone step are tapped on an iPhone first; own document.
         /style-settings\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
+        /circle-chat\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
         /ai-selection\.layout\.spec\.ts/,

@@ -661,6 +661,29 @@ describe("ConnectCirclesTab", () => {
 });
 
 describe("the flows are hosted on Connect, not linked away to Location", () => {
+  it("opens custom creation in a modal without navigation and uses the existing creation action", async () => {
+    mocks.searchParams = new URLSearchParams("tab=people");
+    const onOpenChange = vi.fn();
+    render(<ConnectCirclesTab createDialogOpen onCreateDialogOpenChange={onOpenChange} />);
+    const dialog = await screen.findByRole("dialog", { name: "Create a Circle" });
+    expect(mocks.routerPush).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog).getByRole("textbox"), { target: { value: "Roommates" } });
+    fireEvent.click(within(dialog).getByRole("radio", { name: "Friends" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Create Circle" }));
+    await waitFor(() => expect(mocks.createNamedCircle).toHaveBeenCalledWith({ vaultOwnerToken: "vault-token", name: "Roommates", kind: "friends" }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    expect(String(mocks.routerPush.mock.calls[0][0])).toContain("circleId=new-circle");
+  });
+
+  it("dismisses custom creation without creating a circle", async () => {
+    const onOpenChange = vi.fn();
+    render(<ConnectCirclesTab createDialogOpen onCreateDialogOpenChange={onOpenChange} />);
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+    expect(mocks.createNamedCircle).not.toHaveBeenCalled();
+  });
+
   it("renders Create a circle in place when ?action=create-circle", async () => {
     // The whole point. Before this, the same tap was a router.push into
     // /one/location, where a first-run onboarding takeover -- decided without
@@ -852,7 +875,7 @@ describe("somebody else acting on your Circle", () => {
   it("closes an open Circle when a repair read finds membership was removed", async () => {
     const intervalSpy = vi.spyOn(window, "setInterval");
     mocks.searchParams = new URLSearchParams(
-      "tab=circles&action=circle-detail&circleId=mine",
+      "tab=circles&action=circle-detail&circleId=mine&circleChat=1",
     );
     mocks.listCircles
       .mockResolvedValueOnce([circle("mine", "Friends", 2)])
@@ -872,6 +895,7 @@ describe("somebody else acting on your Circle", () => {
     const href = String(mocks.routerReplace.mock.calls.at(-1)?.[0]);
     expect(href).toContain("tab=circles");
     expect(href).not.toContain("circleId=");
+    expect(href).not.toContain("circleChat=");
   });
 
   it("re-reads when the shared Circle channel announces a change", async () => {

@@ -19,8 +19,11 @@ import { ExternalLink, RefreshCcw, Search } from "@/components/icons";
 import { toast } from "sonner";
 import {
   AppPageContentRegion,
+  AppPageHeaderRegion,
   AppPageShell,
 } from "@/components/app-ui/app-page-shell";
+import { PageHeader } from "@/components/app-ui/page-sections";
+import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
 import { PaginatedListFooter } from "@/components/app-ui/paginated-list-footer";
 import {
   SettingsDetailPanel,
@@ -2020,6 +2023,20 @@ export function ConsentCenterPage() {
   useEffect(() => {
     setVisibleTab(tab);
   }, [tab]);
+  const consentTabSet = useMemo(
+    () => ({
+      ...TOP_SHELL_TAB_REGISTRY.consent,
+      activeValue: visibleTab,
+      tabs: TOP_SHELL_TAB_REGISTRY.consent.tabs.map((tabOption) => ({
+        ...tabOption,
+        href: buildConsentCenterTabRoute(
+          tabOption.value as ConsentTab,
+          new URLSearchParams(searchParams.toString()),
+        ),
+      })),
+    }),
+    [searchParams, visibleTab],
+  );
   const commitConsentTab = useCallback(
     (value: ConsentTab) => {
       if (value === tab) return;
@@ -3597,9 +3614,13 @@ export function ConsentCenterPage() {
     setPreviousLocalPage,
   );
   return (
-    <AppPageShell as="main" width="reading" fitContent>
+    <AppPageShell as="main" width="agent" fitContent>
+      <AppPageHeaderRegion className="space-y-3.5 sm:space-y-3.5">
+        <PageHeader title="Consent Center" titleRole="agent" />
+        <TopShellTabs tabSet={consentTabSet} />
+      </AppPageHeaderRegion>
       <SettingsPresentationProvider density="compact">
-        <AppPageContentRegion>
+        <AppPageContentRegion className="!mt-3.5 sm:!mt-3.5">
           <section data-testid="consent-manager-primary" className="min-h-0">
             <section data-testid="consent-manager-list">
               <SettingsGroup

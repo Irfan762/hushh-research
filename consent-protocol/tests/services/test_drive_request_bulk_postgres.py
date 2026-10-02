@@ -30,7 +30,12 @@ from hushh_mcp.services.drive_sharing_retention import erase_drive_account_in_tr
 from hushh_mcp.services.drive_sharing_service import DriveSharingService
 from hushh_mcp.services.drive_suggestion_store import DriveSuggestionStore
 from hushh_mcp.services.external_mcp_client import ExternalMcpToolResult
-from hushh_mcp.services.google_drive_adapter import DRIVE_BASE, DRIVE_POLICY, LIVE_POLICY_HASH
+from hushh_mcp.services.google_drive_adapter import (
+    DRIVE_BASE,
+    DRIVE_POLICY,
+    LIVE_POLICY_HASH,
+    DriveReadError,
+)
 from tests.services.test_drive_sharing_store import (  # noqa: F401
     MIGRATIONS,
     connector_postgres_url,
@@ -612,6 +617,307 @@ async def _trusted_review(bulk, sharing, *, paid=True):
                 {"request": request["requestId"]},
             )
     return review
+
+
+async def _paid_partial_progressive_request(bulk, sharing, *, batches=1):
+    request_id = (await _trusted_request(sharing))["requestId"]
+    search = _search(bulk, request_id=request_id, count=batches * 2)
+    with bulk.db.engine.begin() as connection:
+        connection.execute(
+            text("""INSERT INTO drive_request_payment_orders
+              (request_id,user_id,requester_user_id,status,paid_at)
+              VALUES (:request,'owner','trusted-member','paid',clock_timestamp())"""),
+            {"request": request_id},
+        )
+    reviews = []
+    for index in range(batches):
+        review = await bulk.create_review(
+            user_id="owner",
+            search_job_id=search,
+            client_request_id=str(uuid4()),
+            recipients=[_recipient("trusted-member", "trusted@example.invalid")],
+            excluded=[],
+            origin_request_id=request_id,
+            selected_positions=[index * 2 + 1, index * 2 + 2],
+        )
+        await bulk.approve(
+            user_id="owner",
+            share_id=review["shareId"],
+            revision=review["revision"],
+            review_digest=review["reviewDigest"],
+            approval_source="trusted_auto",
+        )
+        missing = await bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        await bulk.release(missing, error="provider_unavailable")
+        existing = await bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=2,
+            recipient_user_id="trusted-member",
+        )
+        await bulk.settle(existing, state="preexisting", receipt={"managed": False})
+        reviews.append(review)
+    assert (await sharing.request_status(user_id="owner", request_id=request_id))[
+        "status"
+    ] == "partial"
+    return request_id, reviews
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("batches", [1, 2])
+async def test_paid_partial_progressive_retry_preserves_sibling_approvals_and_outcomes(
+    request_bulk, sharing, batches
+):
+    request_id, reviews = await _paid_partial_progressive_request(
+        request_bulk, sharing, batches=batches
+    )
+    with request_bulk.db.engine.begin() as connection:
+        request_revision = connection.execute(
+            text("SELECT revision FROM drive_share_requests WHERE request_id=:request"),
+            {"request": request_id},
+        ).scalar_one()
+        paid_at = connection.execute(
+            text("SELECT paid_at FROM drive_request_payment_orders WHERE request_id=:request"),
+            {"request": request_id},
+        ).scalar_one()
+        existing_before = list(
+            connection.execute(
+                text("""SELECT e.share_id,e.state,e.attempts,e.receipt_envelope,e.updated_at
+              FROM drive_bulk_share_effects e JOIN drive_bulk_shares b ON b.share_id=e.share_id
+              WHERE b.origin_request_id=:request AND e.position=2 ORDER BY e.share_id"""),
+                {"request": request_id},
+            ).mappings()
+        )
+    for index, original in enumerate(reviews):
+        review = await request_bulk.review(user_id="owner", share_id=original["shareId"])
+        assert review["canRetry"] is True
+        retried = await request_bulk.retry(
+            user_id="owner",
+            share_id=review["shareId"],
+            revision=review["revision"],
+            review_digest=review["reviewDigest"],
+        )
+        assert retried["reviewDigest"] == original["reviewDigest"]
+        assert retried["counts"]["pending"] == retried["counts"]["alreadyShared"] == 1
+        with request_bulk.db.engine.begin() as connection:
+            assert connection.execute(
+                text("SELECT status,revision FROM drive_share_requests WHERE request_id=:request"),
+                {"request": request_id},
+            ).one() == ("pending", request_revision)
+            assert connection.execute(
+                text("""SELECT bool_and(approval_source='trusted_auto'
+                  AND origin_request_revision=:revision) FROM drive_bulk_shares
+                  WHERE origin_request_id=:request"""),
+                {"request": request_id, "revision": request_revision},
+            ).scalar_one()
+        # Already confirmed access is never dispatched again during recovery.
+        assert (
+            await request_bulk.claim(
+                user_id="owner",
+                share_id=review["shareId"],
+                position=2,
+                recipient_user_id="trusted-member",
+            )
+            is None
+        )
+        job = await request_bulk.claim(
+            user_id="owner",
+            share_id=review["shareId"],
+            position=1,
+            recipient_user_id="trusted-member",
+        )
+        assert job is not None
+        await request_bulk.mark_dispatching(job)
+        await request_bulk.settle(job, state="succeeded", receipt={"managed": True})
+        expected = "completed" if index == batches - 1 else "partial"
+        assert (await sharing.request_status(user_id="owner", request_id=request_id))[
+            "status"
+        ] == expected
+    await request_bulk.refresh_request(user_id="owner", request_id=request_id)
+    with request_bulk.db.engine.begin() as connection:
+        assert connection.execute(
+            text(
+                "SELECT status,paid_at FROM drive_request_payment_orders WHERE request_id=:request"
+            ),
+            {"request": request_id},
+        ).one() == ("paid", paid_at)
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM drive_request_payment_orders WHERE request_id=:request"),
+                {"request": request_id},
+            ).scalar_one()
+            == 1
+        )
+        assert (
+            list(
+                connection.execute(
+                    text("""SELECT e.share_id,e.state,e.attempts,e.receipt_envelope,e.updated_at
+              FROM drive_bulk_share_effects e JOIN drive_bulk_shares b ON b.share_id=e.share_id
+              WHERE b.origin_request_id=:request AND e.position=2 ORDER BY e.share_id"""),
+                    {"request": request_id},
+                ).mappings()
+            )
+            == existing_before
+        )
+        # One outcome for each actual terminal transition, per audience. A
+        # repeated refresh cannot duplicate it, and no authority revision moves.
+        assert list(
+            connection.execute(
+                text("""SELECT revision,count(*) FROM drive_share_events
+              WHERE request_id=:request AND event_type='document_share_outcome'
+              GROUP BY revision ORDER BY revision"""),
+                {"request": request_id},
+            )
+        ) == [(request_revision + i, 2) for i in range(batches + 1)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "blocker",
+    [
+        "trust",
+        "background",
+        "refunded",
+        "unpaid",
+        "unknown",
+        "dispatching",
+        "receipt",
+        "lease",
+        "generation",
+        "revision",
+        "expired",
+        "dates",
+    ],
+)
+async def test_paid_progressive_retry_rechecks_authority_and_never_replays_uncertain_effects(
+    request_bulk, sharing, blocker
+):
+    request_id, (original,) = await _paid_partial_progressive_request(request_bulk, sharing)
+    with request_bulk.db.engine.begin() as connection:
+        if blocker == "trust":
+            connection.execute(
+                text(
+                    "UPDATE one_location_circle_memberships SET status='removed' WHERE user_id='trusted-member'"
+                )
+            )
+        elif blocker == "background":
+            connection.execute(
+                text("""INSERT INTO drive_live_preferences(user_id,connection_generation,background_enabled)
+              VALUES('owner',1,FALSE) ON CONFLICT(user_id) DO UPDATE SET background_enabled=FALSE""")
+            )
+        elif blocker in {"refunded", "unpaid"}:
+            connection.execute(
+                text("""UPDATE drive_request_payment_orders SET status=:status,
+                  paid_at=CASE WHEN :status='refunded' THEN paid_at ELSE NULL END
+                  WHERE request_id=:request"""),
+                {
+                    "request": request_id,
+                    "status": "refunded" if blocker == "refunded" else "awaiting_payment",
+                },
+            )
+        elif blocker in {"unknown", "dispatching", "receipt"}:
+            connection.execute(
+                text("""UPDATE drive_bulk_share_effects SET state=:state,
+                  receipt_envelope=CASE WHEN :receipt THEN CAST(:envelope AS jsonb) ELSE NULL END
+                  WHERE share_id=:share AND position=1"""),
+                {
+                    "share": original["shareId"],
+                    "state": "skipped" if blocker == "receipt" else blocker,
+                    "receipt": blocker == "receipt",
+                    "envelope": request_bulk._seal(
+                        {"managed": False},
+                        user_id="owner",
+                        resource_id="synthetic",
+                        purpose="receipt",
+                    ),
+                },
+            )
+        elif blocker == "lease":
+            connection.execute(
+                text("""UPDATE drive_bulk_share_effects
+                  SET lease_id=:lease,lease_expires_at=clock_timestamp()+INTERVAL '1 minute'
+                  WHERE share_id=:share AND position=1"""),
+                {"share": original["shareId"], "lease": str(uuid4())},
+            )
+        elif blocker == "generation":
+            connection.execute(
+                text("""UPDATE user_external_connector_connections
+              SET connection_generation=connection_generation+1 WHERE user_id='owner' AND connector_id='google_drive'""")
+            )
+        elif blocker == "revision":
+            connection.execute(
+                text(
+                    "UPDATE drive_share_requests SET revision=revision+1 WHERE request_id=:request"
+                ),
+                {"request": request_id},
+            )
+        elif blocker == "expired":
+            connection.execute(
+                text("""UPDATE drive_share_requests
+              SET created_at=clock_timestamp()-INTERVAL '2 days',expires_at=clock_timestamp()-INTERVAL '1 day'
+              WHERE request_id=:request"""),
+                {"request": request_id},
+            )
+        else:
+            row = request_bulk._row(
+                connection,
+                "SELECT * FROM drive_share_requests WHERE request_id=:request",
+                {"request": request_id},
+            )
+            private = sharing._open_request(row)
+            private["purpose"].pop("periodStart")
+            connection.execute(
+                text(
+                    "UPDATE drive_share_requests SET request_envelope=CAST(:envelope AS jsonb) WHERE request_id=:request"
+                ),
+                {
+                    "request": request_id,
+                    "envelope": request_bulk._seal(
+                        private, user_id="owner", resource_id=request_id, purpose="request"
+                    ),
+                },
+            )
+        before = list(
+            connection.execute(
+                text(
+                    "SELECT position,state,attempts,updated_at FROM drive_bulk_share_effects WHERE share_id=:share ORDER BY position"
+                ),
+                {"share": original["shareId"]},
+            )
+        )
+    review = await request_bulk.review(user_id="owner", share_id=original["shareId"])
+    assert review["canRetry"] is False
+    with pytest.raises((DriveSharingError, DriveReadError)):
+        await request_bulk.retry(
+            user_id="owner",
+            share_id=review["shareId"],
+            revision=review["revision"],
+            review_digest=review["reviewDigest"],
+        )
+    with request_bulk.db.engine.begin() as connection:
+        assert (
+            list(
+                connection.execute(
+                    text(
+                        "SELECT position,state,attempts,updated_at FROM drive_bulk_share_effects WHERE share_id=:share ORDER BY position"
+                    ),
+                    {"share": original["shareId"]},
+                )
+            )
+            == before
+        )
+        assert (
+            connection.execute(
+                text("SELECT status FROM drive_share_requests WHERE request_id=:request"),
+                {"request": request_id},
+            ).scalar_one()
+            == "partial"
+        )
 
 
 @pytest.mark.asyncio

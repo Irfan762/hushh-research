@@ -1961,6 +1961,8 @@ def test_search_directory_delegates_pagination_to_eligible_directory_query():
                 "maskedPhone": "******4455",
                 "maskedEmail": "c***a@example.com",
                 "relationship": "none",
+                "mutualConnectionCount": 0,
+                "mutualConnectionPreview": None,
                 "isRia": False,
             }
         ],
@@ -3168,3 +3170,57 @@ def test_get_last_request_scope_handles_is_empty_for_a_first_time_recipient():
         )
 
     assert handles == {"requestedScopeHandles": [], "offeredScopeHandles": []}
+
+
+def test_directory_mutual_preview_uses_eligible_profile_outside_current_page():
+    svc = _svc()
+    svc._directory_lookup = lambda _: [
+        {"userId": "candidate", "displayName": "Candidate", "maskedEmail": "c***@example.com"},
+        {"userId": "peer", "displayName": "Peer", "photoUrl": "https://example.com/avatar.png"},
+    ]
+    svc._verified_ria_user_ids = lambda _: set()
+    svc._public_person_refs = lambda _: {}
+    preview_calls = []
+
+    def profiles(owner, ids):
+        preview_calls.append((owner, ids))
+        return [
+            {
+                "userId": "peer",
+                "displayName": "Peer",
+                "photoUrl": "https://example.com/avatar.png",
+                "publicPersonRef": "person_peer",
+            }
+        ]
+
+    svc._directory_profiles = profiles
+    queries = []
+
+    def read(sql, params):
+        queries.append((sql, params))
+        if "WITH viewer_peers AS" in sql:
+            return [{"candidate_id": "candidate", "mutual_count": 2, "preview_user_id": "peer"}]
+        return []
+
+    svc._execute_many = read
+    items = svc.search_directory("owner")["items"]
+    assert items[0]["mutualConnectionCount"] == 2
+    assert items[0]["mutualConnectionPreview"] == {
+        "displayName": "Peer",
+        "photoUrl": "https://example.com/avatar.png",
+        "publicPersonRef": "person_peer",
+    }
+    assert items[0]["email"] is None
+    assert items[0]["maskedEmail"] == "c***@example.com"
+    assert items[1]["mutualConnectionCount"] == 0
+    svc._directory_lookup = lambda _: [{"userId": "candidate", "displayName": "Candidate"}]
+    item = svc.search_directory("owner")["items"][0]
+    assert item["mutualConnectionCount"] == 2
+    assert item["mutualConnectionPreview"]["publicPersonRef"] == "person_peer"
+    assert preview_calls[-1] == ("owner", ["peer"])
+    # A hidden or disabled mutual keeps its count but never exposes identity.
+    svc._directory_profiles = lambda owner, ids: []
+    item = svc.search_directory("owner")["items"][0]
+    assert item["mutualConnectionCount"] == 2
+    assert item["mutualConnectionPreview"] is None
+    assert queries[-1][1] == {"user_id": "owner", "page_user_ids": ["candidate"]}

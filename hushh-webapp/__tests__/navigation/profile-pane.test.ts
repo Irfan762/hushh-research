@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   PROFILE_PANE_DETAIL_QUERY,
+  PROFILE_PANE_OPEN_EVENT,
   PROFILE_PANE_PANEL_QUERY,
   PROFILE_PANE_QUERY,
   buildProfileConnectorsPaneHref,
@@ -18,7 +19,9 @@ import {
   openProfilePane,
   pushProfilePaneLocation,
   replaceProfilePaneLocation,
+  requestProfilePaneOpen,
   resolveProfilePaneUrlState,
+  type ProfilePaneOpenDetail,
 } from "@/lib/navigation/profile-pane";
 import {
   buildProfileRoute,
@@ -220,5 +223,21 @@ describe("Profile pane navigation state", () => {
     expect(currentUrl().searchParams.get("view")).toBe("people");
     expect(currentUrl().searchParams.has(PROFILE_PANE_QUERY)).toBe(false);
     expect(window.history.state).not.toHaveProperty("__hushhProfilePane");
+  });
+
+  it("returns the shell's synchronous answer to an open request, or null with no shell", () => {
+    // Voice settles on this answer; a silent drop must not read as an open.
+    expect(requestProfilePaneOpen("tap")).toBeNull();
+
+    const listener = (event: Event) =>
+      (event as CustomEvent<ProfilePaneOpenDetail>).detail.onResult?.(
+        "unavailable",
+      );
+    window.addEventListener(PROFILE_PANE_OPEN_EVENT, listener);
+    try {
+      expect(requestProfilePaneOpen("tap")).toBe("unavailable");
+    } finally {
+      window.removeEventListener(PROFILE_PANE_OPEN_EVENT, listener);
+    }
   });
 });

@@ -14,6 +14,7 @@ import { applyPatch, type Operation } from "fast-json-patch";
 import { getKaiActionById } from "@/lib/voice/kai-action-gateway";
 import { describeDirectiveForOwner } from "@/lib/agent/action-directive-summary";
 import { parseMcpCallReview, type McpCallApproval, type McpCallReviewReference } from "@/lib/agent/mcp-call-review";
+import { REACTION_TOOL_NAME, parseMessageReaction, type MessageReactionResult } from "@/lib/agent/agent-message-reaction";
 import { FOLLOW_UP_TOOL_NAME, parseFollowUpSuggestions } from "@/lib/agent/follow-up-suggestions";
 import { snapshotValidatedAuthSessionOwner, isValidatedAuthSessionOwnerCurrent } from "@/lib/auth/session-owner";
 import { snapshotVaultSessionEpoch, isVaultSessionEpochCurrent } from "@/lib/vault/session-epoch";
@@ -239,6 +240,7 @@ export type AgentChatStreamHandlers = {
   /** The optional id is the AG-UI activity/tool identity for transport dedupe. */
   onStructuredExperience?: (experience: AgentStructuredExperience, eventId?: string) => void;
   /** 2-3 next questions One wrote with this answer; only for the latest answer, never stored. */
+  onMessageReaction?: (result: MessageReactionResult) => void;
   onFollowUpSuggestions?: (suggestions: string[]) => void;
   /** Owner-only count progress from a server AG-UI activity; never inferred from time. */
   onDriveBatchProgress?: (progress: DriveBatchProgress, eventId?: string) => void;
@@ -960,7 +962,7 @@ export function parseRestoredTurnActivity(descriptor: unknown): RestoredActivity
     const id = typeof step?.id === "string" ? step.id.trim().slice(0, 128) : "";
     const toolName = typeof step?.tool === "string" ? step.tool : "";
     const rawStatus = step?.status;
-    if (!step || !id || !toolName || toolName === FOLLOW_UP_TOOL_NAME) return [];
+    if (!step || !id || !toolName || (toolName === FOLLOW_UP_TOOL_NAME || toolName === REACTION_TOOL_NAME)) return [];
     const mcp = /^mcp_[0-9a-f]{40}$/.test(toolName);
     const presentation = workspaceToolPresentation(toolName, step.provider) ??
       SERVER_TOOL_PRESENTATION[toolName];
@@ -1343,6 +1345,7 @@ export async function streamAgentChat(input: {
     agent.abortRun();
   };
   const toolNames = new Map<string, string>();
+  let reactionShown = false;
   const toolArgs = new Map<string, Record<string, unknown>>();
   const interruptsByToolCall = new Map<string, string>();
   const mcpReviews = new Map<string, McpCallReviewReference>();
@@ -1460,7 +1463,7 @@ export async function streamAgentChat(input: {
     onToolCallStartEvent: ({ event }) => {
       toolNames.set(event.toolCallId, event.toolCallName);
       // Follow-ups are chips under the answer, not a step the person waits on.
-      if (event.toolCallName === FOLLOW_UP_TOOL_NAME) return;
+      if (event.toolCallName === FOLLOW_UP_TOOL_NAME || event.toolCallName === REACTION_TOOL_NAME) return;
       if (event.toolCallName === "adk_request_confirmation") confirmationArgs.set(event.toolCallId, "");
       handlers.onToolStart?.(toolPayload(event.toolCallId, event.toolCallName));
     },
@@ -1473,7 +1476,7 @@ export async function streamAgentChat(input: {
       else confirmationArgs.set(event.toolCallId, next);
     },
     onToolCallEndEvent: ({ event, toolCallName, toolCallArgs }) => {
-      if (toolCallName === FOLLOW_UP_TOOL_NAME) return;
+      if (toolCallName === FOLLOW_UP_TOOL_NAME || toolCallName === REACTION_TOOL_NAME) return;
       if (toolCallName === "adk_request_confirmation") {
         const streamed = confirmationArgs.get(event.toolCallId);
         confirmationArgs.delete(event.toolCallId);
@@ -1513,6 +1516,14 @@ export async function streamAgentChat(input: {
     },
     onToolCallResultEvent: ({ event }) => {
       const toolName = toolNames.get(event.toolCallId) || "";
+      if (toolName === REACTION_TOOL_NAME) {
+        const result = parseMessageReaction(event.content);
+        if (result && !reactionShown) {
+          reactionShown = true;
+          handlers.onMessageReaction?.(result);
+        }
+        return;
+      }
       if (toolName === FOLLOW_UP_TOOL_NAME) {
         // Only the server's `shown` result renders; its text never enters
         // generic tool payloads, diagnostics, or logs.

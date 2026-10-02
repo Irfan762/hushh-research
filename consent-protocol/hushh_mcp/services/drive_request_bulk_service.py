@@ -140,7 +140,9 @@ class DriveRequestBulkService:
                 )
         raise DriveReadError("invalid_argument")
 
-    async def start_search(self, *, user_id, request_id, timezone="UTC", authority_mode="owner"):
+    async def start_search(
+        self, *, user_id, request_id, timezone="UTC", authority_mode="owner", after_page=None
+    ):
         if authority_mode not in {"owner", "trusted_auto"}:
             raise DriveSharingError("invalid_argument")
         context = await self._context(user_id, request_id)
@@ -193,6 +195,7 @@ class DriveRequestBulkService:
             requested_at=requested_at,
             require_current=self.require_owner,
             authority_mode=authority_mode,
+            **({"after_page": after_page} if after_page is not None else {}),
         )
 
     async def search_status(self, *, user_id, request_id):

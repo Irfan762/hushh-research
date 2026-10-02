@@ -126,6 +126,11 @@ import {
 import { EmailDraftCard } from "@/components/agent/email-draft-card";
 import { richEmailPlainText } from "@/components/agent/email-rich-text";
 import {
+  AgentCalendarProposalCard,
+  type CalendarProposalAction,
+  type CalendarProposalConflict,
+} from "@/components/agent/agent-calendar-proposal-card";
+import {
   EmailDeliveryHistoryCard,
   type EmailDeliveryHistoryItem,
 } from "@/components/agent/email-delivery-history-card";
@@ -175,8 +180,9 @@ import { ConnectorBrandMark, type ConnectorBrand } from "@/components/agent/conn
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import {
-  CHAT_USER_BUBBLE_CLASSNAME,
   ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME,
+  OneChatBubble,
+  OneChatTimeSeparator,
 } from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
@@ -386,6 +392,8 @@ import {
   type QueuedAgentPrompt,
 } from "@/lib/agent/agent-chat-prompt-queue";
 import { LiveTurnQueue } from "@/lib/agent/agent-chat-live-turn-queue";
+import { AgentMessageReactionBadge } from "./agent-message-reaction";
+import { attachMessageReaction, type AgentMessageReaction } from "@/lib/agent/agent-message-reaction";
 import { AgentQueuedStack, QueuedJoinedCaption } from "@/components/agent/agent-queued-stack";
 import { useAgentChatSlowNotice } from "@/components/agent/agent-chat-slow-notice";
 import {
@@ -480,6 +488,7 @@ type AgentMessage = {
   lostTurn?: AgentLostTurn;
   /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
   followUps?: string[];
+  reaction?: AgentMessageReaction | null;
   /**
    * The information request this outcome chip or continuation answer belongs
    * to. Set live when the turn starts; restored from history metadata
@@ -687,6 +696,7 @@ type AgentRunTurnOptions = {
   driveSearchSelection?: { jobId: string; position: number };
   kycInformationSaveConfirmed?: boolean;
   appendUserMessage?: boolean;
+  reactionUserMessageId?: string;
   replaceAssistantMessageId?: string | null;
   deferPkmContext?: boolean;
   /** Pasted text sent as separate document parts beside the typed text. */
@@ -897,7 +907,12 @@ export function getCalendarDirectiveFromToolEvent(
           ? "Reschedule"
           : "Schedule";
     const conflicts = Array.isArray(parsed.conflicts) ? parsed.conflicts : [];
-    const confirmLabel = conflicts.length > 0 ? `${verb} anyway` : verb;
+    const confirmLabel =
+      conflicts.length > 0
+        ? `${verb} anyway`
+        : action === "create"
+          ? "Schedule meeting"
+          : verb;
     const title = String(plan.title || plan.event_id || "event");
     const summary = `${verb} '${title}'`;
 
@@ -909,6 +924,7 @@ export function getCalendarDirectiveFromToolEvent(
           type: "calendar.execute_proposal",
           proposalId: parsed.proposal_id,
           action,
+          googleMeet: action === "create",
           summary,
           confirmLabel,
           expiresAt: String(parsed.expires_at || ""),
@@ -2009,16 +2025,12 @@ export function AgentBubble({
           isUser && "sm:max-w-[min(76%,42rem)]",
         )}
       >
-        <div
+        <OneChatBubble
           aria-live={!isUser && isStreaming ? "polite" : undefined}
           data-agent-streaming={!isUser && isStreaming ? "true" : undefined}
+          tone={isUser ? "user" : showAssistantBubble ? "assistant" : "plain"}
           className={cn(
-            "text-sm leading-6",
-            isUser
-              ? CHAT_USER_BUBBLE_CLASSNAME
-              : showAssistantBubble
-                ? cn(ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME, "relative")
-                : "px-0 py-1 text-foreground",
+            (isUser || showAssistantBubble) && "relative",
             isError &&
               "rounded-2xl border border-destructive/20 bg-destructive/[0.06] px-4 py-2.5 text-foreground",
           )}
@@ -2037,6 +2049,7 @@ export function AgentBubble({
                 </div>
               ) : null}
               {gmailInformationRequestAttachment}
+              {message.reaction && <AgentMessageReactionBadge reaction={message.reaction} />}
             </>
           ) : shouldRenderStreamPanel ? (
             <AgentTurnStreamPanel
@@ -2083,7 +2096,7 @@ export function AgentBubble({
               {message.errorNotice}
             </p>
           ) : null}
-        </div>
+        </OneChatBubble>
         {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
         {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} onRetry={onRetryMemorySave} pendingCards={pendingMemoryCards} onUnlock={onUnlockVault} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
@@ -2138,25 +2151,12 @@ export function AgentBubble({
 /** The centered date/time line that opens a group of messages. */
 function ChatTimeSeparatorRow({ separator }: { separator: ChatTimeSeparator }) {
   return (
-    <div
-      data-testid="agent-chat-time-separator"
-      className="flex justify-center whitespace-nowrap pb-0.5 pt-2 first:pt-0"
-    >
-      {separator.dateTime ? (
-        <time
-          dateTime={separator.dateTime}
-          title={separator.accessibleLabel}
-          className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]"
-        >
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </time>
-      ) : (
-        <span className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]">
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </span>
-      )}
+    <div data-testid="agent-chat-time-separator">
+      <OneChatTimeSeparator
+        accessibleLabel={separator.accessibleLabel}
+        dateTime={separator.dateTime}
+        label={separator.text}
+      />
     </div>
   );
 }
@@ -6282,6 +6282,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             if (streamAbortController.signal.aborted) return;
             setPendingSpecialistDirective(directive);
           },
+          onMessageReaction: ({ reaction, clientMessageId }) => {
+            if (streamAbortController.signal.aborted || latestVisibleTurnIdRef.current !== debugTurnId) return;
+            const targetId = clientMessageId ? `msg-queued-${clientMessageId}`
+              : options.reactionUserMessageId ?? userMessages.at(-1)?.id ?? userMessage.id;
+            setMessages(current => attachMessageReaction(current, targetId, reaction));
+          },
           onFollowUpSuggestions: (followUps) => {
             if (streamAbortController.signal.aborted) return;
             updateMessage(assistantMessageId, (message) => ({ ...message, followUps }));
@@ -8138,6 +8144,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         await runAgentTurn(retryText, {
           source: "typed",
           appendUserMessage: false,
+          reactionUserMessageId: previousUserMessage.id,
           replaceAssistantMessageId: messageId,
           attachments: retryAttachments,
         });
@@ -8793,9 +8800,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : null}
 
+              {/* While voice is live the voice card is the interface, so the
+                  welcome panel stands down rather than sharing the canvas with
+                  it. The card is an `absolute bottom-0` overlay and this panel
+                  is centred in the scroll area below it, so on a short phone
+                  viewport the two land on each other. Spacing them apart would
+                  only hold until the next shorter viewport; not rendering both
+                  cannot collide on any screen. Nothing is lost: the panel's
+                  prompts feed the text composer, which voice has already
+                  replaced and disabled. */}
               {chatOnboarding.turns.length ? (
                 renderChatOnboarding({ kind: "top" })
-              ) : !hasStartedConversation ? (
+              ) : !hasStartedConversation && !voiceActive ? (
                 <>
                   <AgentWelcomePanel
                     name={displayName}
@@ -9493,31 +9509,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   />
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   "agent_calendar" ? (
-                  <SpecialistDirectiveCard
-                    summary={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).summary ?? pendingSpecialistDirective.message,
-                    )}
-                    confirmLabel={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).confirmLabel ?? "Continue",
-                    )}
-                    busy={specialistBusy}
-                    onConfirm={async () => {
-                      const directive = pendingSpecialistDirective;
-                      const payload = directive.directive.payload as Record<
-                        string,
-                        unknown
-                      >;
-                      const type = String(payload.type ?? "");
+                  (() => {
+                    const directive = pendingSpecialistDirective;
+                    const payload = directive.directive.payload as Record<
+                      string,
+                      unknown
+                    >;
+                    const type = String(payload.type ?? "");
+                    const calendarAction: CalendarProposalAction =
+                      payload.action === "reschedule" || payload.action === "cancel"
+                        ? payload.action
+                        : "create";
+                    const attendees = Array.isArray(payload.attendees)
+                      ? payload.attendees.filter(
+                          (item): item is string => typeof item === "string",
+                        )
+                      : [];
+                    const conflicts: CalendarProposalConflict[] = Array.isArray(
+                      payload.conflicts,
+                    )
+                      ? payload.conflicts.map((item) => {
+                          const conflict =
+                            item && typeof item === "object"
+                              ? (item as Record<string, unknown>)
+                              : {};
+                          return {
+                            title:
+                              typeof conflict.title === "string"
+                                ? conflict.title
+                                : null,
+                            startAt:
+                              typeof conflict.startAt === "string"
+                                ? conflict.startAt
+                                : typeof conflict.start_at === "string"
+                                  ? conflict.start_at
+                                  : null,
+                          };
+                        })
+                      : [];
+                    const onConfirm = async () => {
                       if (type === "calendar.connect") {
                         if (!user?.uid) {
                           addErrorMessage(
@@ -9545,19 +9575,49 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         return;
                       }
                       enqueueCalendarDirective(directive, token, user.uid);
-                    }}
-                    busyLabel={
-                      directiveConnectWaiting ? "Waiting for Google…" : undefined
-                    }
-                    cancelWhileBusy={directiveConnectWaiting}
-                    onCancel={() => {
+                    };
+                    const onCancel = () => {
                       directiveConnect.cancel();
                       setPendingSpecialistDirective(null);
                       toast.info(
                         "Calendar change cancelled. Nothing was changed.",
                       );
-                    }}
-                  />
+                    };
+
+                    if (type === "calendar.execute_proposal") {
+                      return (
+                        <AgentCalendarProposalCard
+                          action={calendarAction}
+                          title={typeof payload.title === "string" ? payload.title : null}
+                          startAt={typeof payload.startAt === "string" ? payload.startAt : null}
+                          endAt={typeof payload.endAt === "string" ? payload.endAt : null}
+                          attendees={attendees}
+                          location={typeof payload.location === "string" ? payload.location : null}
+                          sendUpdates={payload.sendUpdates === true}
+                          googleMeet={payload.googleMeet === true}
+                          conflicts={conflicts}
+                          confirmLabel={String(payload.confirmLabel ?? "Schedule meeting")}
+                          busy={specialistBusy}
+                          onConfirm={onConfirm}
+                          onCancel={onCancel}
+                        />
+                      );
+                    }
+
+                    return (
+                      <SpecialistDirectiveCard
+                        summary={String(payload.summary ?? directive.message)}
+                        confirmLabel={String(payload.confirmLabel ?? "Continue")}
+                        busy={specialistBusy}
+                        onConfirm={onConfirm}
+                        busyLabel={
+                          directiveConnectWaiting ? "Waiting for Google…" : undefined
+                        }
+                        cancelWhileBusy={directiveConnectWaiting}
+                        onCancel={onCancel}
+                      />
+                    );
+                  })()
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   DRIVE_REVIEW_DELEGATE ? (
                   <SpecialistDirectiveCard

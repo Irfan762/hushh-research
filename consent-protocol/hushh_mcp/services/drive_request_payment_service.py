@@ -228,9 +228,8 @@ class DriveRequestPaymentService(DriveRequestPaymentStore):
             return {"checkoutUrl": order["stripe_checkout_url"]}
 
         def create():
-            return self.stripe_api.checkout.Session.create(
+            params = dict(
                 mode="payment",
-                payment_method_types=["card"],
                 line_items=[
                     {
                         "price_data": {
@@ -261,6 +260,26 @@ class DriveRequestPaymentService(DriveRequestPaymentStore):
                 api_key=key,
                 idempotency_key=f"drive-request-{request_id}-{order['checkout_attempt_id']}",
             )
+            try:
+                return self.stripe_api.checkout.Session.create(**params)
+            except stripe.IdempotencyError as exc:
+                if exc.http_status != 400:
+                    raise
+                # Recover attempts reserved before Stripe retired explicit methods.
+                # Replay their exact payload first: a cached success must be reused.
+                try:
+                    return self.stripe_api.checkout.Session.create(
+                        **params, payment_method_types=["card"]
+                    )
+                except stripe.InvalidRequestError as exc:
+                    if exc.http_status != 400 or exc.param != "payment_method_types":
+                        raise
+                # Only a definitive parameter rejection permits a new payload key.
+                # Keep it stable across retries and retain the order's payer binding.
+                params["idempotency_key"] = (
+                    f"drive-request-{request_id}-{order['checkout_attempt_id']}-dynamic-methods-v1"
+                )
+                return self.stripe_api.checkout.Session.create(**params)
 
         try:
             session = _stripe_dict(await asyncio.to_thread(create))

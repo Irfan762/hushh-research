@@ -28,6 +28,8 @@ from sqlalchemy import text
 
 from db.db_client import DatabaseClient, get_db
 from hushh_mcp.runtime_settings import get_core_security_settings
+from hushh_mcp.services.account_deletion_lifecycle_service import AccountDeletionLifecycleService
+from hushh_mcp.services.circle_photo import validate_circle_photo
 from hushh_mcp.services.connection_graph_service import (
     ensure_connection_origin,
     revoke_circle_origins,
@@ -591,6 +593,7 @@ class OneLocationCircleService:
         return {
             "id": str(row.get("id") or ""),
             "name": name,
+            "photoUrl": row.get("photo_url") or None,
             "kind": str(row.get("kind") or "other"),
             "role": role,
             "isSystem": is_system,
@@ -793,7 +796,7 @@ class OneLocationCircleService:
             result = self._db.execute_raw(
                 f"""
                 SELECT
-                  c.id, c.name, c.kind, c.member_limit, c.is_system,
+                  c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind,
                   c.created_at, c.updated_at,
                   c.owner_user_id, :user_id AS viewer_user_id, mine.role,
@@ -816,7 +819,16 @@ class OneLocationCircleService:
                 """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id},
             )
-            return [self._circle_summary(row) for row in (result.data or [])]
+            circles = [self._circle_summary(row) for row in (result.data or [])]
+            photo_budget = 2_000_000
+            for circle in circles:
+                photo = circle["photoUrl"]
+                size = len(photo.encode("utf-8")) if photo else 0
+                if size > photo_budget:
+                    circle["photoUrl"] = None
+                else:
+                    photo_budget -= size
+            return circles
         except OneLocationCircleError:
             raise
         except Exception as exc:
@@ -828,7 +840,7 @@ class OneLocationCircleService:
             summary_result = self._db.execute_raw(
                 f"""
                 SELECT
-                  c.id, c.name, c.kind, c.member_limit, c.is_system,
+                  c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind,
                   c.created_at, c.updated_at,
                   c.owner_user_id, :user_id AS viewer_user_id, mine.role,
@@ -1003,7 +1015,7 @@ class OneLocationCircleService:
             result = self._db.execute_raw(
                 f"""
                 SELECT
-                  c.id, c.name, c.kind, c.member_limit, c.is_system,
+                  c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind, c.created_at, c.updated_at,
                   c.owner_user_id, :user_id AS viewer_user_id, mine.role,
                   owner_identity.display_name AS owner_display_name,
@@ -1960,6 +1972,57 @@ class OneLocationCircleService:
                     )
         except Exception:
             logger.exception("circle.notify_deleted_invites_import_failed circle_id=%s", circle_id)
+
+    def update_circle_photo(
+        self, *, owner_user_id: str, circle_id: str, photo_url: str | None
+    ) -> dict[str, Any]:
+        cleaned_circle_id = _clean_circle_id(circle_id)
+        try:
+            photo = validate_circle_photo(photo_url)
+        except ValueError as exc:
+            raise OneLocationCircleError(
+                "LOCATION_CIRCLE_PHOTO_INVALID", str(exc), status_code=422
+            ) from exc
+        with self._db.engine.begin() as conn:
+            AccountDeletionLifecycleService.lock_user_writes_in_transaction(
+                conn, user_ids=[owner_user_id]
+            )
+            updated = _first(
+                conn.execute(
+                    text("""
+              UPDATE one_location_circles SET photo_url = :photo, updated_at = now()
+              WHERE id = CAST(:circle AS uuid) AND owner_user_id = :owner AND status = 'active'
+                AND NOT is_system AND system_kind IS NULL
+                AND EXISTS (SELECT 1 FROM one_location_circle_memberships membership
+                  WHERE membership.circle_id = one_location_circles.id
+                    AND membership.user_id = :owner AND membership.status = 'active')
+              RETURNING id
+            """),
+                    {"circle": cleaned_circle_id, "owner": owner_user_id, "photo": photo},
+                )
+            )
+            if not updated:
+                raise OneLocationCircleError(
+                    "LOCATION_CIRCLE_OWNER_REQUIRED",
+                    "Only the Circle owner can change this photo.",
+                    status_code=403,
+                )
+            for recipient in self._active_circle_user_ids(conn, cleaned_circle_id):
+                # No image, name or personal profile in the doorbell.
+                conn.execute(
+                    text("SELECT pg_notify('one_user_state_changed', :event)"),
+                    {
+                        "event": json.dumps(
+                            {
+                                "user_id": recipient,
+                                "type": "location_circle_photo_updated",
+                                "circle_id": cleaned_circle_id,
+                                "message_id": str(uuid.uuid4()),
+                            }
+                        )
+                    },
+                )
+        return self.get_circle_overview(user_id=owner_user_id, circle_id=cleaned_circle_id)
 
     def update_circle(
         self,

@@ -10,6 +10,12 @@ import {
 } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { toast } from "sonner";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
 import { InviteCodeRowIcon } from "@/components/icons/agents";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
@@ -25,6 +31,8 @@ import {
 } from "@/components/one-location/redesign/circles/named-circle-flows";
 import { SmsTextIcon } from "@/components/one-location/redesign/sms-text-icon";
 import { createConnectCircleActions } from "@/components/connect/circles/connect-circle-actions";
+import { CircleChat } from "@/components/connect/circles/circle-chat";
+import { CircleAvatar } from "@/components/connect/circles/circle-photo-editor";
 import type { ConnectCirclesSnapshot } from "@/components/connect/circle-discovery";
 import {
   CONNECT_CIRCLE_GRID_CLASSNAME,
@@ -312,6 +320,8 @@ export function ConnectCirclesTab({
   onRequestConnection,
   onCancelConnectionRequest,
   refreshToken = 0,
+  createDialogOpen = false,
+  onCreateDialogOpenChange,
 }: {
   /** Lets the page keep its native beacon and voice metadata truthful without
    *  hoisting circle state into a 2,400-line component. */
@@ -339,6 +349,8 @@ export function ConnectCirclesTab({
    *  relationship -- a sent request, an accepted invite -- so the list and the
    *  open roster re-read instead of waiting for a manual refresh. */
   refreshToken?: number;
+  createDialogOpen?: boolean;
+  onCreateDialogOpenChange?: (open: boolean) => void;
 }) {
   // The context directly, not `useVault()`. That hook throws outside a
   // provider, and this tab must degrade to "circles are unavailable" rather
@@ -374,6 +386,14 @@ export function ConnectCirclesTab({
   const circleIdParam = String(
     searchParams.get(CONNECT_CIRCLE_ID_PARAM) || "",
   ).trim();
+  const chatSession = useMemo(() => currentUserId && vaultOwnerToken && vault?.vaultKey && circleIdParam
+    ? { userId: currentUserId, circleId: circleIdParam, vaultOwnerToken, vaultKey: vault.vaultKey } : null,
+    [currentUserId, vaultOwnerToken, vault?.vaultKey, circleIdParam]);
+  const consumeChatIntent = useCallback(() => {
+    const next = new URLSearchParams(searchParams.toString());
+    next.delete("circleChat");
+    router.replace(`${ROUTES.CONNECT}?${next.toString()}`, { scroll: false });
+  }, [router, searchParams]);
   const joinCode =
     String(searchParams.get(CIRCLE_JOIN_CODE_PARAM) || "").trim() || undefined;
   const trackedSurfaceRef = useRef<string | null>(null);
@@ -493,6 +513,7 @@ export function ConnectCirclesTab({
     ) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set(CONNECT_SURFACE_PARAM, "circles");
+      params.delete("circleChat");
       for (const [key, value] of [
         [CONNECT_CIRCLE_ACTION_PARAM, next.action],
         [CONNECT_CIRCLE_ID_PARAM, next.circleId],
@@ -637,8 +658,11 @@ export function ConnectCirclesTab({
     [],
   );
 
-  if (vaultOwnerToken && actions && action === "create-circle") {
-    return (
+  if (
+    createDialogOpen ||
+    (vaultOwnerToken && actions && action === "create-circle")
+  ) {
+    const form = actions ? (
       <CreateCircleFlow
         busy={busy}
         onSubmit={async (name, kind) => {
@@ -648,13 +672,42 @@ export function ConnectCirclesTab({
             result: "success",
             circle_kind: kind,
           });
-          // `replace`, so back from the new Circle returns to the list rather
-          // than to the form that just succeeded.
-          go({ action: "circle-detail", circleId: circle.id }, "replace");
+          // Modal creation pushes details so Back returns to its launch page.
+          // The full-page flow replaces the form that just succeeded.
+          go(
+            { action: "circle-detail", circleId: circle.id },
+            createDialogOpen ? "push" : "replace",
+          );
+          onCreateDialogOpenChange?.(false);
           announceCircleMutation("location_circle_created", circle.id);
         }}
       />
+    ) : (
+      <p className="text-sm text-[color:var(--app-secondary-label)]">
+        Unlock One to create a Circle.
+      </p>
     );
+    return createDialogOpen ? (
+      <Dialog
+        modal
+        open
+        onOpenChange={(open) => {
+          if (!busy) onCreateDialogOpenChange?.(open);
+        }}
+      >
+        <DialogContent
+          showCloseButton={!busy}
+          srDescription="Name your Circle and choose its type. You can add people next."
+          onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+          onInteractOutside={(event) => { if (busy) event.preventDefault(); }}
+        >
+          <DialogHeader>
+            <DialogTitle>Create a Circle</DialogTitle>
+          </DialogHeader>
+          {form}
+        </DialogContent>
+      </Dialog>
+    ) : form;
   }
 
   if (vaultOwnerToken && actions && action === "join-circle") {
@@ -691,6 +744,12 @@ export function ConnectCirclesTab({
     return (
       <CircleDetailFlow
         livingCircleExperience
+        chatIntent={searchParams.get("circleChat") === "1"}
+        renderChat={chatSession ? (circle, { active, readingBlocked }) => <CircleChat
+          key={`${chatSession.userId}:${chatSession.circleId}:${chatSession.vaultOwnerToken}`}
+          session={chatSession} circleName={circle.name} initialOpen active={active} readingBlocked={readingBlocked} collapsible={false}
+          onOpenIntentConsumed={searchParams.get("circleChat") === "1" ? consumeChatIntent : undefined}
+        /> : undefined}
         // A signal, not a `key`. Remounting would re-read the roster but also
         // close an open add-people sheet, clear a half-typed search and drop
         // the selection -- and a notification can arrive at any moment.
@@ -708,6 +767,12 @@ export function ConnectCirclesTab({
           );
           announceCircleMutation("location_circle_renamed", circleId);
           return renamed;
+        }}
+        onPhotoUpdate={async (circleId, photoUrl) => {
+          const updated = await withBusy(() => actions.updatePhoto(circleId, photoUrl));
+          announceCircleMutation("location_circle_photo_updated", circleId);
+          toast.success(photoUrl ? "Circle photo updated." : "Circle photo removed.");
+          return updated;
         }}
         onGenerateCode={(circleId, rotate) =>
           withBusy(() => actions.generateCode(circleId, rotate))
@@ -849,9 +914,9 @@ export function ConnectCirclesTab({
         data-testid={testId}
         aria-label={`Open ${title} circle, ${circleRowDescription(circle)}`}
       >
-        <span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-2xl border border-current/10 ${tone}`}>
+        {circle.photoUrl && !kind ? <CircleAvatar photoUrl={circle.photoUrl} /> : <span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-2xl border border-current/10 ${tone}`}>
           <Icon className="size-6" />
-        </span>
+        </span>}
         <span className="min-w-0 flex-1">
           <span className="block text-base font-semibold [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">
             {title}
