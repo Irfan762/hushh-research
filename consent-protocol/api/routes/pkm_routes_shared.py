@@ -766,7 +766,10 @@ async def _stored_reserved_manifest_paths(
         return None
     if request.manifest is None and request.structure_decision is None:
         return None
-    return await get_pkm_service().get_manifest_json_paths(request.user_id, canonical_domain)
+    stored: frozenset[str] | None = await get_pkm_service().get_manifest_json_paths(
+        request.user_id, canonical_domain
+    )
+    return stored
 
 
 def _reserved_manifest_diff(
