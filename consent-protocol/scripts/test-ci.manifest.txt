@@ -31,6 +31,8 @@ tests/services/test_drive_work_wake.py
 tests/test_prod_drive_deploy_contract.py
 tests/test_drive_work_drain_scheduler_contract.py
 tests/test_drive_worker_server.py
+tests/test_drive_worker_revision_provenance.py
+tests/test_drive_worker_release_rollback.py
 tests/services/test_google_drive_permission_adapter.py
 tests/services/test_drive_sharing_contract.py
 tests/test_runtime_settings_maps.py
