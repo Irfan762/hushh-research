@@ -81,14 +81,17 @@ def test_cipher_seals_and_opens_without_plaintext_persistence(monkeypatch):
         sender_user_id="alice",
     )
     assert "hello private world" not in sealed["content_ciphertext"]
-    assert cipher.open(
-        {
-            "id": _MESSAGE_ID,
-            "conversation_id": _CONVERSATION_ID,
-            "sender_user_id": "alice",
-            **sealed,
-        }
-    ) == "hello private world"
+    assert (
+        cipher.open(
+            {
+                "id": _MESSAGE_ID,
+                "conversation_id": _CONVERSATION_ID,
+                "sender_user_id": "alice",
+                **sealed,
+            }
+        )
+        == "hello private world"
+    )
 
 
 def test_cipher_fails_closed_when_storage_key_is_missing(monkeypatch):
@@ -128,7 +131,9 @@ def test_send_requires_current_accepted_connection_and_never_reaches_insert(monk
             )
         ),
     )
-    monkeypatch.setattr(service, "_execute_one", lambda sql, *_args, **_kwargs: inserted.append(sql))
+    monkeypatch.setattr(
+        service, "_execute_one", lambda sql, *_args, **_kwargs: inserted.append(sql)
+    )
 
     with pytest.raises(DirectMessagesError) as caught:
         service.send_message("alice", recipient_user_id="bob", content="hello")
@@ -168,7 +173,9 @@ def test_send_encrypts_content_and_returns_a_participant_safe_projection(monkeyp
 
 def test_history_is_readable_but_reported_read_only_after_disconnect(monkeypatch):
     service = _service()
-    monkeypatch.setattr(service, "_conversation_for_participant", lambda *_args: _conversation(False))
+    monkeypatch.setattr(
+        service, "_conversation_for_participant", lambda *_args: _conversation(False)
+    )
     monkeypatch.setattr(service, "_execute_many", lambda *_args, **_kwargs: [_message()])
 
     result = service.list_messages("alice", _CONVERSATION_ID)
@@ -201,7 +208,10 @@ def test_block_requires_an_existing_relationship_and_persists_a_directed_row(mon
     def execute_one(sql, params=None):
         calls.append((sql, params or {}))
         if "SELECT id, created_at\n                    FROM direct_message_blocks" in sql:
-            return {"id": "44444444-4444-4444-8444-444444444444", "created_at": "2026-01-01T00:00:00Z"}
+            return {
+                "id": "44444444-4444-4444-8444-444444444444",
+                "created_at": "2026-01-01T00:00:00Z",
+            }
         return None
 
     monkeypatch.setattr(service, "_execute_one", execute_one)

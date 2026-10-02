@@ -3,10 +3,7 @@ from pathlib import Path
 
 def test_direct_message_migration_has_database_authorization_gates_not_circle_membership():
     sql = (
-        Path(__file__).resolve().parents[1]
-        / "db"
-        / "migrations"
-        / "264_direct_messages.sql"
+        Path(__file__).resolve().parents[1] / "db" / "migrations" / "264_direct_messages.sql"
     ).read_text(encoding="utf-8")
     normalized = sql.lower()
 

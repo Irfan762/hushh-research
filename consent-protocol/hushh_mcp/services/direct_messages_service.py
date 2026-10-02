@@ -802,9 +802,7 @@ class DirectMessagesService:
                 # revocation, and account cleanup.  A revocation cannot slip
                 # between our active-edge test and message insert.
                 if connection is not None:
-                    lock_connection_graph_users(
-                        connection, user_ids=[sender, recipient]
-                    )
+                    lock_connection_graph_users(connection, user_ids=[sender, recipient])
                 self._require_active_connection(sender, recipient)
 
                 self._execute_one(
@@ -896,7 +894,9 @@ class DirectMessagesService:
                 "Message could not be sent. Please try again.",
                 status_code=503,
             )
-        conversation = self._public_conversation(self._conversation_projection(conversation_row, sender))
+        conversation = self._public_conversation(
+            self._conversation_projection(conversation_row, sender)
+        )
         message = self._message_projection(message_row, sender)
         # The message INSERT trigger emits the recipient's transactional,
         # metadata-only Postgres doorbell.  Wake the sender's other tabs here
@@ -1089,7 +1089,9 @@ class DirectMessagesService:
         # The index wants DESC (newest first); bubbles want chronological order.
         rows.reverse()
         messages = [self._message_projection(row, viewer) for row in rows]
-        conversation = self._public_conversation(self._conversation_projection(conversation_row, viewer))
+        conversation = self._public_conversation(
+            self._conversation_projection(conversation_row, viewer)
+        )
         return {
             "conversation": conversation,
             "items": messages,

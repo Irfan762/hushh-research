@@ -68,9 +68,7 @@ def test_open_by_person_ref_is_private_no_store_and_uses_the_opaque_ref():
 
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
-    service.open_with_person.assert_called_once_with(
-        "viewer-user", recipient_person_ref=person_ref
-    )
+    service.open_with_person.assert_called_once_with("viewer-user", recipient_person_ref=person_ref)
 
 
 def test_direct_message_sse_event_is_metadata_only():
