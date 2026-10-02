@@ -22,6 +22,7 @@ import { BodyText, HelperText } from "@/components/app-ui/typography";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { MobileDocumentDateRange } from "@/components/consent/mobile-document-date-range";
 import {
   Dialog,
   DialogContent,
@@ -270,6 +271,7 @@ export function RequestFilesButton({
           <Button size="standard" variant="none">Request files</Button>
         </DialogTrigger>
         <DialogContent
+          data-request-files-dialog
           className="max-h-[85dvh] overflow-y-auto sm:max-w-md"
           showCloseButton={Boolean(created)}
           srDescription={`Request files from ${personName}.`}
@@ -327,30 +329,35 @@ export function RequestFilesButton({
                   placeholder="Six months of bank statements"
                 />
               </div>
-              <fieldset
-                className="grid min-w-0 gap-3 sm:grid-cols-2"
-                disabled={busy}
-              >
+              <fieldset className="min-w-0" disabled={busy}>
                 <legend className="mb-2">Period (required)</legend>
-                <div className="min-w-0 space-y-2">
-                  <Label htmlFor="document-period-start">Start date</Label>
-                  <Input
-                    id="document-period-start"
-                    type="date"
-                    value={start}
-                    onChange={(event) => setStart(event.target.value)}
-                    required
-                  />
-                </div>
-                <div className="min-w-0 space-y-2">
-                  <Label htmlFor="document-period-end">End date</Label>
-                  <Input
-                    id="document-period-end"
-                    type="date"
-                    value={end}
-                    onChange={(event) => setEnd(event.target.value)}
-                    required
-                  />
+                <MobileDocumentDateRange
+                  start={start}
+                  end={end}
+                  onStartChange={setStart}
+                  onEndChange={setEnd}
+                />
+                <div className="hidden min-w-0 gap-3 sm:grid sm:grid-cols-2">
+                  <div className="min-w-0 space-y-2">
+                    <Label htmlFor="document-period-start">Start date</Label>
+                    <Input
+                      id="document-period-start"
+                      type="date"
+                      value={start}
+                      onChange={(event) => setStart(event.target.value)}
+                      required
+                    />
+                  </div>
+                  <div className="min-w-0 space-y-2">
+                    <Label htmlFor="document-period-end">End date</Label>
+                    <Input
+                      id="document-period-end"
+                      type="date"
+                      value={end}
+                      onChange={(event) => setEnd(event.target.value)}
+                      required
+                    />
+                  </div>
                 </div>
               </fieldset>
               {!start || !end ? (
@@ -358,7 +365,7 @@ export function RequestFilesButton({
                   Choose exact start and end dates before sending this request.
                 </HelperText>
               ) : null}
-              {!validDocumentRequestPeriod(start || null, end || null) ? (
+              {start && end && !validDocumentRequestPeriod(start, end) ? (
                 <HelperText role="status">
                   Choose both dates, with the end on or after the start.
                 </HelperText>

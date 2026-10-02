@@ -182,6 +182,7 @@ export function toneForResult(
   ok: boolean | undefined,
 ): ToolResultTone {
   const status = String(result.status || "").trim();
+  if (status === "draft_open_unconfirmed") return "neutral";
   if (isPendingStatus(status)) return "pending";
   if (ok === undefined) {
     return NOT_SUCCESS_STATUSES.has(status) ||
