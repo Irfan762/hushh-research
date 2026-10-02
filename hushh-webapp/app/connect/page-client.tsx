@@ -86,7 +86,11 @@ import { useContactSync } from "@/lib/contacts/use-contact-sync";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { isNative } from "@/lib/capacitor/platform";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
-import { buildPersonProfileRoute, ROUTES } from "@/lib/navigation/routes";
+import {
+  buildDirectMessageRoute,
+  buildPersonProfileRoute,
+  ROUTES,
+} from "@/lib/navigation/routes";
 import {
   CONNECT_CIRCLE_ACTION_PARAM,
   CONNECT_CIRCLE_ID_PARAM,
@@ -3203,18 +3207,26 @@ export default function ConnectPageClient() {
                                         CONNECT_ROW_TRAILING_CLASSNAME,
                                       )}
                                     >
-                                      <Button
-                                        type="button"
-                                        variant="none"
-                                        effect="fade"
-                                        size="compact"
-                                        disabled
-                                        title="Messaging is coming soon"
-                                        aria-label={`Message ${connection.displayName || "connection"} (coming soon)`}
-                                        className="!border !border-[color:var(--app-accent)] !bg-transparent !px-3 !text-[color:var(--app-accent)] disabled:!opacity-100"
-                                      >
-                                        Message
-                                      </Button>
+                                      {connection.publicPersonRef ? (
+                                        <Button
+                                          type="button"
+                                          variant="none"
+                                          effect="fade"
+                                          size="compact"
+                                          aria-label={`Message ${connection.displayName || connection.userId}`}
+                                          className="!border !border-[color:var(--app-accent)] !bg-transparent !px-3 !text-[color:var(--app-accent)]"
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            router.push(
+                                              buildDirectMessageRoute({
+                                                personRef: connection.publicPersonRef,
+                                              }),
+                                            );
+                                          }}
+                                        >
+                                          Message
+                                        </Button>
+                                      ) : null}
                                       <Button
                                         type="button"
                                         variant="none"

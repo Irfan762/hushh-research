@@ -100,6 +100,33 @@ class AccountService:
             "agent_chat_conversations": text(
                 "DELETE FROM agent_chat_conversations WHERE user_id = :user_id"
             ),
+            # Direct-message history is participant-bound, not a `user_id`
+            # table.  Erase child ciphertext before its pair conversation so
+            # both sides' copies disappear during an account purge/reset.
+            "messages": text(
+                """
+                DELETE FROM messages
+                WHERE conversation_id IN (
+                  SELECT id FROM conversations
+                  WHERE participant_a_user_id = :user_id
+                     OR participant_b_user_id = :user_id
+                )
+                """
+            ),
+            "conversations": text(
+                """
+                DELETE FROM conversations
+                WHERE participant_a_user_id = :user_id
+                   OR participant_b_user_id = :user_id
+                """
+            ),
+            "direct_message_blocks": text(
+                """
+                DELETE FROM direct_message_blocks
+                WHERE blocker_user_id = :user_id
+                   OR blocked_user_id = :user_id
+                """
+            ),
             "consent_export_refresh_jobs": text(
                 "DELETE FROM consent_export_refresh_jobs WHERE user_id = :user_id"
             ),
@@ -1342,6 +1369,9 @@ class AccountService:
                 "one_action_directive_ledger",
                 "agent_chat_messages",
                 "agent_chat_conversations",
+                "messages",
+                "conversations",
+                "direct_message_blocks",
                 "kai_gmail_receipts",
                 "kai_gmail_sync_runs",
                 "kai_gmail_connections",
@@ -1686,6 +1716,9 @@ class AccountService:
             "pkm_domain_revision_segments": False,
             "pkm_domain_revisions": False,
             "world_model_index_v2": False,
+            "messages": False,
+            "conversations": False,
+            "direct_message_blocks": False,
             "kai_analyze_runs": False,
             "kai_run_state": False,
             "kai_gmail_connections": False,
@@ -1811,6 +1844,9 @@ class AccountService:
                         "one_action_directive_ledger",
                         "agent_chat_messages",
                         "agent_chat_conversations",
+                        "messages",
+                        "conversations",
+                        "direct_message_blocks",
                         "kai_gmail_receipts",
                         "kai_gmail_sync_runs",
                         "kai_gmail_connections",

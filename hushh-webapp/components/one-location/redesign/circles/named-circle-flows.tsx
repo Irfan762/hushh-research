@@ -53,7 +53,11 @@ import {
 } from "@/components/one-location/redesign/tokens";
 import { roleClasses } from "@/lib/morphy-ux/tokens/semantic-roles";
 import { buildConsentCenterHref } from "@/lib/consent/consent-sheet-route";
-import { ROUTES, buildPersonProfileRoute } from "@/lib/navigation/routes";
+import {
+  buildDirectMessageRoute,
+  buildPersonProfileRoute,
+  ROUTES,
+} from "@/lib/navigation/routes";
 import {
   CIRCLE_NAME_INPUT_CLASSNAME,
   CIRCLE_NAME_ROW_CLASSNAME,
@@ -1286,6 +1290,13 @@ function CircleMemberRow({
             member.publicPersonRef
               ? buildPersonProfileRoute(member.publicPersonRef, {
                   from: ROUTES.ONE_LOCATION,
+                })
+              : null
+          }
+          messageHref={
+            relationship === "connected" && member.publicPersonRef
+              ? buildDirectMessageRoute({
+                  personRef: member.publicPersonRef,
                 })
               : null
           }

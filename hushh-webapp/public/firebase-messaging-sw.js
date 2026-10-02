@@ -191,6 +191,21 @@ function notificationTapTarget(data) {
   const type = String(data?.type || "")
     .trim()
     .toLowerCase();
+  // Private-message pushes carry only opaque identifiers. The app verifies
+  // conversation membership before it renders any history.
+  if (type === "direct_message") {
+    const conversationId = String(
+      data?.conversation_id || data?.conversationId || "",
+    ).trim();
+    if (
+      conversationId &&
+      conversationId.length <= 256 &&
+      !/[\x00-\x1f]/.test(conversationId)
+    ) {
+      return `/one/messages?conversation=${encodeURIComponent(conversationId)}`;
+    }
+    return "/one/messages";
+  }
   // Recipient-only alerts match the native/shared FCM tap handler. Historical
   // identifiers must not reopen another workflow or imply current access.
   if (

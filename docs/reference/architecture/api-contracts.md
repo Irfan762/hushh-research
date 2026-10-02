@@ -752,6 +752,36 @@ budget to Redis/Memorystore later without changing the API contract.
 | GET | `/api/iam/contact-discoverability` | Firebase Bearer | Read effective contact-directory eligibility plus `stored_contact_discoverable`, `directory_visible`, `contact_sync_preference_state` (`default`, `enabled`, `disabled`, or `invalid`), and `contact_sync_match_policy_version`. Untouched accounts follow the visible Connect-directory default; explicit opt-outs and marketplace hides remain disabled. Historical explicit enablement timestamp, rule version, and consent-contract version are reported as stored, never fabricated for default eligibility |
 | POST | `/api/iam/contact-discoverability` | Firebase Bearer | Atomically set the combined preference. Enabling requires `{enabled:true, consent_version:"contact_find_auto_connect_v1"}`; a missing/stale marker returns `409`, so an older findability-only client cannot broaden authority. Disabling accepts `{enabled:false}` and blocks future new-person discovery and automatic edge creation without erasing or hiding existing active connections. The relationship grants no location or information access |
 
+### Direct Messages
+
+Direct Messages are a separate one-to-one relationship surface. Every route is
+Firebase-authenticated and derives the caller from the bearer token; the client
+never supplies a sender identity. A new conversation or message is admitted
+only when the canonical `connections` pair is currently `active` and neither
+participant has a directed direct-message block. This database gate locks the
+connection row, so a revoke or block cannot race a send. It does **not** query
+Circle membership, trusted-edge membership, or Circle provenance. Conversation
+history remains participant-readable after disconnect or block, with
+`canSend:false` and a disconnected notice; it is not deleted merely because the
+connection ended.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/one/messages/conversations` | Participant-only inbox with latest decrypted message projection, timestamp, unread count, peer-safe profile projection, and `canSend`. |
+| GET | `/api/one/messages/with/person/{personRef}` | Open the viewer's existing conversation with an opaque public person reference, or return a no-conversation draft state. Internal `/with/{userId}` compatibility remains Firebase-authenticated and is never exposed as a profile route. |
+| POST | `/api/one/messages` | Send `{recipientPersonRef|recipientUserId, content}`. Creates the canonical pair conversation on first message and returns the conversation plus sender/receiver-safe message projection. Empty text, self-send, unconnected pair, and a block fail closed. |
+| GET | `/api/one/messages/conversations/{conversationId}/messages?before=&limit=` | Participant-only chronological history page; `before` is an opaque message id and `limit` is bounded. |
+| POST | `/api/one/messages/conversations/{conversationId}/read` | Mark the viewer's received unread messages as read. This remains available for preserved history after a connection ends. |
+| GET | `/api/one/messages/events` and `/stream` | Authenticated metadata-only realtime subscription. The event is a doorbell; clients re-read the inbox/history instead of trusting an event payload. |
+| POST / DELETE | `/api/one/messages/blocks` | Create/remove the caller's directed block using `{blockedPersonRef|blockedUserId}`. Blocking does not revoke the canonical connection or delete history, but either direction disables future sends. |
+
+Persisted body text is AES-256-GCM ciphertext under the server-managed
+direct-message envelope key. API responses decrypt only inside the authenticated
+service boundary and expose `senderIsViewer`, never a peer's raw user id. Push
+and realtime payloads contain no message content. Stable `403` failures are
+`DIRECT_MESSAGE_CONNECTION_REQUIRED`, `DIRECT_MESSAGE_BLOCKED`, and
+`DIRECT_MESSAGE_SENDER_FORBIDDEN`; malformed/self/empty requests are `422`.
+
 ### One Location Agent
 
 One Location Agent is One-owned live-location sharing for trusted people. The
