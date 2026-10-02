@@ -197,7 +197,8 @@ export const ROUTES = {
   MARKETPLACE: "/marketplace",
   MARKETPLACE_CONNECTIONS: "/marketplace/connections",
   MARKETPLACE_RIA_PROFILE: "/marketplace/ria",
-  ONE_KYC: "/one/kyc",
+  /** Retired mailbox-KYC compatibility target; personal Gmail KYC lives in Email. */
+  ONE_KYC: "/one/email",
   ONE_LOCATION: "/one/location",
   /** Immersive, consented multi-person Location map. */
   ONE_LOCATION_MAP: "/one/location/map",

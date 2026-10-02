@@ -182,8 +182,12 @@ class AccountDeletionLifecycleService:
         normalized = AccountDeletionLifecycleService._normalize_user_ids(user_ids)
         for namespace in (_CONNECTION_GRAPH_LOCK_NAMESPACE, _ACCOUNT_LIFECYCLE_LOCK_NAMESPACE):
             for user_id in normalized:
-                conn.execute(text("SELECT pg_advisory_xact_lock_shared(hashtextextended(:user_id, :namespace))"),
-                             {"user_id": user_id, "namespace": namespace})
+                conn.execute(
+                    text(
+                        "SELECT pg_advisory_xact_lock_shared(hashtextextended(:user_id, :namespace))"
+                    ),
+                    {"user_id": user_id, "namespace": namespace},
+                )
 
     @staticmethod
     def _normalize_user_ids(user_ids: Iterable[str]) -> tuple[str, ...]:

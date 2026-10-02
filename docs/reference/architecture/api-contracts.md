@@ -558,7 +558,7 @@ HTML; Gmail send uses multipart/alternative while preserving the plain-text
 fallback and original-thread reply headers. The
 `agent_kyc.approved_disclosure_formatter.v1` contract owns the render model;
 the vault-unlocked browser executes it against decrypted scoped exports. The
-maintained architecture reference is [One Email KYC](./one-email-kyc.md).
+legacy mailbox-KYC architecture has been retired.
 
 Inbound user resolution uses exact verified sender evidence. The resolver binds
 an actionable request only to the `From` sender when that sender matches a
