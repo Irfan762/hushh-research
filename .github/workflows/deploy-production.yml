@@ -162,6 +162,8 @@ jobs:
           git log -1 --diff-filter=A --format=%H -- \
             consent-protocol/hushh_mcp/services/drive_prod_registry_provisioning.py \
             > "${RUNNER_TEMP}/release-tools/prod-drive-feature-commit"
+          cp scripts/ci/verify-prod-places-readiness.py \
+            "${RUNNER_TEMP}/release-tools/verify-prod-places-readiness.py"
 
       - name: Checkout deployment SHA
         shell: bash
@@ -454,6 +456,13 @@ jobs:
           export DB_USER DB_PASSWORD
           "${{ env.PROTOCOL_PYTHON }}" consent-protocol/scripts/ops/reconcile_google_drive_prod_connector.py --attest-target
 
+      - name: Verify production Places prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "${RUNNER_TEMP}/release-tools/verify-prod-places-readiness.py" \
+            --project "${GCP_PROJECT_ID}"
+
       - name: Sync canonical hosted runtime secrets
         shell: bash
         run: |
@@ -490,11 +499,15 @@ jobs:
             --connector-production-all-users "${{ steps.drive-mode.outputs.active }}" \
             --production-drive-candidate-secret "${{ env.DRIVE_CANDIDATE_RUNTIME_SECRET }}" \
             --one-location-read-only-state-enabled "false" \
+            --consent-center-summary-v2-enabled "true" \
             --hushh-trusted-device-enabled "${{ vars.HUSSH_TRUSTED_DEVICE_ENABLED || 'false' }}" \
             --hushh-tech-client-enabled "false" \
             --hushh-tech-allowed-consent-scopes "" \
             --one-location-nearby-presence-mode "${{ github.event.inputs.nearby_check_in_cohort && 'production' || '' }}" \
             --one-location-nearby-presence-cohort "${{ github.event.inputs.nearby_check_in_cohort }}" \
+            --advisors-api-base-url "${{ vars.ADVISORS_API_BASE_URL || 'https://brokercheck.35.253.255.106.sslip.io' }}" \
+            --insurance-agents-api-base-url "${{ vars.INSURANCE_AGENTS_API_BASE_URL || 'https://insurance-agents.34.61.69.175.sslip.io' }}" \
+            --one-places-directory-enabled "true" \
             > /tmp/prod-runtime-secret-sync.json
 
           "${{ env.PROTOCOL_PYTHON }}" scripts/ops/sync_frontend_runtime_secrets.py \
