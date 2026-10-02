@@ -1,7 +1,6 @@
 /**
  * Unified FCM Service
- * ====================
- *
+ * ============= *
  * Single FCM implementation that works on BOTH web and native platforms.
  * Replaces the hybrid SSE+FCM approach with FCM-only architecture.
  *
@@ -13,6 +12,7 @@
  */
 
 import { Capacitor } from "@capacitor/core";
+import { circleChatNotificationTarget } from "@/lib/circle-chat/routes";
 import { ApiService } from "@/lib/services/api-service";
 import {
   buildDirectMessageRoute,
@@ -225,6 +225,8 @@ export function directMessageNotificationTapTarget(
 export function buildNotificationTapTarget(
   data: Record<string, unknown> | undefined,
 ): string {
+  const circleTarget = circleChatNotificationTarget(data);
+  if (circleTarget) return circleTarget;
   const directMessageTarget = directMessageNotificationTapTarget(data);
   if (directMessageTarget) return directMessageTarget;
   const oneReplyTarget = oneReplyNotificationTapTarget(data);
@@ -259,6 +261,8 @@ function resolveNotificationClickTarget(
   value: unknown,
   data: Record<string, unknown> | undefined,
 ): string {
+  const circleTarget = circleChatNotificationTarget(data);
+  if (circleTarget) return circleTarget;
   // Older workers send a Feed URL but retain the original typed payload.
   // Only this known event family may bypass the existing Feed URL boundary.
   const directMessageTarget = directMessageNotificationTapTarget(data);

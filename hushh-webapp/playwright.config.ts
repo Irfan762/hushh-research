@@ -145,6 +145,7 @@ export default defineConfig({
         // (insets, tile grid, aligned tabular counts) in the shipped engine.
         /memory-save-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
+        /circle-chat\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
         /ai-selection\.layout\.spec\.ts/,

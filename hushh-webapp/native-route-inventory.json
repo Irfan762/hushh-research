@@ -1,7 +1,7 @@
 {
   "generated_at": "2026-09-20",
-  "total_routes": 123,
-  "native_required_routes": 103,
+  "total_routes": 122,
+  "native_required_routes": 102,
   "excluded_routes": 20,
   "routes": [
     {
@@ -574,18 +574,6 @@
       ]
     },
     {
-      "route": "/one/kyc",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fone%2Fkyc",
-      "expectedMarker": "native-route-one-kyc",
-      "expectedRoute": "/one/kyc",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded"
-      ]
-    },
-    {
       "route": "/one/location",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Flocation",
@@ -1113,8 +1101,8 @@
       "route": "/one/setup/email",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fsetup%2Femail",
-      "expectedMarker": "native-route-one-kyc",
-      "expectedRoute": "/one/kyc",
+      "expectedMarker": "native-route-one-setup-email",
+      "expectedRoute": "/one/setup/email",
       "autoReviewerLogin": true,
       "expectedAuth": "authenticated",
       "allowedDataStates": [

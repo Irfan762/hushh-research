@@ -45,6 +45,7 @@ import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { Button } from "@/lib/morphy-ux/button";
 import { morphyToast } from "@/lib/morphy-ux/morphy";
 import { useAuth } from "@/hooks/use-auth";
+import { useHeldValue } from "@/hooks/use-held-value";
 import { navigateToAgentChat } from "@/lib/navigation/agent-navigation";
 import { ROUTES } from "@/lib/navigation/routes";
 import {
@@ -142,6 +143,12 @@ function formatAmount(
   }
 }
 
+/**
+ * Older purchases are fetched as a chain of runs: each one finishes, then the
+ * next is queued a moment later. The overview holds its "fetching" state this
+ * long past a finished run so that hand-off never reads as "ready" in between.
+ */
+const OVERVIEW_RECEIPT_SYNC_SETTLE_MS = 4_000;
 const RECEIPT_PLACEHOLDER_ROWS = 8;
 const RECEIPT_ONBOARDING_STORAGE_PREFIX = "hushh.gmail.receipts.onboarding.v1";
 
@@ -652,6 +659,8 @@ export default function GmailReceiptsPage({
   const syncing = gmail.syncingRun;
   const isConnected = gmail.presentation.isConnected;
   const loadingStatus = gmail.loadingStatus;
+  const receiptStorageReadOnly =
+    gmail.status?.receipt_storage_mode === "legacy_read_only";
 
   useEffect(() => {
     if (journeyVariant === "onboarding" || !isConnected || !user?.uid) {
@@ -1210,6 +1219,13 @@ export default function GmailReceiptsPage({
       if (!isConnected || syncing) {
         return;
       }
+      if (receiptStorageReadOnly) {
+        toast.message(
+          gmail.status?.receipt_storage_message ||
+            "Existing receipts remain available while private on-device sync is prepared.",
+        );
+        return;
+      }
       const queued = await gmail.syncNow();
       if (!queued?.run?.run_id) {
         toast.message("We're already syncing your receipts.");
@@ -1228,7 +1244,7 @@ export default function GmailReceiptsPage({
         }),
       );
     }
-  }, [gmail, isConnected, syncing, user?.uid]);
+  }, [gmail, isConnected, receiptStorageReadOnly, syncing, user?.uid]);
 
   const progressPercent = useMemo(
     () => computeSyncProgressPercent(gmail.syncRun),
@@ -1284,6 +1300,7 @@ export default function GmailReceiptsPage({
   const canBuildReceiptMemoryPreview =
     Boolean(user?.uid) &&
     hasSealedReceiptAccess &&
+    !receiptStorageReadOnly &&
     (total > 0 || hasStoredReceipts);
   const autoReceiptSummaryKey = useMemo(() => {
     if (!user?.uid || !isConnected || !canBuildReceiptMemoryPreview) {
@@ -1325,27 +1342,46 @@ export default function GmailReceiptsPage({
   );
   // The run response settles before the aggregate status refresh. Prefer it
   // so a completed fetch never keeps the overview spinner alive.
-  const overviewReceiptsFetching = gmail.syncRun
+  const overviewReceiptsActive = gmail.syncRun
     ? gmail.syncRun.status === "queued" || gmail.syncRun.status === "running"
     : isSyncingState;
   const overviewReceiptIssue = statusSummary.tone === "error" ||
     gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled";
-  const overviewReceiptDetail = loadingStatus
-    ? "Checking your Mail status…"
-    : overviewReceiptsFetching
-    ? hasStaleBackgroundSync
-      ? "Sync is taking longer than usual."
-      : isPassiveBackfillState
+  // After connecting, every fetch is the person's past purchases; only a
+  // manual refresh is about the latest ones. The status-cache age is not shown
+  // here (the receipts workspace carries that note): it would swap the copy
+  // mid-fetch for no reason the person can act on.
+  const overviewFetchingDetail = useHeldValue(
+    overviewReceiptsActive
+      ? isPassiveBackfillState ||
+          connectorState === "connected_initial_scan_running"
         ? "Fetching older purchases…"
         : "Fetching your latest purchases…"
-    : statusSummary.tone === "error"
-      ? `${statusSummary.title}. ${statusSummary.detail}`
-      : gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled"
-        ? "Sync interrupted. Open receipts to retry."
-        : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
-          ? "Your latest receipts are ready."
-          : "Organize your purchases in one place.";
-  const primaryActionLabel = isConnected
+      : null,
+    OVERVIEW_RECEIPT_SYNC_SETTLE_MS,
+  );
+  // A failure is never held back: only a run that ended cleanly can be a seam
+  // between two fetches.
+  const heldOverviewFetchingDetail = overviewReceiptIssue
+    ? null
+    : overviewFetchingDetail;
+  const overviewReceiptsFetching = heldOverviewFetchingDetail !== null;
+  const overviewReceiptDetail = loadingStatus
+    ? "Checking your Mail status…"
+    : heldOverviewFetchingDetail
+      ? heldOverviewFetchingDetail
+      : statusSummary.tone === "error"
+        ? `${statusSummary.title}. ${statusSummary.detail}`
+        : gmail.syncRun?.status === "failed" || gmail.syncRun?.status === "canceled"
+          ? "Sync interrupted. Open receipts to retry."
+          : receiptStorageReadOnly
+            ? "Existing receipts are available while private on-device sync is prepared."
+            : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
+              ? "Your latest receipts are ready."
+              : "Organize your purchases in one place.";
+  const primaryActionLabel = receiptStorageReadOnly
+    ? "Receipt sync moving to device"
+    : isConnected
     ? syncing
       ? "Syncing receipts…"
       : "Sync receipts"
@@ -1911,7 +1947,7 @@ export default function GmailReceiptsPage({
               <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center">
                 <Button
                   onClick={() => void handleSyncNow()}
-                  disabled={syncing || gmailActionBusy !== null}
+                  disabled={syncing || receiptStorageReadOnly || gmailActionBusy !== null}
                   className="w-full sm:w-auto sm:min-w-[150px]"
                   data-voice-control-id="sync_gmail_receipts"
                   data-voice-action-id="profile.gmail.sync_now"
@@ -2363,6 +2399,13 @@ export default function GmailReceiptsPage({
             <ReceiptListSkeleton />
           ) : null}
 
+          {receiptsContentActive && isConnected && receiptStorageReadOnly ? (
+            <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
+              {gmail.status?.receipt_storage_message ||
+                "Existing receipts are available read-only while private on-device sync is prepared. No new receipt data is being copied to Hushh."}
+            </SurfaceInset>
+          ) : null}
+
           {receiptsContentActive &&
           isConnected &&
           hasSealedReceiptAccess &&
@@ -2390,9 +2433,11 @@ export default function GmailReceiptsPage({
           receipts.length === 0 &&
           !loadingStatus ? (
             <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
-              {gmail.syncRun?.synced_count
-                ? "Your receipts are still finishing up. Please try syncing again in a moment."
-                : "No receipts yet. Sync receipts to bring in your recent purchases."}
+              {receiptStorageReadOnly
+                ? "No legacy receipts are available for this account yet. New receipt sync is being moved to your device."
+                : gmail.syncRun?.synced_count
+                  ? "Your receipts are still finishing up. Please try syncing again in a moment."
+                  : "No receipts yet. Sync receipts to bring in your recent purchases."}
             </SurfaceInset>
           ) : null}
 
