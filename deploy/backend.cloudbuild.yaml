@@ -463,7 +463,8 @@ steps:
           --quiet
         execute_status=$?
         set -e
-        if [[ "${execute_status}" -eq 0 ]]; then
+        if [[ "${execute_status}" -eq 0 ]] \
+           && [[ "${_DEPLOY_ENV}" != "production" || "${_ONE_VOICE_LIVE_ENABLED}" != "true" ]]; then
           echo "Managed Vertex candidate probe passed."
           exit 0
         fi
@@ -521,6 +522,19 @@ steps:
             print(str(verdict.get("classification") or ""))
         PY
         )"
+
+        # A successful release must prove that production's enabled One Voice
+        # can open its pinned Live session before the candidate gets traffic.
+        # The general provider-outage advisory still applies to other probes.
+        if [[ "${_DEPLOY_ENV}" == "production" && "${_ONE_VOICE_LIVE_ENABLED}" == "true" ]]; then
+          printf '%s\n' "${probe_line}" | python3 scripts/ci/assert_one_voice_live_probe.py \
+            --model "${_VERTEX_LIVE_MODEL_ID}" \
+            --location "${_VERTEX_LIVE_LOCATION}"
+        fi
+        if [[ "${execute_status}" -eq 0 ]]; then
+          echo "Managed Vertex candidate probe passed."
+          exit 0
+        fi
 
         if [[ "${classification}" == "provider_unavailable" ]]; then
           echo "::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::"
