@@ -7,8 +7,13 @@ import gateway from "@/contracts/kai/kai-action-gateway.vnext.json";
 import routeIndex from "@/contracts/kai/one-route-orchestration-index.v1.json";
 import contract from "@/contracts/pkm/reserved-branches.v1.json";
 import {
+  RESERVED_ENFORCEMENT_MODE,
+  RESERVED_MEMORY_SCREEN_POLICY,
+  ReservedBranchWriteBlocked,
+  assertReservedBranchesUntouched,
   evaluateReservedWrite,
   isReservedPath,
+  isReservedRefusalHint,
   reservedEntryFor,
   touchedReservedBranches,
   writer,
@@ -96,6 +101,62 @@ describe("reserved-branch loader", () => {
       "writer_not_listed",
     );
     expect(evaluateReservedWrite({ domain: "location", paths, writerId: "one_location_saved_place_confirm" })).toEqual([]);
+  });
+
+  it("refuses auto-save authority and a missing capability, as the server does", () => {
+    const paths = ["saved_places"];
+    expect(
+      evaluateReservedWrite({
+        domain: "location",
+        paths,
+        writerId: "one_location_saved_place_confirm",
+        authorizationMode: "owner_auto_save_policy",
+      })[0]?.reason,
+    ).toBe("auto_save_mode");
+    expect(
+      evaluateReservedWrite({ domain: "location", paths, writerId: "location_onboarding_command" })[0]?.reason,
+    ).toBe("capability_missing");
+    expect(
+      evaluateReservedWrite({
+        domain: "location",
+        paths,
+        writerId: "location_onboarding_command",
+        capabilities: ["location_finalize_authorization"],
+      }),
+    ).toEqual([]);
+    expect(
+      evaluateReservedWrite({
+        domain: "identity",
+        paths: ["identity_documents"],
+        writerId: "agent_chat_kyc_owner_confirmed",
+      })[0]?.reason,
+    ).toBe("capability_missing");
+  });
+
+  it("ships in shadow mode with read-only reserved Memory items, from the contract", () => {
+    expect(RESERVED_ENFORCEMENT_MODE).toBe("shadow");
+    expect(RESERVED_MEMORY_SCREEN_POLICY).toBe("read_only_reserved");
+  });
+
+  it("throws only in enforce mode, and only on a refused change", () => {
+    const params = {
+      domain: "identity",
+      before: { identity_documents: { passport_number: "A1" } },
+      after: { identity_documents: { passport_number: "B2" } },
+      writerId: "agent_chat_owner_request",
+    };
+    expect(assertReservedBranchesUntouched({ ...params, mode: "shadow" })).toHaveLength(1);
+    expect(() => assertReservedBranchesUntouched({ ...params, mode: "enforce" })).toThrow(ReservedBranchWriteBlocked);
+    expect(
+      assertReservedBranchesUntouched({ ...params, after: params.before, mode: "enforce" }),
+    ).toEqual([]);
+  });
+
+  it("treats a re-route into the sibling as saveable, every other reserved hint as a refusal", () => {
+    expect(isReservedRefusalHint("reserved_target_rerouted_to_sibling")).toBe(false);
+    expect(isReservedRefusalHint("reserved_branch_blocked")).toBe(true);
+    expect(isReservedRefusalHint("invalid_or_reserved_target_rejected")).toBe(true);
+    expect(isReservedRefusalHint("reserved_target_offered_not_saved")).toBe(true);
   });
 
   it("never refuses the upgrade gate, and ignores non-reserved paths", () => {
@@ -212,8 +273,8 @@ function importedStringConstant(
     for (const element of bindings.elements) {
       if (element.name.text !== name) continue;
       const exported = element.propertyName?.text ?? element.name.text;
-      const module = resolveModule(sourceFile.fileName, statement.moduleSpecifier.text, files);
-      return module ? topLevelStringConstants(module).get(exported) ?? null : null;
+      const target = resolveModule(sourceFile.fileName, statement.moduleSpecifier.text, files);
+      return target ? topLevelStringConstants(target).get(exported) ?? null : null;
     }
   }
   return null;

@@ -1,7 +1,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const navigation = vi.hoisted(() => ({ push: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ push: navigation.push }) }));
+vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: "owner-1" } }) }));
+
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
 import { emptyPkmSaveReceipt } from "@/lib/agent/pkm-save-receipt";
+import { takeReservedOfferPrefill } from "@/lib/pkm/reserved-offer";
 
 afterEach(cleanup);
 describe("quiet Memory capture receipt", () => {
@@ -53,5 +59,52 @@ describe("quiet Memory capture receipt", () => {
     expect(screen.getByTestId("memory-save-owner-review")).toHaveTextContent("Full synthetic detail to inspect before saving");
     fireEvent.click(screen.getByRole("button", { name: "Save it too" }));
     expect(confirm).toHaveBeenCalledTimes(1);
+  });
+  it("offers the owning screen and hands the prefill over in memory, never in the URL", () => {
+    navigation.push.mockReset();
+    const receipt = {
+      ...emptyPkmSaveReceipt(),
+      saved: 1,
+      offers: [
+        {
+          id: "home",
+          ownerFeature: "location",
+          label: "Add as Home in Location",
+          routePattern: "/one/location",
+          actionId: "route.one_location",
+          prefill: { kind: "location_saved_place" as const, category: "home" as const, label: "" },
+        },
+        {
+          id: "amex",
+          ownerFeature: "wallet",
+          label: "Add Amex Gold to Wallet",
+          routePattern: "/one/wallet",
+          actionId: "route.one_wallet",
+          prefill: { kind: "wallet_card" as const, nickname: "Amex Gold" },
+        },
+      ],
+    };
+    render(<AgentMemoryCaptureStatus status={{ phase: "saved", saved: 1, receipt }} />);
+    const rows = screen.getAllByTestId("reserved-offer-row");
+    expect(rows.map((row) => row.textContent)).toEqual(["Add as Home in Location", "Add Amex Gold to Wallet"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Add Amex Gold to Wallet" }));
+    expect(navigation.push).toHaveBeenCalledWith("/one/wallet");
+    // The route is the registry's, with nothing of the fact in it.
+    expect(JSON.stringify(navigation.push.mock.calls)).not.toMatch(/Amex|Gold|nickname/i);
+    // The owning screen takes the prefill once, for this owner only.
+    expect(takeReservedOfferPrefill({ ownerUserId: "someone-else", ownerFeature: "wallet", kind: "wallet_card" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add Amex Gold to Wallet" }));
+    expect(takeReservedOfferPrefill({ ownerUserId: "owner-1", ownerFeature: "wallet", kind: "wallet_card" })).toEqual({
+      kind: "wallet_card",
+      nickname: "Amex Gold",
+    });
+    expect(takeReservedOfferPrefill({ ownerUserId: "owner-1", ownerFeature: "wallet", kind: "wallet_card" })).toBeNull();
+  });
+
+  it("shows no offer rows on a receipt without offers (negative control)", () => {
+    render(<AgentMemoryCaptureStatus status={{ phase: "saved", saved: 1, receipt: { ...emptyPkmSaveReceipt(), saved: 1 } }} />);
+    expect(screen.queryByTestId("reserved-offer-row")).toBeNull();
+    expect(screen.queryByTestId("memory-save-offers")).toBeNull();
   });
 });

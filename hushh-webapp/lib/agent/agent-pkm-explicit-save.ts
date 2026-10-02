@@ -39,6 +39,7 @@ import {
   type PkmNaturalLanguageDuplicateMatch,
 } from "@/lib/pkm/pkm-natural-language-ingestion";
 import { isDegradedPreviewCard } from "@/lib/profile/pkm-agent-lab-preview";
+import { isReservedRefusalHint } from "@/lib/pkm/reserved-branches";
 
 /** Long documents need more than the 120 s review budget; still bounded. */
 export const EXPLICIT_SAVE_PREPARATION_BUDGET_MS = 300_000;
@@ -56,8 +57,10 @@ function isSecretRejected(card: AgentPkmPreviewCard): boolean {
 function isReservedTargetRejected(card: AgentPkmPreviewCard): boolean {
   const decision = card.structure_decision as { action?: unknown } | undefined;
   const action = String(decision?.action || "").toLowerCase();
+  // A re-route into the branch's agent_memory sibling is not a refusal: that
+  // card is kept, and carries an offer to the owning screen.
   return action === "reject_reserved_target" || action === "reserved_target" || action === "reserved" ||
-    (card.validation_hints || []).some((hint) => String(hint).toLowerCase().includes("reserved"));
+    (card.validation_hints || []).some(isReservedRefusalHint);
 }
 
 /**

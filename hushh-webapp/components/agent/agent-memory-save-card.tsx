@@ -3,6 +3,7 @@
 import { useState, type ReactNode } from "react";
 
 import { CaretDownIcon, MemoryAgentIcon } from "@/components/icons";
+import { ReservedOfferRows } from "@/components/agent/reserved-offer-rows";
 import { Button } from "@/components/ui/button";
 import type { AgentPkmPreviewCard } from "@/lib/agent/agent-pkm-memory";
 import {
@@ -10,6 +11,7 @@ import {
   type PkmSaveReceipt,
   type PkmSaveReceiptItemOutcome,
 } from "@/lib/agent/pkm-save-receipt";
+import type { ReservedOfferItem } from "@/lib/pkm/reserved-offer";
 
 /**
  * The receipt card for an explicit "save this to my memory" request.
@@ -78,6 +80,7 @@ export function AgentMemorySaveCard({
   memoryHref,
   renderLink,
   onConfirmNeedsOwner,
+  onOpenOffer,
   pendingCards = [],
 }: {
   receipt: PkmSaveReceipt;
@@ -85,6 +88,8 @@ export function AgentMemorySaveCard({
   /** The host's router link; a plain anchor is used when absent. */
   renderLink?: (props: { href: string; className: string; children: string }) => ReactNode;
   onConfirmNeedsOwner?: () => Promise<void>;
+  /** Opens the app screen that owns a fact; the prefill travels in memory only. */
+  onOpenOffer?: (offer: ReservedOfferItem) => void;
   /** Full proposed details, held only in this unlocked chat session. */
   pendingCards?: readonly AgentPkmPreviewCard[];
 }) {
@@ -143,6 +148,15 @@ export function AgentMemorySaveCard({
             <li key={note}>{note}</li>
           ))}
         </ul>
+      ) : null}
+
+      {receipt.offers?.length && onOpenOffer ? (
+        <div className="flex flex-col gap-2" data-testid="memory-save-offers">
+          <p className="text-xs leading-4 text-foreground/70">
+            {receipt.offers.length === 1 ? "This belongs in an app. Finish it there:" : "These belong in an app. Finish them there:"}
+          </p>
+          <ReservedOfferRows offers={receipt.offers} onOpen={onOpenOffer} />
+        </div>
       ) : null}
 
       {receipt.needsOwner > 0 ? (

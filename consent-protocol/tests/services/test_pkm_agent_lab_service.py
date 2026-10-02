@@ -1128,6 +1128,7 @@ async def test_a_ria_advisor_package_target_is_rerouted_to_ria_agent_memory(monk
     assert card["reserved_offer"] == {
         "domain": "ria",
         "branch": "advisor_package",
+        "subject": "Northwind Capital",
         "owner_feature": "ria",
         "agent_memory_sibling": "ria.agent_memory",
         "offer_action": {

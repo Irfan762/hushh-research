@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PkmMetadataReviewRequired } from "@/lib/personal-knowledge-model/manifest";
 
 /* ---------- mocks (before any real imports) ---------- */
@@ -82,6 +82,18 @@ vi.mock("@/lib/personal-knowledge-model/upgrade-contracts", () => ({
   comparePkmSemanticVersions: vi.fn((left: string, right: string) => left.localeCompare(right)),
   currentDomainContractVersion: vi.fn(() => 2),
 }));
+
+const reservedMode = vi.hoisted(() => ({ value: "shadow" as "shadow" | "enforce" }));
+vi.mock("@/lib/pkm/reserved-branches", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/pkm/reserved-branches")>();
+  // The contract ships in shadow; enforce is exercised by switching this value.
+  return {
+    ...actual,
+    get RESERVED_ENFORCEMENT_MODE() {
+      return reservedMode.value;
+    },
+  };
+});
 
 import {
   getReservedWouldRefuseShadowCount,
@@ -638,11 +650,26 @@ describe("PkmWriteCoordinator", () => {
     });
   });
   describe("reserved-branch shadow (contracts/pkm/reserved-branches.v1.json)", () => {
+    // The KYC reply writer holds an information-request capability; the device
+    // only checks that one is present, and the server verifies it.
+    const KYC_REPLY_AUTHORIZATION = {
+      schema_version: "one.kyc_reply_authorization.v1" as const,
+      information_request_id: "00000000-0000-4000-8000-000000000001",
+      token: `kycreplytoken_${"a".repeat(64)}`,
+      expires_at: "2099-01-01T00:00:00+00:00",
+    };
     const smuggledWrite = (source: string) =>
       PkmWriteCoordinator.savePreparedDomain({
         ...BASE_PARAMS,
         domain: "identity",
-        confirmation: { confirmedByUser: true, surface: "chat", source },
+        confirmation: {
+          confirmedByUser: true,
+          surface: "chat",
+          source,
+          ...(source === "agent_chat_kyc_owner_confirmed"
+            ? { kycReplyAuthorization: KYC_REPLY_AUTHORIZATION }
+            : {}),
+        },
         build: () => ({
           // The scope says agent_memory; the payload also rewrites a document.
           domainData: {
@@ -684,6 +711,61 @@ describe("PkmWriteCoordinator", () => {
 
       expect(result.success).toBe(true);
       expect(getReservedWouldRefuseShadowCount() - before).toBe(0);
+    });
+
+    describe("in enforce mode", () => {
+      beforeEach(() => {
+        reservedMode.value = "enforce";
+      });
+      afterEach(() => {
+        reservedMode.value = "shadow";
+      });
+
+      it("blocks a smuggled identity_documents change behind proposed_scope agent_memory", async () => {
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const result = await smuggledWrite("agent_chat_owner_request");
+
+        expect(result.success).toBe(false);
+        expect(result.saveState).toBe("blocked_reserved_branch");
+        expect(result.reservedRefusals).toEqual([
+          {
+            domain: "identity",
+            branch: "identity_documents",
+            writerId: "agent_chat_owner_request",
+            reason: "memory_agent",
+          },
+        ]);
+        // Nothing reached the network, and no stored or proposed value was logged.
+        expect(pkmStorePreparedDomainMock).not.toHaveBeenCalled();
+        expect(JSON.stringify(warn.mock.calls)).not.toMatch(/SMUGGLED|STORED/);
+        warn.mockRestore();
+      });
+
+      it("still saves the change from the listed writer holding its capability (negative control)", async () => {
+        const result = await smuggledWrite("agent_chat_kyc_owner_confirmed");
+
+        expect(result.success).toBe(true);
+        expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
+      });
+
+      it("still saves a memory agent's write that leaves reserved branches untouched", async () => {
+        const result = await PkmWriteCoordinator.savePreparedDomain({
+          ...BASE_PARAMS,
+          domain: "identity",
+          confirmation: { confirmedByUser: true, surface: "chat", source: "agent_chat_owner_request" },
+          build: ({ currentDomainData }) => ({
+            domainData: {
+              ...currentDomainData,
+              agent_memory: { entities: { mem_1: { summary: "Prefers email" } } },
+            },
+            summary: { item_count: 1 },
+            scopePath: "agent_memory",
+          }),
+        });
+
+        expect(result.success).toBe(true);
+        expect(pkmStorePreparedDomainMock).toHaveBeenCalledTimes(1);
+      });
     });
   });
 });

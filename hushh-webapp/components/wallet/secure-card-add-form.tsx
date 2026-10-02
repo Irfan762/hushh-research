@@ -38,10 +38,15 @@ export interface SecureCardAddFormProps {
   onSubmit: (card: WalletCardInput) => Promise<void>;
   onCancel?: () => void;
   compact?: boolean;
+  /**
+   * A nickname handed over by a chat offer ("Add Amex Gold to Wallet"). Only
+   * the label: the owner types every card detail here, on this screen.
+   */
+  initialNickname?: string;
 }
 
-export function SecureCardAddForm({ onSubmit, onCancel, compact }: SecureCardAddFormProps) {
-  const [nickname, setNickname] = useState("");
+export function SecureCardAddForm({ onSubmit, onCancel, compact, initialNickname }: SecureCardAddFormProps) {
+  const [nickname, setNickname] = useState(initialNickname ?? "");
   const [cardholderName, setCardholderName] = useState("");
   const [pan, setPan] = useState("");
   const [cvv, setCvv] = useState("");

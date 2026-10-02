@@ -143,6 +143,9 @@ export default defineConfig({
         // memory-save-card: the explicit-save receipt's pixel-grid contract
         // (insets, tile grid, aligned tabular counts) in the shipped engine.
         /memory-save-card\.layout\.spec\.ts/,
+        // reserved-offer-card: the receipt's "Add as Home in Location" rows and
+        // Memory's read-only "Open in" row, tapped on an iPhone first.
+        /reserved-offer-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,

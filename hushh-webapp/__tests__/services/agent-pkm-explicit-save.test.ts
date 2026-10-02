@@ -82,6 +82,49 @@ describe("explicit memory save", () => {
     expect(timedOut.skipped).toEqual([]);
   });
 
+  it("saves a fact re-routed to its app's agent_memory sibling and offers the app's screen", () => {
+    // The server moved "my home is ..." out of location.saved_places into
+    // location.agent_memory. The hint names "reserved", but it is not a refusal:
+    // a substring check here once dropped every re-routed card unsaved.
+    const offer = {
+      domain: "location",
+      branch: "saved_places",
+      subject: "Home",
+      owner_feature: "location",
+      agent_memory_sibling: "location.agent_memory",
+      offer_action: { route_pattern: "/one/location", action_id: "route.one_location", label: "Add as Home in Location" },
+      registry_version: 1,
+    };
+    const partition = partitionExplicitSaveCards([
+      card("home", {
+        target_domain: "location",
+        validation_hints: ["reserved_target_rerouted_to_sibling"],
+        candidate_payload: { agent_memory: { entities: { home: { summary: "My home is 12 Example Street" } } } },
+        reserved_offer: offer,
+      }),
+      // Negative control: a refusal hint still keeps the card out.
+      card("blocked", { validation_hints: ["reserved_branch_blocked"], reserved_offer: offer }),
+    ]);
+    expect(partition.save.map((item) => item.card_id)).toEqual(["home"]);
+    expect(partition.excluded.map((item) => item.card_id)).toEqual(["blocked"]);
+    const receipt = buildPkmSaveReceipt({
+      coverage: [],
+      partition,
+      saveResult: { attempted: 1, saved: 1, failed: 0, domains: ["location"], results: [acked("saved")] },
+    });
+    expect(receipt.saved).toBe(1);
+    expect(receipt.offers).toEqual([
+      {
+        id: "home",
+        ownerFeature: "location",
+        label: "Add as Home in Location",
+        routePattern: "/one/location",
+        actionId: "route.one_location",
+        prefill: { kind: "location_saved_place", category: "home", label: "" },
+      },
+    ]);
+  });
+
   it("counts only acknowledged commits; a success without a revision is a failure", () => {
     const partition = partitionExplicitSaveCards([card("a"), card("b"), card("c"), card("d")]);
     const receipt = buildPkmSaveReceipt({

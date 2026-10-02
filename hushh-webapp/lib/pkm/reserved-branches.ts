@@ -6,9 +6,11 @@
  * one list so they cannot drift, the same reason `internal-path-keys.v1.json`
  * exists.
  *
- * Phase 0 is shadow mode: `evaluateReservedWrite` answers "would this write be
- * refused", and the write coordinator only COUNTS the answer. Nothing here
- * refuses a write yet.
+ * `evaluateReservedWrite` answers "would this write be refused". The contract's
+ * own `enforcement` value (`RESERVED_ENFORCEMENT_MODE`) decides what the write
+ * coordinator does with the answer: `shadow` only counts it, `enforce` blocks
+ * the save. It is a reviewed contract value, never an env flag, so the device
+ * and the server read the same one.
  *
  * Deliberately dependency-free and not a client module, like
  * `internal-path-keys.ts`, so the coordinator and tests can import it alone.
@@ -20,7 +22,21 @@ import contract from "@/contracts/pkm/reserved-branches.v1.json";
 export const WILDCARD_BRANCH = "*";
 
 export type ReservedWriterClass = "feature" | "memory_agent" | "migration";
-export type ReservedRefusalReason = "writer_unknown" | "memory_agent" | "writer_not_listed";
+export type ReservedRefusalReason =
+  | "writer_unknown"
+  | "memory_agent"
+  | "writer_not_listed"
+  | "auto_save_mode"
+  | "capability_missing";
+export type ReservedEnforcementMode = "shadow" | "enforce";
+export type ReservedMemoryScreenPolicy = "read_only_reserved" | "editable";
+
+/** Where the owner commits a re-routed fact: the owning feature's own screen. */
+export type ReservedOfferAction = {
+  routePattern: string;
+  actionId: string;
+  labelTemplate: string;
+};
 
 export type ReservedWriter = {
   writerId: string;
@@ -40,6 +56,7 @@ export type ReservedEntry = {
   agentMemorySibling: string | null;
   shareable: string;
   sendToModel: string;
+  offerAction: ReservedOfferAction | null;
 };
 
 /** One would-be refusal. Carries labels only, never a stored value. */
@@ -67,6 +84,7 @@ type RawEntry = {
   agent_memory_sibling: string | null;
   shareable: string;
   send_to_model: string;
+  offer_action: { route_pattern: string; action_id: string; label_template: string } | null;
 };
 
 const WRITER_CLASSES: ReadonlySet<string> = new Set(["feature", "memory_agent", "migration"]);
@@ -114,9 +132,48 @@ const ENTRIES: readonly ReservedEntry[] = (contract.entries as RawEntry[]).map((
   agentMemorySibling: raw.agent_memory_sibling ?? null,
   shareable: raw.shareable,
   sendToModel: raw.send_to_model,
+  offerAction: raw.offer_action
+    ? {
+        routePattern: raw.offer_action.route_pattern,
+        actionId: raw.offer_action.action_id,
+        labelTemplate: raw.offer_action.label_template,
+      }
+    : null,
 }));
 
 export const RESERVED_REGISTRY_VERSION: number = contract.version;
+
+function readEnum<T extends string>(value: unknown, allowed: readonly T[], code: string): T {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!(allowed as readonly string[]).includes(normalized)) throw new Error(code);
+  return normalized as T;
+}
+
+/** `shadow` (count) or `enforce` (block). Anything else fails the import closed. */
+export const RESERVED_ENFORCEMENT_MODE: ReservedEnforcementMode = readEnum(
+  (contract as { enforcement?: unknown }).enforcement,
+  ["shadow", "enforce"] as const,
+  "reserved_branches_enforcement_mode_invalid",
+);
+
+/** How the Memory screen treats an item inside a reserved branch. */
+export const RESERVED_MEMORY_SCREEN_POLICY: ReservedMemoryScreenPolicy = readEnum(
+  (contract as { memory_screen_policy?: unknown }).memory_screen_policy,
+  ["read_only_reserved", "editable"] as const,
+  "reserved_branches_memory_screen_policy_invalid",
+);
+
+/** Authorization modes that write without the owner reviewing this write. */
+export const AUTO_SAVE_AUTHORIZATION_MODES: ReadonlySet<string> = new Set([
+  "owner_auto_save_policy",
+  "product_default_auto_save_policy",
+]);
+
+/** The offer's button text, `{label}` filled with the agent's short noun. */
+export function reservedOfferLabel(offer: ReservedOfferAction, noun: string | null | undefined): string {
+  const text = String(noun ?? "").replace(/\s+/g, " ").trim().slice(0, 48) || "this";
+  return offer.labelTemplate.replace("{label}", text);
+}
 
 /** The catalogued writer for `writerId`, or null when it is unknown. */
 export function writer(writerId: string | null | undefined): ReservedWriter | null {
@@ -167,11 +224,16 @@ export function evaluateReservedWrite(params: {
   domain: string;
   paths: Iterable<string | null | undefined>;
   writerId: string | null | undefined;
+  authorizationMode?: string | null;
+  /** Capabilities the caller has already PROVEN, e.g. a Location finalize authority. */
+  capabilities?: Iterable<string>;
 }): ReservedRefusal[] {
   const canonicalDomain = String(params.domain ?? "").trim().toLowerCase();
   const writerId = String(params.writerId ?? "").trim().toLowerCase();
   const catalogued = writer(writerId);
   if (catalogued?.writerClass === "migration") return [];
+  const mode = String(params.authorizationMode ?? "").trim().toLowerCase();
+  const held = new Set([...(params.capabilities ?? [])].map((item) => String(item).trim().toLowerCase()));
   const refusals = new Map<string, ReservedRefusal>();
   for (const rawPath of params.paths) {
     const normalized = normalizePath(rawPath);
@@ -181,7 +243,10 @@ export function evaluateReservedWrite(params: {
     if (!catalogued) reason = "writer_unknown";
     else if (catalogued.writerClass === "memory_agent") reason = "memory_agent";
     else if (!entry.writerIds.has(writerId)) reason = "writer_not_listed";
-    else continue;
+    else if (AUTO_SAVE_AUTHORIZATION_MODES.has(mode)) reason = "auto_save_mode";
+    else if (catalogued.requiresCapability && !held.has(catalogued.requiresCapability)) {
+      reason = "capability_missing";
+    } else continue;
     const branch = branchLabel(entry, normalized);
     const key = `${branch}|${reason}`;
     if (!refusals.has(key)) {
@@ -290,4 +355,75 @@ export function touchedReservedBranches(params: {
     if (changed || dropped || deleted) touched.push(prefix);
   }
   return touched;
+}
+
+/** Thrown by `assertReservedBranchesUntouched`; carries labels only, never a value. */
+export class ReservedBranchWriteBlocked extends Error {
+  readonly refusals: readonly ReservedRefusal[];
+  constructor(refusals: readonly ReservedRefusal[]) {
+    super(`reserved_branch_blocked:${refusals.map((item) => `${item.domain}.${item.branch}`).join(",")}`);
+    this.name = "ReservedBranchWriteBlocked";
+    this.refusals = refusals;
+  }
+}
+
+/**
+ * The device-side value check: every reserved branch this write would change,
+ * judged against its writer. Returns the refusals; in `enforce` mode throws
+ * `ReservedBranchWriteBlocked` when there are any. The server cannot run this
+ * check, because each write re-encrypts the whole domain: a change smuggled
+ * behind an innocent `proposed_scope` is only visible here, before encryption.
+ */
+export function assertReservedBranchesUntouched(params: {
+  domain: string;
+  before: Record<string, unknown> | null | undefined;
+  after: Record<string, unknown> | null | undefined;
+  writerId: string | null | undefined;
+  mergeMode?: string | null;
+  deleteTargetPath?: string | null;
+  authorizationMode?: string | null;
+  capabilities?: Iterable<string>;
+  mode?: ReservedEnforcementMode;
+}): ReservedRefusal[] {
+  const touched = touchedReservedBranches({
+    domain: params.domain,
+    before: params.before,
+    after: params.after,
+    mergeMode: params.mergeMode,
+    deleteTargetPath: params.deleteTargetPath,
+  });
+  if (touched.length === 0) return [];
+  const refusals = evaluateReservedWrite({
+    domain: params.domain,
+    paths: touched,
+    writerId: params.writerId,
+    authorizationMode: params.authorizationMode,
+    capabilities: params.capabilities,
+  });
+  if (refusals.length && (params.mode ?? RESERVED_ENFORCEMENT_MODE) === "enforce") {
+    throw new ReservedBranchWriteBlocked(refusals);
+  }
+  return refusals;
+}
+
+/**
+ * The hint a structure preview carries when the registry moved its target into
+ * an agent_memory sibling. The card is saveable; it is the one "reserved" hint
+ * that is not a refusal.
+ */
+export const RESERVED_REROUTE_HINT = "reserved_target_rerouted_to_sibling";
+
+/** True for a validation hint that refuses a reserved target, not a re-route. */
+export function isReservedRefusalHint(hint: unknown): boolean {
+  const text = String(hint ?? "").trim().toLowerCase();
+  return text.includes("reserved") && text !== RESERVED_REROUTE_HINT;
+}
+
+/** The reserved entry, sibling and offer for a Memory item, when it is app-owned. */
+export function reservedOwnerFor(
+  domain: string | null | undefined,
+  pathSegments: readonly (string | number)[],
+): ReservedEntry | null {
+  const path = pathSegments.filter((segment) => typeof segment === "string").join(".");
+  return reservedEntryFor(domain, path);
 }

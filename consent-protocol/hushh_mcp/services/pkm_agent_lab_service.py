@@ -3757,6 +3757,8 @@ class PKMAgentLabService:
         return {
             "domain": entry.domain,
             "branch": branch,
+            # The agent's short noun ("Home"); the owning screen prefills from it.
+            "subject": label,
             "owner_feature": entry.owner_feature,
             "agent_memory_sibling": entry.agent_memory_sibling,
             "offer_action": {

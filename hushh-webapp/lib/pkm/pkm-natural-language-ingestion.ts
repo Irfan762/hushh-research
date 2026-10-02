@@ -120,32 +120,6 @@ function logIngestion(event: string, fields: PkmIngestionLogFields): void {
   console.info(`[PKM_INGEST] ${event}`, fields);
 }
 
-const EXPLICIT_PKM_SAVE_INTENT =
-  /\b(?:save|store|remember|add|keep)\b[\s\S]{0,100}\b(?:my\s+)?(?:pkm|memory|vault)\b/i;
-const KYC_IDENTITY_FIELD_HINT =
-  /\b(?:aadha{1,2}r|pan(?:\s+(?:number|no))?|passport(?:\s+number)?|driving\s+licen[cs]e(?:\s+number)?|voter\s*id(?:\s+number)?|roll\s*(?:number|no)|student\s*id|address)\b/i;
-
-/**
- * The restricted KYC writer is one constrained extraction call over a fixed
- * identity schema. It is for a short request that names an identity field
- * ("save my passport number ..."), never for a long document. Measured on
- * production 2026-09-29: a 17,120 character personal-context transfer that
- * mentioned a passport and asked to be saved matched this rule, went to the
- * KYC writer as ONE call, and came back as three identity cards. The other
- * fourteen sections were never prepared. A message that plans into more than
- * one source section, or is longer than one proposal, stays on the general
- * semantic path, where every section is prepared.
- */
-const KYC_EXPLICIT_SAVE_MAX_CHARS = 1_200;
-
-export function isExplicitKycIdentitySaveRequest(message: string): boolean {
-  if (message.length > KYC_EXPLICIT_SAVE_MAX_CHARS) return false;
-  if (!EXPLICIT_PKM_SAVE_INTENT.test(message) || !KYC_IDENTITY_FIELD_HINT.test(message)) {
-    return false;
-  }
-  return planPkmSourceChunks(message, { maxBlocks: 1 }).length <= 1;
-}
-
 function splitRecommendedPreview(preview: AgentPkmPreviewResponse): boolean {
   return preview.preview_summary?.split_recommended === true;
 }

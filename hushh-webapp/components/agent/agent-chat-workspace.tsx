@@ -231,7 +231,6 @@ import {
 } from "@/lib/agent/agent-pkm-memory";
 import {
   ingestNaturalLanguagePkm,
-  isExplicitKycIdentitySaveRequest,
   prepareNaturalLanguagePkm,
 } from "@/lib/pkm/pkm-natural-language-ingestion";
 import {
@@ -5068,6 +5067,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       sourceMessage: string;
       currentDomains: string[];
       kycInformationSaveConfirmed?: boolean;
+      /** The open information request the KYC reply answers; binds the KYC writer. */
+      kycInformationRequestWorkflowId?: string;
       /** The owner asked One to save this; see lib/agent/agent-pkm-explicit-save.ts. */
       explicitRequest?: boolean;
     }): Promise<AgentPkmCaptureStatus> => {
@@ -5076,10 +5077,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const existing = pkmCaptureJobsRef.current.get(jobKey);
       if (existing) return existing;
       const token = getVaultOwnerToken();
-      const ownerConfirmedKycSave = params.kycInformationSaveConfirmed === true;
+      // Only a typed reply to an owner-selected information request runs the
+      // KYC writer. The keyword route that also sent "save my passport ..." here
+      // is retired: it once took a whole 17,120 character paste away from the
+      // semantic agents (production, 2026-09-29). An explicit save goes to them.
+      const ownerConfirmedKycSave =
+        params.kycInformationSaveConfirmed === true && Boolean(params.kycInformationRequestWorkflowId);
       const explicitRequest = params.explicitRequest === true;
-      const userRequestedSave = explicitRequest || ownerConfirmedKycSave ||
-        isExplicitKycIdentitySaveRequest(params.sourceMessage);
+      const userRequestedSave = explicitRequest || ownerConfirmedKycSave;
       if (explicitRequest && (!user?.uid || !vaultKey || !token)) {
         const locked: AgentPkmCaptureStatus = { phase: "needs_unlock", saved: 0 };
         setMessages((current) => current.map((message) =>
@@ -5136,10 +5141,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           // Yield presentation without creating an untracked detached timer.
           await guard.assertCurrent();
           settle({ phase: "preparing", saved: 0 });
-          if (ownerConfirmedKycSave || isExplicitKycIdentitySaveRequest(params.sourceMessage)) {
+          if (ownerConfirmedKycSave && params.kycInformationRequestWorkflowId) {
             // A typed reply to an owner-selected KYC request is an explicit
             // confirmation for the fixed, restricted KYC schema. The Gmail
             // email never enters this writer; only the owner's message does.
+            // The server binds the writer to this open request: without the
+            // capability it refuses identity writes (reserved-branches.v1.json).
+            const kycReplyAuthorization = await GmailInformationRequestsService.issuePkmReplyAuthorization({
+              firebaseIdToken: await user.getIdToken(),
+              vaultOwnerToken: token,
+              workflowId: params.kycInformationRequestWorkflowId,
+            });
+            await guard.assertCurrent();
             const ingestion = await ingestNaturalLanguagePkm({
               userId,
               message: params.sourceMessage,
@@ -5152,6 +5165,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 confirmedByUser: true,
                 surface: "chat",
                 source: "agent_chat_kyc_owner_confirmed",
+                kycReplyAuthorization,
               },
               writePolicy: "reviewable",
               batchSimpleDomainExtensions: true,
@@ -5275,7 +5289,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       pkmCaptureJobsRef.current.set(jobKey, job);
       return job;
     },
-    [appendDebugEvent, getVaultOwnerToken, user?.uid, vaultKey],
+    [appendDebugEvent, getVaultOwnerToken, user, vaultKey],
   );
 
   // The owner tapped "Save these too" on a memory receipt card: their direct
@@ -5942,6 +5956,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           sourceMessage: turnSourceText,
           currentDomains: agentPkmContext.domains,
           kycInformationSaveConfirmed: true,
+          kycInformationRequestWorkflowId: options.gmailInformationRequestWorkflowId,
         });
         if (capture.saved > 0) {
           agentPkmContext = await loadAgentPkmContext({

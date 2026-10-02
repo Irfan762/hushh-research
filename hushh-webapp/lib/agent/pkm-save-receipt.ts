@@ -9,6 +9,7 @@
 
 import type { AgentPkmPreviewCard, AgentPkmSaveResult } from "@/lib/agent/agent-pkm-memory";
 import { humanizeMemorySegment } from "@/lib/pkm/humanize-segment";
+import { toReservedOfferItem, type ReservedOfferItem } from "@/lib/pkm/reserved-offer";
 import type { PkmNaturalLanguageSourceCoverage } from "@/lib/pkm/pkm-natural-language-ingestion";
 import type { PkmMergeOutcome } from "@/lib/pkm/pkm-supersede-merge";
 
@@ -61,6 +62,12 @@ export type PkmSaveReceipt = {
   unprepared: number;
   domains: PkmSaveReceiptDomain[];
   items: PkmSaveReceiptItem[];
+  /**
+   * Facts that belong to an app's own screen (reserved-branches.v1.json), each
+   * an offer to commit it there. Kept in the branch's agent_memory sibling when
+   * saved; offered either way.
+   */
+  offers: ReservedOfferItem[];
 };
 
 export type ExplicitSavePartition = {
@@ -91,7 +98,7 @@ function itemText(card: AgentPkmPreviewCard): string {
 export function emptyPkmSaveReceipt(): PkmSaveReceipt {
   return {
     saved: 0, updated: 0, merged: 0, unchanged: 0, skipped: 0, excluded: 0, unreadable: 0,
-    needsOwner: 0, failed: 0, unprepared: 0, domains: [], items: [],
+    needsOwner: 0, failed: 0, unprepared: 0, domains: [], items: [], offers: [],
   };
 }
 
@@ -148,12 +155,34 @@ export function buildPkmSaveReceipt(params: {
     if (block.accountedFactCount > 0) continue;
     if (block.disposition === "intentionally_ignored") receipt.skipped += 1;
   }
+  receipt.offers = collectReservedOffers([
+    ...params.partition.save.filter((_card, index) => isCommittedPkmSave(params.saveResult?.results[index])),
+    ...params.partition.excluded,
+  ]);
   receipt.domains = [...domains.values()].sort(
     (left, right) =>
       right.saved + right.updated + right.merged - (left.saved + left.updated + left.merged) ||
       left.label.localeCompare(right.label),
   );
   return receipt;
+}
+
+/** At most three offers, one per screen and label, in the order they arrived. */
+export const MAX_RECEIPT_OFFERS = 3;
+
+export function collectReservedOffers(cards: readonly AgentPkmPreviewCard[]): ReservedOfferItem[] {
+  const offers: ReservedOfferItem[] = [];
+  const seen = new Set<string>();
+  for (const card of cards) {
+    const item = toReservedOfferItem(card.card_id, card.reserved_offer);
+    if (!item) continue;
+    const key = `${item.routePattern}|${item.label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    offers.push(item);
+    if (offers.length >= MAX_RECEIPT_OFFERS) break;
+  }
+  return offers;
 }
 
 export function pkmSaveReceiptWrote(receipt: PkmSaveReceipt): number {
@@ -227,6 +256,7 @@ export function applyOwnerConfirmedSave(
     ...receipt,
     domains: receipt.domains.map((domain) => ({ ...domain })),
     items: [...receipt.items],
+    offers: [...(receipt.offers ?? [])],
   };
   cards.forEach((card, index) => {
     const ack = result.results[index];

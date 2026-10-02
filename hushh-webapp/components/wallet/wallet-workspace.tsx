@@ -72,6 +72,7 @@ import {
   focusedCardIdOf,
   walletViewReducer,
 } from "@/lib/wallet/wallet-view-state";
+import { takeReservedOfferPrefill } from "@/lib/pkm/reserved-offer";
 
 const WALLET_PAGE_SIZE = 10;
 
@@ -142,6 +143,9 @@ export function WalletWorkspace() {
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<WalletCardSummary | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  // A chat offer ("Add Amex Gold to Wallet") hands over the nickname in memory
+  // (lib/pkm/reserved-offer.ts); the owner enters the card here, as always.
+  const [offerNickname, setOfferNickname] = useState<string | null>(null);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const detailsId = useId();
   // Search and page live in the URL (same shape as Consent Center's list), so a
@@ -219,6 +223,18 @@ export function WalletWorkspace() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!renderedOwnerId || view.kind !== "list") return;
+    const staged = takeReservedOfferPrefill({
+      ownerUserId: renderedOwnerId,
+      ownerFeature: "wallet",
+      kind: "wallet_card",
+    });
+    if (!staged) return;
+    setOfferNickname(staged.nickname);
+    dispatch({ type: "open_add" });
+  }, [renderedOwnerId, view.kind]);
 
   const focusedCardId = focusedCardIdOf(view);
   const focusedCard = focusedCardId
@@ -551,6 +567,7 @@ export function WalletWorkspace() {
           {view.kind === "add" ? (
             <div className="motion-step-enter">
               <SecureCardAddForm
+                initialNickname={offerNickname ?? undefined}
                 onSubmit={async (card) => {
                   const context = vaultContext();
                   if (!context) throw new Error("Unlock your vault to save a card.");
@@ -570,9 +587,13 @@ export function WalletWorkspace() {
                     }
                     throw error;
                   }
+                  setOfferNickname(null);
                   await refresh();
                 }}
-                onCancel={() => dispatch({ type: "close_add" })}
+                onCancel={() => {
+                  setOfferNickname(null);
+                  dispatch({ type: "close_add" });
+                }}
               />
             </div>
           ) : null}

@@ -1,5 +1,7 @@
 "use client";
 
+import { isReservedRefusalHint } from "@/lib/pkm/reserved-branches";
+import type { AgentPkmReservedOffer } from "@/lib/pkm/reserved-offer";
 import type { DomainManifest } from "@/lib/personal-knowledge-model/manifest";
 import { buildReadablePkmMetadata } from "@/lib/personal-knowledge-model/natural-language";
 import { ApiService } from "@/lib/services/api-service";
@@ -88,6 +90,8 @@ export type AgentPkmPreviewCard = {
     affected_grant_ids: string[];
     affected_export_ids: string[];
   };
+  /** Set when this fact belongs to an app-owned branch and was kept in its sibling. */
+  reserved_offer?: AgentPkmReservedOffer | null;
 };
 
 export type AgentPkmPreviewResponse = {
@@ -281,7 +285,7 @@ export function isReservedPkmCard(card: AgentPkmPreviewCard): boolean {
     action === "reject_reserved_target" ||
     action === "reserved_target" ||
     action === "reserved" ||
-    hints.some((hint) => hint.includes("reserved"))
+    hints.some(isReservedRefusalHint)
   );
 }
 
