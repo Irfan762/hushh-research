@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AgentHistorySidebar } from "@/components/agent/agent-history-sidebar";
 import type { AgentChatConversation } from "@/lib/services/agent-chat-client";
@@ -35,6 +35,7 @@ function renderSidebar(extra: Partial<Parameters<typeof AgentHistorySidebar>[0]>
 }
 
 describe("AgentHistorySidebar", () => {
+  afterEach(() => vi.useRealTimers());
   it("places Drive activity above chats on One and hides it on Puppy", () => {
     const activity = <div data-testid="drive-activity">Drive sharing update</div>;
     const first = renderSidebar({ driveActivity: activity });
@@ -80,6 +81,9 @@ describe("AgentHistorySidebar", () => {
     // Regression: the list sends `last_message_at` as epoch seconds. Parsing
     // it as a date string gave NaN, so every chat grouped as "Older" and no
     // row showed its time.
+    // Keep the age within Today even when CI runs just after midnight.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 0, 15, 12, 0, 0));
     const seconds = (Date.now() - 19 * 60_000) / 1000;
     render(
       <AgentHistorySidebar
