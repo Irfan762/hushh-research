@@ -113,9 +113,31 @@ async def test_a_manifest_provider_with_no_row_still_appears_in_development(regi
 
     assert _pinned(by_id["notion"])
     assert _pinned(by_id["hubspot"])
-    # A registration-only contract (Attio) is never a runtime provider, so never overlaid.
-    assert "attio" not in by_id
+    # Attio now has a reviewed runtime manifest, so it is overlaid and pinned too.
+    assert _pinned(by_id["attio"])
     assert "public" in by_id
+
+
+@pytest.mark.asyncio
+async def test_a_registration_only_provider_is_never_overlaid_in_development(
+    registry, monkeypatch, registration_only_provider
+):
+    service, _, _ = registry
+    _develop(monkeypatch)
+    by_id = {item.connector_id: item for item in await service.list_active_connectors()}
+
+    # The registration contract is loaded, but with no tool policy it is not a
+    # runtime provider: not overlaid, not fetchable, not in the curated list.
+    assert registration_only_provider.connector_id == "pendingco"
+    assert get_manifest("pendingco") is None
+    assert "pendingco" not in by_id
+    assert await service.get_connector("pendingco") is None
+    assert "pendingco" not in {
+        item.connector_id for item in await service.list_curated_connectors()
+    }
+    # The runtime providers are still overlaid alongside it.
+    assert _pinned(by_id["attio"])
+    assert _pinned(by_id["hubspot"])
 
 
 @pytest.mark.asyncio

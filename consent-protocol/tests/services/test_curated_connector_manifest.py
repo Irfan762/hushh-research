@@ -38,7 +38,10 @@ from hushh_mcp.services.curated_connector_manifest import (
     registration_spec_errors,
 )
 from hushh_mcp.services.external_connector_registry_service import ExternalMcpConnectorDefinition
-from hushh_mcp.services.external_mcp_connector_descriptor import validate_descriptor
+from hushh_mcp.services.external_mcp_connector_descriptor import (
+    descriptor_to_row_values,
+    validate_descriptor,
+)
 
 MANIFESTS = all_manifests()
 REGISTRATION_SPECS = all_registration_specs()
@@ -57,34 +60,165 @@ def test_there_is_at_least_one_manifest_and_none_failed_to_load():
     assert manifest_errors() == {}
 
 
-def test_attio_registration_spec_is_valid_but_never_becomes_a_runtime_manifest():
-    assert registration_spec_errors() == {}
-    assert set(REGISTRATION_SPECS) == {"attio"}
-    assert get_manifest("attio") is None
-    assert get_registration_spec("attio") == REGISTRATION_SPECS["attio"]
-    assert not (MANIFEST_DIR / "attio.json").exists()
+def _registration_only_raw() -> dict:
+    """The raw JSON of the synthetic registration-only provider ("pendingco").
 
-    spec = REGISTRATION_SPECS["attio"]
-    assert spec.display_name == "Attio"
-    assert spec.description == "Connect Attio after setup is complete."
+    Only valid while the `registration_only_provider` fixture is active: it reads the
+    fixture's temporary registration directory, not the shipped one."""
+    from hushh_mcp.services import curated_connector_manifest as module
+
+    return json.loads((module.REGISTRATION_SPEC_DIR / "pendingco.json").read_text(encoding="utf-8"))
+
+
+def test_a_registration_only_spec_is_valid_but_never_becomes_a_runtime_manifest(
+    registration_only_provider,
+):
+    spec = registration_only_provider
+    assert registration_spec_errors() == {}
+    assert set(all_registration_specs()) == {"pendingco"}
+    assert get_manifest("pendingco") is None
+    assert get_registration_spec("pendingco") == spec
+    assert not (MANIFEST_DIR / "pendingco.json").exists()
+
+    assert spec.display_name == "Pending Co"
+    assert spec.description == "Connect Pending Co after setup is complete."
     assert spec.is_public_client is True
-    assert spec.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
-    assert spec.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
+    assert spec.client_id_env == "PENDINGCO_OAUTH_CLIENT_ID"
+    assert spec.secret_env_names == ("PENDINGCO_OAUTH_CLIENT_ID",)
     assert spec.registration_url == "https://app.attio.com/oauth/register"
     assert spec.redirect_uris["uat"] == (
         "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
     )
 
 
-def test_catalog_entries_project_only_reviewed_display_metadata_and_setup_state():
+def test_catalog_entries_project_only_reviewed_display_metadata_and_setup_state(
+    registration_only_provider,
+):
     entries = all_catalog_entries()
-    assert set(entries) == {"hubspot", "notion", "attio"}
+    assert set(entries) == {"hubspot", "notion", "attio", "pendingco"}
     assert entries["hubspot"].catalog_state == "setup_pending"
     assert entries["notion"].catalog_state == "setup_pending"
-    assert entries["attio"].catalog_state == "discovery_pending"
+    # Attio now has a reviewed runtime manifest, so it is no longer discovery-pending.
+    assert entries["attio"].catalog_state == "setup_pending"
     assert entries["attio"].display_name == "Attio"
-    assert entries["attio"].description == "Connect Attio after setup is complete."
+    assert entries["attio"].description == MANIFESTS["attio"].description
     assert not hasattr(entries["attio"], "mcp_endpoint")
+    # A registration-only provider is still projected as discovery-pending, display only.
+    assert entries["pendingco"].catalog_state == "discovery_pending"
+    assert entries["pendingco"].display_name == "Pending Co"
+    assert entries["pendingco"].description == "Connect Pending Co after setup is complete."
+    assert not hasattr(entries["pendingco"], "mcp_endpoint")
+
+
+# --- Attio: reviewed runtime manifest ----------------------------------------
+# Attio graduated from a registration-only contract to a reviewed runtime
+# manifest. These pin the exact tool-policy decisions made at review so a later
+# edit cannot quietly widen them.
+
+ATTIO_NEVER_ALLOWLISTED = {
+    "delete-comment",  # irreversible
+    "delete-task",  # irreversible
+    "merge-records",  # irreversible
+    "create-list",  # changes workspace structure and permissions
+    "update-list",  # changes workspace structure and permissions
+}
+# Private-communication content: callable, but every call needs a review card.
+ATTIO_REVIEW_EVERY_CALL = {
+    "get-email-content",
+    "search-emails-by-metadata",
+    "semantic-search-emails",
+    "get-call-recording",
+    "search-call-recordings-by-metadata",
+    "semantic-search-call-recordings",
+}
+ATTIO_FREE_READS = {
+    "whoami",
+    "list-records",
+    "search-records",
+    "get-records-by-ids",
+    "list-objects",
+    "get-note-body",
+}
+ATTIO_WRITES = {
+    "create-record",
+    "update-record",
+    "upsert-record",
+    "create-note",
+    "update-note",
+    "create-task",
+    "update-task",
+    "create-comment",
+    "add-record-to-list",
+    "update-list-entry-by-id",
+    "update-list-entry-by-record-id",
+}
+
+
+def test_attio_is_a_reviewed_public_pkce_runtime_provider():
+    attio = get_manifest("attio")
+    assert attio is not None
+    assert attio == MANIFESTS["attio"]
+    assert (MANIFEST_DIR / "attio.json").is_file()
+    assert attio.connector_id == "attio"
+    assert attio.display_name == "Attio"
+    assert attio.mcp_endpoint == "https://mcp.attio.com/mcp"
+    assert attio.is_public_client is True
+    assert attio.token_endpoint_auth == "none"
+    assert attio.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
+    assert attio.client_secret_env is None
+    assert attio.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
+    assert attio.registration_url == "https://app.attio.com/oauth/register"
+    assert set(attio.scopes) == {"mcp", "offline_access", "openid"}
+    assert attio.redirect_uris["uat"] == (
+        "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
+    )
+    descriptor = validate_descriptor(attio.to_descriptor("uat")).raw
+    assert descriptor["chatAdmission"] == "reviewed"
+    assert "oauthClientSecretEnv" not in descriptor
+
+
+def test_attio_free_reads_are_a_subset_of_its_allowlist():
+    attio = MANIFESTS["attio"]
+    assert attio.free_read_tools
+    assert attio.free_read_tools <= set(attio.tool_allowlist)
+    assert len(set(attio.tool_allowlist)) == len(attio.tool_allowlist)
+
+
+def test_attio_never_allowlists_irreversible_or_workspace_structure_tools():
+    allowlist = set(MANIFESTS["attio"].tool_allowlist)
+    assert allowlist.isdisjoint(ATTIO_NEVER_ALLOWLISTED)
+    assert oauth.curated_free_read_tools("attio").isdisjoint(ATTIO_NEVER_ALLOWLISTED)
+
+
+def test_attio_private_communication_tools_are_allowlisted_but_always_reviewed():
+    attio = MANIFESTS["attio"]
+    assert ATTIO_REVIEW_EVERY_CALL <= set(attio.tool_allowlist)
+    assert attio.free_read_tools.isdisjoint(ATTIO_REVIEW_EVERY_CALL)
+    assert oauth.curated_free_read_tools("attio").isdisjoint(ATTIO_REVIEW_EVERY_CALL)
+
+
+def test_attio_plain_reads_are_free_reads():
+    attio = MANIFESTS["attio"]
+    assert ATTIO_FREE_READS <= set(attio.tool_allowlist)
+    assert ATTIO_FREE_READS <= attio.free_read_tools
+    assert ATTIO_FREE_READS <= oauth.curated_free_read_tools("attio")
+
+
+def test_attio_writes_are_allowlisted_and_never_free_reads():
+    attio = MANIFESTS["attio"]
+    assert ATTIO_WRITES <= set(attio.tool_allowlist)
+    assert attio.free_read_tools.isdisjoint(ATTIO_WRITES)
+    assert oauth.curated_free_read_tools("attio").isdisjoint(ATTIO_WRITES)
+
+
+def test_the_shipped_connector_config_is_clean_and_has_no_double_definitions():
+    assert manifest_errors() == {}
+    assert registration_spec_errors() == {}
+    assert set(MANIFESTS).isdisjoint(REGISTRATION_SPECS)
+    assert set(all_manifests()).isdisjoint(all_registration_specs())
+    # Attio's old registration-only file is gone for good.
+    assert not (REGISTRATION_SPEC_DIR / "attio.json").exists()
+    assert get_registration_spec("attio") is None
 
 
 @pytest.fixture
@@ -186,9 +320,20 @@ def test_the_committed_manifests_round_trip_through_the_file_loader():
 
 
 def test_the_committed_registration_specs_round_trip_without_a_runtime_descriptor():
+    # Whatever registration-only specs are shipped (none right now) must round-trip.
     for connector_id, spec in REGISTRATION_SPECS.items():
         assert load_registration_spec_file(REGISTRATION_SPEC_DIR / f"{connector_id}.json") == spec
         assert not hasattr(spec, "to_descriptor")
+
+
+def test_a_registration_spec_round_trips_without_a_runtime_descriptor(
+    registration_only_provider,
+):
+    from hushh_mcp.services import curated_connector_manifest as module
+
+    path = module.REGISTRATION_SPEC_DIR / "pendingco.json"
+    assert load_registration_spec_file(path) == registration_only_provider
+    assert not hasattr(registration_only_provider, "to_descriptor")
 
 
 @pytest.mark.parametrize(
@@ -272,18 +417,22 @@ def test_a_public_client_must_pin_a_public_registration_endpoint():
             "registration-only spec",
         ),
         (
-            lambda spec: spec["oauth"].update(clientSecretEnv="ATTIO_OAUTH_CLIENT_SECRET"),
+            lambda spec: spec["oauth"].update(clientSecretEnv="PENDINGCO_OAUTH_CLIENT_SECRET"),
             "public client",
         ),
         (lambda spec: spec["oauth"].pop("registrationUrl"), "registrationUrl"),
         (
-            lambda spec: spec["oauth"].update(registrationUrl="http://app.attio.com/register"),
+            lambda spec: spec["oauth"].update(
+                registrationUrl="http://app.attio.com/oauth/register"
+            ),
             "registrationUrl",
         ),
     ],
 )
-def test_registration_spec_rejects_runtime_tools_and_unsafe_client_shapes(mutate, message):
-    raw = json.loads((REGISTRATION_SPEC_DIR / "attio.json").read_text(encoding="utf-8"))
+def test_registration_spec_rejects_runtime_tools_and_unsafe_client_shapes(
+    registration_only_provider, mutate, message
+):
+    raw = _registration_only_raw()
     mutate(raw)
     with pytest.raises(CuratedConnectorManifestError, match=message):
         parse_registration_spec(raw)
@@ -322,30 +471,25 @@ def test_one_bad_manifest_does_not_take_the_others_down(tmp_path, monkeypatch):
 
 
 def test_a_registration_only_spec_fails_closed_if_a_runtime_manifest_is_added(
-    tmp_path, monkeypatch
+    registration_only_provider, tmp_path, monkeypatch
 ):
     from hushh_mcp.services import curated_connector_manifest as module
 
     runtime_dir = tmp_path / "runtime"
-    registration_dir = tmp_path / "registration"
     runtime_dir.mkdir()
-    registration_dir.mkdir()
     runtime = json.loads((MANIFEST_DIR / "notion.json").read_text(encoding="utf-8"))
-    runtime["connectorId"] = "attio"
-    runtime["oauth"]["clientIdEnv"] = "ATTIO_OAUTH_CLIENT_ID"
-    (runtime_dir / "attio.json").write_text(json.dumps(runtime), encoding="utf-8")
-    (registration_dir / "attio.json").write_text(
-        (REGISTRATION_SPEC_DIR / "attio.json").read_text(encoding="utf-8"),
-        encoding="utf-8",
-    )
+    runtime["connectorId"] = "pendingco"
+    runtime["oauth"]["clientIdEnv"] = "PENDINGCO_OAUTH_CLIENT_ID"
+    (runtime_dir / "pendingco.json").write_text(json.dumps(runtime), encoding="utf-8")
+    # The fixture already installed the registration-only spec for the same id.
+    assert (module.REGISTRATION_SPEC_DIR / "pendingco.json").is_file()
     monkeypatch.setattr(module, "MANIFEST_DIR", runtime_dir)
-    monkeypatch.setattr(module, "REGISTRATION_SPEC_DIR", registration_dir)
     clear_manifest_cache()
     clear_registration_spec_cache()
     try:
-        assert module.get_manifest("attio") is not None
-        assert module.get_registration_spec("attio") is None
-        assert set(module.registration_spec_errors()) == {"attio.json"}
+        assert module.get_manifest("pendingco") is not None
+        assert module.get_registration_spec("pendingco") is None
+        assert set(module.registration_spec_errors()) == {"pendingco.json"}
     finally:
         monkeypatch.undo()
         clear_manifest_cache()
@@ -590,3 +734,120 @@ async def test_a_public_client_authorize_url_uses_pkce_and_the_default_scope(
     assert "scope=default" in url
     assert "client_secret" not in url
     assert "client_id=public-client-id" in url
+
+
+# --- Attio's reviewed tool policy, pinned exactly ------------------------------
+# Captured from a real authenticated tools/list (41 tools). Changing either list
+# is a security review of what One may do in someone's CRM, not a refactor: this
+# test fails on purpose so the change is read, argued for, and made here too.
+ATTIO_REVIEWED_ALLOWLIST = frozenset(
+    (
+        "create-comment",
+        "add-record-to-list",
+        "create-note",
+        "create-record",
+        "create-task",
+        "get-call-recording",
+        "get-email-content",
+        "get-note-body",
+        "get-records-by-ids",
+        "list-attribute-definitions",
+        "list-comment-replies",
+        "list-comments",
+        "list-list-attribute-definitions",
+        "list-lists",
+        "list-objects",
+        "list-records-in-list",
+        "list-records",
+        "list-tasks",
+        "list-workspace-members",
+        "list-workspace-teams",
+        "run-basic-report",
+        "search-call-recordings-by-metadata",
+        "search-emails-by-metadata",
+        "search-meetings",
+        "search-notes-by-metadata",
+        "search-records",
+        "semantic-search-call-recordings",
+        "semantic-search-emails",
+        "semantic-search-notes",
+        "update-list-entry-by-id",
+        "update-list-entry-by-record-id",
+        "update-note",
+        "update-record",
+        "update-task",
+        "upsert-record",
+        "whoami",
+    )
+)
+ATTIO_REVIEWED_FREE_READS = frozenset(
+    (
+        "get-note-body",
+        "get-records-by-ids",
+        "list-attribute-definitions",
+        "list-comment-replies",
+        "list-comments",
+        "list-list-attribute-definitions",
+        "list-lists",
+        "list-objects",
+        "list-records-in-list",
+        "list-records",
+        "list-tasks",
+        "list-workspace-members",
+        "list-workspace-teams",
+        "run-basic-report",
+        "search-meetings",
+        "search-notes-by-metadata",
+        "search-records",
+        "semantic-search-notes",
+        "whoami",
+    )
+)
+
+
+def test_attio_reviewed_tool_policy_is_pinned_exactly():
+    manifest = MANIFESTS["attio"]
+    assert frozenset(manifest.tool_allowlist) == ATTIO_REVIEWED_ALLOWLIST
+    assert frozenset(manifest.free_read_tools) == ATTIO_REVIEWED_FREE_READS
+    assert len(ATTIO_REVIEWED_ALLOWLIST) == 36 and len(ATTIO_REVIEWED_FREE_READS) == 19
+
+
+# --- every runtime manifest's row guard, with no per-provider test code ---------
+_ROW_DRIFTS = {
+    "mcp_endpoint": lambda row: replace(row, mcp_endpoint="https://unreviewed.example/mcp"),
+    "oauth_authorize_url": lambda row: replace(
+        row, oauth_authorize_url="https://unreviewed.example/authorize"
+    ),
+    "oauth_token_url": lambda row: replace(
+        row,
+        oauth_token_url="https://unreviewed.example/token",  # noqa: S106 - a URL, not a secret
+    ),
+    "oauth_scopes": lambda row: replace(row, oauth_scopes=(*row.oauth_scopes, "admin")),
+    "oauth_client_id_env": lambda row: replace(row, oauth_client_id_env="SOME_OTHER_ENV"),
+    "registered_redirect_uris": lambda row: replace(
+        row,
+        registered_redirect_uris=(*row.registered_redirect_uris, "https://unreviewed.example/cb"),
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("connector_id", sorted(MANIFESTS))
+@pytest.mark.parametrize("field", sorted(_ROW_DRIFTS))
+async def test_a_manifest_derived_row_is_served_and_a_drifted_field_is_refused(
+    connector_id, field, service, monkeypatch
+):
+    manifest = MANIFESTS[connector_id]
+    monkeypatch.setenv(manifest.client_id_env, "client-id")
+    if manifest.client_secret_env:
+        monkeypatch.setenv(manifest.client_secret_env, "client-secret")
+    values = descriptor_to_row_values(manifest.to_descriptor("uat"))
+    row = ExternalMcpConnectorDefinition.from_row({**values, "is_active": True, "user_id": None})
+
+    service.registry.get_connector = AsyncMock(return_value=row)
+    served, client_id, _ = await service._configuration(connector_id)
+    assert served is row and client_id == "client-id"
+
+    service.registry.get_connector = AsyncMock(return_value=_ROW_DRIFTS[field](row))
+    with pytest.raises(oauth.CuratedConnectorOAuthError, match="connector_configuration_invalid"):
+        await service._configuration(connector_id)

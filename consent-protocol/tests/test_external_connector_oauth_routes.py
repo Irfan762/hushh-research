@@ -963,9 +963,9 @@ def test_reviewed_providers_without_a_usable_row_are_not_offered_to_an_owner_wit
     response = client.get("/api/connectors")
 
     assert response.status_code == 200
-    # Reviewed providers with no usable runtime row (setup pending) or no runtime
-    # manifest yet (Attio, discovery pending) are not offered, and an owner with
-    # no stored grant has nothing to recover: the product shows no dead cards.
+    # Reviewed providers with no usable runtime row (setup pending) are not offered
+    # (Attio now has a runtime manifest, so it is covered like the others), and an
+    # owner with no stored grant has nothing to recover: no dead cards.
     ids = {card["connectorId"] for card in response.json()["connectors"]}
     assert ids.isdisjoint({"hubspot", "notion", "attio"})
 
@@ -1037,16 +1037,21 @@ def test_a_drifted_row_with_no_stored_grant_is_not_offered(route_client, monkeyp
     assert "notion" not in ids
 
 
-def test_registration_only_attio_is_never_surfaced_even_with_a_similarly_named_registry_row(
-    route_client, monkeypatch
+def test_a_registration_only_provider_is_never_surfaced_even_with_a_similarly_named_registry_row(
+    route_client, monkeypatch, registration_only_provider
 ):
     client, app, _ = route_client
     app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
-    attio_row = _hubspot_definition(connector_id="attio", display_name="Operator-controlled Attio")
+    # The registration spec is loaded, yet it is not a runtime provider.
+    assert registration_only_provider.connector_id == "pendingco"
+    assert routes.get_manifest("pendingco") is None
+    pending_row = _hubspot_definition(
+        connector_id="pendingco", display_name="Operator-controlled Pending Co"
+    )
     monkeypatch.setattr(
         routes,
         "get_external_connector_registry_service",
-        lambda: SimpleNamespace(list_active_connectors=AsyncMock(return_value=[attio_row])),
+        lambda: SimpleNamespace(list_active_connectors=AsyncMock(return_value=[pending_row])),
     )
     monkeypatch.setattr(
         routes,
@@ -1057,7 +1062,8 @@ def test_registration_only_attio_is_never_surfaced_even_with_a_similarly_named_r
     response = client.get("/api/connectors")
 
     # Registration-only: neither a card nor the operator's similarly named row is surfaced.
-    assert all(item["connectorId"] != "attio" for item in response.json()["connectors"])
+    assert response.status_code == 200
+    assert all(item["connectorId"] != "pendingco" for item in response.json()["connectors"])
 
 
 @pytest.mark.parametrize(
@@ -1065,9 +1071,11 @@ def test_registration_only_attio_is_never_surfaced_even_with_a_similarly_named_r
     [
         (_hubspot_definition(), True),
         (_hubspot_definition(connector_id="notion", display_name="Notion"), True),
-        # A registration-only Attio contract is never enough to surface a
-        # provider: it has no authenticated tool policy or runtime manifest.
-        (_hubspot_definition(connector_id="attio", display_name="Attio"), False),
+        # Attio now has a reviewed runtime manifest, so its pinned row is curated.
+        (_hubspot_definition(connector_id="attio", display_name="Attio"), True),
+        # A registration-only contract is never enough to surface a provider: it
+        # has no authenticated tool policy or runtime manifest.
+        (_hubspot_definition(connector_id="pendingco", display_name="Pending Co"), False),
         # A reviewed-looking row with no manifest never reads as a curated provider,
         # so the frontend would not offer a Connect button that could only fail.
         (_hubspot_definition(connector_id="no_manifest_crm"), False),
@@ -1077,8 +1085,11 @@ def test_registration_only_attio_is_never_surfaced_even_with_a_similarly_named_r
     ],
 )
 def test_the_catalog_marks_manifest_backed_oauth_providers_for_the_frontend(
-    route_client, monkeypatch, definition, expected
+    route_client, monkeypatch, registration_only_provider, definition, expected
 ):
+    # The registration-only spec is loaded for every case, so the "pendingco"
+    # case proves a loaded registration contract still never reads as curated.
+    assert registration_only_provider.connector_id == "pendingco"
     client, app, _ = route_client
     app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
     _wire_curated_service(

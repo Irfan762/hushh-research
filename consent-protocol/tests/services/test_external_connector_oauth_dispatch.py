@@ -89,10 +89,13 @@ async def test_operator_owned_row_never_falls_back_to_legacy_oauth_start(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("connector_id", ["unreviewed_crm", "attio"])
+@pytest.mark.parametrize("connector_id", ["unreviewed_crm", "pendingco"])
 async def test_operator_owned_row_without_a_runtime_manifest_never_reopens_legacy_oauth(
-    monkeypatch, connector_id
+    monkeypatch, registration_only_provider, connector_id
 ):
+    # "pendingco" is a registration-only provider (spec, no runtime manifest);
+    # attio now has a manifest, so it no longer represents this case.
+    assert get_manifest(connector_id) is None
     source = _notion_row({"chat": "reviewed"})
     row = ExternalMcpConnectorDefinition(
         connector_id=connector_id,

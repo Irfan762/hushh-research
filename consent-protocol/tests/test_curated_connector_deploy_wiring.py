@@ -48,10 +48,35 @@ def test_a_public_client_contributes_only_its_client_id():
     assert {"HUBSPOT_OAUTH_CLIENT_ID", "HUBSPOT_OAUTH_CLIENT_SECRET"} <= set(names)
 
 
-def test_a_registration_only_client_id_is_never_mounted_by_deploy():
-    assert get_registration_spec("attio") is not None
-    assert get_manifest("attio") is None
-    assert "ATTIO_OAUTH_CLIENT_ID" not in secrets_script.secret_names()
+def test_deploy_mounts_exactly_the_runtime_manifests_secrets_and_never_a_registration_only_one(
+    registration_only_provider,
+):
+    # The stdlib reader scans only the runtime manifest directory, so a fixture
+    # cannot put a registration spec where it would look. Guard the property
+    # two other ways: its result must equal the authoritative loader's view of
+    # the runtime manifests (a reader that also mounted registration contracts
+    # could not match), and it must not know the registration directory at all.
+    assert get_registration_spec("pendingco") is not None
+    assert registration_only_provider.client_id_env == "PENDINGCO_OAUTH_CLIENT_ID"
+    expected = sorted({name for m in all_manifests().values() for name in m.secret_env_names})
+    assert secrets_script.secret_names() == expected
+    assert "PENDINGCO_OAUTH_CLIENT_ID" not in secrets_script.secret_names()
+    assert secrets_script.MANIFEST_DIR.name == "curated_connectors"
+    assert "curated_connector_registrations" not in Path(secrets_script.__file__).read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_runtime_manifest_client_id_is_mounted_by_deploy(registration_only_provider):
+    # Attio graduated from registration-only to a reviewed runtime manifest, so
+    # deploy now mounts its client id; the registration-only fixture still is not.
+    manifest = get_manifest("attio")
+    assert manifest is not None
+    assert get_registration_spec("attio") is None
+    names = secrets_script.secret_names()
+    assert "ATTIO_OAUTH_CLIENT_ID" in manifest.secret_env_names
+    assert "ATTIO_OAUTH_CLIENT_ID" in names
+    assert "PENDINGCO_OAUTH_CLIENT_ID" not in names
 
 
 def test_the_reader_rejects_an_unreadable_manifest(tmp_path):

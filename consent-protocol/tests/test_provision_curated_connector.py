@@ -10,19 +10,14 @@ from typing import Any
 
 import pytest
 
-from hushh_mcp.services.curated_connector_manifest import (
-    REGISTRATION_SPEC_DIR,
-    get_manifest,
-    get_registration_spec,
-)
+from hushh_mcp.services import curated_connector_manifest as manifest_module
+from hushh_mcp.services.curated_connector_manifest import get_manifest, get_registration_spec
 from scripts.ops import configure_external_mcp_connector as cli
 from scripts.ops import provision_curated_connector as prov
 
 NOTION = get_manifest("notion")
 HUBSPOT = get_manifest("hubspot")
-# Attio has a real checked-in registration-only spec. It deliberately remains
-# absent from the runtime manifests until authenticated tools/list discovery.
-ATTIO = get_registration_spec("attio")
+ATTIO = get_manifest("attio")
 GOOD_METADATA = {
     "issuer": "https://mcp.notion.com",
     "authorization_endpoint": "https://mcp.notion.com/authorize",
@@ -31,7 +26,9 @@ GOOD_METADATA = {
     "code_challenge_methods_supported": ["plain", "S256"],
     "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post", "none"],
 }
-ATTIO_METADATA = {
+# The synthetic registration-only provider (conftest `registration_only_provider`,
+# "pendingco") keeps Attio's real endpoints, a cross-origin authorization server.
+PENDING_METADATA = {
     "issuer": "https://mcp.attio.com",
     "authorization_endpoint": "https://app.attio.com/oidc/authorize",
     "token_endpoint": "https://app.attio.com/oidc/token",
@@ -69,14 +66,33 @@ def test_the_registration_request_is_a_public_pkce_client_with_the_manifest_redi
     assert request["client_name"] == prov.CLIENT_NAME
 
 
-def test_attio_public_client_contract_uses_only_its_client_id_and_metadata_scopes():
-    request = prov.build_registration_request(ATTIO, "uat", [])
-    assert ATTIO.is_public_client is True
-    assert ATTIO.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
-    assert ATTIO.secret_env_names == ("ATTIO_OAUTH_CLIENT_ID",)
-    assert get_manifest("attio") is None
+def test_registration_only_public_client_contract_uses_only_its_client_id_and_metadata_scopes(
+    registration_only_provider,
+):
+    spec = registration_only_provider
+    request = prov.build_registration_request(spec, "uat", [])
+    assert spec.is_public_client is True
+    assert spec.client_id_env == "PENDINGCO_OAUTH_CLIENT_ID"
+    assert spec.secret_env_names == ("PENDINGCO_OAUTH_CLIENT_ID",)
+    assert get_manifest("pendingco") is None
     assert request["token_endpoint_auth_method"] == "none"
     assert request["scope"] == "mcp offline_access openid"
+
+
+def test_attio_is_a_normal_public_runtime_provider_for_the_script():
+    # Attio graduated from a registration-only spec to a reviewed runtime manifest.
+    assert ATTIO is not None
+    assert get_registration_spec("attio") is None
+    assert prov.require_manifest("attio") == ATTIO
+    assert ATTIO.is_public_client is True
+    assert ATTIO.client_id_env == "ATTIO_OAUTH_CLIENT_ID"
+    request = prov.build_registration_request(ATTIO, "uat", [])
+    assert request["token_endpoint_auth_method"] == "none"
+    assert request["redirect_uris"] == list(ATTIO.redirect_uris["uat"])
+    assert request["grant_types"] == ["authorization_code", "refresh_token"]
+    assert request["response_types"] == ["code"]
+    assert request["scope"] == "mcp offline_access openid"
+    assert request["client_name"] == prov.CLIENT_NAME
 
 
 def test_extra_redirects_are_appended_after_the_reviewed_ones():
@@ -126,20 +142,24 @@ def test_an_unknown_provider_has_no_manifest():
 
 
 @pytest.mark.asyncio
-async def test_attio_registration_only_spec_can_dry_run_but_never_posts_or_stores(monkeypatch):
+async def test_registration_only_spec_can_dry_run_but_never_posts_or_stores(
+    monkeypatch, registration_only_provider
+):
+    spec = registration_only_provider
+
     async def fake_discover(contract):
-        assert contract == ATTIO
-        return ATTIO.registration_url
+        assert contract == spec
+        return spec.registration_url
 
     monkeypatch.setattr(prov, "discover_registration_endpoint", fake_discover)
     monkeypatch.setattr(prov, "secret_exists", lambda *_: False)
     monkeypatch.setattr(prov, "register_client", pytest.fail)
     monkeypatch.setattr(prov, "store_secret", pytest.fail)
 
-    result = await prov.cmd_register(_args(connector_id="attio", dry_run=True, store=True))
+    result = await prov.cmd_register(_args(connector_id="pendingco", dry_run=True, store=True))
 
     assert result["dryRun"] is True
-    assert result["clientIdVariable"] == "ATTIO_OAUTH_CLIENT_ID"
+    assert result["clientIdVariable"] == "PENDINGCO_OAUTH_CLIENT_ID"
     assert result["registrationEndpoint"] == "https://app.attio.com/oauth/register"
     assert result["request"] == {
         "client_name": prov.CLIENT_NAME,
@@ -164,15 +184,18 @@ async def test_discovery_returns_the_registration_endpoint_when_metadata_agrees(
 
 
 @pytest.mark.asyncio
-async def test_discovery_allows_a_cross_origin_registration_endpoint_only_when_pinned(monkeypatch):
+async def test_discovery_allows_a_cross_origin_registration_endpoint_only_when_pinned(
+    monkeypatch, registration_only_provider
+):
+    spec = registration_only_provider
     requested: list[str] = []
 
     async def fake(url):
         requested.append(url)
-        return ATTIO_METADATA
+        return PENDING_METADATA
 
     monkeypatch.setattr(prov, "_get_json", fake)
-    assert await prov.discover_registration_endpoint(ATTIO) == ATTIO.registration_url
+    assert await prov.discover_registration_endpoint(spec) == spec.registration_url
     assert requested == ["https://mcp.attio.com/.well-known/oauth-authorization-server"]
 
 
@@ -188,15 +211,15 @@ async def test_discovery_allows_a_cross_origin_registration_endpoint_only_when_p
         ({"registration_endpoint": "http://app.attio.com/oauth/register"}, "public HTTPS"),
     ],
 )
-async def test_discovery_rejects_attio_metadata_drift_before_registration(
-    monkeypatch, change, message
+async def test_discovery_rejects_registration_only_metadata_drift_before_registration(
+    monkeypatch, registration_only_provider, change, message
 ):
     async def fake(_url):
-        return {**ATTIO_METADATA, **change}
+        return {**PENDING_METADATA, **change}
 
     monkeypatch.setattr(prov, "_get_json", fake)
     with pytest.raises(prov.ProvisionError, match=message):
-        await prov.discover_registration_endpoint(ATTIO)
+        await prov.discover_registration_endpoint(registration_only_provider)
 
 
 @pytest.mark.asyncio
@@ -419,17 +442,34 @@ def test_status_for_a_confidential_provider_needs_both_secrets(monkeypatch):
     assert report["ready"] is False
 
 
-def test_registration_only_status_can_be_registration_ready_but_never_runtime_ready(monkeypatch):
+def test_registration_only_status_can_be_registration_ready_but_never_runtime_ready(
+    monkeypatch, registration_only_provider
+):
     monkeypatch.setattr(prov, "secret_state", lambda *_: "ready")
 
-    report = prov.cmd_status(_args(connector_id="attio"))
+    report = prov.cmd_status(_args(connector_id="pendingco"))
 
     assert report["registrationOnly"] is True
     assert report["runtimeManifest"] is False
     assert report["toolsPendingDiscovery"] is True
     assert report["registrationReady"] is True
     assert report["ready"] is False
+    assert report["secrets"] == {"PENDINGCO_OAUTH_CLIENT_ID": "ready"}
+
+
+def test_attio_status_is_runtime_ready_not_registration_only(monkeypatch):
+    monkeypatch.setattr(prov, "secret_state", lambda *_: "ready")
+
+    report = prov.cmd_status(_args(connector_id="attio"))
+
+    assert report["publicClient"] is True
     assert report["secrets"] == {"ATTIO_OAUTH_CLIENT_ID": "ready"}
+    assert report["registrationReady"] is True
+    assert report["ready"] is True
+    assert not report.get("registrationOnly")
+    assert report["runtimeManifest"] is True
+    assert "toolsPendingDiscovery" not in report
+    assert report["tools"] == {"allowlist": 36, "freeRead": 19}
 
 
 def test_apply_goes_through_the_manifest_path_and_the_guarded_cli(monkeypatch):
@@ -451,17 +491,47 @@ def test_apply_goes_through_the_manifest_path_and_the_guarded_cli(monkeypatch):
     assert descriptor.raw["toolAllowlist"] == list(NOTION.tool_allowlist)
 
 
-def test_apply_refuses_a_registration_only_spec_before_descriptor_or_registry_work(monkeypatch):
+def test_apply_applies_attio_as_a_runtime_provider_not_a_registration_only_spec(monkeypatch):
+    calls: list[Any] = []
+    monkeypatch.setattr(
+        cli,
+        "_apply",
+        lambda descriptor, operator: calls.append((descriptor, operator)) or {"ok": 1},
+    )
+
+    result = prov.cmd_apply(
+        SimpleNamespace(connector_id="attio", env="uat", operator="op@hushh.ai")
+    )
+
+    assert result == {"ok": 1}
+    descriptor, operator = calls[0]
+    assert operator == "op@hushh.ai"
+    assert descriptor.raw["connectorId"] == "attio"
+    assert descriptor.raw["tokenEndpointAuth"] == "none"
+    assert "oauthClientSecretEnv" not in descriptor.raw
+    assert descriptor.raw["toolAllowlist"] == list(ATTIO.tool_allowlist)
+    assert descriptor.raw["mcpEndpoint"] == "https://mcp.attio.com/mcp"
+    assert descriptor.raw["oauthScopes"] == ["mcp", "offline_access", "openid"]
+    assert descriptor.raw["registeredRedirectUris"] == [
+        "https://uat.one.hushh.ai/one/profile/connectors/oauth/return"
+    ]
+
+
+def test_apply_refuses_a_registration_only_spec_before_descriptor_or_registry_work(
+    monkeypatch, registration_only_provider
+):
     monkeypatch.setattr(cli, "load_descriptor", pytest.fail)
     monkeypatch.setattr(cli, "_apply", pytest.fail)
 
     with pytest.raises(prov.ProvisionError, match="registration-only spec"):
-        prov.cmd_apply(SimpleNamespace(connector_id="attio", env="uat", operator="op@hushh.ai"))
+        prov.cmd_apply(SimpleNamespace(connector_id="pendingco", env="uat", operator="op@hushh.ai"))
 
 
-def test_the_descriptor_cli_refuses_a_registration_only_spec():
+def test_the_descriptor_cli_refuses_a_registration_only_spec(registration_only_provider):
+    spec_path = manifest_module.REGISTRATION_SPEC_DIR / "pendingco.json"
+    assert spec_path.is_file()
     with pytest.raises(cli.ExternalMcpConnectorDescriptorError, match="version"):
-        cli.load_descriptor(str(REGISTRATION_SPEC_DIR / "attio.json"), environment="uat")
+        cli.load_descriptor(str(spec_path), environment="uat")
 
 
 def test_the_cli_applies_a_manifest_with_env_and_a_legacy_descriptor_unchanged(tmp_path):
@@ -508,3 +578,41 @@ def test_the_script_never_prints_a_secret_value(capsys):
     # status/register only ever report names and a public client id.
     assert "secret" not in json.dumps(prov.build_registration_request(NOTION, "uat", [])).lower()
     assert Path(prov.__file__).name == "provision_curated_connector.py"
+
+
+@pytest.mark.asyncio
+async def test_the_shipped_attio_manifest_passes_the_discovery_guard_against_its_verified_metadata(
+    monkeypatch,
+):
+    # The synthetic registration-only provider covers the cross-origin mechanism;
+    # this is the real, shipped contract against Attio's verified metadata.
+    async def fake(_url):
+        return PENDING_METADATA
+
+    monkeypatch.setattr(prov, "_get_json", fake)
+    assert (
+        await prov.discover_registration_endpoint(ATTIO) == "https://app.attio.com/oauth/register"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_attio_dry_run_builds_the_reviewed_request_and_sends_nothing(monkeypatch):
+    async def fake(_url):
+        return PENDING_METADATA
+
+    async def refuse(*_args, **_kwargs):
+        raise AssertionError("a dry run must never reach the provider")
+
+    monkeypatch.setattr(prov, "_get_json", fake)
+    monkeypatch.setattr(prov, "register_client", refuse)
+
+    result = await prov.cmd_register(_args(connector_id="attio", dry_run=True))
+
+    assert result["dryRun"] is True
+    assert result["clientIdVariable"] == "ATTIO_OAUTH_CLIENT_ID"
+    assert result["registrationEndpoint"] == "https://app.attio.com/oauth/register"
+    assert result["request"]["token_endpoint_auth_method"] == "none"
+    assert result["request"]["scope"] == "mcp offline_access openid"
+    assert result["request"]["redirect_uris"] == [
+        "https://uat.one.hushh.ai/one/profile/connectors/oauth/return"
+    ]

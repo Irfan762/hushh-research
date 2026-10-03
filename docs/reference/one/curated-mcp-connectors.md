@@ -1,11 +1,9 @@
 # Curated MCP Connectors
 
-A curated connector is an operator-registered OAuth MCP provider (HubSpot and
-Notion today) that an owner connects from Connectors and then uses in One chat.
-Everything the application must not take from the operator-writable registry is
-kept in one reviewed, checked-in file per provider. Attio's cross-origin public
-client shape is supported by a registration-only contract, but it intentionally
-does not have an active manifest until its authenticated tool list is captured.
+A curated connector is an operator-registered OAuth MCP provider (HubSpot,
+Notion and Attio today) that an owner connects from Connectors and then uses in
+One chat. Everything the application must not take from the operator-writable
+registry is kept in one reviewed, checked-in file per provider.
 
 ## Visual Map
 
@@ -108,7 +106,7 @@ valid for `register` and `status` only:
 - `status` can say `registrationReady`, but never reports runtime `ready`;
 - it cannot be passed to the descriptor CLI or applied as a registry row.
 
-For Attio, the operator first reviews this exact dynamic-registration request:
+For a public provider such as Attio, the operator first reviews this exact dynamic-registration request:
 
 ```sh
 python3 scripts/ops/provision_curated_connector.py register attio --env uat --store --dry-run
@@ -122,7 +120,7 @@ then signs in with the resulting public client, selects the intended workspace,
 and captures authenticated `tools/list` plus read-only annotations. Registration
 alone does not make Attio appear in One or give it runtime access.
 
-## Attio readiness
+## Attio
 
 Attio is a separate per-owner connector, not a Notion synchronization. Its
 verified OAuth metadata uses a protected resource at
@@ -142,15 +140,50 @@ selects the intended workspace during sign-in:
 }
 ```
 
-There is deliberately no `clientSecretEnv`. The checked-in
-`config/curated_connector_registrations/attio.json` is registration-only; do
-not add runtime `config/curated_connectors/attio.json` from metadata alone. An
-active manifest requires a nonempty authenticated tool allowlist, and its
-`freeRead` names require live read-only annotations. After explicit operator
-authorization, register the public client, sign in to the intended Attio
-workspace through the controlled discovery client, capture `tools/list`, then
-add the small reviewed runtime Attio manifest change. No registry row or
-deployment is created by the bootstrap registration.
+There is deliberately no `clientSecretEnv`.
+
+### Tool policy
+
+`config/curated_connectors/attio.json` was written from an authenticated
+`tools/list` capture (41 tools, each with Attio's own annotations). Attio marks
+every write `destructiveHint: true`, including plain creates, so that
+annotation cannot separate safe from irreversible writes. The split below is a
+reviewed judgement, not something derived from the annotations:
+
+- **36 tools are allowlisted**: 25 reads and 11 writes (record, note, task,
+  comment and list-entry create or update, and upsert). Every write goes
+  through the review card.
+- **19 reads run without review.** Each must still be annotated read-only by
+  the live server.
+- **6 reads stay behind the review card** even though they are reads: email
+  bodies and call recordings (`get-email-content`,
+  `search-emails-by-metadata`, `semantic-search-emails`, `get-call-recording`,
+  `search-call-recordings-by-metadata`, `semantic-search-call-recordings`).
+  They return third parties' private communications and are the widest
+  untrusted-content surface.
+- **5 tools are not offered at all**: `delete-comment`, `delete-task` and
+  `merge-records` (irreversible), and `create-list` and `update-list`
+  (workspace structure and permissions).
+
+When Attio adds tools, capture `tools/list` again and review the difference
+before widening either list.
+
+### Rollout order
+
+Deploy mounts the secrets of every runtime manifest, so `ATTIO_OAUTH_CLIENT_ID`
+has to exist in Secret Manager before this manifest is deployed; a missing
+secret fails the UAT deploy.
+
+1. Check first: `status attio --env uat` shows whether `ATTIO_OAUTH_CLIENT_ID`
+   already exists in `hushh-pda-uat`. If it is `ready`, do not register again.
+2. Only if it is missing, review the request and register the public client
+   once (see above); it stores the client id in `hushh-pda-uat`. Registering
+   again refuses unless `--force` is passed, because it would orphan every
+   existing grant.
+3. Merge. Until a deploy-time registry sync exists, an operator writes the UAT
+   registry row with `apply attio --env uat`.
+4. A local run needs no registry write: in a loopback development runtime the
+   registry derives the row from the manifest, read-only.
 
 ## Limits
 
