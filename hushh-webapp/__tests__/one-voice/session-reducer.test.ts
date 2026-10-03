@@ -32,6 +32,16 @@ import {
 import { pendingActionFrame, readyFrame } from "./fixtures/scripted-server";
 
 describe("turn ownership", () => {
+  it("ignores navigation settlement for another call or an older input", () => {
+    const state = run([
+      server({ type: "transcript.input", turn_id: "old", text: "Open profile", final: true }),
+      server({ type: "tool.started", call_id: "profile", tool: "open_screen", args_public: {}, turn_id: "old" }),
+      server({ type: "transcript.input", turn_id: "new", text: "List connections", final: true }),
+    ], connected());
+    expect(reduceVoiceSession(state, { type: "navigation_settled", callId: "profile", turnId: "old", status: "opened" })).toBe(state);
+    expect(reduceVoiceSession(state, { type: "navigation_settled", callId: "other", turnId: "new", status: "failed" })).toBe(state);
+  });
+
   const input = (turn_id: string, text: string): ServerFrame => ({
     type: "transcript.input", turn_id, text, final: true,
   });
@@ -90,6 +100,21 @@ describe("turn ownership", () => {
     expect(state.activeResponseTurnId).toBe("c");
   });
 
+  it("retires a completed origin before any late audio can reclaim a newer response", () => {
+    let state = run([
+      server(input("a", "First")),
+      server({ type: "turn", state: "model_end", turn_id: "a" }),
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "c", origin_turn_id: "c" }),
+    ], connected());
+    expect(state.fencedTurnIds).toContain("a");
+    state = run([
+      server({ type: "audio", data: "QUJD", mime_type: "audio/pcm;rate=24000", turn_id: "a", origin_turn_id: "a" }),
+      server(output("a", "Late old answer")),
+    ], state);
+    expect(state.activeResponseTurnId).toBe("c");
+    expect(state.transcript.some((item) => item.text === "Late old answer")).toBe(false);
+  });
+
   it("keeps a fresh name answer after a delayed Mail result and speech", () => {
     const state = run([
       server(input("mail-turn", "Is Gmail connected?")),
@@ -106,6 +131,38 @@ describe("turn ownership", () => {
     expect(state.turnId).toBe("name-turn");
     expect(state.transcript.some((item) => item.text === "Your Gmail is connected.")).toBe(false);
     expect(state.toolTimeline.find((item) => item.callId === "mail-call")?.result?.account).toBe("mail");
+  });
+
+  it("fences a restored pending origin after a newer question completes", () => {
+    const oldCard = pendingActionFrame({ origin_turn_id: "old-turn" });
+    const state = run([
+      server(readyFrame({ pending_actions: [oldCard], resumed: true })),
+      server(input("new-turn", "New question")),
+      server({ type: "turn", state: "model_end", turn_id: "new-turn" }),
+      server(toolResult({
+        call_id: null,
+        pending_action_id: oldCard.pending_action_id,
+        turn_id: "old-turn",
+        result_public: { status: "deleted", spoken_facts: ["Deleted."] },
+      })),
+    ], connected());
+    expect(state.fencedTurnIds).toContain("old-turn");
+    expect(state.activeInputTurnId).toBeNull();
+    expect(state.lastResult).toBeNull();
+    expect(state.pendingAction?.pending_action_id).toBe(oldCard.pending_action_id);
+  });
+
+  it("does not give an unowned result the answer slot after completion", () => {
+    const state = run([
+      server(input("a", "First question")),
+      server({ type: "turn", turn_id: "a", state: "model_end" }),
+      server(toolResult({
+        call_id: null,
+        turn_id: undefined,
+        result_public: { status: "ok", echoed: "unowned" },
+      })),
+    ], connected());
+    expect(state.lastResult).toBeNull();
   });
 });
 
@@ -248,7 +305,7 @@ describe("reduceVoiceSession: lifecycle", () => {
     );
   });
 
-  it("only idle (4009) and a clean end (1000) are recoverable closes", () => {
+  it("reports an abnormal network close as recoverable", () => {
     for (const code of [CLOSE_CODES.idle, CLOSE_CODES.ended]) {
       expect(voiceErrorForClose(code, "")).toBeNull();
       const state = run(
@@ -262,7 +319,6 @@ describe("reduceVoiceSession: lifecycle", () => {
       CLOSE_CODES.auth,
       CLOSE_CODES.capacity,
       CLOSE_CODES.replaced,
-      1006,
     ]) {
       const state = run(
         [{ type: "closed", code, reason: "", now: NOW }],
@@ -270,6 +326,12 @@ describe("reduceVoiceSession: lifecycle", () => {
       );
       expect(state.error?.recoverable).toBe(false);
     }
+    const networkLost = run(
+      [{ type: "closed", code: 1006, reason: "", now: NOW }],
+      connected(),
+    );
+    expect(networkLost.error?.code).toBe("network_lost");
+    expect(networkLost.error?.recoverable).toBe(true);
   });
 
   it("reconnect_required then a server close keeps the conversation and goes back to connecting", () => {
@@ -566,6 +628,33 @@ describe("reduceVoiceSession: tools and success", () => {
     expect(selectSuccessReceipt(state)).toBeNull();
   });
 
+  it("navigation_dispatched reads neutral, not success, not pending; confirmation_waiting is never success", () => {
+    expect(toolResultTone("navigation_dispatched", true)).toBe("neutral");
+    expect(toolResultTone("navigation_dispatched", false)).toBe("failure");
+    // Screens gate success on this set; ui_settled decides the outcome.
+    expect(NOT_SUCCESS_STATUSES.has("navigation_dispatched")).toBe(true);
+    // Pending would hold the turn on a device step that never comes.
+    expect(isPendingStatus("navigation_dispatched")).toBe(false);
+    const waiting = run(
+      [
+        server(
+          toolResult({
+            tool: "send_message",
+            status: "confirmation_waiting",
+            result_public: {
+              status: "confirmation_waiting",
+              spoken_facts: ["That's already waiting for your answer."],
+            },
+          }),
+        ),
+      ],
+      connected(),
+    );
+    expect(NOT_SUCCESS_STATUSES.has("confirmation_waiting")).toBe(true);
+    expect(toolResultTone("confirmation_waiting", true)).toBe("failure");
+    expect(selectSuccessReceipt(waiting)).toBeNull();
+  });
+
   it("device Location switch tones: on/off succeed, already_* are neutral, pending and rejected fail", () => {
     expect(toolResultTone("on", true)).toBe("success");
     expect(toolResultTone("off", true)).toBe("success");
@@ -720,6 +809,40 @@ describe("reduceVoiceSession: tools and success", () => {
     expect(
       run([server(pendingActionFrame())], picked).candidatePicker,
     ).toBeNull();
+  });
+
+  it("retires a spoken-confirmed candidate before a later provider turn prepares mail", () => {
+    const picker = {
+      type: "candidate_picker" as const,
+      kind: "person" as const,
+      question: "Is this who you mean?",
+      candidates: [{ user_id: "u-ankit", display_name: "Ankit", relationship: "connected" }],
+    };
+    const offered = run([server(picker)], connected());
+    const unrelated = run([server({
+      type: "entity_card", kind: "person", user_id: "u-other", display_name: "Other",
+    })], offered);
+    expect(unrelated.candidatePicker).not.toBeNull();
+
+    const confirmed = run([
+      server({ type: "transcript.input", turn_id: "yes-turn", text: "Yes", final: true }),
+      server({
+        type: "entity_card", kind: "person", user_id: "u-ankit",
+        display_name: "Ankit", turn_id: "yes-turn",
+      }),
+    ], unrelated);
+    expect(confirmed.candidatePicker).toBeNull();
+    expect(confirmed.entities.some((entity) => entity.user_id === "u-ankit")).toBe(true);
+
+    const prepared = run([
+      server({ type: "turn", state: "model_end", turn_id: "yes-turn" }),
+      server(pendingActionFrame({
+        tool: "send_mail", summary: "Draft an email to Ankit",
+        turn_id: "continuation-turn",
+      })),
+    ], confirmed);
+    expect(prepared.pendingAction?.tool).toBe("send_mail");
+    expect(prepared.phase).toBe("confirming");
   });
 
   it("(5) two pending actions in order: the newest is on screen; a stale resolution never clears it", () => {
@@ -1047,6 +1170,7 @@ describe("reduceVoiceSession: Save My Soul", () => {
   it("classifies the delivery, stop and roster statuses: only sos_sent and sos_stopped may succeed", () => {
     expect(toolResultTone("sos_sent", true)).toBe("success");
     expect(toolResultTone("sos_stopped", true)).toBe("success");
+    expect(toolResultTone("draft_open_unconfirmed", false)).toBe("neutral");
     for (const status of [
       "sos_partial",
       "sos_not_sent",

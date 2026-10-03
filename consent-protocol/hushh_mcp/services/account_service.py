@@ -100,6 +100,33 @@ class AccountService:
             "agent_chat_conversations": text(
                 "DELETE FROM agent_chat_conversations WHERE user_id = :user_id"
             ),
+            # Direct-message history is participant-bound, not a `user_id`
+            # table.  Erase child ciphertext before its pair conversation so
+            # both sides' copies disappear during an account purge/reset.
+            "messages": text(
+                """
+                DELETE FROM messages
+                WHERE conversation_id IN (
+                  SELECT id FROM conversations
+                  WHERE participant_a_user_id = :user_id
+                     OR participant_b_user_id = :user_id
+                )
+                """
+            ),
+            "conversations": text(
+                """
+                DELETE FROM conversations
+                WHERE participant_a_user_id = :user_id
+                   OR participant_b_user_id = :user_id
+                """
+            ),
+            "direct_message_blocks": text(
+                """
+                DELETE FROM direct_message_blocks
+                WHERE blocker_user_id = :user_id
+                   OR blocked_user_id = :user_id
+                """
+            ),
             "consent_export_refresh_jobs": text(
                 "DELETE FROM consent_export_refresh_jobs WHERE user_id = :user_id"
             ),
@@ -180,6 +207,7 @@ class AccountService:
             ),
             "kai_gmail_receipts": text("DELETE FROM kai_gmail_receipts WHERE user_id = :user_id"),
             "kai_gmail_sync_runs": text("DELETE FROM kai_gmail_sync_runs WHERE user_id = :user_id"),
+            "one_kyc_workflows": text("DELETE FROM one_kyc_workflows WHERE user_id = :user_id"),
             "marketplace_public_profiles": text(
                 "DELETE FROM marketplace_public_profiles WHERE user_id = :user_id"
             ),
@@ -235,7 +263,6 @@ class AccountService:
             "kai_receipt_memory_artifacts": text(
                 "DELETE FROM kai_receipt_memory_artifacts WHERE user_id = :user_id"
             ),
-            "one_kyc_workflows": text("DELETE FROM one_kyc_workflows WHERE user_id = :user_id"),
             "one_location_access_requests": text(
                 """
                 DELETE FROM one_location_access_requests
@@ -531,6 +558,15 @@ class AccountService:
                 """
             ),
             "user_push_tokens": text("DELETE FROM user_push_tokens WHERE user_id = :user_id"),
+            "circle_chat_messages": text(
+                "DELETE FROM circle_chat_messages WHERE sender_user_id = :user_id"
+            ),
+            "circle_chat_recipients": text(
+                "DELETE FROM circle_chat_recipients WHERE recipient_user_id = :user_id"
+            ),
+            "circle_chat_preferences": text(
+                "DELETE FROM circle_chat_preferences WHERE user_id = :user_id"
+            ),
             "feed_events": text("DELETE FROM feed_events WHERE user_id = :user_id"),
             "byoc_setup_jobs": text("DELETE FROM byoc_setup_jobs WHERE user_id = :user_id"),
             "pod_lifecycle_events": text(
@@ -633,17 +669,6 @@ class AccountService:
                 WHERE user_id = :user_id
                 ORDER BY issued_at DESC
                 LIMIT 500
-                """
-            ),
-            "one_kyc_workflows": text(
-                """
-                SELECT workflow_id, user_id, status, gmail_thread_id, sender_email,
-                       counterparty_label, required_fields, requested_scope,
-                       consent_request_id, draft_status, last_error_code,
-                       created_at, updated_at
-                FROM one_kyc_workflows
-                WHERE user_id = :user_id
-                ORDER BY created_at DESC
                 """
             ),
             "verified_email_aliases": text(
@@ -1342,6 +1367,9 @@ class AccountService:
                 "one_action_directive_ledger",
                 "agent_chat_messages",
                 "agent_chat_conversations",
+                "messages",
+                "conversations",
+                "direct_message_blocks",
                 "kai_gmail_receipts",
                 "kai_gmail_sync_runs",
                 "kai_gmail_connections",
@@ -1490,8 +1518,6 @@ class AccountService:
         results["internal_access_events"] = True
         self._delete_user_rows_if_table_exists(conn, table_name="user_push_tokens", params=params)
         results["push_tokens"] = True
-        self._delete_user_rows_if_table_exists(conn, table_name="one_kyc_workflows", params=params)
-        results["one_kyc_workflows"] = True
         self._delete_owned_named_circles(
             conn,
             user_id=user_id,
@@ -1526,6 +1552,9 @@ class AccountService:
             "one_location_recipient_keys",
             # Feed is a derived projection. Clear it after every source table so
             # present or future source-cleanup fan-out cannot recreate a row.
+            "circle_chat_messages",
+            "circle_chat_recipients",
+            "circle_chat_preferences",
             "feed_events",
         ):
             self._delete_user_rows_if_table_exists(conn, table_name=table_name, params=params)
@@ -1686,6 +1715,9 @@ class AccountService:
             "pkm_domain_revision_segments": False,
             "pkm_domain_revisions": False,
             "world_model_index_v2": False,
+            "messages": False,
+            "conversations": False,
+            "direct_message_blocks": False,
             "kai_analyze_runs": False,
             "kai_run_state": False,
             "kai_gmail_connections": False,
@@ -1716,7 +1748,6 @@ class AccountService:
             "marketplace_access_requests": False,
             "marketplace_recipient_keys": False,
             "marketplace_opportunity_signals": False,
-            "one_kyc_workflows": False,
             "one_referral_risk_reviews": False,
             "one_referral_events": False,
             "one_referral_relationships": False,
@@ -1755,6 +1786,9 @@ class AccountService:
             "one_location_share_grants": False,
             "one_location_recipient_keys": False,
             "feed_events": False,
+            "circle_chat_messages": False,
+            "circle_chat_recipients": False,
+            "circle_chat_preferences": False,
             "runtime_persona_state": False,
             "ria_pick_legacy_retirements": False,
             "developer_oauth_tokens": False,
@@ -1811,6 +1845,9 @@ class AccountService:
                         "one_action_directive_ledger",
                         "agent_chat_messages",
                         "agent_chat_conversations",
+                        "messages",
+                        "conversations",
+                        "direct_message_blocks",
                         "kai_gmail_receipts",
                         "kai_gmail_sync_runs",
                         "kai_gmail_connections",
@@ -1980,12 +2017,6 @@ class AccountService:
                     conn, table_name="user_push_tokens", params=params
                 )
                 results["push_tokens"] = True
-                self._delete_user_rows_if_table_exists(
-                    conn,
-                    table_name="one_kyc_workflows",
-                    params=params,
-                )
-                results["one_kyc_workflows"] = True
                 self._delete_owned_named_circles(
                     conn,
                     user_id=user_id,
@@ -2029,6 +2060,9 @@ class AccountService:
                     "one_location_recipient_keys",
                     "one_wallet_cards",
                     # Last derived-data cleanup, before the identity/vault spine.
+                    "circle_chat_messages",
+                    "circle_chat_recipients",
+                    "circle_chat_preferences",
                     "feed_events",
                 ):
                     self._delete_user_rows_if_table_exists(
@@ -2255,7 +2289,6 @@ class AccountService:
             "investor_marketplace_profile": False,
             "consent_audit": False,
             "internal_access_events": False,
-            "one_kyc_workflows": False,
             "actor_profile": False,
             "runtime_persona_state": False,
         }
@@ -2367,12 +2400,6 @@ class AccountService:
                     params,
                 )
                 results["internal_access_events"] = True
-                self._delete_user_rows_if_table_exists(
-                    conn,
-                    table_name="one_kyc_workflows",
-                    params=params,
-                )
-                results["one_kyc_workflows"] = True
                 conn.execute(
                     text(
                         """

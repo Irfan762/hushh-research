@@ -13,12 +13,15 @@ import asyncio
 from hushh_mcp.services.drive_bulk_share_service import DriveBulkShareService
 from hushh_mcp.services.drive_bulk_share_store import DriveBulkShareStore
 from hushh_mcp.services.drive_request_bulk_service import DriveRequestBulkService
+from hushh_mcp.services.drive_request_payment_service import DriveRequestPaymentService
 from hushh_mcp.services.drive_sharing_store import DriveSharingStore
 from hushh_mcp.services.drive_work_wake import wake_drive_work
 from hushh_mcp.services.google_drive_adapter import DriveReadError
 
 
 def _defer_code(error: BaseException) -> str:
+    if str(error) == "date_range_required":
+        return "date_range_required"
     if str(error) == "background_preparation_required":
         return "background_preparation_required"
     if str(error) == "trusted_request_unavailable":
@@ -27,10 +30,22 @@ def _defer_code(error: BaseException) -> str:
 
 
 class DriveTrustedAutoService:
-    def __init__(self, *, sharing=None, bulk=None, wake=None):
+    def __init__(self, *, sharing=None, bulk=None, payment=None, wake=None):
         self.sharing = sharing or DriveSharingStore()
         self.bulk = bulk or DriveBulkShareStore(db=self.sharing.db)
+        self.payment = payment or DriveRequestPaymentService(db=self.sharing.db)
         self.wake = wake or wake_drive_work
+
+    async def _payment_ready(self, *, user_id: str, request_id: str, share_id: str) -> bool:
+        state = await self.payment.ensure_payment_for_frozen_batch(
+            user_id=user_id, request_id=request_id, share_id=share_id
+        )
+        if state["status"] == "paid":
+            return True
+        # The order and payment-ready event are committed. Prompt the sharing
+        # drain to deliver its notification; the scheduled drain remains backup.
+        await self.wake("sharing")
+        return False
 
     def _authority(self, user_id: str, request_id: str):
         async def require_current():
@@ -44,10 +59,20 @@ class DriveTrustedAutoService:
         if request_id is None:
             return None
         require_current = self._authority(user_id, request_id)
+        dates_checked = False
 
         async def guarded():
+            nonlocal dates_checked
             try:
                 await require_current()
+                if not dates_checked:
+                    context = await self.sharing.request_bulk_context(
+                        user_id=user_id, request_id=request_id
+                    )
+                    purpose = context["purpose"]
+                    if not (purpose.get("periodStart") and purpose.get("periodEnd")):
+                        raise DriveReadError("date_range_required")
+                    dates_checked = True
             except (DriveReadError, TimeoutError) as error:
                 await self.sharing.defer_trusted_search(
                     user_id=user_id, request_id=request_id, code=_defer_code(error)
@@ -82,6 +107,7 @@ class DriveTrustedAutoService:
                         user_id=user_id,
                         request_id=request_id,
                         authority_mode="trusted_auto",
+                        after_page=self.after_search_page,
                     )
                 else:
                     async with asyncio.timeout_at(deadline_at - 15):
@@ -89,6 +115,7 @@ class DriveTrustedAutoService:
                             user_id=user_id,
                             request_id=request_id,
                             authority_mode="trusted_auto",
+                            after_page=self.after_search_page,
                         )
                 outcomes["started"] += 1
                 # The durable search may have no committed rows yet. Wake its
@@ -107,6 +134,10 @@ class DriveTrustedAutoService:
             raise ValueError("invalid trusted batch bound")
         require_current = self._authority(user_id, request_id)
         await require_current()
+        context = await self.sharing.request_bulk_context(user_id=user_id, request_id=request_id)
+        purpose = context["purpose"]
+        if not (purpose.get("periodStart") and purpose.get("periodEnd")):
+            raise DriveReadError("date_range_required")
         request_bulk = DriveRequestBulkService(
             sharing=self.sharing,
             bulk=self.bulk,
@@ -125,6 +156,10 @@ class DriveTrustedAutoService:
         )
         for review in pending:
             await require_current()
+            if not await self._payment_ready(
+                user_id=user_id, request_id=request_id, share_id=review["shareId"]
+            ):
+                return queued
             await share_service.approve(
                 user_id=user_id,
                 share_id=review["shareId"],
@@ -144,6 +179,10 @@ class DriveTrustedAutoService:
                 user_id=user_id, request_id=request_id, positions=positions
             )
             await require_current()
+            if not await self._payment_ready(
+                user_id=user_id, request_id=request_id, share_id=review["shareId"]
+            ):
+                return queued
             await share_service.approve(
                 user_id=user_id,
                 share_id=review["shareId"],
@@ -167,12 +206,20 @@ class DriveTrustedAutoService:
             await self.wake("suggestions")
         return queued
 
-    async def after_search_slice(self, *, user_id: str, job_id: str) -> int:
+    async def after_search_page(self, *, user_id: str, job_id: str) -> int:
+        """Hand off one committed provider page before searching for more."""
+        # A provider page has at most 100 matches. Keep each immutable share
+        # at 25 files; sparse pages are available without waiting for the scan.
+        return await self.after_search_slice(user_id=user_id, job_id=job_id, max_batches=4)
+
+    async def after_search_slice(self, *, user_id: str, job_id: str, max_batches: int = 8) -> int:
         request_id = await self.sharing.trusted_request_for_job(user_id=user_id, job_id=job_id)
         if request_id is None:
             return 0
         try:
-            return await self.share_available(user_id=user_id, request_id=request_id)
+            return await self.share_available(
+                user_id=user_id, request_id=request_id, max_batches=max_batches
+            )
         except (DriveReadError, TimeoutError) as error:
             await self.sharing.defer_trusted_search(
                 user_id=user_id, request_id=request_id, code=_defer_code(error)

@@ -739,6 +739,28 @@ describe("AG-UI Agent One client", () => {
     ] } })).toEqual([]);
   });
 
+  it("routes a shown reaction once and never exposes it in activity or restored history", async () => {
+    const onMessageReaction = vi.fn();
+    const onToolStart = vi.fn();
+    const onToolWaiting = vi.fn();
+    const onToolResult = vi.fn();
+    mockTransport.emitEvents = (subscriber) => {
+      subscriber.onToolCallStartEvent({ event: { toolCallId: "reaction", toolCallName: "react_to_message" } });
+      subscriber.onToolCallEndEvent({ event: { toolCallId: "reaction" }, toolCallName: "react_to_message", toolCallArgs: { emoji: "💛" } });
+      for (const result of [{status: "ignored"}, {status: "shown", emoji: "💛💛"},
+        {status: "shown", emoji: "💛"}, {status: "shown", emoji: "🎉"}]) {
+        subscriber.onToolCallResultEvent({ event: { toolCallId: "reaction", content: JSON.stringify(result) } });
+      }
+    };
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY, userId: "u1", message: "A difficult day",
+      vaultOwnerToken: "fixture", handlers: { onMessageReaction, onToolStart, onToolWaiting, onToolResult } });
+    expect(onMessageReaction).toHaveBeenCalledExactlyOnceWith({ reaction: {emoji: "💛", actor: "agent"} });
+    expect([onToolStart, onToolWaiting, onToolResult].map(spy => spy.mock.calls.length)).toEqual([0, 0, 0]);
+    expect(parseRestoredTurnActivity({ activityType: "one.turn_activity.v1", content: { steps: [
+      {id: "reaction", tool: "react_to_message", status: "done"},
+    ]}})).toEqual([]);
+  });
+
   it.each([
     { toolName: "ask_email_agent", connector: "mail", sourceRef: "mail:1", kind: "metadata", label: "Mail" },
     { toolName: "ask_documents_agent", connector: "drive", sourceRef: `document:${"a".repeat(32)}`, kind: "document", label: "Document" },

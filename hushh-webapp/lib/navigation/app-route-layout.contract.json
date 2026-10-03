@@ -421,43 +421,6 @@
     }
   },
   {
-    "route": "/one/kyc",
-    "mode": "standard",
-    "shellVerification": {
-      "file": "app/one/kyc/page.tsx",
-      "includes": [
-        "AppPageShell",
-        "AppPageHeaderRegion",
-        "AppPageContentRegion",
-        "PageHeader"
-      ]
-    },
-    "voicePlaybook": {
-      "playbookId": "route.one.kyc",
-      "purpose": "Help the person understand and use the kyc screen through its generated controls.",
-      "screen": "one_kyc",
-      "entryCue": "You can say \u201cOpen KYC\u201d to use the primary control on this screen.",
-      "proactivity": "on_entry",
-      "primaryActionId": "route.one_kyc",
-      "happyPathActionIds": [
-        "route.one_kyc"
-      ],
-      "requiredInputs": [],
-      "recoveries": {
-        "blocked": "Explain the current guard and retain the goal.",
-        "cancelled": "Respect the cancellation and retain a safe next step.",
-        "failed": "Acknowledge the failure without claiming completion.",
-        "timeout": "Retain the goal and offer one safe retry.",
-        "callbackError": "Return to the verified callback recovery path without claiming success.",
-        "routeMismatch": "Use the verified current route and its generated actions only."
-      },
-      "completionBoundary": "Completion is shown only after the correlated browser settlement succeeds.",
-      "nextRoute": "/one/kyc",
-      "returnPolicy": "stay",
-      "outOfScopeBehavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
-    }
-  },
-  {
     "route": "/one/location",
     "mode": "standard",
     "interactionLayerPolicy": {
@@ -728,6 +691,7 @@
   {
     "route": "/one/gmail",
     "mode": "standard",
+    "pageTopLocalOffset": "-24px",
     "shellVerification": {
       "file": "components/gmail/gmail-receipts-page.tsx",
       "includes": [
@@ -1245,6 +1209,40 @@
       "nextRoute": null,
       "returnPolicy": "navigate",
       "outOfScopeBehavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+    }
+  },
+  {
+    "route": "/one/messages",
+    "mode": "standard",
+    "shellVerification": {
+      "file": "components/direct-messages/direct-messages-page.tsx",
+      "includes": [
+        "AppPageShell",
+        "ConnectionPersonAvatar",
+        "Button"
+      ]
+    },
+    "voicePlaybook": {
+      "playbookId": "route.one.messages",
+      "purpose": "Read and send private one-to-one messages with accepted connections.",
+      "screen": "app",
+      "entryCue": "",
+      "proactivity": "ambient",
+      "primaryActionId": null,
+      "happyPathActionIds": [],
+      "requiredInputs": [],
+      "recoveries": {
+        "blocked": "Explain that messaging requires an active connection and retain the current conversation.",
+        "cancelled": "Respect the cancellation and retain the current conversation.",
+        "failed": "Acknowledge the message failure and offer a safe retry.",
+        "timeout": "Retain the conversation and offer one safe retry.",
+        "callbackError": "Keep the message screen open and explain that the update could not be verified.",
+        "routeMismatch": "Use only the verified private message route and its generated controls."
+      },
+      "completionBoundary": "A send completes only after the server accepts the message for the active connection.",
+      "nextRoute": null,
+      "returnPolicy": "stay",
+      "outOfScopeBehavior": "Do not infer a connection or reveal another person's message history."
     }
   },
   {

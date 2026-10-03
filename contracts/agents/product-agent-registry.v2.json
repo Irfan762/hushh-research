@@ -113,7 +113,7 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "8f664d2cde215f8aca055b45877de651add62a467dded371611725de78bddc11",
+      "system_instruction_sha256": "e4591cf27cdc63456ed3b9a082bf6bf17ff64335f1a0af78673201c8fe915f85",
       "telemetry_namespace": "agent.calendar",
       "tools": [
         {
@@ -141,7 +141,7 @@
           "required_scope": "cap.one.invoke"
         },
         {
-          "description": "Prepare a new meeting for explicit owner confirmation.",
+          "description": "Prepare a new Google Meet event for explicit owner confirmation; Calendar shares the invite with guests after confirmation.",
           "name": "propose_calendar_event",
           "py_func": "hushh_mcp.agents.calendar.tools.propose_calendar_event",
           "required_scope": "cap.one.invoke"
@@ -3908,7 +3908,7 @@
         "voice": true,
         "web": true
       },
-      "system_instruction_sha256": "ef36929c9f2af9a599f369e1951c142a4269b87f40bbff8190436dd87c4c66b6",
+      "system_instruction_sha256": "9243a1a9afd33725174d2be4323b93375806866e7b19f67ebc4bc6fb83ffe1da",
       "telemetry_namespace": "agent.one",
       "tools": [
         {
@@ -3970,6 +3970,12 @@
           "name": "propose_drive_file_trash",
           "py_func": "hushh_mcp.one_adk.drive_write_tools.propose_drive_file_trash",
           "required_scope": "vault.owner"
+        },
+        {
+          "description": "Add one optional contextual emoji to the latest typed-chat user message; presentation only, never ends the answer or persists a reaction.",
+          "name": "react_to_message",
+          "py_func": "hushh_mcp.one_adk.message_reactions.react_to_message",
+          "required_scope": "cap.one.invoke"
         },
         {
           "description": "Offer two or three short next questions after a substantive typed-chat answer, in the same response; the app shows them as tappable chips that fill the composer and reads or changes nothing.",

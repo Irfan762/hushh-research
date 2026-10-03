@@ -11,7 +11,6 @@ import {
   useMemo,
   useRef,
   useState,
-  useSyncExternalStore,
   type ReactNode,
   type ClipboardEvent as ReactClipboardEvent,
 } from "react";
@@ -124,6 +123,11 @@ import {
 import { EmailDraftCard } from "@/components/agent/email-draft-card";
 import { richEmailPlainText } from "@/components/agent/email-rich-text";
 import {
+  AgentCalendarProposalCard,
+  type CalendarProposalAction,
+  type CalendarProposalConflict,
+} from "@/components/agent/agent-calendar-proposal-card";
+import {
   EmailDeliveryHistoryCard,
   type EmailDeliveryHistoryItem,
 } from "@/components/agent/email-delivery-history-card";
@@ -171,8 +175,9 @@ import { ConnectorBrandMark, type ConnectorBrand } from "@/components/agent/conn
 import { AgentResponseReportButton } from "@/components/agent/agent-response-report";
 import { isAndroid } from "@/lib/capacitor/platform";
 import {
-  CHAT_USER_BUBBLE_CLASSNAME,
   ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME,
+  OneChatBubble,
+  OneChatTimeSeparator,
 } from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
 import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
@@ -383,6 +388,8 @@ import {
   type QueuedAgentPrompt,
 } from "@/lib/agent/agent-chat-prompt-queue";
 import { LiveTurnQueue } from "@/lib/agent/agent-chat-live-turn-queue";
+import { AgentMessageReactionBadge } from "./agent-message-reaction";
+import { attachMessageReaction, type AgentMessageReaction } from "@/lib/agent/agent-message-reaction";
 import { AgentQueuedStack, QueuedJoinedCaption } from "@/components/agent/agent-queued-stack";
 import { useAgentChatSlowNotice } from "@/components/agent/agent-chat-slow-notice";
 import {
@@ -473,6 +480,7 @@ type AgentMessage = {
   lostTurn?: AgentLostTurn;
   /** One's 2-3 next questions for this answer; in memory only, shown while it is latest. */
   followUps?: string[];
+  reaction?: AgentMessageReaction | null;
   /**
    * The information request this outcome chip or continuation answer belongs
    * to. Set live when the turn starts; restored from history metadata
@@ -724,6 +732,7 @@ type AgentRunTurnOptions = {
   driveSearchSelection?: { jobId: string; position: number };
   kycInformationSaveConfirmed?: boolean;
   appendUserMessage?: boolean;
+  reactionUserMessageId?: string;
   replaceAssistantMessageId?: string | null;
   deferPkmContext?: boolean;
   /** Pasted text sent as separate document parts beside the typed text. */
@@ -934,7 +943,12 @@ export function getCalendarDirectiveFromToolEvent(
           ? "Reschedule"
           : "Schedule";
     const conflicts = Array.isArray(parsed.conflicts) ? parsed.conflicts : [];
-    const confirmLabel = conflicts.length > 0 ? `${verb} anyway` : verb;
+    const confirmLabel =
+      conflicts.length > 0
+        ? `${verb} anyway`
+        : action === "create"
+          ? "Schedule meeting"
+          : verb;
     const title = String(plan.title || plan.event_id || "event");
     const summary = `${verb} '${title}'`;
 
@@ -946,6 +960,7 @@ export function getCalendarDirectiveFromToolEvent(
           type: "calendar.execute_proposal",
           proposalId: parsed.proposal_id,
           action,
+          googleMeet: action === "create",
           summary,
           confirmLabel,
           expiresAt: String(parsed.expires_at || ""),
@@ -1826,6 +1841,7 @@ export function AgentBubble({
   driveMemoryReview,
   onResendAttachment,
   onConfirmMemoryNeedsOwner,
+  pendingMemoryCards,
   onUnlockVault,
 }: {
   message: AgentMessage;
@@ -1855,6 +1871,7 @@ export function AgentBubble({
   /** "Edit and send again" on a sent paste: a new turn, never an edit of this one. */
   onResendAttachment?: (index: number, editedText: string) => boolean | void;
   onConfirmMemoryNeedsOwner?: () => Promise<void>;
+  pendingMemoryCards?: readonly AgentPkmPreviewCard[];
   onUnlockVault?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
@@ -2041,16 +2058,12 @@ export function AgentBubble({
           isUser && "sm:max-w-[min(76%,42rem)]",
         )}
       >
-        <div
+        <OneChatBubble
           aria-live={!isUser && isStreaming ? "polite" : undefined}
           data-agent-streaming={!isUser && isStreaming ? "true" : undefined}
+          tone={isUser ? "user" : showAssistantBubble ? "assistant" : "plain"}
           className={cn(
-            "text-sm leading-6",
-            isUser
-              ? CHAT_USER_BUBBLE_CLASSNAME
-              : showAssistantBubble
-                ? cn(ONE_CHAT_ASSISTANT_BUBBLE_CLASSNAME, "relative")
-                : "px-0 py-1 text-foreground",
+            (isUser || showAssistantBubble) && "relative",
             isError &&
               "rounded-2xl border border-destructive/20 bg-destructive/[0.06] px-4 py-2.5 text-foreground",
           )}
@@ -2069,6 +2082,7 @@ export function AgentBubble({
                 </div>
               ) : null}
               {gmailInformationRequestAttachment}
+              {message.reaction && <AgentMessageReactionBadge reaction={message.reaction} />}
             </>
           ) : shouldRenderStreamPanel ? (
             <AgentTurnStreamPanel
@@ -2115,9 +2129,9 @@ export function AgentBubble({
               {message.errorNotice}
             </p>
           ) : null}
-        </div>
+        </OneChatBubble>
         {isUser && message.queuedPlacement === "joined" ? <QueuedJoinedCaption /> : null}
-        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} onUnlock={onUnlockVault} /> : null}
+        {!isUser && message.memoryCapture ? <AgentMemoryCaptureStatus status={message.memoryCapture} onConfirmNeedsOwner={onConfirmMemoryNeedsOwner} pendingCards={pendingMemoryCards} onUnlock={onUnlockVault} /> : null}
         {!isUser && !isStreaming && !isError ? driveMemoryReview : null}
         {showResponseActions ? (
         <div
@@ -2170,25 +2184,12 @@ export function AgentBubble({
 /** The centered date/time line that opens a group of messages. */
 function ChatTimeSeparatorRow({ separator }: { separator: ChatTimeSeparator }) {
   return (
-    <div
-      data-testid="agent-chat-time-separator"
-      className="flex justify-center whitespace-nowrap pb-0.5 pt-2 first:pt-0"
-    >
-      {separator.dateTime ? (
-        <time
-          dateTime={separator.dateTime}
-          title={separator.accessibleLabel}
-          className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]"
-        >
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </time>
-      ) : (
-        <span className="whitespace-nowrap text-[12.5px] font-medium tabular-nums text-[color:var(--one-chat-meta)]">
-          <span aria-hidden="true">{separator.text}</span>
-          <span className="sr-only">{separator.accessibleLabel}</span>
-        </span>
-      )}
+    <div data-testid="agent-chat-time-separator">
+      <OneChatTimeSeparator
+        accessibleLabel={separator.accessibleLabel}
+        dateTime={separator.dateTime}
+        label={separator.text}
+      />
     </div>
   );
 }
@@ -2407,26 +2408,6 @@ export function chatHeaderSubtitle(input: {
   const current = input.activeToolCalls.at(-1);
   if (current) return `${current.activity || current.label}…`;
   return input.statusText || IDLE_AGENT_SUBTITLE;
-}
-
-/**
- * From this width the chat history is a persistent column beside the
- * conversation (Muse-style); below it, the existing full-height drawer.
- */
-const DESKTOP_HISTORY_QUERY = "(min-width: 1024px)";
-
-function subscribeDesktopHistoryLayout(onChange: () => void): () => void {
-  const query = window.matchMedia(DESKTOP_HISTORY_QUERY);
-  query.addEventListener("change", onChange);
-  return () => query.removeEventListener("change", onChange);
-}
-
-function useDesktopHistoryLayout(): boolean {
-  return useSyncExternalStore(
-    subscribeDesktopHistoryLayout,
-    () => window.matchMedia(DESKTOP_HISTORY_QUERY).matches,
-    () => false,
-  );
 }
 
 export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
@@ -2831,19 +2812,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   }, []);
   const historyDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
   const historyDrawerFallbackRef = useRef<HTMLButtonElement | null>(null);
-  const desktopHistoryLayout = useDesktopHistoryLayout();
-  const [desktopHistoryCollapsed, setDesktopHistoryCollapsed] = useState(true);
   useLayoutEffect(() => {
     // Next.js can hide and preserve this route instead of unmounting it.
     // History is transient: returning to Chat must require a fresh open action.
     return () => {
-      setDesktopHistoryCollapsed(true);
       setIsHistoryDrawerOpen(false);
       setDrawerMode("chats");
       setConnectorPanelInitialConnector(null);
     };
   }, [pathname]);
-  const desktopHistoryVisible = desktopHistoryLayout && !desktopHistoryCollapsed;
   const [driveReviewSignal, setDriveReviewSignal] = useState<{ ownerId: string | null; epoch: number; count: number }>(
     { ownerId: null, epoch: vaultSessionEpoch, count: 0 },
   );
@@ -2854,9 +2831,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   }, [user?.uid, vaultSessionEpoch]);
   const driveReviewsPending = user && isVaultUnlocked && driveReviewSignal.ownerId === user.uid &&
     driveReviewSignal.epoch === vaultSessionEpoch ? driveReviewSignal.count : 0;
-  const desktopHistoryId = useId();
   const [getAppOpen, setGetAppOpen] = useState(false);
-  const [getAppAnchorRect, setGetAppAnchorRect] = useState<DOMRect | null>(null);
   const getAppReturnFocusRef = useRef<HTMLElement | null>(null);
   // The installed app never offers to download itself.
   const offerGetApp = !Capacitor.isNativePlatform();
@@ -4965,7 +4940,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const token = getVaultOwnerToken();
       if (!token) {
         toast.error("Vault access expired. Unlock again to continue.");
-        return;
+        throw new Error("VAULT_ACCESS_EXPIRED");
       }
       setHistoryActionPendingId(targetConversationId);
       try {
@@ -4984,6 +4959,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         toast.success("Agent chat renamed.");
       } catch {
         toast.error("Could not rename Agent chat.");
+        throw new Error("CHAT_RENAME_FAILED");
       } finally {
         setHistoryActionPendingId(null);
       }
@@ -5270,7 +5246,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             const wrote = pkmSaveReceiptWrote(receipt);
             appendDebugEvent(params.turnId, "pkm_explicit_save_result", {
               saved: receipt.saved, updated: receipt.updated, merged: receipt.merged,
-              unchanged: receipt.unchanged, skipped: receipt.skipped, needs_owner: receipt.needsOwner,
+              unchanged: receipt.unchanged, skipped: receipt.skipped, excluded: receipt.excluded,
+              unreadable: receipt.unreadable, needs_owner: receipt.needsOwner,
               failed: receipt.failed, unprepared: receipt.unprepared,
             });
             trackEvent("agent_pkm_save_confirmation_completed", {
@@ -5278,7 +5255,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               saved_count_bucket: toPkmFactCountBucket(wrote), failed_count_bucket: toPkmFactCountBucket(receipt.failed),
               has_active_recipients: false,
             });
-            const incomplete = receipt.failed + receipt.unprepared + receipt.needsOwner > 0;
+            const incomplete = receipt.failed + receipt.unprepared + receipt.unreadable + receipt.excluded + receipt.needsOwner > 0;
             return settle({
               phase: wrote > 0 || receipt.unchanged > 0
                 ? (incomplete ? "partial" : "saved")
@@ -6262,6 +6239,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           onSpecialistDirective: (directive) => {
             if (streamAbortController.signal.aborted) return;
             setPendingSpecialistDirective(directive);
+          },
+          onMessageReaction: ({ reaction, clientMessageId }) => {
+            if (streamAbortController.signal.aborted || latestVisibleTurnIdRef.current !== debugTurnId) return;
+            const targetId = clientMessageId ? `msg-queued-${clientMessageId}`
+              : options.reactionUserMessageId ?? userMessages.at(-1)?.id ?? userMessage.id;
+            setMessages(current => attachMessageReaction(current, targetId, reaction));
           },
           onFollowUpSuggestions: (followUps) => {
             if (streamAbortController.signal.aborted) return;
@@ -8076,6 +8059,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         await runAgentTurn(retryText, {
           source: "typed",
           appendUserMessage: false,
+          reactionUserMessageId: previousUserMessage.id,
           replaceAssistantMessageId: messageId,
           attachments: retryAttachments,
         });
@@ -8100,31 +8084,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     if (next.open && !isPuppySurface)
       void loadConversationList().catch(() => undefined);
   }, [drawerMode, isHistoryDrawerOpen, isPuppySurface, loadConversationList]);
-  const toggleDesktopHistory = useCallback(() => {
-    setDesktopHistoryCollapsed((collapsed) => !collapsed);
-  }, []);
-  // The column needs the list as soon as it is on screen (the drawer loads on
-  // open); the history cache makes a repeat of this cheap.
-  useEffect(() => {
-    if (!desktopHistoryVisible || isPuppySurface) return;
-    void loadConversationList().catch(() => undefined);
-  }, [desktopHistoryVisible, isPuppySurface, loadConversationList]);
-  // Widening past the breakpoint closes the phone drawer; desktop history
-  // remains controlled by its hamburger toggle.
-  useEffect(() => {
-    if (desktopHistoryLayout && isHistoryDrawerOpen && drawerMode === "chats")
-      handleHistoryDrawerOpenChange(false);
-  }, [desktopHistoryLayout, drawerMode, handleHistoryDrawerOpenChange, isHistoryDrawerOpen]);
-  // The fixed bottom navigation centres on the conversation column, not the
-  // whole window, while the column is showing (see globals.css).
-  useEffect(() => {
-    if (!desktopHistoryVisible) return;
-    const root = document.documentElement;
-    root.dataset.oneChatSidebar = "open";
-    return () => {
-      delete root.dataset.oneChatSidebar;
-    };
-  }, [desktopHistoryVisible]);
   // "N messages" (as in the reference): while the reader is scrolled up, a
   // pill above the composer counts the messages not yet fully in view below
   // and jumps back to the latest on a tap.
@@ -8200,26 +8159,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     return () => observer.disconnect();
   }, [isPuppySurface, scheduleMessagesBelowCount]);
   const openGetApp = useCallback((trigger: HTMLButtonElement) => {
-    if (desktopHistoryLayout) {
-      getAppReturnFocusRef.current = trigger;
-      setGetAppAnchorRect(trigger.getBoundingClientRect());
-    } else {
-      // The phone drawer is modal: close it first, then raise the sheet, and
-      // return focus to the history button the drawer itself restores to.
-      getAppReturnFocusRef.current =
-        historyDrawerTriggerRef.current ?? historyDrawerFallbackRef.current;
-      setGetAppAnchorRect(null);
-      handleHistoryDrawerOpenChange(false);
-    }
+    // The drawer is modal at every width. Close it before raising the sheet.
+    getAppReturnFocusRef.current =
+      historyDrawerTriggerRef.current ?? historyDrawerFallbackRef.current ?? trigger;
+    handleHistoryDrawerOpenChange(false);
     setGetAppOpen(true);
-  }, [desktopHistoryLayout, handleHistoryDrawerOpenChange]);
-  // A floating card anchored to a control that moved is worse than none.
-  useEffect(() => {
-    if (!getAppOpen || !getAppAnchorRect) return;
-    const close = () => setGetAppOpen(false);
-    window.addEventListener("resize", close);
-    return () => window.removeEventListener("resize", close);
-  }, [getAppAnchorRect, getAppOpen]);
+  }, [handleHistoryDrawerOpenChange]);
   const renderHistorySidebar = (
     sidebarClassName?: string,
     onClose?: () => void,
@@ -8247,8 +8192,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         : undefined}
       onGetApp={offerGetApp ? openGetApp : undefined}
       getAppOpen={getAppOpen}
-      driveActivity={!isPuppySurface && (mode === "desktop" ? desktopHistoryVisible : !desktopHistoryVisible)
-        ? <DriveRecentSharing presentation="sidebar" onNeedsReviewChange={onDriveNeedsReviewChange} /> : null}
+      driveActivity={!isPuppySurface
+        ? <DriveRecentSharing presentation="sidebar" active={isHistoryDrawerOpen && drawerMode === "chats"} onNeedsReviewChange={onDriveNeedsReviewChange} /> : null}
       onCreateNew={handleSidebarCreateNewChat}
       onSelectConversation={handleSidebarSelectConversation}
       onRenameConversation={isPuppySurface ? handleRenamePuppyConversation : handleRenameConversation}
@@ -8364,7 +8309,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       data-agent-chat-workspace="page"
       data-agent-chat-route={isCanonicalChatRoute ? "root" : "embedded"}
       data-agent-history-drawer-open={isHistoryDrawerOpen ? "true" : undefined}
-      data-agent-history-column={desktopHistoryVisible ? "open" : undefined}
       data-one-chat-surface
     >
       <AgentPersonSelectionContext.Provider value={hasChatAccess && !isStreaming
@@ -8410,14 +8354,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           }
         />
 
-        {/* Desktop: one persistent history column beside the conversation,
-            scrolling on its own. Phones and tablets keep the drawer above. */}
-        {desktopHistoryVisible ? (
-          <div id={desktopHistoryId} className="flex min-h-0 shrink-0 max-lg:hidden">
-            {renderHistorySidebar("h-full", undefined, false, "desktop")}
-          </div>
-        ) : null}
-
         <section
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[color:var(--one-chat-canvas)]",
@@ -8441,34 +8377,23 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               construction: whatever does not fit is cut at its own edge and
               truncates, it never slides under a control.
             */}
-            {/* The same menu control on every width. On desktop it shows or
-                hides the history column (and keeps its hamburger: nothing
-                modal opened); below that it opens the drawer as before. Its
-                drawer-side label is what the edge-swipe gesture clicks. */}
+            {/* The same overlay drawer on every width keeps the transcript and
+                fixed navigation in place. */}
             <ShellActionSurface
               variant="icon"
               ref={historyDrawerFallbackRef}
               onClick={(event) => {
-                if (desktopHistoryLayout) {
-                  toggleDesktopHistory();
-                  return;
-                }
                 historyDrawerTriggerRef.current = event.currentTarget;
                 toggleHistoryDrawer();
               }}
-              aria-label={`${desktopHistoryLayout
-                ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
-                : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}${driveReviewsPending > 0 && !desktopHistoryVisible && !isHistoryDrawerOpen
+              aria-label={`${isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}${driveReviewsPending > 0 && !isHistoryDrawerOpen
                 ? `, ${driveReviewsPending} Drive ${driveReviewsPending === 1 ? "review needs" : "reviews need"} you` : ""}`}
-              title={desktopHistoryLayout
-                ? desktopHistoryVisible ? "Hide chat history" : "Show chat history"
-                : isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}
-              aria-expanded={desktopHistoryLayout ? desktopHistoryVisible : undefined}
-              aria-controls={desktopHistoryLayout && desktopHistoryVisible ? desktopHistoryId : undefined}
+              title={isHistoryDrawerOpen ? "Close chat history" : "Open chat history"}
+              aria-expanded={isHistoryDrawerOpen}
               className="relative z-[540]"
             >
-              <AnimatedMenuCrossIcon isOpen={!desktopHistoryLayout && isHistoryDrawerOpen} />
-              {driveReviewsPending > 0 && !desktopHistoryVisible && !isHistoryDrawerOpen && !isPuppySurface ?
+              <AnimatedMenuCrossIcon isOpen={isHistoryDrawerOpen} />
+              {driveReviewsPending > 0 && !isHistoryDrawerOpen && !isPuppySurface ?
                 <span aria-hidden="true" className="pointer-events-none absolute right-0 top-0 size-2 rounded-full bg-[color:var(--app-warning)]" /> : null}
             </ShellActionSurface>
             <div
@@ -8790,9 +8715,18 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 </div>
               ) : null}
 
+              {/* While voice is live the voice card is the interface, so the
+                  welcome panel stands down rather than sharing the canvas with
+                  it. The card is an `absolute bottom-0` overlay and this panel
+                  is centred in the scroll area below it, so on a short phone
+                  viewport the two land on each other. Spacing them apart would
+                  only hold until the next shorter viewport; not rendering both
+                  cannot collide on any screen. Nothing is lost: the panel's
+                  prompts feed the text composer, which voice has already
+                  replaced and disabled. */}
               {chatOnboarding.turns.length ? (
                 renderChatOnboarding({ kind: "top" })
-              ) : !hasStartedConversation ? (
+              ) : !hasStartedConversation && !voiceActive ? (
                 <>
                   <AgentWelcomePanel
                     name={displayName}
@@ -8834,6 +8768,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                           : undefined
                       }
                       onConfirmMemoryNeedsOwner={() => confirmMemoryNeedsOwner(message.id)}
+                      pendingMemoryCards={pkmNeedsOwnerCardsRef.current.get(message.id)?.cards}
                       onUnlockVault={() => setVaultDialogOpen(true)}
                       onInformationRequestSubmitted={async (activityId, receipt) => {
                         const ownerUid = user?.uid;
@@ -9484,31 +9419,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   />
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   "agent_calendar" ? (
-                  <SpecialistDirectiveCard
-                    summary={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).summary ?? pendingSpecialistDirective.message,
-                    )}
-                    confirmLabel={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).confirmLabel ?? "Continue",
-                    )}
-                    busy={specialistBusy}
-                    onConfirm={async () => {
-                      const directive = pendingSpecialistDirective;
-                      const payload = directive.directive.payload as Record<
-                        string,
-                        unknown
-                      >;
-                      const type = String(payload.type ?? "");
+                  (() => {
+                    const directive = pendingSpecialistDirective;
+                    const payload = directive.directive.payload as Record<
+                      string,
+                      unknown
+                    >;
+                    const type = String(payload.type ?? "");
+                    const calendarAction: CalendarProposalAction =
+                      payload.action === "reschedule" || payload.action === "cancel"
+                        ? payload.action
+                        : "create";
+                    const attendees = Array.isArray(payload.attendees)
+                      ? payload.attendees.filter(
+                          (item): item is string => typeof item === "string",
+                        )
+                      : [];
+                    const conflicts: CalendarProposalConflict[] = Array.isArray(
+                      payload.conflicts,
+                    )
+                      ? payload.conflicts.map((item) => {
+                          const conflict =
+                            item && typeof item === "object"
+                              ? (item as Record<string, unknown>)
+                              : {};
+                          return {
+                            title:
+                              typeof conflict.title === "string"
+                                ? conflict.title
+                                : null,
+                            startAt:
+                              typeof conflict.startAt === "string"
+                                ? conflict.startAt
+                                : typeof conflict.start_at === "string"
+                                  ? conflict.start_at
+                                  : null,
+                          };
+                        })
+                      : [];
+                    const onConfirm = async () => {
                       if (type === "calendar.connect") {
                         if (!user?.uid) {
                           addErrorMessage(
@@ -9536,19 +9485,49 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         return;
                       }
                       enqueueCalendarDirective(directive, token, user.uid);
-                    }}
-                    busyLabel={
-                      directiveConnectWaiting ? "Waiting for Google…" : undefined
-                    }
-                    cancelWhileBusy={directiveConnectWaiting}
-                    onCancel={() => {
+                    };
+                    const onCancel = () => {
                       directiveConnect.cancel();
                       setPendingSpecialistDirective(null);
                       toast.info(
                         "Calendar change cancelled. Nothing was changed.",
                       );
-                    }}
-                  />
+                    };
+
+                    if (type === "calendar.execute_proposal") {
+                      return (
+                        <AgentCalendarProposalCard
+                          action={calendarAction}
+                          title={typeof payload.title === "string" ? payload.title : null}
+                          startAt={typeof payload.startAt === "string" ? payload.startAt : null}
+                          endAt={typeof payload.endAt === "string" ? payload.endAt : null}
+                          attendees={attendees}
+                          location={typeof payload.location === "string" ? payload.location : null}
+                          sendUpdates={payload.sendUpdates === true}
+                          googleMeet={payload.googleMeet === true}
+                          conflicts={conflicts}
+                          confirmLabel={String(payload.confirmLabel ?? "Schedule meeting")}
+                          busy={specialistBusy}
+                          onConfirm={onConfirm}
+                          onCancel={onCancel}
+                        />
+                      );
+                    }
+
+                    return (
+                      <SpecialistDirectiveCard
+                        summary={String(payload.summary ?? directive.message)}
+                        confirmLabel={String(payload.confirmLabel ?? "Continue")}
+                        busy={specialistBusy}
+                        onConfirm={onConfirm}
+                        busyLabel={
+                          directiveConnectWaiting ? "Waiting for Google…" : undefined
+                        }
+                        cancelWhileBusy={directiveConnectWaiting}
+                        onCancel={onCancel}
+                      />
+                    );
+                  })()
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   DRIVE_REVIEW_DELEGATE ? (
                   <SpecialistDirectiveCard
@@ -10140,8 +10119,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         <AgentGetAppPrompt
           open={getAppOpen}
           onOpenChange={setGetAppOpen}
-          presentation={desktopHistoryLayout && getAppAnchorRect ? "card" : "sheet"}
-          anchorRect={getAppAnchorRect}
+          presentation="sheet"
           returnFocusRef={getAppReturnFocusRef}
         />
       ) : null}

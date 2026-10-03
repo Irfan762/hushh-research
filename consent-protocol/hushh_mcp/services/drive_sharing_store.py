@@ -8,6 +8,7 @@ disconnect and removal of the index. A queued operation is not Google success.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import UTC, datetime
 from typing import cast
@@ -183,7 +184,7 @@ class DriveSharingStore(DriveDocumentStore):
 
     @staticmethod
     def _summary(row, *, recipient=False):
-        # No matches, counts, filenames or private failure details for B.
+        # No filenames, counts or private failure details for B.
         state = row["status"]
         if state in {"pending", "preparing", "review_ready"} and row["expires_at"] <= datetime.now(
             UTC
@@ -191,7 +192,31 @@ class DriveSharingStore(DriveDocumentStore):
             state = "expired"
         if recipient and state in {"preparing", "review_ready"}:
             state = "pending"
+        if recipient and state == "no_match":
+            state = "no_files_shared"
         return {"requestId": str(row["request_id"]), "status": state, "revision": row["revision"]}
+
+    @staticmethod
+    def _payment_metadata(connection, request_id):
+        order = (
+            connection.execute(
+                text("""SELECT status,amount_cents,currency,reconciliation_required
+                FROM drive_request_payment_orders WHERE request_id=:request"""),
+                {"request": request_id},
+            )
+            .mappings()
+            .first()
+        )
+        return (
+            {
+                "paymentStatus": order["status"],
+                "paymentAmountCents": order["amount_cents"],
+                "paymentCurrency": order["currency"],
+                "paymentReconciliationRequired": order["reconciliation_required"] is True,
+            }
+            if order
+            else {}
+        )
 
     def _open_request(self, row):
         return self.sharing_cipher.open(
@@ -361,6 +386,7 @@ class DriveSharingStore(DriveDocumentStore):
     async def defer_trusted_search(self, *, user_id: str, request_id: str, code: str) -> None:
         """Make missing background authority visible and avoid a hot retry loop."""
         if code not in {
+            "date_range_required",
             "background_preparation_required",
             "preparation_unavailable",
             "trusted_relationship_changed",
@@ -410,7 +436,9 @@ class DriveSharingStore(DriveDocumentStore):
             )
             attempts = row["preparation_attempts"] + int(code == "preparation_unavailable")
             terminal = code == "preparation_unavailable" and attempts >= 3
-            if code == "background_preparation_required":
+            if code == "date_range_required":
+                visible_code = "date_range_required"
+            elif code == "background_preparation_required":
                 visible_code = (
                     ("trusted_auto_active" if has_job else "trusted_auto_queued")
                     if background_ready
@@ -427,7 +455,8 @@ class DriveSharingStore(DriveDocumentStore):
                 """UPDATE drive_share_requests
                   SET preparation_error_code=:code,
                     preparation_attempts=:attempts,
-                    preparation_next_at=CASE WHEN :ready THEN clock_timestamp()
+                    preparation_next_at=CASE WHEN :needs_dates THEN expires_at
+                      WHEN :ready THEN clock_timestamp()
                       ELSE clock_timestamp()+INTERVAL '5 minutes' END,
                     bulk_search_started_at=CASE WHEN :has_job THEN bulk_search_started_at ELSE NULL END,
                     updated_at=clock_timestamp()
@@ -438,9 +467,11 @@ class DriveSharingStore(DriveDocumentStore):
                     "attempts": attempts,
                     "has_job": has_job,
                     "ready": background_ready,
+                    "needs_dates": code == "date_range_required",
                 },
             )
             if visible_code in {
+                "date_range_required",
                 "background_preparation_required",
                 "preparation_unavailable",
                 "trusted_relationship_changed",
@@ -460,7 +491,7 @@ class DriveSharingStore(DriveDocumentStore):
             now = connection.execute(text("SELECT clock_timestamp()")).scalar_one()
             if row["expires_at"] <= now or row["status"] in {"cancelled", "declined", "expired"}:
                 raise DriveSharingError("request_unavailable")
-            if start and row["status"] in {"approved", "completed", "partial"}:
+            if start and row["status"] in {"approved", "completed", "partial", "no_match"}:
                 raise DriveSharingError("request_changed")
             if start and row["bulk_search_started_at"] is None:
                 row = self._row(
@@ -508,6 +539,8 @@ class DriveSharingStore(DriveDocumentStore):
         owner_initiated: A shares files A chose from B's question. Background
         preparation never runs for it and A is not notified of A's own action.
         """
+        if not owner_initiated and (purpose.periodStart is None or purpose.periodEnd is None):
+            raise DriveSharingError("date_range_required")
         self._sharing_admission(recipient.user_id)
         self._sharing_admission(owner_user_id)
         age = (datetime.now(UTC) - recipient.verified_at).total_seconds()
@@ -572,6 +605,16 @@ class DriveSharingStore(DriveDocumentStore):
                 and live_connection["verified_policy_hash"] == LIVE_POLICY_HASH
                 and self._trusted_recipient_current(connection, owner_user_id, recipient.user_id)
             )
+            payment_required = (
+                trusted_auto
+                and os.getenv("DRIVE_REQUEST_PAYMENTS_ENABLED", "").strip().lower() == "true"
+            )
+            if payment_required:
+                from hushh_mcp.services.drive_request_payment_service import (
+                    require_payment_configuration,
+                )
+
+                require_payment_configuration()
             envelope = self.sharing_cipher.seal(
                 {**payload, **({"trusted_auto": True} if trusted_auto else {})},
                 user_id=owner_user_id,
@@ -582,9 +625,10 @@ class DriveSharingStore(DriveDocumentStore):
                 connection,
                 """
                 INSERT INTO drive_share_requests(request_id,user_id,recipient_user_id,client_request_id,
-                  request_envelope,recipient_binding,request_digest,preparation_error_code)
+                  request_envelope,recipient_binding,request_digest,preparation_error_code,
+                  payment_required)
                 VALUES (:id,:owner,:recipient,:client,CAST(:envelope AS jsonb),:binding,:digest,
-                  :preparation_code)
+                  :preparation_code,:payment_required)
                 ON CONFLICT (recipient_user_id,client_request_id) DO NOTHING
                 RETURNING *
             """,
@@ -597,6 +641,7 @@ class DriveSharingStore(DriveDocumentStore):
                     "binding": binding,
                     "digest": digest,
                     "preparation_code": "trusted_auto_queued" if trusted_auto else None,
+                    "payment_required": payment_required,
                 },
             )
             if not row:
@@ -896,6 +941,9 @@ class DriveSharingStore(DriveDocumentStore):
         return None
 
     def _queue_grants(self, connection, *, request, approval, sources, batch, rule=None):
+        from hushh_mcp.services.drive_request_payment_store import DriveRequestPaymentStore
+
+        DriveRequestPaymentStore.require_paid_if_required(connection, request)
         # A plan's approval must name exactly the files queued in this batch.
         if sorted(str(source["document_id"]) for source in sources) != sorted(
             str(source.document_id) for source in approval.sources
@@ -1463,6 +1511,7 @@ class DriveSharingStore(DriveDocumentStore):
             return {
                 **self._summary(row, recipient=recipient),
                 "direction": "outgoing" if recipient else "incoming",
+                **(self._payment_metadata(connection, request_id) if recipient else {}),
             }
 
         return cast(dict, await self._transaction(operation))
@@ -1521,7 +1570,15 @@ class DriveSharingStore(DriveDocumentStore):
                     current_connection["verified_policy_hash"] == LIVE_POLICY_HASH
                     and row["preparation_next_at"] < row["expires_at"]
                     and row["status"]
-                    in {"pending", "preparing", "review_ready", "approved", "completed", "partial"}
+                    in {
+                        "pending",
+                        "preparing",
+                        "review_ready",
+                        "approved",
+                        "completed",
+                        "partial",
+                        "no_match",
+                    }
                 ),
             }
             if review and row["bulk_search_started_at"] is None:

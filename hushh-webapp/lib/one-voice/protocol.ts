@@ -105,6 +105,7 @@ export type VoiceState =
 
 export type PendingActionPublic = {
   pending_action_id: string;
+  origin_turn_id?: string | null;
   tool: string;
   gateway_action_id: string;
   tier: "voice" | "tap";
@@ -207,6 +208,7 @@ export type ToolResultFrame = {
 };
 export type PendingActionFrame = PendingActionPublic & {
   type: "pending_action";
+  turn_id?: string;
   risk_level: "low" | "medium" | "high";
   requires_tap: boolean;
   entities: EntityCardPayload[];
@@ -218,9 +220,10 @@ export type PendingResolvedFrame = {
   status: "executed" | "failed" | "cancelled" | "expired" | "not_pending";
   result_public: ToolResultPublic | null;
 };
-export type EntityCardFrame = EntityCardPayload & { type: "entity_card" };
+export type EntityCardFrame = EntityCardPayload & { type: "entity_card"; turn_id?: string };
 export type CandidatePickerFrame = {
   type: "candidate_picker";
+  turn_id?: string;
   kind: "person" | "circle";
   question: string;
   candidates: CandidatePublic[];
@@ -236,12 +239,15 @@ export type UiDirectiveKind =
   | "open_mail";
 export type UiDirectiveFrame = {
   type: "ui_directive";
+  turn_id?: string;
   directive_id: string;
   kind: UiDirectiveKind;
   payload: Record<string, unknown>;
 };
 export type ClientStepRequestFrame = {
   type: "client_step.request";
+  turn_id?: string;
+  confirmed_pending_action_id?: string;
   step_id: string;
   kind: string;
   payload: Record<string, unknown>;
@@ -368,6 +374,9 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   // A dispatch asks the surface to do something; it reports no outcome, so it
   // must never render as a success even if it reaches a card.
   "mail_open_dispatched",
+  "draft_open_requested",
+  "draft_not_opened",
+  "draft_open_unconfirmed",
   "grant_created",
   "check_in_created",
   "sos_grants_created",
@@ -379,4 +388,6 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   "not_pending",
   "consent_required",
   "setup_required",
+  // The same voice proposal is already waiting for an answer; nothing ran.
+  "confirmation_waiting",
 ]);

@@ -172,6 +172,7 @@ Notes:
 - Changing them requires restarting the backend or rerunning the script; they are not hot-reloaded into an already running process.
 - `REVIEWER_UID` is the canonical non-production reviewer/test user id. The current fixture resolves to `UWHGeUyfUAbmEl5xwIPoWJ7Cyft2` from Firebase Auth email `kushaltrivedi1711@gmail.com`.
 - `REVIEWER_VAULT_PASSPHRASE` is the canonical vault unlock secret for reviewer smoke and must remain in ignored local env files or Secret Manager/runtime overlays.
+- The review-session mint binds a supplied reviewer UID to that same configured passphrase. A stale local process-level pair can cause an identity mismatch; restart the backend with the canonical pair rather than falling back to another reviewer.
 - `UAT_SMOKE_*` and `KAI_TEST_*` are deprecated one-release aliases for existing maintainer scripts.
 - UAT analytics smoke reuses the existing reviewer test fixture; do not create new Firebase users, reviewer users, app environments, or one-off analytics fixtures for validation.
 - If the reviewer test fixture lacks seeded portfolio or recommendation state, repair or reseed that same user rather than minting another account.
@@ -281,8 +282,7 @@ subject itself must be a real user mailbox.
 
 ## One Email KYC
 
-`one@hushh.ai` is the inbound mailbox for One-led email workflows. The roadmap
-and rollout gates live in [One Email KYC](../../../docs/reference/architecture/one-email-kyc.md).
+The legacy One-led mailbox-KYC workflow is retired.
 The repo now includes metadata-only Gmail Pub/Sub intake, watch renewal,
 workflow state, scoped KYC consent requests, `/one/kyc`, and approval-gated
 same-thread send. Hosted current-state still requires Pub/Sub subscription,

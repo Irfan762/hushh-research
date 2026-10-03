@@ -29,8 +29,12 @@ tests/services/test_drive_share_notification_worker.py
 tests/services/test_drive_work_drain.py
 tests/services/test_connector_attempt_retention.py
 tests/test_drive_work_drain_routes.py
+tests/services/test_drive_work_wake.py
+tests/test_prod_drive_deploy_contract.py
 tests/test_drive_work_drain_scheduler_contract.py
 tests/test_drive_worker_server.py
+tests/test_drive_worker_revision_provenance.py
+tests/test_drive_worker_release_rollback.py
 tests/services/test_google_drive_permission_adapter.py
 tests/services/test_drive_sharing_contract.py
 tests/test_runtime_settings_maps.py
@@ -64,6 +68,8 @@ tests/services/test_drive_owner_share.py
 tests/services/test_drive_owner_search_postgres.py
 tests/services/test_drive_request_search_unit.py
 tests/services/test_drive_request_bulk_postgres.py
+tests/services/test_drive_trusted_auto.py
+tests/services/test_drive_request_payment.py
 tests/services/test_google_drive_mcp_service.py
 tests/services/test_drive_bulk_share_postgres.py
 tests/services/test_drive_bulk_share_service.py
@@ -91,6 +97,7 @@ tests/test_developer_api_routes.py
 tests/test_encrypted_blob_bounds.py
 tests/test_data_model_audit_script.py
 tests/test_data_model_audit_postgres.py
+tests/test_gmail_receipt_cache_cutover.py
 tests/services/test_gmail_cache_retention.py
 tests/services/test_consent_request_lock.py
 tests/test_scoped_export_download.py
@@ -547,3 +554,6 @@ tests/test_consent_sensitive_continuation.py
 tests/test_shared_with_me_card.py
 tests/test_curated_connector_deploy_wiring.py
 tests/test_provision_curated_connector.py
+
+# Circle chat membership, encrypted relay, retries, delivery and migration replay.
+tests/test_circle_chat.py

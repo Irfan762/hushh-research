@@ -125,7 +125,8 @@ describe("the phone mandate page survives an auth re-validation", () => {
 
     const view = render(<PhoneMandatePageContent />);
     await screen.findByText("step: phone");
-    expect(mountCount).toBe(1);
+    // The async admission can commit the DOM before its passive mount effect.
+    await waitFor(() => expect(mountCount).toBe(1));
 
     // Starting Firebase phone verification republishes auth state, and the web
     // observer sets loading=true while it re-validates the session.

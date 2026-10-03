@@ -113,7 +113,7 @@ export type ToolResultTone = "success" | "neutral" | "failure" | "pending";
  * `location_updates_pending` keep their pinned failure tone (their screens
  * render the interim state themselves and the panel hides the card).
  */
-const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED]);
+const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_requested"]);
 
 /** An armed-but-unsent outcome: neither success nor failure yet. */
 /**
@@ -123,6 +123,16 @@ const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED]);
  * result already displayed.
  */
 export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
+
+/**
+ * A navigation the app was asked to make. It is not a success (it stays in
+ * NOT_SUCCESS_STATUSES; the ui_settled outcome decides) and not a failure: it
+ * reads as "Opening…". Not pending either -- that would hold the turn open
+ * waiting on a device step that never comes.
+ */
+export const NAVIGATION_DISPATCH_STATUSES = new Set<string>([
+  "navigation_dispatched",
+]);
 
 export function isPendingStatus(status: string | null | undefined): boolean {
   return PENDING_STATUSES.has(String(status || "").trim());
@@ -137,6 +147,12 @@ export function toolResultTone(
   // An armed Save My Soul is "sending your position", whatever `ok` says: the
   // relay sends it with ok:false because nothing has been delivered yet.
   if (isPendingStatus(value)) return "pending";
+  // The review card may already be visible after a lost acknowledgement.
+  // This says nothing about a send, so avoid both success and failure claims.
+  if (value === "draft_open_unconfirmed") return "neutral";
+  if (NAVIGATION_DISPATCH_STATUSES.has(value)) {
+    return ok === false ? "failure" : "neutral";
+  }
   if (
     !ok ||
     !value ||
@@ -261,6 +277,12 @@ export function voiceErrorForClose(
         code: "protocol",
         message: VOICE_UNAVAILABLE_MESSAGE,
         recoverable: false,
+      };
+    case 1006:
+      return {
+        code: "network_lost",
+        message: "Connection lost. Tap Try again to resume talking to One.",
+        recoverable: true,
       };
     default:
       return {
@@ -477,6 +499,12 @@ function isStaleOrigin(state: VoiceSessionState, turnId: string | null | undefin
   );
 }
 
+/** A completed model turn can still be waiting for its screen to mount. */
+export function isStaleNavigation(state: VoiceSessionState, callId: string, turnId?: string | null): boolean {
+  const item = state.toolTimeline.findLast((entry) => entry.callId === callId && entry.tool === "open_screen");
+  return !item || Boolean(item.navigationSuperseded) || Boolean(turnId && item.turnId !== turnId);
+}
+
 // --- server frames ------------------------------------------------------------
 
 function reduceServerFrame(
@@ -490,7 +518,7 @@ function reduceServerFrame(
       return {
         ...state,
         // An open card the server re-lists is still waiting on the person.
-        phase: first ? "confirming" : "listening",
+        phase: state.phase === "paused" ? "paused" : first ? "confirming" : "listening",
         serverState: null,
         sessionId: frame.session_id,
         conversationId: frame.conversation_id,
@@ -602,11 +630,15 @@ function reduceServerFrame(
               state.fencedTurnIds,
               state.activeInputTurnId,
               state.activeResponseTurnId,
+              state.pendingAction?.origin_turn_id,
             ).filter((id) => id !== frame.turn_id)
           : state.fencedTurnIds,
         // A new question owns the visible answer slot. Older tool receipts
         // remain in the timeline and any pending action still settles by ID.
         lastResult: newInput ? null : state.lastResult,
+        toolTimeline: newInput
+          ? state.toolTimeline.map((item) => item.tool === "open_screen" ? { ...item, navigationSuperseded: true } : item)
+          : state.toolTimeline,
         phase:
           newInput && state.phase !== "paused" && state.phase !== "error"
             ? "understanding"
@@ -634,7 +666,16 @@ function reduceServerFrame(
         activeResponseTurnId: !isStaleOrigin(state, frame.turn_id)
           ? frame.turn_id
           : state.activeResponseTurnId,
+        // A completed origin can finish audio already scheduled by the player,
+        // but late frames must never reclaim a later question's answer slot.
+        fencedTurnIds:
+          frame.state === "model_end" || frame.state === "interrupted"
+            ? addFencedTurns(state.fencedTurnIds, frame.turn_id)
+            : state.fencedTurnIds,
         transcript,
+        toolTimeline: frame.state === "interrupted"
+          ? state.toolTimeline.map((item) => item.tool === "open_screen" && item.turnId === frame.turn_id ? { ...item, navigationSuperseded: true } : item)
+          : state.toolTimeline,
         idleDeadlineAt: null,
       };
     }
@@ -648,7 +689,7 @@ function reduceServerFrame(
       return {
         ...state,
         serverState: frame.state,
-        phase,
+        phase: state.phase === "paused" && frame.state !== "error" ? "paused" : phase,
         turnId: frame.turn_id ?? state.turnId,
         idleDeadlineAt:
           frame.state === "complete" && state.idleTimeoutMs
@@ -683,7 +724,8 @@ function reduceServerFrame(
       // cannot take ownership of a newer question's answer slot.
       const belongsToCurrentInput = originTurnId
         ? !isStaleOrigin(state, originTurnId)
-        : state.activeInputTurnId === null;
+        : state.turnId === null && state.activeInputTurnId === null &&
+          state.activeResponseTurnId === null;
       // A normal confirmed action emits `pending_action.resolved` first, but
       // a terminal result can still arrive without that frame after a relay
       // reconnect. Its exact pending id lets the client retire only the card
@@ -777,8 +819,10 @@ function reduceServerFrame(
       };
     }
     case "pending_action": {
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       const {
         type: _type,
+        turn_id: _turnId,
         risk_level,
         requires_tap,
         entities,
@@ -786,6 +830,7 @@ function reduceServerFrame(
         ...row
       } = frame;
       void _type;
+      void _turnId;
       const pending: PendingActionView = {
         ...row,
         riskLevel: risk_level,
@@ -845,15 +890,30 @@ function reduceServerFrame(
       };
     }
     case "entity_card": {
-      const { type: _type, ...payload } = frame;
+      if (isStaleOrigin(state, frame.turn_id)) return state;
+      const { type: _type, turn_id: _turnId, ...payload } = frame;
       void _type;
+      void _turnId;
+      const confirmedId =
+        payload.kind === "person" ? payload.user_id : payload.circle_id;
+      const picker = state.candidatePicker;
+      const confirmedCandidate =
+        Boolean(confirmedId) &&
+        picker?.kind === payload.kind &&
+        picker.candidates.some(
+          (candidate) =>
+            (picker.kind === "person" ? candidate.user_id : candidate.circle_id) ===
+            confirmedId,
+        );
       return {
         ...state,
         idleDeadlineAt: null,
         entities: upsertEntity(state.entities, payload),
+        candidatePicker: confirmedCandidate ? null : picker,
       };
     }
     case "candidate_picker":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       return {
         ...state,
         idleDeadlineAt: null,
@@ -864,11 +924,13 @@ function reduceServerFrame(
         },
       };
     case "ui_directive":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       // Directives are side effects the provider runs; the reducer only notes activity.
       return state.idleDeadlineAt === null
         ? state
         : { ...state, idleDeadlineAt: null };
     case "client_step.request":
+      if (isStaleOrigin(state, frame.turn_id)) return state;
       return {
         ...state,
         idleDeadlineAt: null,
@@ -992,6 +1054,19 @@ export function reduceVoiceSession(
   event: VoiceSessionEvent,
 ): VoiceSessionState {
   switch (event.type) {
+    case "navigation_settled": {
+      if (isStaleNavigation(state, event.callId, event.turnId)) return state;
+      const index = findLastIndex(state.toolTimeline, (item) =>
+        item.callId === event.callId && item.tool === "open_screen" &&
+        (!event.turnId || item.turnId === event.turnId),
+      );
+      if (index < 0 || state.toolTimeline[index]!.navigationOutcome) return state;
+      const timeline = state.toolTimeline.slice();
+      // tool.started precedes the directive. Retain settlement on that entry
+      // even if navigation completes before tool.result arrives.
+      timeline[index] = { ...timeline[index]!, navigationOutcome: event.status };
+      return { ...state, toolTimeline: timeline };
+    }
     case "reset":
       return INITIAL_VOICE_SESSION_STATE;
     case "clear_view": {

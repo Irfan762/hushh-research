@@ -148,6 +148,7 @@ from api.routes import (  # noqa: E402
     db_proxy,
     debug_firebase,
     developer,
+    drive_request_payments,
     drive_searches,
     drive_sharing,
     drive_work_drain,
@@ -326,6 +327,8 @@ app.include_router(connected_systems.router)
 # External MCP connector routes (/api/connectors/...)
 app.include_router(external_connectors.router)
 app.include_router(drive_sharing.router)
+app.include_router(drive_request_payments.router)
+app.include_router(drive_request_payments.webhook_router)
 app.include_router(drive_searches.router)
 # A separately authenticated, default-off Cloud Scheduler route performs one
 # finite Drive workflow sweep. It has no startup/background execution path.
@@ -1035,6 +1038,15 @@ async def startup_feed_attention_push_worker() -> None:
             "startup.feed_attention_push_worker_failed reason=%s",
             type(exc).__name__,
         )
+
+
+@app.on_event("startup")
+async def startup_circle_chat_push_worker() -> None:
+    from hushh_mcp.services.circle_chat_notifications import run_circle_chat_push_worker
+
+    _track_startup_background_task(
+        asyncio.create_task(run_circle_chat_push_worker(), name="circle-chat-push")
+    )
 
 
 if __name__ == "__main__":

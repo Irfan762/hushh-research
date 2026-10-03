@@ -72,19 +72,28 @@ must not recreate shell chrome, safe-area math, an icon well, or a list row.
 
 ## Unified Mobile Header Guidelines
 
-To maintain absolute uniformity across mobile screens, all top-level workspace pages must adhere to the high-end centered layout of the Profile tab:
-
-1. **No Mixed/Stacked Headers:** Double headers, stacked titles, and triple-line headers are strictly prohibited. The page title must never be repeated below the top app bar breadcrumbs.
-2. **Clean Centered Typography:** The main screen title and its single-sentence supporting description must be perfectly centered on candidate screens, using Apple-clean typography and a maximum description layout width of `480px` for optimal legibility.
-3. **Specialist Squircle Wells:** Workspace icons must be displayed inside glowing frosted squircles (`rounded-[18px]` to `rounded-[22px]`) with a color-matched blurred glow backdrop. Full `rounded-full` circle backgrounds on iconwells are prohibited.
-4. **Standalone Left Back Button:** On sub-pages, the back button must sit on its own dedicated body row immediately preceding the main centered header layout (using a clean circular button with a discrete left margin), keeping the typography area immaculate and un-overloaded.
+The shared top shell owns navigation and the route declares its breadcrumb. Do
+not add a second Back control. An agent root with a back-only shell (Location,
+Finance, Memory, or Consent Center) draws its one visible title as a body
+`PageHeader titleRole="agent"`, directly above its registered tab rail when it
+has one. Nested routes retain their compact trail title instead. Align an
+agent root to the agent grid; center a focused flow only when that flow's
+layout contract calls for centering. Specialist icons use the shared squircle
+treatment, without a route-local glow or competing header.
+See [Shell and navigation ownership](./app-surface-design-system.md#shell-and-navigation-ownership)
+and [Pixel Grid And Symmetry Contract](./app-surface-design-system.md#pixel-grid-and-symmetry-contract).
 
 ## Material 3 Expressive Physics & Transforms
 
-The Morphy design language relies on physics-based responsive motion, transitioning away from rigid, linear CSS timelines toward fluid underdamped spring interactions.
+The Morphy design language uses responsive motion where it communicates a
+state change. Navigation, repeated list actions, and bottom controls stay
+stable; a bounce or overshoot is never their default. Respect reduced-motion
+preferences and the shared motion tokens.
 
 ### 1. Unified Spring Physics
-Transforms and popovers model a spring-mass-damper system. Underdamped transitions ($\zeta < 1$) establish smooth, natural bounce profiles. The physical displacement is governed by:
+Some expressive transforms and popovers may use a spring-mass-damper model
+when the motion adds meaning. This is not a default recipe for all controls.
+The physical displacement is governed by:
 
 $$m \frac{d^2x}{dt^2} + c \frac{dx}{dt} + kx = 0$$
 
@@ -151,10 +160,11 @@ contract.
 
 ```text
 safe area
-┌ One / current workspace     workspace tabs                  alerts + Profile ┐
-│ Finance                     Market · Portfolio · Analysis                    │
-└──────────────────────────────────────────────────────────────────────────────┘
-                                     route content
+┌ back                                        alerts + Profile ┐
+└──────────────────────────────────────────────────────────────┘
+                           Finance
+                    Market · Portfolio · Analysis
+                             route content
                               voice-only control (narrow slot)
                               Chat · One · Connect · Feed · Search
 safe area
@@ -170,10 +180,11 @@ safe area
    There is no divider, nested material, or inter-slot gap; their transform,
    safe-area clearance, and fade are measured by the shared shell. Neither
    route nor component may add another boundary.
-4. Finance and RIA workspace tabs render only in the unified top shell. Their
-   labels, destinations, active query state, and visibility come from the
-   central route registry; route bodies and bottom navigation do not duplicate
-   them.
+4. Finance, Consent Center, Location, and RIA derive labels, destinations, and
+   active state from the central route registry. Their route bodies render the
+   registered `TopShellTabs` directly below the module header; the fixed shell
+   does not duplicate those rails. Public Explore remains a fixed-shell tab
+   set.
 5. The rightmost signed-in top-bar control is Profile. It uses the signed-in
    person's image when available and the same generic/initial fallback as the
    Profile route. Connect remains a route but is not shell chrome.
@@ -184,19 +195,19 @@ safe area
    never aligns to the wider page shell or viewport edge. The voice slot is
    narrower than the navigation frame while retaining a 44px hit target.
 8. Finance is one `/one/kai?tab=` workspace. Market, Portfolio, and Analysis
-   use the Profile reading measure and shared outer gutter; their content may
-   vary, but they must not introduce a wider dashboard canvas, a second fixed
-   header, or a route-local tab bar.
+   use the Location-aligned agent measure and shared outer gutter. Its stable
+   Finance header and registry-backed rail precede the pager; tab content may
+   vary but must not introduce a second title or a custom tab bar.
 
 ## List and Header Rules
 
 1. Every standard signed-in route uses the lean shared header; no route-local
    logo, hero, or duplicate title bar.
-2. Profile is the geometry reference for a primary workspace header: one
-   `AppPageShell` at the reading measure, one `AppPageHeaderRegion`, and one
-   primary `PageHeader` or profile identity header. Finance tab content may
-   render supporting section headings, but it must not create a competing
-   primary header above or beside the shared workspace header.
+2. Location is the geometry reference for an agent-root workspace header: one
+   `AppPageShell` at the agent measure, one `AppPageHeaderRegion`, and one
+   primary agent `PageHeader`. Finance, Memory, and Consent Center use the
+   same title hierarchy; tab content may render supporting section headings,
+   but it must not create a competing primary header.
 3. `SettingsGroup` and `SettingsRow` own responsive inset lists: icon well,
    separator, truncation, 44px+ tap target, trailing alignment, and mobile
    stacking. Connected Systems, Profile, and agent lists use the same model.

@@ -118,6 +118,7 @@ export default defineConfig({
       // that matters is the WKWebView the app ships in. Its fixture builds its
       // own document.
       testMatch: [
+        /connect-page-grid\.layout\.spec\.ts/,
         /first-connect-insights\.layout\.spec\.ts/,
         /chat-onboarding\.layout\.spec\.ts/,
         // agent-markdown: One's answers are read on an iPhone first; the code
@@ -144,6 +145,7 @@ export default defineConfig({
         // (insets, tile grid, aligned tabular counts) in the shipped engine.
         /memory-save-card\.layout\.spec\.ts/,
         /text-attachment-viewer\.layout\.spec\.ts/,
+        /circle-chat\.layout\.spec\.ts/,
         /one-location-live-share\.layout\.spec\.ts/,
         /profile-sign-out\.spec\.ts/,
         /ai-selection\.layout\.spec\.ts/,
@@ -159,6 +161,7 @@ export default defineConfig({
         // subject hold in the engine the app ships in.
         /one-voice-mail-open\.layout\.spec\.ts/,
         /mail-overview\.layout\.spec\.ts/,
+        /receipt-pagination\.layout\.spec\.ts/,
         /connections-drawer\.layout\.spec\.ts/,
         /connect-living-circles\.layout\.spec\.ts/,
         /(intro-viewport\.layout|country-picker\.layout|account-session-recovery|agent-surface-model-authority\.layout|one-voice-panel\.layout|connect-sticky-header\.layout|circle-join-responsive-contract|circle-member-row\.layout|connect-circle-cta\.layout|location-cta-layout|google-contact-sync\.layout|location-switch\.layout|active-share-actions\.layout|one-location-requests-sent-row\.layout|one-location-duration-ladder\.layout|gemini-endpoint-fields\.layout|feed-needs-you-row\.layout|one-location-people-rows\.layout|one-location-tab-strip\.layout|one-location-ready-panel\.layout|one-location-map-consent-panel\.layout|one-location-flow-action-footer\.layout|app-shell-top-clearance\.layout|app-shell-bottom-clearance\.layout|save-location-sheet\.layout|one-location-check-in-panel\.layout|contact-invitation-sheet\.layout)\.spec\.ts/,

@@ -1,8 +1,9 @@
 {
   "contract_name": "dev_minimum_schema",
-  "expected_migration_version": 261,
+  "expected_migration_version": 267,
   "migration_version_policy": "minimum",
   "required_functions": [
+    "block_gmail_receipt_cache_writes",
     "project_calendar_mail_feed",
     "ensure_drive_share_management_context",
     "invalidate_selected_drive_documents",
@@ -33,7 +34,17 @@
     "refresh_account_deletion_guards_after_identity_ddl",
     "commit_pkm_domain_mutation_v5",
     "clear_location_presence_rating_visit",
-    "preserve_active_location_rating_visit"
+    "preserve_active_location_rating_visit",
+    "require_active_direct_message_connection",
+    "guard_direct_message_block_write",
+    "guard_direct_message_conversation_write",
+    "guard_direct_message_message_write",
+    "touch_direct_message_conversation",
+    "notify_direct_message_recipient",
+    "circle_chat_membership_ended",
+    "circle_chat_recipient_deleted",
+    "circle_chat_circle_deleted",
+    "circle_photo_erased"
   ],
   "required_tables": {
     "account_deletion_tombstones": [
@@ -143,6 +154,37 @@
       "metadata",
       "created_at",
       "completed_at"
+    ],
+    "circle_chat_messages": [
+      "original_recipient_count",
+      "id",
+      "sequence",
+      "circle_id",
+      "sender_user_id",
+      "client_message_id",
+      "ciphertext",
+      "iv",
+      "image_ciphertext",
+      "image_iv",
+      "request_digest",
+      "created_at"
+    ],
+    "circle_chat_preferences": [
+      "circle_id",
+      "user_id",
+      "muted"
+    ],
+    "circle_chat_recipients": [
+      "message_id",
+      "recipient_user_id",
+      "membership_joined_at",
+      "key_id",
+      "envelope",
+      "read_at",
+      "feed_event_id",
+      "push_status",
+      "push_attempts",
+      "push_due_at"
     ],
     "connected_documents": [
       "document_id",
@@ -304,6 +346,13 @@
       "lookup_count",
       "updated_at"
     ],
+    "conversations": [
+      "id",
+      "participant_a_user_id",
+      "participant_b_user_id",
+      "created_at",
+      "last_message_at"
+    ],
     "crm_operation_endpoints": [
       "crm_id",
       "operation",
@@ -371,6 +420,12 @@
       "created_at",
       "revoked_at",
       "last_used_at"
+    ],
+    "direct_message_blocks": [
+      "id",
+      "blocker_user_id",
+      "blocked_user_id",
+      "created_at"
     ],
     "document_chunks": [
       "document_id",
@@ -576,6 +631,60 @@
       "notification_error_code",
       "notification_settled_at"
     ],
+    "drive_request_payment_obligations": [
+      "request_id",
+      "payer_ref",
+      "amount_cents",
+      "currency",
+      "status",
+      "checkout_attempt_id",
+      "stripe_checkout_session_id",
+      "stripe_payment_intent_id",
+      "paid_at",
+      "reconciliation_required",
+      "erased_at",
+      "delivery_confirmed_at_erasure",
+      "delivery_unsettled_at_erasure",
+      "created_at",
+      "updated_at"
+    ],
+    "drive_request_payment_orders": [
+      "request_id",
+      "user_id",
+      "requester_user_id",
+      "amount_cents",
+      "currency",
+      "status",
+      "checkout_attempt_id",
+      "stripe_checkout_session_id",
+      "stripe_checkout_url",
+      "stripe_checkout_expires_at",
+      "stripe_payment_intent_id",
+      "paid_at",
+      "reconciliation_required",
+      "reconciliation_reason",
+      "reconciliation_at",
+      "created_at",
+      "updated_at"
+    ],
+    "drive_request_payment_refunds": [
+      "request_id",
+      "attempt_id",
+      "status",
+      "stripe_refund_id",
+      "first_dispatch_at",
+      "lease_expires_at",
+      "next_check_at",
+      "safe_error_code",
+      "created_at",
+      "updated_at"
+    ],
+    "drive_request_payment_webhook_events": [
+      "stripe_event_id",
+      "stripe_checkout_session_id",
+      "request_id",
+      "created_at"
+    ],
     "drive_share_events": [
       "event_id",
       "request_id",
@@ -647,6 +756,7 @@
       "recipient_binding",
       "request_digest",
       "status",
+      "payment_required",
       "revision",
       "revocation_revision",
       "approval_invalidated_at",
@@ -955,6 +1065,16 @@
       "source_errors",
       "metadata"
     ],
+    "messages": [
+      "id",
+      "conversation_id",
+      "sender_user_id",
+      "content_ciphertext",
+      "content_iv",
+      "content_algorithm",
+      "created_at",
+      "read_at"
+    ],
     "one_action_directive_ledger": [
       "adk_app_name",
       "document_request_id",
@@ -1157,6 +1277,9 @@
       "updated_at",
       "revoked_at",
       "metadata"
+    ],
+    "one_location_circles": [
+      "photo_url"
     ],
     "one_location_nearby_check_in_preferences": [
       "user_id",

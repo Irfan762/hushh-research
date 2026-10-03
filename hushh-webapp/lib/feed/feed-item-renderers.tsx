@@ -23,6 +23,7 @@ import { formatLocationDurationLabel } from "@/lib/one-location/duration-copy";
 import { buildOneLocationWorkflowHref } from "@/lib/one-location/notifications";
 import { buildKaiMarketRoute } from "@/lib/navigation/routes";
 import { ROUTES } from "@/lib/navigation/routes";
+import { circleChatHref } from "@/lib/circle-chat/routes";
 import type { FeedItem, FeedSourceDomain } from "@/lib/services/feed-service";
 import { getAnalysisHistoryRunRouteId } from "@/lib/kai/analysis-route-intent";
 
@@ -168,6 +169,12 @@ function driveFeedLine(
       return "Document request received";
     case "document_share_review_ready":
       return "Files ready for your review";
+    case "document_share_payment_ready":
+      return "Pay $10 to continue your document request";
+    case "document_share_payment_confirmed":
+      return "Payment confirmed for your document request";
+    case "document_share_payment_refunded":
+      return "Payment refunded for your document request";
     case "document_share_decided":
       if (sharedWithMe) {
         return status === "declined"
@@ -180,6 +187,11 @@ function driveFeedLine(
         ? "Withdrew their file request"
         : status === "pending" ? "Some shared files are available" : "Getting your shared files";
     case "document_share_outcome":
+      if (status === "no_files_shared") return "No files were shared";
+      if (status === "no_match")
+        return sharedWithMe
+          ? "No files were shared"
+          : "No matching files found; nothing was shared";
       if (sharedWithMe) {
         return status === "partial"
           ? "Sharing finished with some files unavailable"
@@ -757,6 +769,11 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
           : ROUTES.ONE_LOCATION,
       };
     }
+    case "location_circle_message": {
+      return { icon: Users, domainLabel: "Circle chat", label: "New circle message",
+        description: metadataString(item.metadata, "circle_name") || "Open your circle chat",
+        href: circleChatHref(metadataString(item.metadata, "circle_id")) };
+    }
     case "circle_member_added": {
       const circleName = metadataString(item.metadata, "circle_name");
       const circleId = metadataString(item.metadata, "circle_id");
@@ -1032,6 +1049,9 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
     }
     case "document_share_request":
     case "document_share_review_ready":
+    case "document_share_payment_ready":
+    case "document_share_payment_confirmed":
+    case "document_share_payment_refunded":
     case "document_share_decided":
     case "document_share_outcome":
     case "document_share_revoked":
@@ -1054,10 +1074,14 @@ export function presentFeedItem(item: FeedItem): FeedItemPresentation {
           sharedWithMe,
           metadataString(item.metadata, "user_facing_status"),
         ),
-        href: buildConsentCenterHref(
-          "pending",
-          selection ? { requestId: selection } : undefined,
-        ),
+        href: item.event_type === "document_share_payment_ready" ||
+          item.event_type === "document_share_payment_confirmed" ||
+          item.event_type === "document_share_payment_refunded"
+          ? ROUTES.ONE_FEED
+          : buildConsentCenterHref(
+              "pending",
+              selection ? { requestId: selection } : undefined,
+            ),
       };
     }
     default:

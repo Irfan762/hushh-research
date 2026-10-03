@@ -179,6 +179,8 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
     assert result["details"]["one_referral_attributions"] is True
     assert result["details"]["one_referral_codes"] is True
     assert result["details"]["feed_events"] is True
+    for table in ["circle_chat_messages", "circle_chat_recipients", "circle_chat_preferences"]:
+        assert result["details"][table] is True
     assert result["details"]["account_deletion_tombstone"] is True
     assert result["details"]["firebase_cleanup_intent_count"] == 1
 
@@ -241,7 +243,6 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
         "DELETE FROM advisor_investor_relationships",
         "DELETE FROM marketplace_investor_actions",
         "DELETE FROM marketplace_public_profiles",
-        "DELETE FROM one_kyc_workflows",
         "DELETE FROM one_location_auto_approve_preferences",
         "DELETE FROM one_location_visibility_exclusions",
         "DELETE FROM one_location_visibility_preferences",
@@ -850,7 +851,6 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
         "DELETE FROM trusted_device_audit_events",
         "DELETE FROM trusted_devices",
         "DELETE FROM consent_audit",
-        "DELETE FROM one_kyc_workflows",
         "DELETE FROM one_location_auto_approve_preferences",
         "DELETE FROM one_location_map_preferences",
         "DELETE FROM one_location_network_connections",

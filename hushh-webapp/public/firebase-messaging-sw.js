@@ -12,6 +12,9 @@ const pendingNotificationClickAcks = new Map();
 const DOCUMENT_SHARE_NOTIFICATION_TYPES = new Set([
   "document_share_request",
   "document_share_review_ready",
+  "document_share_payment_ready",
+  "document_share_payment_confirmed",
+  "document_share_payment_refunded",
   "document_share_decided",
   "document_share_outcome",
   "document_share_revoked",
@@ -40,13 +43,25 @@ const DOCUMENT_SHARE_NOTIFICATION_COPY_BY_TYPE = {
     title: "Files ready to review",
     body: "Open One to choose what to share.",
   },
+  document_share_payment_ready: {
+    title: "Payment needed",
+    body: "Pay $10 in One to continue your document request.",
+  },
+  document_share_payment_confirmed: {
+    title: "Payment confirmed",
+    body: "Open One for your document request update.",
+  },
+  document_share_payment_refunded: {
+    title: "Payment refunded",
+    body: "Open One for your document request update.",
+  },
   document_share_decided: {
     title: "Drive sharing update",
     body: "Open One to see the latest.",
   },
   document_share_outcome: {
-    title: "Drive sharing finished",
-    body: "Open One to see the shared files.",
+    title: "Drive request update",
+    body: "Open One to see the result.",
   },
   document_share_revoked: {
     title: "Drive access changed",
@@ -160,8 +175,17 @@ function isSilentNotification(data) {
 }
 
 function notificationTapTarget(data) {
+  if (data?.type === "location_circle_message") {
+    const circleId = String(data.circle_id || "");
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(circleId)) return "/one/feed";
+    return `/one/connect?tab=circles&action=circle-detail&circleId=${encodeURIComponent(circleId)}&circleChat=1`;
+  }
   const documentRequestId = documentShareNotificationRequestId(data);
   if (documentRequestId) {
+    const eventType = normalizedDocumentShareType(data);
+    if (eventType === "document_share_payment_ready" ||
+        eventType === "document_share_payment_confirmed" ||
+        eventType === "document_share_payment_refunded") return "/one/feed";
     const selection = DRIVE_QUESTION_NOTIFICATION_TYPES.has(
       normalizedDocumentShareType(data),
     )
@@ -172,6 +196,21 @@ function notificationTapTarget(data) {
   const type = String(data?.type || "")
     .trim()
     .toLowerCase();
+  // Private-message pushes carry only opaque identifiers. The app verifies
+  // conversation membership before it renders any history.
+  if (type === "direct_message") {
+    const conversationId = String(
+      data?.conversation_id || data?.conversationId || "",
+    ).trim();
+    if (
+      conversationId &&
+      conversationId.length <= 256 &&
+      !/[\x00-\x1f]/.test(conversationId)
+    ) {
+      return `/one/messages?conversation=${encodeURIComponent(conversationId)}`;
+    }
+    return "/one/messages";
+  }
   // Recipient-only alerts match the native/shared FCM tap handler. Historical
   // identifiers must not reopen another workflow or imply current access.
   if (
