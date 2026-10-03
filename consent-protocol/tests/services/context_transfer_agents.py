@@ -96,16 +96,13 @@ def _segmentation(message: str) -> dict[str, Any]:
     }
 
 
-def _between(prompt: str, start: str, end: str) -> str:
-    head = prompt.index(start) + len(start)
-    return prompt[head : prompt.index(end, head)]
+def _request(prompt: str) -> dict[str, Any]:
+    """The JSON request a memory-agent prompt ends with, after its worked examples."""
+    return json.loads(prompt.rpartition("Request: ")[2])
 
 
 def _section_of(prompt: str) -> str:
-    marker = "are not a separate fact): "
-    if marker not in prompt:
-        return ""
-    quotes = json.loads(prompt[prompt.index(marker) + len(marker) :].split("\n", 1)[0])
+    quotes = _request(prompt).get("section_context") or []
     match = _HEADING.match(quotes[0]) if quotes else None
     return match.group(1) if match else ""
 
@@ -122,7 +119,7 @@ def _slug(text: str) -> str:
 
 
 def _intent(prompt: str) -> dict[str, Any]:
-    message = _between(prompt, "Natural language message: ", "\nRules:")
+    message = _request(prompt)["message"]
     section = _section_of(prompt)
     if message.startswith("Optimize my portfolio"):
         return {
@@ -158,8 +155,8 @@ def _intent(prompt: str) -> dict[str, Any]:
 
 
 def _merge(prompt: str) -> dict[str, Any]:
-    frame = json.loads(_between(prompt, "Intent frame: ", "\n"))
-    message = _between(prompt, "Natural language message: ", "\nRules:")
+    frame = _request(prompt)["intent_frame"]
+    message = _request(prompt)["message"]
     choices = frame.get("candidate_domain_choices") or [{}]
     # The merge agent names the subject it sees ("agents"), as models do.
     subject = next((slug for phrase, slug in _PROTOCOL_SUBJECTS if phrase in message), None)
@@ -176,7 +173,7 @@ def _merge(prompt: str) -> dict[str, Any]:
 
 
 def _structure(prompt: str) -> dict[str, Any]:
-    message = _between(prompt, "Natural language message: ", "\nRules:")
+    message = _request(prompt)["message"]
     section = _section_of(prompt)
     domain = _domain_for(section, message)
     root = _slug(section) if section else "notes"
@@ -221,7 +218,7 @@ async def scripted_contract(**kwargs: Any) -> dict[str, Any] | None:
     agent = kwargs["manifest"].id
     prompt = kwargs["prompt"]
     if agent == "agent_memory_segmentation":
-        return _segmentation(json.loads(prompt)["message"])
+        return _segmentation(_request(prompt)["message"])
     if agent == "agent_memory_intent":
         return _intent(prompt)
     if agent == "agent_memory_merge":

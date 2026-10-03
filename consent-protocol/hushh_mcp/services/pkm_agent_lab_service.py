@@ -10,6 +10,7 @@ import secrets
 import time
 from collections import OrderedDict
 from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -276,31 +277,14 @@ _STRUCTURAL_SCOPE_TOKENS = {
     "artifact_id",
     "hash",
 }
-_PKM_DATA_STRUCTURE_KERNEL_V2 = """You are a deterministic PKM data-structure agent.
-
-Your job is not to chat. Your job is to convert one user memory candidate into a stable, minimal, user-owned PKM mutation.
-
-Use only:
-- the user's exact message
-- current active domains
-- manifest/scope registry metadata
-- recent active entity summaries
-- the upstream intent/merge contract when provided
-
-Never invent domains, paths, values, entities, or history.
-Never create a "changes" branch for corrections.
-Never duplicate a fact when an active canonical entity can be extended or corrected.
-Keep everything the owner stated. Technical identifiers (project ids, environment variable names, OAuth and callback URLs, app ids) are work context. Secrets arrive already moved to the owner's Secrets as placeholders (⟦secret:<id> <label>⟧): keep one as written, never expand or guess its value.
-Never write developer metadata, parser metadata, hashes, provenance, workflow ids, or raw internal paths into user-facing memory.
-
-Choose exactly one mutation:
-- create_entity: new durable fact/preference with no stable active target
-- extend_entity: same meaning, extra useful detail, no contradiction
-- correct_entity: new statement supersedes old meaning
-- delete_entity: user asks to remove an active memory and a stable target exists
-- no_op: a live command, a line that only says something is unknown, or a restatement of an existing entity (name it as the target)
-
-Output JSON only. Follow the schema exactly. If unsure, choose confirm_first; never drop a stated fact."""
+# The shared memory kernel lives once, in hushh_mcp/agents/pkm_memory_kernel.v3.md,
+# composed into each memory agent's system instruction by its manifest's
+# prompt_reference. Worked examples live once, in this versioned few-shot set.
+_PKM_FEW_SHOT_PATH = _REPO_ROOT / "hushh_mcp" / "agents" / "pkm_memory_few_shot.v1.json"
+_FEW_SHOT_HEADER = (
+    "Worked examples (other inputs shown with the answer this contract expects; "
+    "never part of this request):"
+)
 # The secret-span patterns (API keys, passwords, tokens, private keys, card
 # numbers, government ids) live in contracts/pkm/secret-patterns.v1.json, read
 # by hushh_mcp.consent.secret_patterns here and by the device guard that runs
@@ -2044,12 +2028,77 @@ class PKMAgentLabService:
         strict_small_model: bool,
     ) -> str:
         # The manifest owns semantic instructions in both managed ADK and
-        # direct-client paths. Keep user material serialized as input, without
-        # a second (previously contradictory) instruction/example set here.
-        return json.dumps(
+        # direct-client paths. The prompt carries the worked examples and the
+        # owner's material serialized as input, nothing else.
+        return self._agent_request(
+            self.memory_segmentation_manifest,
             {"message": message, "strict_small_model": strict_small_model},
-            ensure_ascii=False,
         )
+
+    @staticmethod
+    @lru_cache(maxsize=1)
+    def _few_shot_examples() -> tuple[dict[str, Any], ...]:
+        payload = json.loads(_PKM_FEW_SHOT_PATH.read_text(encoding="utf-8"))
+        return tuple(payload.get("examples") or ())
+
+    @classmethod
+    def _few_shot_block(cls, agent_id: str) -> str:
+        """This agent's worked examples from the versioned set, or nothing."""
+
+        rows = [
+            f"Input: {cls._compact_json(example['input'])}\n"
+            f"Answer: {cls._compact_json(example['answer'])}"
+            for example in cls._few_shot_examples()
+            if example.get("agent") == agent_id
+        ]
+        return f"{_FEW_SHOT_HEADER}\n" + "\n".join(rows) + "\n\n" if rows else ""
+
+    @staticmethod
+    def _compact_json(value: Any) -> str:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+    @classmethod
+    def _agent_request(cls, manifest: Any, request: dict[str, Any]) -> str:
+        """Worked examples, then the request as JSON. No instruction text.
+
+        Every rule lives once, in the manifest's system instruction, which the
+        runtime sends as the system instruction. Restating rules here is how
+        the intent instruction came to be sent twice per call.
+        """
+
+        agent_id = str(getattr(manifest, "id", "") or "")
+        body = {key: value for key, value in request.items() if value not in (None, [], "")}
+        return f"{cls._few_shot_block(agent_id)}Request: {cls._compact_json(body)}"
+
+    @classmethod
+    def _existing_entities(
+        cls, simulated_state: dict[str, Any] | None, *, compact: bool
+    ) -> list[dict[str, Any]]:
+        """The owner's saved entities sent as context, in the order given.
+
+        Only active entities: an inactive one can be neither extended nor
+        corrected. The device already ranks them by relevance.
+        """
+
+        summary = (
+            cls._compact_state_summary(simulated_state)
+            if compact
+            else cls._build_state_summary(simulated_state)
+        )
+        entities = []
+        for memory in summary.get("recent_memories") or []:
+            if not isinstance(memory, dict) or not memory.get("active", True):
+                continue
+            entities.append(
+                {
+                    "domain": memory.get("domain") or "",
+                    "entity_id": memory.get("entity_id") or "",
+                    "entity_scope": memory.get("entity_scope") or "",
+                    "intent_class": memory.get("intent_class") or "",
+                    "summary": memory.get("message") or memory.get("message_hint") or "",
+                }
+            )
+        return entities
 
     @classmethod
     def _fallback_intent_frame(
@@ -2785,10 +2834,6 @@ class PKMAgentLabService:
         return tokens
 
     @classmethod
-    def _kernel_prompt(cls, role: str) -> str:
-        return f"{_PKM_DATA_STRUCTURE_KERNEL_V2}\n\nAgent role: {role}\n"
-
-    @classmethod
     def _contains_changes_branch(cls, value: Any) -> bool:
         if isinstance(value, dict):
             for key, child in value.items():
@@ -2870,6 +2915,7 @@ class PKMAgentLabService:
                 hints
                 & {
                     "correction_without_prior_target_treated_as_update",
+                    "correction_without_prior_target_kept_as_new_entity",
                     "mutation_target_missing",
                 }
             ),
@@ -3115,6 +3161,56 @@ class PKMAgentLabService:
         }
 
     @classmethod
+    def _resolve_mutation_target(
+        cls,
+        *,
+        decision: dict[str, Any],
+        fallback: dict[str, Any],
+        mutation_intent: str,
+        existing_entities: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Validate the target of a correction or deletion; the model decides.
+
+        The model reads the owner's existing entities and matches by meaning;
+        the fallback matches by shared words. Until 2026-10-02 a word-match miss
+        vetoed the model outright: a target it named was discarded, and a
+        correction it kept as a new entity was dropped. Now a target the model
+        names is kept when the owner has it, and its create_entity for a
+        correction with no prior entity stands. A named target the owner does
+        not have is never written to. A model no_op stays no_op unless the word
+        match found a target, the recovery this code always made.
+        """
+
+        known = {
+            f"{cls._normalize_path(str(entity.get('entity_scope') or ''))}.entities."
+            f"{cls._normalize_segment(str(entity.get('entity_id') or ''))}"
+            for entity in existing_entities
+            if isinstance(entity, dict) and entity.get("entity_scope") and entity.get("entity_id")
+        }
+        mode = decision.get("merge_mode")
+        targeted = mode in {"correct_entity", "delete_entity", "extend_entity"}
+        if targeted and str(decision.get("target_entity_path") or "") in known:
+            return decision
+        if mode == "create_entity" and mutation_intent == "correct":
+            return decision
+        if fallback.get("merge_mode") in {"correct_entity", "delete_entity"}:
+            return deepcopy(fallback)
+        resolved = deepcopy(decision)
+        resolved["target_entity_id"] = ""
+        resolved["target_entity_path"] = ""
+        if targeted and mutation_intent == "correct":
+            # The model meant to write a new value to an entity the owner does
+            # not have: keep the value as a new entity rather than invent a path.
+            resolved["merge_mode"] = "create_entity"
+            resolved["match_reason"] = "Correction with no prior entity; the new value is kept."
+        else:
+            resolved["merge_mode"] = "no_op"
+            resolved["match_reason"] = fallback.get("match_reason") or (
+                "No stable prior target was available for this mutation."
+            )
+        return resolved
+
+    @classmethod
     def _sanitize_merge_decision(
         cls,
         *,
@@ -3122,6 +3218,7 @@ class PKMAgentLabService:
         fallback: dict[str, Any],
         intent_frame: dict[str, Any],
         current_domains: list[str],
+        existing_entities: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         decision = deepcopy(fallback)
         if isinstance(raw, dict):
@@ -3156,19 +3253,13 @@ class PKMAgentLabService:
             decision["match_reason"] = fallback["match_reason"]
 
         mutation_intent = cls._normalize_segment(str(intent_frame.get("mutation_intent") or ""))
-        if mutation_intent in {"correct", "delete"} and fallback.get("merge_mode") == "no_op":
-            decision["merge_mode"] = "no_op"
-            decision["target_entity_id"] = ""
-            decision["target_entity_path"] = ""
-            decision["match_reason"] = fallback.get("match_reason") or (
-                "No stable prior target was available for this mutation."
+        if mutation_intent in {"correct", "delete"}:
+            decision = cls._resolve_mutation_target(
+                decision=decision,
+                fallback=fallback,
+                mutation_intent=mutation_intent,
+                existing_entities=existing_entities or [],
             )
-        elif (
-            mutation_intent in {"correct", "delete"}
-            and fallback.get("merge_mode") in {"correct_entity", "delete_entity"}
-            and decision.get("merge_mode") == "no_op"
-        ):
-            decision = deepcopy(fallback)
 
         if decision["merge_mode"] in {"correct_entity", "delete_entity"}:
             decision_scope = cls._entity_scope_from_path(
@@ -3538,19 +3629,6 @@ class PKMAgentLabService:
             },
             "registry_version": reserved_registry_version(),
         }
-
-    @staticmethod
-    def _reserved_table_prompt_lines() -> str:
-        rows = reserved_table_for_prompt()
-        return (
-            "App-owned (reserved) PKM branches. An app feature writes these through its own "
-            "screen; a chat fact never targets one:\n"
-            f"{json.dumps(rows)}\n"
-            "- When a fact belongs to a reserved branch, put it in that row's agent_memory_sibling "
-            "(for example location.agent_memory) as an entity, and return "
-            'reserved_offer {"branch": "<domain>.<reserved branch>", "label": "<2 to 4 word noun the owner would tap, e.g. Home>"}.\n'
-            "- A row whose agent_memory_sibling is null keeps no chat facts: use do_not_save.\n"
-        )
 
     @classmethod
     def _first_recommended_domain(
@@ -4147,6 +4225,7 @@ class PKMAgentLabService:
             # malformed result review-only instead of synthesizing a write.
             write_mode = "confirm_first"
             validation_hints.append("invalid_write_mode_requires_review")
+        structure_dropped = write_mode == "do_not_save"
 
         if intent_frame.get("save_class") == "ephemeral":
             write_mode = "do_not_save"
@@ -4182,6 +4261,8 @@ class PKMAgentLabService:
             write_mode = "confirm_first"
 
         mutation_intent = str(intent_frame.get("mutation_intent") or "create")
+        if mutation_intent == "correct" and merge_decision.get("merge_mode") == "create_entity":
+            validation_hints.append("correction_without_prior_target_kept_as_new_entity")
         if (
             mutation_intent in {"update", "correct", "delete"}
             and target_domain not in current_domains
@@ -4231,10 +4312,27 @@ class PKMAgentLabService:
         if write_mode == "can_save" and requires_review_for_auto_save:
             write_mode = "confirm_first"
             validation_hints.append("auto_save_requires_review")
-        if reserved_blocked or any(
+        reserved_drop = reserved_blocked or any(
             reserved_entry_for(target_domain, path) is not None
             for path in decision.get("json_paths") or []
+        )
+        if (
+            structure_dropped
+            and write_mode == "do_not_save"
+            and not reserved_drop
+            and intent_frame.get("save_class") == "durable"
+            and mutation_intent != "no_op"
+            and merge_decision.get("merge_mode") not in {None, "", "no_op"}
+            and not cls._looks_opaque_or_nonsense(message)
         ):
+            # Whether to save is decided upstream: intent kept this statement
+            # and merge attached it, and no rule above dropped it. A structure
+            # drop here lost a stated fact silently (measured 2026-10-02: the
+            # most common loss on the release chain); keep it for the owner's
+            # review instead. Reserved-only input is still dropped below.
+            write_mode = "confirm_first"
+            validation_hints.append("structure_drop_kept_for_review")
+        if reserved_drop:
             # Authority, not meaning: contracts/pkm/reserved-branches.v1.json
             # names the branches an app feature writes through its own screen
             # (Finance sources, Location places, Wallet, KYC...). Whatever is
@@ -5018,90 +5116,29 @@ class PKMAgentLabService:
         strict_small_model: bool,
         context_quotes: list[str] | None = None,
     ) -> str:
-        rules = []
-        state_summary = self._build_state_summary(simulated_state)
-        registry_payload: Any = registry_choices
-        context_line = self._section_context_line(context_quotes)
-        if strict_small_model:
-            rules.append(
-                "- Minimal-thinking mode: prefer conservative broad domains, do not invent narrow domains, and only use ontology labels from the contract."
-            )
-            rules.append("- Candidate domain choices must only use the provided domain keys.")
-            state_summary = self._compact_state_summary(simulated_state)
-            registry_payload = self._compact_registry_choices(registry_choices)
-            return (
-                f"{self._kernel_prompt('Memory Intent Agent')}"
-                "You are the Memory Intent Agent for the Hussh private agent.\n"  # nosec B608 - prompt template, not SQL.
-                "Return JSON only with save_class, intent_class, mutation_intent, requires_confirmation, confirmation_reason, candidate_domain_choices, confidence, source_agent, contract_version.\n"
-                "Allowed save_class: durable, ephemeral, ambiguous.\n"
-                "Allowed intent_class: preference, profile_fact, routine, task_or_reminder, plan_or_goal, relationship, health, travel, shopping_need, financial_event, command, correction, deletion, note, ambiguous.\n"
-                "Allowed mutation_intent: create, extend, update, correct, delete, no_op.\n"
-                f"Soft ontology domain keys: {json.dumps(registry_payload)}\n"
-                f"Current domains: {json.dumps(current_domains)}\n"
-                f"State summary: {json.dumps(state_summary)}\n"
-                f"{self._reserved_table_prompt_lines()}"
-                f"{context_line}"
-                f"Message: {message}\n"
-                "Rules:\n"
-                "- durable = anything the owner stated, including work context, people, vendors, metrics and technical ids.\n"
-                "- ephemeral = a live command (intent_class command) or an errand; never pasted source material.\n"
-                "- ambiguous = a fragment with no subject at all.\n"
-                "- Brand loyalty, cuisine choices, and shopping habits are preference, not financial_event.\n"
-                "- Home base, residence, and where the user lives are profile_fact, not preference.\n"
-                "- A stated money preference (index funds, risk tolerance) is durable with financial recommended first; an instruction to act on money now (optimize, rebalance, sell, buy) is command.\n"
-                "- If state_summary already shows an active memory in the same broad domain and the new message says still, also, again, continue, or otherwise refines the same theme, prefer mutation_intent extend instead of create.\n"
-                "- If multiple broad domains are plausible, keep it durable, set requires_confirmation=true and return 2-4 broad candidate domains.\n"
-                "- Gibberish, ciphertext-like blobs, random hex strings, or semantically empty fragments must become no_op.\n"
-                "- Never use general.\n"
-                'Examples: {"message":"Window seats work better for me now.","save_class":"durable","intent_class":"correction","mutation_intent":"correct","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"travel","recommended":true}]} '
-                '{"message":"Please call my aunt tomorrow.","save_class":"ephemeral","intent_class":"task_or_reminder","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"social","recommended":true}]} '
-                '{"message":"Optimize my portfolio for lower volatility.","save_class":"ephemeral","intent_class":"command","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"financial","recommended":true}]} '
-                '{"message":"- GCP project: example-proj-123","save_class":"durable","intent_class":"profile_fact","mutation_intent":"create","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"professional","recommended":true}]} '
-                '{"message":"One medium-term priority for me is to pay off my student loans in three years.","save_class":"durable","intent_class":"plan_or_goal","mutation_intent":"create","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"financial","recommended":true}]} '
-                '{"message":"Delete the outdated note about seat selection.","save_class":"durable","intent_class":"deletion","mutation_intent":"delete","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"travel","recommended":true}]} '
-                '{"message":"4d2fa9aa67f03c119ed8b8d38b9a7e0a","save_class":"ephemeral","intent_class":"ambiguous","mutation_intent":"no_op","requires_confirmation":false,"candidate_domain_choices":[{"domain_key":"professional","recommended":true}]}'
-            )
-        return (
-            f"{self._kernel_prompt('Memory Intent Agent')}"
-            f"{self.memory_intent_manifest.system_instruction}\n\n"
-            "Return JSON only.\n"
-            f"Soft ontology domain choices: {json.dumps(registry_payload)}\n"
-            f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
-            f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
-            f"{context_line}"
-            f"Natural language message: {message}\n"
-            "Rules:\n"
-            "- Durable means anything the owner stated: personal facts, work context, people, vendors, metrics and technical identifiers.\n"
-            "- Ephemeral means only a live command (intent_class command) or an errand; pasted source material is never ephemeral.\n"
-            "- If the user is correcting or deleting prior meaning, set mutation_intent to correct or delete.\n"
-            "- If multiple broad domains are plausible, keep it durable, require confirmation and provide 2-4 broad candidate domains.\n"
-            "- Gibberish, ciphertext-like blobs, or semantically empty fragments must map to no_op and do_not_save.\n"
-            "- Never use general.\n"
-            f"{chr(10).join(rules)}\n"
-            "Examples:\n"
-            'I like Chinese food. -> {"save_class":"durable","intent_class":"preference","mutation_intent":"create","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"food","display_name":"Food & Dining","description":"Dietary preferences, favorite cuisines, and restaurant history","recommended":true}],"confidence":0.93,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            'Remind me to call mom on Sunday. -> {"save_class":"ephemeral","intent_class":"task_or_reminder","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"social","display_name":"Social","description":"Relationships, family context, and social preferences","recommended":true}],"confidence":0.96,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            'Optimize my portfolio for lower volatility. -> {"save_class":"ephemeral","intent_class":"command","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"financial","display_name":"Financial","description":"Investment portfolio, risk profile, and financial preferences","recommended":true}],"confidence":0.95,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            'Actually I prefer window seats now. -> {"save_class":"durable","intent_class":"correction","mutation_intent":"correct","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"travel","display_name":"Travel","description":"Travel preferences, loyalty programs, and trip history","recommended":true}],"confidence":0.89,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            'Remember that I prefer index funds. -> {"save_class":"durable","intent_class":"financial_event","mutation_intent":"extend","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"financial","display_name":"Financial","description":"Investment portfolio, risk profile, and financial preferences","recommended":true}],"confidence":0.92,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            '- OAuth callback: https://auth.example.dev/oauth/callback -> {"save_class":"durable","intent_class":"profile_fact","mutation_intent":"create","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"professional","display_name":"Professional","description":"Career information, skills, and work preferences","recommended":true}],"confidence":0.9,"source_agent":"memory_intent_agent","contract_version":1}\n'
-            'Q2FmZSB3YWtlIHVwIGhhc2ggcGF5bG9hZA== -> {"save_class":"ephemeral","intent_class":"ambiguous","mutation_intent":"no_op","requires_confirmation":false,"confirmation_reason":"","candidate_domain_choices":[{"domain_key":"professional","display_name":"Professional","description":"Career information, skills, and work preferences","recommended":true}],"confidence":0.98,"source_agent":"memory_intent_agent","contract_version":1}'
+        return self._agent_request(
+            self.memory_intent_manifest,
+            {
+                "message": message,
+                "section_context": self._section_context(context_quotes),
+                "current_domains": current_domains,
+                "domain_choices": self._compact_registry_choices(registry_choices)
+                if strict_small_model
+                else registry_choices,
+                "existing_entities": self._existing_entities(
+                    simulated_state, compact=strict_small_model
+                ),
+            },
         )
 
     @staticmethod
-    def _section_context_line(context_quotes: list[str] | None) -> str:
-        """The headings that attribute a statement, quoted, as prompt context.
+    def _section_context(context_quotes: list[str] | None) -> list[str]:
+        """The exact headings that attribute and qualify a statement.
 
-        They qualify the statement (whose company, which person, which
-        period); they are not a second fact to save.
+        They say whose company, which person or which period; they are not a
+        second fact to save.
         """
-        quotes = [quote for quote in (context_quotes or []) if isinstance(quote, str) and quote]
-        if not quotes:
-            return ""
-        return (
-            "Section context (exact headings above this statement; they attribute and "
-            f"qualify it and are not a separate fact): {json.dumps(quotes, ensure_ascii=False)}\n"
-        )
+        return [quote for quote in (context_quotes or []) if isinstance(quote, str) and quote]
 
     def _build_memory_merge_prompt(
         self,
@@ -5112,52 +5149,16 @@ class PKMAgentLabService:
         simulated_state: dict[str, Any] | None,
         strict_small_model: bool,
     ) -> str:
-        state_summary = (
-            self._compact_state_summary(simulated_state)
-            if strict_small_model
-            else self._build_state_summary(simulated_state)
-        )
-        header = (
-            "You are the Memory Merge Agent for Hussh Kai.\n"
-            "Return JSON only with merge_mode, target_domain, target_entity_id, target_entity_path, match_confidence, match_reason, source_agent, contract_version.\n"
-            "Allowed merge_mode values: create_entity, extend_entity, correct_entity, delete_entity, no_op.\n"
-        )
-        if strict_small_model:
-            return (
-                f"{self._kernel_prompt('Memory Merge Agent')}"
-                f"{header}"
-                f"Intent frame: {json.dumps(intent_frame)}\n"
-                f"Current domains: {json.dumps(current_domains)}\n"
-                f"State summary: {json.dumps(state_summary)}\n"
-                f"Message: {message}\n"
-                "Rules:\n"
-                "- create_entity = a new durable concept.\n"
-                "- extend_entity = same durable concept, more detail.\n"
-                "- correct_entity = old meaning is superseded by the new statement.\n"
-                "- delete_entity = an existing active memory should be removed from shareable PKM data.\n"
-                "- no_op = not durable, too vague, or no stable target exists.\n"
-                "- Never use general.\n"
-                'Examples: {"message":"I still prefer aisle seats.","merge_mode":"extend_entity","target_domain":"travel"} '
-                '{"message":"Actually window seats work better now.","merge_mode":"correct_entity","target_domain":"travel"} '
-                '{"message":"Forget the old seat note.","merge_mode":"delete_entity","target_domain":"travel"} '
-                '{"message":"7b9a662f0c63a4d8f65f5b9d4cb4e2aa","merge_mode":"no_op","target_domain":"professional"}'
-            )
-        return (
-            f"{self._kernel_prompt('Memory Merge Agent')}"
-            f"{self.memory_merge_manifest.system_instruction}\n\n"
-            "Return JSON only.\n"
-            f"Intent frame: {json.dumps(intent_frame)}\n"
-            f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
-            f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
-            f"Natural language message: {message}\n"
-            "Rules:\n"
-            "- Choose create_entity when this is a new durable memory.\n"
-            "- Choose extend_entity when it clearly refines an existing active memory.\n"
-            "- Choose correct_entity when the user is replacing prior meaning.\n"
-            "- Choose delete_entity when the user is removing prior meaning.\n"
-            "- Choose no_op for noise, ephemeral requests, or missing correction targets.\n"
-            "- Never invent a new top-level domain when an existing user domain clearly fits.\n"
-            "- Never use general.\n"
+        return self._agent_request(
+            self.memory_merge_manifest,
+            {
+                "message": message,
+                "intent_frame": intent_frame,
+                "current_domains": current_domains,
+                "existing_entities": self._existing_entities(
+                    simulated_state, compact=strict_small_model
+                ),
+            },
         )
 
     def _build_structure_prompt(
@@ -5172,84 +5173,27 @@ class PKMAgentLabService:
         strict_small_model: bool,
         context_quotes: list[str] | None = None,
     ) -> str:
-        state_summary = self._build_state_summary(simulated_state)
-        small_model_rules = ""
-        context_line = self._section_context_line(context_quotes)
-        if strict_small_model:
-            state_summary = self._compact_state_summary(simulated_state)
-            compact_registry_choices = self._compact_registry_choices(registry_choices)
-            return (
-                "You are the PKM Structure Agent for the Hussh private agent.\n"
-                "Return JSON only with candidate_payload, structure_decision, write_mode, primary_json_path, target_entity_scope, validation_hints.\n"
-                "Allowed actions: match_existing_domain, create_domain, extend_domain.\n"
-                "Allowed write_mode: can_save, confirm_first, do_not_save.\n"
-                f"Intent frame: {json.dumps(intent_frame)}\n"
-                f"Merge decision: {json.dumps(merge_decision)}\n"
-                f"Soft ontology domain keys: {json.dumps(compact_registry_choices)}\n"
-                f"Current domains: {json.dumps(current_domains)}\n"
-                f"State summary: {json.dumps(state_summary)}\n"
-                f"{context_line}"
-                f"Message: {message}\n"
-                "Rules:\n"
-                "- candidate_payload must align with target_domain and intent_frame.\n"
-                "- Choose a domain for everything stated; work context, technical ids, vendors and people go under professional or a work domain.\n"
-                "- Keep payload shallow, durable, and entity-based when possible.\n"
-                "- Use merge_decision.target_domain unless there is a clear validation error.\n"
-                "- For correct_entity/delete_entity, candidate_payload must use merge_decision.target_entity_path and must not create a changes subtree.\n"
-                "- For delete_entity, do not create replacement plaintext; target the existing entity id only.\n"
-                "- primary_json_path may be a top-level root path when broad structure is enough.\n"
-                "- Use a deeper nested path only when the subtree is clearly stable.\n"
-                "- If requires_confirmation is true, return write_mode=confirm_first.\n"
-                "- If save_class is ephemeral, return write_mode=do_not_save.\n"
-                "- A finance preference or goal goes under agent_memory in financial.\n"
-                "- candidate_payload should favor entities keyed by stable ids over anonymous statement arrays.\n"
-                "- Never use general.\n"
-                'Examples: {"message":"I usually choose Thai takeout first.","target_domain":"food","primary_json_path":"preferences"} '
-                '{"message":"- Backend: FastAPI on Cloud Run","target_domain":"professional","primary_json_path":"tech_stack"}'
-            )
-        small_model_rules = (
-            "- Minimal-thinking mode: prefer shallow payloads with entities{} maps under one stable subtree.\n"
-            "- Reuse one of the candidate_domain_choices unless a clearly better broad domain is obvious.\n"
-        )
-        return (
-            "Return JSON only.\n"
-            f"Intent frame: {json.dumps(intent_frame)}\n"
-            f"Merge decision: {json.dumps(merge_decision)}\n"
-            f"Soft ontology domain choices: {json.dumps(registry_choices)}\n"
-            f"Current top-level PKM domains: {json.dumps(current_domains)}\n"
-            f"Current simulated PKM state summary: {json.dumps(state_summary)}\n"
-            f"{context_line}"
-            f"Natural language message: {message}\n"
-            "Rules:\n"
-            "- candidate_payload must align with target_domain and the intent frame.\n"
-            "- Choose the action that names this person's information most honestly.\n"
-            "- A domain is a SUBJECT AREA of a person's life, not a container of convenience. Before reusing one, ask whether a person would genuinely say this belongs there.\n"
-            "- The three actions: match_existing_domain means an offered domain already fits; extend_domain means an offered domain fits but needs a new subtree; create_domain means naming a new domain.\n"
-            "- create_domain is a normal, expected outcome. A person is not a fixed list of categories. If a statement is about a distinct part of who they are, name a new domain for it.\n"
-            "- Do not stretch an existing domain to absorb something it is not about. Measured: the wording this replaced produced zero new domains across ten statements and filed someone's communication style under ria, the financial-advisor domain.\n"
-            "- You may propose a new safe lowercase snake_case top-level domain when no existing domain is semantically accurate.\n"
-            "- Never propose protocol or internal namespaces such as vault, pkm, attr, cap, agent, agents, mcp, system, runtime_secrets, kyc_connector, or kyc_workflow; a fact about agent or system architecture is work context under professional.\n"
-            "- Every durable write is confirm_first; never rely on can_save for persistence.\n"
-            "- Keep payloads shallow, durable, and conservative.\n"
-            "- Use stable snake_case keys.\n"
-            "- Prefer entity maps with stable ids over anonymous append-only statements.\n"
-            "- Use merge_decision.target_domain unless validation requires a different broad domain.\n"
-            "- For correct_entity/delete_entity, candidate_payload must align to merge_decision.target_entity_path and must not create a changes subtree.\n"
-            "- For delete_entity, target the existing entity id; do not create replacement plaintext or a new deleted memory.\n"
-            "- For a live command or an errand, use write_mode=do_not_save.\n"
-            "- If intent_frame.requires_confirmation is true, return write_mode=confirm_first.\n"
-            "- primary_json_path must identify the main path inside the domain payload. Use a top-level path when a broad root-domain write is enough; use a deeper nested path only when the subtree is clearly stable.\n"
-            "- target_entity_scope should point to the stable subtree being written or changed.\n"
-            "- A finance preference or goal follows the Finance rule in your system instruction: the fact goes under agent_memory, never a Finance app branch.\n"
-            "- Gibberish or opaque input must return write_mode=do_not_save.\n"
-            "- Never use the domain key general.\n"
-            f"{small_model_rules}"
-            "Examples:\n"
-            'I gravitate toward Cantonese menus when I go out. -> {"candidate_payload":{"preferences":{"entities":{"mem_food_pref":{"entity_id":"mem_food_pref","kind":"preference","summary":"I gravitate toward Cantonese menus when I go out.","observations":["I gravitate toward Cantonese menus when I go out."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"food","json_paths":["preferences","preferences.entities","preferences.entities.mem_food_pref","preferences.entities.mem_food_pref.summary"],"top_level_scope_paths":["preferences"],"externalizable_paths":["preferences.entities.mem_food_pref.summary"],"summary_projection":{"intent_class":"preference","top_level_scope":"preferences"},"sensitivity_labels":{},"confidence":0.91,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"confirm_first","primary_json_path":"preferences","target_entity_scope":"preferences","validation_hints":[]}\n'
-            'Circle back with my aunt this weekend. -> {"candidate_payload":{"tasks":{"entities":{"mem_social_task":{"entity_id":"mem_social_task","kind":"task_or_reminder","summary":"Circle back with my aunt this weekend.","observations":["Circle back with my aunt this weekend."],"status":"active"}}}},"structure_decision":{"action":"match_existing_domain","target_domain":"social","json_paths":["tasks","tasks.entities","tasks.entities.mem_social_task","tasks.entities.mem_social_task.summary"],"top_level_scope_paths":["tasks"],"externalizable_paths":["tasks.entities.mem_social_task.summary"],"summary_projection":{"intent_class":"task_or_reminder","top_level_scope":"tasks"},"sensitivity_labels":{},"confidence":0.87,"source_agent":"pkm_structure_agent","contract_version":1},"write_mode":"do_not_save","primary_json_path":"","target_entity_scope":"tasks","validation_hints":[]}\n'
-            '- GCP project: example-proj-123 (section "## Infrastructure") -> target_domain professional, candidate_payload {"infrastructure":{"entities":{"gcp_project":{"entity_id":"gcp_project","kind":"profile_fact","summary":"GCP project: example-proj-123","observations":["GCP project: example-proj-123"],"status":"active"}}}}, write_mode confirm_first.\n'
-            "Remember that I prefer index funds. -> target_domain must be financial, write_mode confirm_first, and candidate_payload must use agent_memory, the Finance sibling for chat facts.\n"
-            'My home is 12 Example Street. -> target_domain location, candidate_payload under agent_memory (location.saved_places is the Location app\'s), reserved_offer {"branch":"location.saved_places","label":"Home"}.'
+        return self._agent_request(
+            self.structure_manifest,
+            {
+                "message": message,
+                "section_context": self._section_context(context_quotes),
+                "intent_frame": intent_frame,
+                "merge_decision": merge_decision,
+                "current_domains": current_domains,
+                "domain_choices": self._compact_registry_choices(registry_choices)
+                if strict_small_model
+                else registry_choices,
+                "existing_entities": self._existing_entities(
+                    simulated_state, compact=strict_small_model
+                ),
+                # The structure instruction promises this table with every
+                # request; until now only the strict intent prompt carried it.
+                "reserved_branches": [
+                    [row["reserved_branch"], row["agent_memory_sibling"]]
+                    for row in reserved_table_for_prompt()
+                ],
+            },
         )
 
     @classmethod
@@ -5366,6 +5310,7 @@ class PKMAgentLabService:
             fallback=merge_fallback,
             intent_frame=intent_frame,
             current_domains=normalized_domains,
+            existing_entities=self._existing_entities(simulated_state, compact=strict_small_model),
         )
         merge_mode = str(merge_decision.get("merge_mode") or "")
         if merge_mode == "extend_entity":

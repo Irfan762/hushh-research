@@ -9,6 +9,15 @@ from hushh_mcp.services import pkm_agent_lab_service as pkm_agent_lab_module
 from hushh_mcp.services.pkm_agent_lab_service import PKMAgentLabService
 
 
+def _request(prompt: str) -> dict:
+    """The JSON request a memory-agent prompt ends with, after its worked examples."""
+
+    head, marker, body = prompt.rpartition("Request: ")
+    assert marker, "every memory-agent prompt ends with its JSON request"
+    assert "Rules:" not in head, "rules belong in the manifest instruction, not the prompt"
+    return json.loads(body)
+
+
 def _registry_choices():
     return [
         {
@@ -557,7 +566,7 @@ async def test_direct_contract_uses_manifest_instruction_and_input_only_segmenta
         prompt = service._build_memory_segmentation_prompt(
             message=message, strict_small_model=strict
         )
-        assert json.loads(prompt) == {"message": message, "strict_small_model": strict}
+        assert _request(prompt) == {"message": message, "strict_small_model": strict}
         await service._run_agent_contract(
             manifest=service.memory_segmentation_manifest,
             prompt=prompt,
@@ -2684,29 +2693,35 @@ async def test_structure_instruction_is_supplied_once_by_both_runtime_adapters(m
         strict_small_model=strict,
     )
     instruction = service.structure_manifest.system_instruction
+    kernel = pkm_agent_lab_module._REPO_ROOT / "hushh_mcp/agents/pkm_memory_kernel.v3.md"
+    kernel_text = kernel.read_text(encoding="utf-8").strip()
+    # One copy of every rule: the kernel once, inside the instruction, and
+    # neither the instruction nor the kernel restated in the prompt.
+    assert instruction.count(kernel_text) == 1
+    assert kernel_text not in prompt
     assert instruction not in prompt
-    assert service._kernel_prompt("PKM Structure Agent") not in prompt
     assert "Never invent domains, paths" not in instruction + prompt
     assert (
         "New domain and path names may organize only information actually supplied" in instruction
     )
     assert "Proposing structure does not authorize a write" in instruction
     assert "Never create a changes branch" in instruction
-    assert "merge_decision.target_entity_path" in prompt
-    assert "do not create replacement plaintext" in prompt
-    assert "write_mode=do_not_save" in prompt
+    assert "merge_decision.target_entity_path" in instruction
+    assert "do not create replacement plaintext" in instruction
+    assert "your question is where it goes, never whether" in instruction
     assert "Choose a place for everything the owner stated" in instruction
     assert "Export eligibility is not publication or consent" in instruction
     assert '"primary_json_path": "string"' in instruction
     assert "contract_version must be 1" in instruction
-    if not strict:
-        examples = [line.split(" -> ", 1)[1] for line in prompt.splitlines() if " -> {" in line]
-        assert len(examples) == 2
-        assert all(
-            json.loads(example)["structure_decision"]["contract_version"] == 1
-            for example in examples
-        )
-    assert "My synthetic project is Cedar Lantern." in prompt
+    examples = [line.split("Answer: ", 1)[1] for line in prompt.splitlines() if "Answer: " in line]
+    assert examples, "the structure agent receives its worked examples"
+    assert all(
+        json.loads(example)["structure_decision"]["contract_version"] == 1 for example in examples
+    )
+    request = _request(prompt)
+    assert request["message"] == "My synthetic project is Cedar Lantern."
+    # The instruction promises the reserved-branch table with every request.
+    assert ["location.saved_places", "location.agent_memory"] in request["reserved_branches"]
     agent = build_single_turn_agent(
         service.structure_manifest, output_schema=dict, model="gemini-3.7-flash"
     )
@@ -2770,7 +2785,7 @@ def test_memory_prompts_do_not_reintroduce_keyword_only_mutation_cues(strict):
         ),
     ]
     for prompt in prompts:
-        assert source in prompt
+        assert _request(prompt)["message"] == source
         assert "Corrections are signaled by:" not in prompt
         assert "Deletions are signaled by:" not in prompt
         assert "Refinements are signaled by:" not in prompt
@@ -2809,9 +2824,8 @@ async def test_compact_ontology_preserves_late_and_owner_defined_domains():
         strict_small_model=True,
     )
 
-    encoded_keys = json.dumps(keys)
-    assert f"Soft ontology domain keys: {encoded_keys}" in memory_intent_prompt
-    assert f"Soft ontology domain keys: {encoded_keys}" in structure_prompt
+    assert _request(memory_intent_prompt)["domain_choices"] == keys
+    assert _request(structure_prompt)["domain_choices"] == keys
 
 
 def test_compact_ontology_removes_nonselectable_and_duplicate_domains():
@@ -2831,3 +2845,121 @@ def test_compact_ontology_removes_nonselectable_and_duplicate_domains():
         ]
     )
     assert keys == ["social", "shopping"]
+
+
+# A correction or deletion names its target among the owner's existing entities.
+# Until 2026-10-02 a word-overlap miss vetoed the model's target outright, and a
+# correction the model kept as a new entity was dropped.
+_SEAT_ENTITY = {
+    "domain": "travel",
+    "entity_id": "seat_preference",
+    "entity_scope": "preferences",
+    "summary": "I book aisle seats",
+}
+
+
+def _merge_for(mutation_intent: str, raw: dict, fallback_mode: str = "no_op") -> dict:
+    fallback = {
+        "merge_mode": fallback_mode,
+        "target_domain": "travel",
+        "target_entity_id": "",
+        "target_entity_path": "",
+        "match_confidence": 0.5,
+        "match_reason": "No stable prior target was available for correction or deletion.",
+        "source_agent": "memory_merge_agent",
+        "contract_version": 1,
+    }
+    return PKMAgentLabService._sanitize_merge_decision(
+        raw={"target_domain": "travel", **raw},
+        fallback=fallback,
+        intent_frame={"mutation_intent": mutation_intent},
+        current_domains=["travel"],
+        existing_entities=[_SEAT_ENTITY],
+    )
+
+
+def test_a_target_the_model_names_and_the_owner_has_survives_a_word_match_miss() -> None:
+    decision = _merge_for(
+        "delete",
+        {
+            "merge_mode": "delete_entity",
+            "target_entity_id": "seat_preference",
+            "target_entity_path": "preferences.entities.seat_preference",
+        },
+    )
+
+    assert decision["merge_mode"] == "delete_entity"
+    assert decision["target_entity_path"] == "preferences.entities.seat_preference"
+
+
+def test_a_target_the_owner_does_not_have_is_never_written_to() -> None:
+    invented = {"target_entity_id": "ghost", "target_entity_path": "preferences.entities.ghost"}
+
+    deletion = _merge_for("delete", {"merge_mode": "delete_entity", **invented})
+    correction = _merge_for("correct", {"merge_mode": "correct_entity", **invented})
+
+    assert deletion["merge_mode"] == "no_op"
+    assert correction["merge_mode"] == "create_entity"
+    assert correction["target_entity_path"] == deletion["target_entity_path"] == ""
+
+
+def test_a_correction_the_model_keeps_as_new_is_no_longer_vetoed() -> None:
+    kept = _merge_for("correct", {"merge_mode": "create_entity"})
+    dropped = _merge_for("correct", {"merge_mode": "no_op"})
+
+    assert kept["merge_mode"] == "create_entity"
+    assert kept["target_entity_path"] == ""
+    # The model decides: a correction it judged empty is not forced into memory.
+    assert dropped["merge_mode"] == "no_op"
+
+
+def test_a_deletion_the_model_dropped_still_recovers_the_word_match() -> None:
+    decision = _merge_for("delete", {"merge_mode": "no_op"}, fallback_mode="delete_entity")
+
+    assert decision["merge_mode"] == "delete_entity"
+
+
+def _structure_drop(
+    *, save_class: str, merge_mode: str, message: str = "I am based in Lisbon."
+) -> dict:
+    return PKMAgentLabService._normalize_structure_preview(
+        message=message,
+        current_domains=["location"],
+        registry_choices=_registry_choices(),
+        intent_frame={
+            "save_class": save_class,
+            "intent_class": "profile_fact",
+            "mutation_intent": "no_op" if merge_mode == "no_op" else "create",
+            "candidate_domain_choices": [{"domain_key": "location", "recommended": True}],
+        },
+        merge_decision={"target_domain": "location", "merge_mode": merge_mode},
+        parsed_structure={
+            "candidate_payload": {"home": {"entities": {"city": {"summary": message}}}},
+            "structure_decision": {"target_domain": "location"},
+            "write_mode": "do_not_save",
+        },
+        fallback_target_domain="location",
+        simulated_state=None,
+    )
+
+
+def test_a_structure_drop_of_a_kept_statement_becomes_a_review_card() -> None:
+    preview = _structure_drop(save_class="durable", merge_mode="create_entity")
+
+    assert preview["write_mode"] == "confirm_first"
+    assert "structure_drop_kept_for_review" in preview["validation_hints"]
+
+
+@pytest.mark.parametrize(
+    ("save_class", "merge_mode", "message"),
+    [
+        ("ephemeral", "create_entity", "I am based in Lisbon."),
+        ("durable", "no_op", "I am based in Lisbon."),
+        ("durable", "create_entity", "aGVsbG8gd29ybGQgdGhpcyBpcyBiYXNlNjQgZW5jb2RlZA=="),
+    ],
+)
+def test_upstream_and_deterministic_drops_still_stand(save_class, merge_mode, message) -> None:
+    preview = _structure_drop(save_class=save_class, merge_mode=merge_mode, message=message)
+
+    assert preview["write_mode"] == "do_not_save"
+    assert "structure_drop_kept_for_review" not in preview["validation_hints"]

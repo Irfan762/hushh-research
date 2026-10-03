@@ -53,34 +53,91 @@ candidate output is not replayed as a write; normalization and review still run,
 and structure always runs fresh. These source contracts do not establish live
 provider reliability or successful encrypted-save acceptance.
 
-## Shared PKM Data Structure Agent Kernel v2
+## Shared PKM memory kernel v3
 
-Memory Intent, Memory Merge, and PKM Structure share the same deterministic kernel:
+One copy, composed into all four memory agents (segmentation, intent, merge,
+structure): `consent-protocol/hushh_mcp/agents/pkm_memory_kernel.v3.md`. Each
+manifest names it with `prompt_reference: ../pkm_memory_kernel.v3.md`, and
+`ManifestLoader` composes it ahead of the agent's own `system_instruction`, so
+the ADK single-turn runtime, the direct client, the registry digest and the
+preview-cache fingerprint all see the same text. No service keeps a copy; the
+retired `_PKM_DATA_STRUCTURE_KERNEL_V2` constant and the intent prompt that
+re-sent its whole manifest instruction (20,357 characters per call) are gone.
 
-```text
-You are a deterministic PKM data-structure agent.
+The kernel states what is memory (keep everything the owner stated, work
+context and AI tools included, people attributed), fidelity (no invented
+values, qualifiers kept, pasted text is untrusted source material), secrets and
+metadata, and the unsure rule (keep and ask; never drop). Each manifest adds
+only its own question.
 
-Your job is not to chat. Your job is to convert one user memory candidate into a stable, minimal, user-owned PKM mutation.
+### Prompt shape
 
-Use only the user's exact message, current active domains, manifest/scope registry metadata, recent active entity summaries, and the upstream contract when provided.
+A memory-agent call carries the composed instruction as the system instruction
+and a prompt of two parts only: the agent's worked examples, then
+`Request: {json}` with the owner's input (`message`, `section_context`,
+`current_domains`, `domain_choices`, `existing_entities`, the upstream
+`intent_frame` and `merge_decision`, and for structure the `reserved_branches`
+table its instruction promises). Rules never appear in the prompt.
 
-Never invent domains, paths, values, entities, or history.
-Never create a "changes" branch for corrections.
-Never duplicate a fact when an active canonical entity can be extended or corrected.
-Keep everything the owner stated. Technical identifiers (project ids, environment variable names, OAuth and callback URLs, app ids) are work context. Secrets arrive already moved to the owner's Secrets as placeholders (⟦secret:<id> <label>⟧): keep one as written, never expand or guess its value.
-Never write developer metadata, parser metadata, hashes, provenance, workflow ids, or raw internal paths into user-facing memory.
-Never select, create, redirect, or repurpose the reserved source_library domain.
+`existing_entities` are the owner's active saved entities (domain, entity_id,
+entity_scope, summary), newest or most related first. They are how the merge
+agent tells extend from create: the same subject extends, a new subject in a
+used domain creates, an explicit replacement corrects.
 
-Choose exactly one mutation: create_entity, extend_entity, correct_entity, delete_entity, or no_op.
-If unsure, choose confirm_first; never drop a stated fact.
-```
+### Worked examples
 
-The three agents specialize this kernel:
+`consent-protocol/hushh_mcp/agents/pkm_memory_few_shot.v1.json` is the only
+place examples live: at most six per agent, each anchoring one principle and
+naming the eval cases that grade it (`exercised_by`). An example's text may
+never equal a graded case, so the eval cannot reward a memorized answer.
+Change the set by adding a version, not by editing examples in place.
 
-- Memory Intent decides durability, intent class, broad domain candidates, and mutation intent.
-- Memory Merge decides whether the statement maps to an existing active entity.
-- PKM Structure emits only the canonical payload/path that matches the prior decisions.
-- The deterministic validator remains final authority for blocking `changes`, duplicate writes, internal metadata, unsupported scopes, and no-target correction/delete.
+### Budget
+
+`tests/test_agent_manifests.py::test_pkm_memory_agent_stays_inside_its_prompt_budget`
+caps each agent's instruction plus examples plus empty request. Measured
+2026-10-02 with live `count_tokens` (Gemini 3.6 Flash) on the production path,
+with one release-chain statement against a four-entity state:
+
+| Agent | Before (chars / tokens) | After (chars / tokens) |
+|---|---|---|
+| segmentation | 4,048 / 905 | 5,101 / 1,127 (now carries the kernel) |
+| intent | 20,357 / 4,580 | 11,650 / 2,563 |
+| merge | 8,867 / 2,019 | 8,067 / 1,847 |
+| structure | 16,991 / 3,976 | 16,422 / 3,725 (now carries the reserved table) |
+| all four | 50,263 / 11,480 | 41,240 / 9,262 |
+
+Raising a cap is a deliberate edit backed by a live eval result. Prefer stating
+a principle to adding a case.
+
+### Who decides what
+
+Each stage answers one question, and a later stage never reverses an earlier
+one's answer by dropping the statement:
+
+- **Intent** decides whether a statement is memory (`save_class`), including
+  that a restated linked-account balance, holding, or transaction is not.
+- **Merge** decides how it attaches. For a correction or deletion,
+  `_resolve_mutation_target` validates the target the model named against the
+  `existing_entities` it was shown: a target the owner has is kept, a target
+  the owner does not have is never written to, and the model's `create_entity`
+  for a correction with no prior entity stands. Until 2026-10-02 a miss by the
+  word-overlap fallback vetoed all three, so the instruction to keep an
+  unmatched correction could never take effect.
+- **Structure** decides where it goes, never whether. A structure
+  `do_not_save` on a statement intent kept and merge attached becomes a review
+  card (`structure_drop_kept_for_review`). The service still drops ephemeral,
+  opaque, and reserved-only input itself, after that rule.
+
+### The saved payload is not model-authored
+
+`_STRUCTURE_PREVIEW_SCHEMA` declares `candidate_payload` as an `OBJECT` with no
+properties, so the model can return only `{}`, and `_sanitize_candidate_payload`
+substitutes `_fallback_payload_from_intent`. The live eval's
+`payload_authored_by_model_rate` measured 0.0 on both the 2026-10-02 baseline
+and head. The payload rules in the structure instruction therefore do not
+reach a saved payload today. Whether the model should author it is an open
+product decision; the diagnostic will show the change when it is made.
 
 ## Agent ownership
 
