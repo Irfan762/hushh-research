@@ -15,6 +15,8 @@ export type ChatMessage = {
   id: string; sequence: number; clientMessageId: string; senderUserId: string;
   senderName: string; createdAt: string; ciphertext: string; iv: string;
   hasImage: boolean; envelope: RecipientPayloadEnvelope;
+  senderPhotoUrl?: string | null;
+  receipt?: { recipientCount: number | null; readCount: number };
 };
 
 function encode(bytes: Uint8Array): string {

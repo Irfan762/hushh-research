@@ -875,7 +875,7 @@ describe("somebody else acting on your Circle", () => {
   it("closes an open Circle when a repair read finds membership was removed", async () => {
     const intervalSpy = vi.spyOn(window, "setInterval");
     mocks.searchParams = new URLSearchParams(
-      "tab=circles&action=circle-detail&circleId=mine",
+      "tab=circles&action=circle-detail&circleId=mine&circleChat=1",
     );
     mocks.listCircles
       .mockResolvedValueOnce([circle("mine", "Friends", 2)])
@@ -895,6 +895,7 @@ describe("somebody else acting on your Circle", () => {
     const href = String(mocks.routerReplace.mock.calls.at(-1)?.[0]);
     expect(href).toContain("tab=circles");
     expect(href).not.toContain("circleId=");
+    expect(href).not.toContain("circleChat=");
   });
 
   it("re-reads when the shared Circle channel announces a change", async () => {

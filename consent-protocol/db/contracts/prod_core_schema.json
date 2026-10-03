@@ -1,8 +1,9 @@
 {
   "contract_name": "prod_core_schema",
-  "expected_migration_version": 265,
+  "expected_migration_version": 267,
   "migration_version_policy": "exact",
   "required_functions": [
+    "block_gmail_receipt_cache_writes",
     "project_calendar_mail_feed",
     "ensure_drive_share_management_context",
     "invalidate_selected_drive_documents",
@@ -45,7 +46,8 @@
     "notify_direct_message_recipient",
     "circle_chat_membership_ended",
     "circle_chat_recipient_deleted",
-    "circle_chat_circle_deleted"
+    "circle_chat_circle_deleted",
+    "circle_photo_erased"
   ],
   "required_tables": {
     "account_deletion_tombstones": [
@@ -165,6 +167,7 @@
       "completed_at"
     ],
     "circle_chat_messages": [
+      "original_recipient_count",
       "id",
       "sequence",
       "circle_id",
@@ -1588,6 +1591,7 @@
       "metadata"
     ],
     "one_location_circles": [
+      "photo_url",
       "id",
       "owner_user_id",
       "name",

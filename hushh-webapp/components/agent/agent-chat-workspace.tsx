@@ -119,6 +119,11 @@ import {
 import { EmailDraftCard } from "@/components/agent/email-draft-card";
 import { richEmailPlainText } from "@/components/agent/email-rich-text";
 import {
+  AgentCalendarProposalCard,
+  type CalendarProposalAction,
+  type CalendarProposalConflict,
+} from "@/components/agent/agent-calendar-proposal-card";
+import {
   EmailDeliveryHistoryCard,
   type EmailDeliveryHistoryItem,
 } from "@/components/agent/email-delivery-history-card";
@@ -888,7 +893,12 @@ export function getCalendarDirectiveFromToolEvent(
           ? "Reschedule"
           : "Schedule";
     const conflicts = Array.isArray(parsed.conflicts) ? parsed.conflicts : [];
-    const confirmLabel = conflicts.length > 0 ? `${verb} anyway` : verb;
+    const confirmLabel =
+      conflicts.length > 0
+        ? `${verb} anyway`
+        : action === "create"
+          ? "Schedule meeting"
+          : verb;
     const title = String(plan.title || plan.event_id || "event");
     const summary = `${verb} '${title}'`;
 
@@ -900,6 +910,7 @@ export function getCalendarDirectiveFromToolEvent(
           type: "calendar.execute_proposal",
           proposalId: parsed.proposal_id,
           action,
+          googleMeet: action === "create",
           summary,
           confirmLabel,
           expiresAt: String(parsed.expires_at || ""),
@@ -9345,31 +9356,45 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   />
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   "agent_calendar" ? (
-                  <SpecialistDirectiveCard
-                    summary={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).summary ?? pendingSpecialistDirective.message,
-                    )}
-                    confirmLabel={String(
-                      (
-                        pendingSpecialistDirective.directive.payload as Record<
-                          string,
-                          unknown
-                        >
-                      ).confirmLabel ?? "Continue",
-                    )}
-                    busy={specialistBusy}
-                    onConfirm={async () => {
-                      const directive = pendingSpecialistDirective;
-                      const payload = directive.directive.payload as Record<
-                        string,
-                        unknown
-                      >;
-                      const type = String(payload.type ?? "");
+                  (() => {
+                    const directive = pendingSpecialistDirective;
+                    const payload = directive.directive.payload as Record<
+                      string,
+                      unknown
+                    >;
+                    const type = String(payload.type ?? "");
+                    const calendarAction: CalendarProposalAction =
+                      payload.action === "reschedule" || payload.action === "cancel"
+                        ? payload.action
+                        : "create";
+                    const attendees = Array.isArray(payload.attendees)
+                      ? payload.attendees.filter(
+                          (item): item is string => typeof item === "string",
+                        )
+                      : [];
+                    const conflicts: CalendarProposalConflict[] = Array.isArray(
+                      payload.conflicts,
+                    )
+                      ? payload.conflicts.map((item) => {
+                          const conflict =
+                            item && typeof item === "object"
+                              ? (item as Record<string, unknown>)
+                              : {};
+                          return {
+                            title:
+                              typeof conflict.title === "string"
+                                ? conflict.title
+                                : null,
+                            startAt:
+                              typeof conflict.startAt === "string"
+                                ? conflict.startAt
+                                : typeof conflict.start_at === "string"
+                                  ? conflict.start_at
+                                  : null,
+                          };
+                        })
+                      : [];
+                    const onConfirm = async () => {
                       if (type === "calendar.connect") {
                         if (!user?.uid) {
                           addErrorMessage(
@@ -9397,19 +9422,49 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         return;
                       }
                       enqueueCalendarDirective(directive, token, user.uid);
-                    }}
-                    busyLabel={
-                      directiveConnectWaiting ? "Waiting for Google…" : undefined
-                    }
-                    cancelWhileBusy={directiveConnectWaiting}
-                    onCancel={() => {
+                    };
+                    const onCancel = () => {
                       directiveConnect.cancel();
                       setPendingSpecialistDirective(null);
                       toast.info(
                         "Calendar change cancelled. Nothing was changed.",
                       );
-                    }}
-                  />
+                    };
+
+                    if (type === "calendar.execute_proposal") {
+                      return (
+                        <AgentCalendarProposalCard
+                          action={calendarAction}
+                          title={typeof payload.title === "string" ? payload.title : null}
+                          startAt={typeof payload.startAt === "string" ? payload.startAt : null}
+                          endAt={typeof payload.endAt === "string" ? payload.endAt : null}
+                          attendees={attendees}
+                          location={typeof payload.location === "string" ? payload.location : null}
+                          sendUpdates={payload.sendUpdates === true}
+                          googleMeet={payload.googleMeet === true}
+                          conflicts={conflicts}
+                          confirmLabel={String(payload.confirmLabel ?? "Schedule meeting")}
+                          busy={specialistBusy}
+                          onConfirm={onConfirm}
+                          onCancel={onCancel}
+                        />
+                      );
+                    }
+
+                    return (
+                      <SpecialistDirectiveCard
+                        summary={String(payload.summary ?? directive.message)}
+                        confirmLabel={String(payload.confirmLabel ?? "Continue")}
+                        busy={specialistBusy}
+                        onConfirm={onConfirm}
+                        busyLabel={
+                          directiveConnectWaiting ? "Waiting for Google…" : undefined
+                        }
+                        cancelWhileBusy={directiveConnectWaiting}
+                        onCancel={onCancel}
+                      />
+                    );
+                  })()
                 ) : pendingSpecialistDirective.delegateAgentId ===
                   DRIVE_REVIEW_DELEGATE ? (
                   <SpecialistDirectiveCard

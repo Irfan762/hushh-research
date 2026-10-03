@@ -691,6 +691,39 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     window.history.replaceState(null, "", "/");
   });
 
+  it("starts the generic executor once when a screen ignores a pending directive", async () => {
+    const directives = await import("@/lib/one-voice/directives");
+    type Outcome = Awaited<ReturnType<typeof directives.executeDirective>>;
+    let complete!: (outcome: Outcome) => void;
+    const pending = new Promise<Outcome>((resolve) => { complete = resolve; });
+    const execute = vi.spyOn(directives, "executeDirective").mockReturnValue(pending);
+    const mounted = await startSession(mount({
+      effects: { onDirective: (_id, _kind, _payload, settle) => settle("ignored") },
+    }));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        mounted.server.push({
+          type: "ui_directive", directive_id: "single-takeover", kind: "navigate",
+          payload: { gateway_action_id: "location.open_settings" },
+        });
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(mounted.server.frames("ui.settled")).toHaveLength(0);
+      await act(async () => { complete({ handled: true, status: "opened" }); });
+      expect(mounted.server.frames("ui.settled")).toEqual([
+        { type: "ui.settled", directive_id: "single-takeover", status: "opened" },
+      ]);
+    } finally {
+      await act(async () => { complete({ handled: true, status: "failed" }); });
+      mounted.unmount();
+      vi.useRealTimers();
+      execute.mockRestore();
+    }
+  });
+
   it("a screen that owns request_os_permission settles it; a screen that ignores navigate hands it to the executor", async () => {
     const onDirective = vi.fn(
       (

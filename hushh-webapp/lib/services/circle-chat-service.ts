@@ -8,7 +8,9 @@ import type { OneLocationMyRecipientKey } from "@/lib/one-location/types";
 import { openChatContent, openChatImage, sealChatMessage, type ChatMemberKey, type ChatMessage, type SealedChatMessage } from "@/lib/circle-chat/crypto";
 
 export type CircleChatState = { members: ChatMemberKey[]; rosterVersion: string; unreadCount: number; latestSequence: number; muted: boolean };
-export type CircleChatPage = { items: ChatMessage[]; hasMore: boolean };
+export type CircleChatReceipt = { id: string; recipientCount: number | null; readCount: number };
+export type CircleChatPage = { items: ChatMessage[]; hasMore: boolean; receipts?: CircleChatReceipt[] };
+type WireChatPage = CircleChatPage & { senders?: { userId: string; name: string; photoUrl: string | null }[] };
 export type CircleChatSession = { circleId: string; userId: string; vaultOwnerToken: string; vaultKey: string };
 const root = (session: CircleChatSession) => `/api/one/circles/${encodeURIComponent(session.circleId)}/chat`;
 function options(session: CircleChatSession, signal?: AbortSignal): RequestInit {
@@ -41,15 +43,21 @@ export const CircleChatService = {
       vaultOwnerToken: session.vaultOwnerToken, vaultKey: session.vaultKey, strictRecovery: true });
   },
   state: (session: CircleChatSession, signal?: AbortSignal) => apiJson<CircleChatState>(root(session), options(session, signal)),
-  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number; changed: boolean; readChanged?: boolean }>(
+  wait: (session: CircleChatSession, after: number, signal?: AbortSignal) => apiJson<{ latestSequence: number; changed: boolean; readChanged?: boolean; receiptsChanged?: boolean; photoChanged?: boolean }>(
     // Native HTTP cannot cancel an underlying request. Keep it awaited through
     // a pause/resume instead of abandoning it and consuming another wait slot.
     `${root(session)}/wait?after=${after}`, options(session, Capacitor.isNativePlatform() ? undefined : signal)),
-  messages: (session: CircleChatSession, page: { before?: number; after?: number } = {}, signal?: AbortSignal) => {
+  messages: async (session: CircleChatSession, page: { before?: number; after?: number; receiptAfter?: number; receiptThrough?: number } = {}, signal?: AbortSignal): Promise<CircleChatPage> => {
     const query = new URLSearchParams();
     if (page.before !== undefined) query.set("before", String(page.before));
     if (page.after !== undefined) query.set("after", String(page.after));
-    return apiJson<CircleChatPage>(`${root(session)}/messages?${query}`, options(session, signal));
+    if (page.receiptAfter !== undefined) query.set("receiptAfter", String(page.receiptAfter));
+    if (page.receiptThrough !== undefined) query.set("receiptThrough", String(page.receiptThrough));
+    const response = await apiJson<WireChatPage>(`${root(session)}/messages?${query}`, options(session, signal));
+    const senders = new Map(response.senders?.map((sender) => [sender.userId, sender]));
+    return { ...response, items: response.items.map((message) => ({ ...message,
+      ...(senders.has(message.senderUserId) ? { senderPhotoUrl: senders.get(message.senderUserId)!.photoUrl } : {}),
+    })) };
   },
   async prepare(session: CircleChatSession, text: string, file: File | null): Promise<SealedChatMessage> {
     const state = await CircleChatService.state(session);
@@ -60,7 +68,11 @@ export const CircleChatService = {
   open: (session: CircleChatSession, message: ChatMessage) => recover(session, message,
     (recovery) => openChatContent(session.circleId, session.userId, message, recovery)),
   async image(session: CircleChatSession, message: ChatMessage, type: string, signal?: AbortSignal): Promise<Blob> {
-    const image = await apiJson<{ ciphertext: string; iv: string }>(`${root(session)}/messages/${encodeURIComponent(message.id)}/image`, options(session, signal));
+    signal?.throwIfAborted();
+    // Capacitor cannot cancel its physical download. Keep the scheduler slot
+    // until it settles, then discard bytes after a logical pause/access loss.
+    const image = await apiJson<{ ciphertext: string; iv: string }>(`${root(session)}/messages/${encodeURIComponent(message.id)}/image`, options(session, Capacitor.isNativePlatform() ? undefined : signal));
+    signal?.throwIfAborted();
     return recover(session, message, (recovery) => openChatImage(session.circleId, session.userId, message, image, type, recovery));
   },
   async read(session: CircleChatSession, sequence: number): Promise<void> {

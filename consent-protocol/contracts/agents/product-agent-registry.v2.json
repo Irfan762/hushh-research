@@ -113,7 +113,7 @@
         "voice": false,
         "web": true
       },
-      "system_instruction_sha256": "8f664d2cde215f8aca055b45877de651add62a467dded371611725de78bddc11",
+      "system_instruction_sha256": "e4591cf27cdc63456ed3b9a082bf6bf17ff64335f1a0af78673201c8fe915f85",
       "telemetry_namespace": "agent.calendar",
       "tools": [
         {
@@ -141,7 +141,7 @@
           "required_scope": "cap.one.invoke"
         },
         {
-          "description": "Prepare a new meeting for explicit owner confirmation.",
+          "description": "Prepare a new Google Meet event for explicit owner confirmation; Calendar shares the invite with guests after confirmation.",
           "name": "propose_calendar_event",
           "py_func": "hushh_mcp.agents.calendar.tools.propose_calendar_event",
           "required_scope": "cap.one.invoke"

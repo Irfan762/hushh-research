@@ -16,8 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
-import { InviteCodeRowIcon } from "@/components/icons/agents";
+import { Briefcase, ChevronRight, Heart, KeyRound, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
@@ -32,6 +31,7 @@ import {
 import { SmsTextIcon } from "@/components/one-location/redesign/sms-text-icon";
 import { createConnectCircleActions } from "@/components/connect/circles/connect-circle-actions";
 import { CircleChat } from "@/components/connect/circles/circle-chat";
+import { CircleAvatar } from "@/components/connect/circles/circle-photo-editor";
 import type { ConnectCirclesSnapshot } from "@/components/connect/circle-discovery";
 import {
   CONNECT_CIRCLE_GRID_CLASSNAME,
@@ -512,6 +512,7 @@ export function ConnectCirclesTab({
     ) => {
       const params = new URLSearchParams(searchParams.toString());
       params.set(CONNECT_SURFACE_PARAM, "circles");
+      params.delete("circleChat");
       for (const [key, value] of [
         [CONNECT_CIRCLE_ACTION_PARAM, next.action],
         [CONNECT_CIRCLE_ID_PARAM, next.circleId],
@@ -742,10 +743,11 @@ export function ConnectCirclesTab({
     return (
       <CircleDetailFlow
         livingCircleExperience
-        renderChat={chatSession ? (circle) => <CircleChat
+        chatIntent={searchParams.get("circleChat") === "1"}
+        renderChat={chatSession ? (circle, { active, readingBlocked }) => <CircleChat
           key={`${chatSession.userId}:${chatSession.circleId}:${chatSession.vaultOwnerToken}`}
-          session={chatSession} circleName={circle.name} initialOpen={searchParams.get("circleChat") === "1"}
-          onOpenIntentConsumed={consumeChatIntent}
+          session={chatSession} circleName={circle.name} initialOpen active={active} readingBlocked={readingBlocked} collapsible={false}
+          onOpenIntentConsumed={searchParams.get("circleChat") === "1" ? consumeChatIntent : undefined}
         /> : undefined}
         // A signal, not a `key`. Remounting would re-read the roster but also
         // close an open add-people sheet, clear a half-typed search and drop
@@ -764,6 +766,12 @@ export function ConnectCirclesTab({
           );
           announceCircleMutation("location_circle_renamed", circleId);
           return renamed;
+        }}
+        onPhotoUpdate={async (circleId, photoUrl) => {
+          const updated = await withBusy(() => actions.updatePhoto(circleId, photoUrl));
+          announceCircleMutation("location_circle_photo_updated", circleId);
+          toast.success(photoUrl ? "Circle photo updated." : "Circle photo removed.");
+          return updated;
         }}
         onGenerateCode={(circleId, rotate) =>
           withBusy(() => actions.generateCode(circleId, rotate))
@@ -905,9 +913,9 @@ export function ConnectCirclesTab({
         data-testid={testId}
         aria-label={`Open ${title} circle, ${circleRowDescription(circle)}`}
       >
-        <span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-2xl border border-current/10 ${tone}`}>
+        {circle.photoUrl && !kind ? <CircleAvatar photoUrl={circle.photoUrl} /> : <span aria-hidden="true" className={`flex size-12 shrink-0 items-center justify-center rounded-2xl border border-current/10 ${tone}`}>
           <Icon className="size-6" />
-        </span>
+        </span>}
         <span className="min-w-0 flex-1">
           <span className="block text-base font-semibold [overflow-wrap:anywhere] text-[color:var(--app-primary-label)]">
             {title}
@@ -943,7 +951,7 @@ export function ConnectCirclesTab({
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <Button type="button" variant="none" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full !border !border-[color:var(--app-card-border-standard)] !bg-[color:var(--app-card-surface-default-solid)]" onClick={() => go({ action: "join-circle" })} data-testid="connect-circle-join">
-              <InviteCodeRowIcon aria-hidden="true" className="mr-2 size-4" />
+              <KeyRound aria-hidden="true" className="mr-2 size-4" />
               Join with code
             </Button>
             <Button type="button" variant="blue" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full" onClick={() => go({ action: "create-circle" })} data-testid="connect-circle-create">
