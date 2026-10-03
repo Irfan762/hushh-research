@@ -538,11 +538,9 @@ const DEFAULT_AGENT_CARD_THEME: AgentCardTheme = {
 
 function AgentMetric({
   mode,
-  compact = false,
   align = "right",
 }: {
   mode: OneAgentMode;
-  compact?: boolean;
   align?: "right" | "left" | "grid" | "pill";
 }) {
   const isTopWinner =
