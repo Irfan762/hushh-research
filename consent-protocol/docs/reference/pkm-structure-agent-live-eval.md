@@ -83,12 +83,96 @@ The intent ontology is fixed:
     domain (or Finance for the preference); only the command is ephemeral. Production
     2026-09-29 dropped exactly this shape as "not about the owner" or "opaque".
 
+- `context_transfer_document`
+  - the synthetic, founder-shaped context transfer the web save-job tests replay
+    (`hushh-webapp/__tests__/fixtures/pkm/context-transfer.v1.md`; every name and
+    number in it is synthetic). Each section is sent the way the device sends it;
+    a `split_recommended` answer is discarded and the passage halved. Graded
+    **line by line**, not by card count: a memory line is kept only when a
+    write-eligible card's quote maps onto it (`locate_source_quote`), a line under
+    "Information not known" must never be saved, and a word-for-word repeat may
+    go either way. Gates: mean line coverage `>= 0.95`, zero disclaimers saved,
+    fallback `<= 0.10`, and the variance gate below. `lost_lines` names every line
+    lost and in how many repetitions.
+
+## Honest harness
+
+The judging rules of `.codex/skills/puppy-one-harness/references/judging-contract.md`
+apply here (`scripts/pkm_eval_integrity.py`):
+
+- **The judge is never the answerer.** Gemini answers; a pure scorer
+  (`_score_case`, `score_passage`) grades against labels authored in the corpus.
+- **Planted controls, unmarked.** Every repetition plants four negative controls
+  (wrong domain on a confirm_first card, wrong intent, wrong mutation, and a
+  fallback that guessed the right label) and two positive controls. They reach the
+  scorer through the same function as real rows, at seeded random positions; the
+  answer key stays with the harness. The document phase plants a dropped line, a
+  paraphrased quote, a saved disclaimer, and two clean passages.
+- **A void run publishes no accuracy.** A negative control graded clean or a
+  positive control flagged voids the run: every rate is withheld (null), the gate
+  fails, and the ledger records `status: void`.
+- **`unsure` counts against accuracy.** A field produced by a stage that fell back
+  to a non-model answer is graded wrong even when the fallback guessed the label.
+- **Domain is graded on every write mode.** The retired rule graded any
+  confirm_first card domain-correct; the production path files every durable
+  write as confirm_first, so the domain rate read 1.0 by construction. The
+  `wrong_domain_confirm_first` control voids a scorer that regresses to it.
+- **The chain grows the way an owner reviews.** A confirm_first card enters the
+  simulated state like a can_save card, carrying its entity id, and each request
+  sends the active entities newest first. Counting only can_save meant the
+  production path never grew a state, so every "extend" was graded against an
+  empty PKM.
+- **Variance is measured.** `--reps N` replays the chain from a blank state N
+  times and reports, per gated rate, the mean, min, max, spread (max minus min)
+  and sample standard deviation. `--enforce-gates` fails a run of fewer than three
+  repetitions (`variance_unmeasured`) and any gated rate whose spread exceeds
+  `--max-rate-spread` (default `0.10`, two release-chain cases).
+- **Production path by default.** The release gate used to run the strict
+  small-model prompt path, which `/api/pkm` never takes. It now runs the production
+  path; `--strict-small-model` opts into the other, and the choice is recorded.
+- **Capability profile.** Every report and ledger entry records, per agent, the
+  model id and the effective thinking level, plus the runtime adapter, the prompt
+  path and the SDK versions. The instructions under test are recorded separately
+  as the `subject` (per-agent instruction sha256), because they are what a
+  comparison is meant to vary.
+- **Append-only ledger.** `--ledger consent-protocol/artifacts/pkm-structure-agent/ledger.v1.jsonl`
+  appends one hash-chained entry per run (void runs included) under a file lock.
+  `tests/scripts/test_eval_pkm_structure_agent.py::test_committed_ledger_chain_is_intact`
+  fails if an entry is rewritten. `--compare BEFORE_SEQ AFTER_SEQ` prints mean and
+  spread deltas and refuses entries of different phases, a void entry, or
+  different capability profiles.
+
+- **Stage diagnostics, never graded.** The eval reads each stage's raw answer at
+  `_run_agent_contract`, the one method every memory stage goes through in both
+  the baseline and the head. It reports `durable_drop_stage_counts` (which stage
+  dropped each durable statement that was not saved: intent, merge, structure,
+  or a deterministic service rule) and `payload_authored_by_model_rate`.
+
+```bash
+python3 scripts/eval_pkm_structure_agent.py --phase release_chain_24 --skip-shadow \
+  --model gemini-3.6-flash --reps 3 --enforce-gates \
+  --ledger artifacts/pkm-structure-agent/ledger.v1.jsonl
+```
+
+### Measuring a baseline
+
+Grade the old instructions with the new judge: extract the old commit with
+`git archive <sha> consent-protocol hushh-webapp/__tests__/fixtures/pkm` into a
+scratch directory (no worktree, no `node_modules`), copy the three harness files
+(`scripts/eval_pkm_structure_agent.py`, `scripts/pkm_eval_integrity.py`,
+`scripts/pkm_eval_document.py`) over it, and run it with this checkout's
+`.venv/bin/python` and `--source-ref <sha>`, which the ledger records because an
+archive is not a git checkout. Confirm the archive imports its own
+`hushh_mcp` first; the corpus lives in the eval script, so both sides answer the
+same cases.
+
 ## Live Model Policy
 
 Current live eval mode:
 
-- model: `gemini-3.5-flash`
-- posture: minimal-thinking / strict-small-model
+- model: the fleet text model (`gemini-3.6-flash` for the 2026-10-02 measurements),
+  recorded per agent in the capability profile
+- posture: each manifest's authored thinking level (`low`) on the production prompt path
 - Vertex endpoint: validate model availability in the configured project and region before promotion; no unavailable model may be retained as a fallback-only default.
 
 Promotion discipline:
