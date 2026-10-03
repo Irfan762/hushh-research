@@ -2089,10 +2089,10 @@ export default function GmailReceiptsPage({
                         ? "setup.connect_gmail"
                         : undefined
                     }
-                    data-voice-label={primaryActionLabel}
+                    data-voice-label="Connect Mail"
                     data-voice-purpose="starts Mail connection or reconnection from this receipts page."
                   >
-                    {primaryActionLabel}
+                    Connect Mail
                   </Button>
                   {gmail.statusError ? (
                     <Button
