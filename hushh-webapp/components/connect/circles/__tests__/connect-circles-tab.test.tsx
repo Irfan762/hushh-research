@@ -675,11 +675,21 @@ describe("the flows are hosted on Connect, not linked away to Location", () => {
     expect(String(mocks.routerPush.mock.calls[0][0])).toContain("circleId=new-circle");
   });
 
-  it("dismisses custom creation without creating a circle", async () => {
+  it("dismisses custom creation in one close action without validating an empty name", async () => {
     const onOpenChange = vi.fn();
     render(<ConnectCirclesTab createDialogOpen onCreateDialogOpenChange={onOpenChange} />);
     const dialog = await screen.findByRole("dialog");
-    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    const nameInput = within(dialog).getByRole("textbox", { name: "Circle name" });
+    const closeButton = within(dialog).getByRole("button", { name: "Close" });
+
+    fireEvent.focus(nameInput);
+    fireEvent.blur(nameInput, { relatedTarget: closeButton });
+
+    expect(screen.queryByText("Enter a Circle name.")).toBeNull();
+    expect(nameInput).not.toHaveAttribute("aria-invalid", "true");
+
+    fireEvent.click(closeButton);
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledTimes(1));
     expect(onOpenChange).toHaveBeenCalledWith(false);
     expect(mocks.createNamedCircle).not.toHaveBeenCalled();
   });
