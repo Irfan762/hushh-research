@@ -782,6 +782,14 @@ and realtime payloads contain no message content. Stable `403` failures are
 `DIRECT_MESSAGE_CONNECTION_REQUIRED`, `DIRECT_MESSAGE_BLOCKED`, and
 `DIRECT_MESSAGE_SENDER_FORBIDDEN`; malformed/self/empty requests are `422`.
 
+Each newly received Direct Message also creates one recipient-only Feed row.
+That row contains only the opaque source message id; it never stores a body,
+envelope, sender id, or preview. During the authenticated recipient's Feed
+read, the service verifies the recipient relationship again, decrypts the
+source in memory, and returns a whitespace-normalized preview capped at 256
+characters. The source message's delete path removes that derived Feed row,
+and push/SSE payloads remain metadata-only.
+
 ### One Location Agent
 
 One Location Agent is One-owned live-location sharing for trusted people. The
