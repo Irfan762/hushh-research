@@ -17,12 +17,18 @@ describe("private-agent chat shell contract", () => {
 
     expect(workspace).not.toContain("<DriveBackgroundSearches");
   });
-  it("exposes connections from chat history in the shared drawer", () => {
+  // Connectors is a Profile section (founder, 2026-10-02): every chat entry
+  // opens it in the Profile pane over the chat, never in a drawer of its own,
+  // and the chat lends the pane its draft saver for sign-ins that leave.
+  it("opens Connectors from chat in the Profile pane, never in its own drawer", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
-    expect(workspace).toContain('setDrawerMode("connections")');
     expect(workspace).toContain("<AgentConnectionsDrawer");
-    expect(workspace).toContain("<ConnectorsPanel");
-    expect(workspace).toContain('onBack={() => setDrawerMode("chats")}');
+    expect(workspace).toContain("connections={null}");
+    expect(workspace).not.toContain("<ConnectorsPanel");
+    expect(workspace).not.toContain('setDrawerMode("connections")');
+    expect(workspace).toContain("openProfilePane(");
+    expect(workspace).toContain("profileConnectorsLocation(");
+    expect(workspace).toContain("registerChatConnectorRecoveryHost(");
   });
   it("keeps the connector manager bounded, scrollable, and on the shared modal scrim", () => {
     const drawer = read("components/agent/agent-connections-drawer.tsx");

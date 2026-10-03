@@ -99,10 +99,14 @@ import {
 
 import { usePuppyConversations } from "@/lib/agent/puppy-conversations";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { requestProfilePaneOpen } from "@/lib/navigation/profile-pane";
+import {
+  openProfilePane,
+  profileConnectorsLocation,
+  replaceProfilePaneLocation,
+  requestProfilePaneOpen,
+} from "@/lib/navigation/profile-pane";
 import { Button } from "@/components/ui/button";
 import { AgentHistorySidebar } from "@/components/agent/agent-history-sidebar";
-import { ConnectorsPanel } from "@/components/agent/connectors-panel";
 import { McpCallReviewCard, type McpChatReview } from "@/components/agent/mcp-call-review-card";
 import { FirstConnectInsightsCard } from "@/components/agent/first-connect-insights-card";
 import type { WorkspaceConnectorProvider } from "@/lib/agent/connector-read-receipt";
@@ -419,6 +423,7 @@ import {
 import {
   DRIVE_CHAT_RECOVERY_RETURN_EVENT,
   clearDriveChatRecovery,
+  registerChatConnectorRecoveryHost,
   saveDriveChatRecovery,
   takeDriveChatRecovery,
   type DriveChatRecoveryReason,
@@ -2592,8 +2597,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [isHistoryDrawerOpen, setIsHistoryDrawerOpen] = useState(false);
   const [drawerMode, setDrawerMode] = useState<ConnectionsDrawerMode>("chats");
-  const [connectorPanelInitialConnector, setConnectorPanelInitialConnector] =
-    useState<"google_drive" | "gmail" | null>(null);
   const handleHistoryDrawerOpenChange = useCallback((open: boolean) => {
     const next = transitionConnectionsDrawer(
       { open: isHistoryDrawerOpen, mode: drawerMode },
@@ -2601,8 +2604,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     );
     setIsHistoryDrawerOpen(next.open);
     setDrawerMode(next.mode);
-    if (!next.open) setConnectorPanelInitialConnector(null);
   }, [drawerMode, isHistoryDrawerOpen]);
+  // Connectors is a Profile section. Every chat entry (the sidebar's
+  // Connectors, a card's "Open connectors") opens it in the Profile pane over
+  // this chat, and Back from there returns here with the draft untouched.
   const openConnectorSurface = useCallback((
     provider?: WorkspaceConnectorProvider,
     trigger?: HTMLButtonElement,
@@ -2612,11 +2617,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       router.push(ROUTES.CALENDAR);
       return;
     }
-    setConnectorPanelInitialConnector(
-      provider === "drive" ? "google_drive" : provider === "gmail" ? "gmail" : null,
+    // The pane is the one modal surface: leave the history drawer first.
+    setIsHistoryDrawerOpen(false);
+    setDrawerMode("chats");
+    openProfilePane(
+      window.location.pathname,
+      window.location.search,
+      profileConnectorsLocation(
+        provider === "drive" ? "google_drive" : provider === "gmail" ? "gmail" : null,
+      ),
+      { returnsToOrigin: true },
     );
-    setDrawerMode("connections");
-    setIsHistoryDrawerOpen(true);
   }, [router]);
   const [recoveryCheckedForUid, setRecoveryCheckedForUid] = useState<string | null>(null);
   const pendingDriveRecoveryRef = useRef<{
@@ -2643,21 +2654,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     window.addEventListener(DRIVE_CHAT_RECOVERY_RETURN_EVENT, onReturn);
     return () => window.removeEventListener(DRIVE_CHAT_RECOVERY_RETURN_EVENT, onReturn);
   }, []);
-  const [connectorExternalModalOpen, setConnectorExternalModalOpen] =
-    useState(false);
   useEffect(() => {
-    // `?panel=connectors` is the connector OAuth-return flow's landing signal
-    // -- connectors live in the responsive modal, not a dedicated route, so
-    // completing a connect has to reopen it here instead of navigating to one.
+    // `?panel=connectors` is the landing signal sign-in returns used before
+    // Connectors moved into Profile. An address that still carries it opens
+    // Connectors in the Profile pane over this chat, in place of the signal.
     if (searchParams?.get("panel") !== "connectors") return;
-    setDrawerMode("connections");
-    setIsHistoryDrawerOpen(true);
     const next = new URLSearchParams(searchParams.toString());
     next.delete("panel");
-    const query = next.toString();
-    router.replace(query ? `${pathname}?${query}` : pathname, {
-      scroll: false,
-    });
+    replaceProfilePaneLocation(pathname, next, profileConnectorsLocation());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
   const [historyActionPendingId, setHistoryActionPendingId] = useState<
@@ -2785,7 +2789,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     return () => {
       setIsHistoryDrawerOpen(false);
       setDrawerMode("chats");
-      setConnectorPanelInitialConnector(null);
     };
   }, [pathname]);
   const [driveReviewSignal, setDriveReviewSignal] = useState<{ ownerId: string | null; epoch: number; count: number }>(
@@ -4696,8 +4699,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         setInput(state.input);
         setLongPromptAttachment(state.attachment);
         setComposerExpanded(state.composerExpanded);
-        setDrawerMode(state.drawerMode);
-        setIsHistoryDrawerOpen(state.drawerOpen);
+        // Connectors no longer opens in this drawer; a draft saved while it
+        // did comes back to the chat list (or closed), never an empty drawer.
+        setDrawerMode("chats");
+        setIsHistoryDrawerOpen(state.drawerOpen && state.drawerMode === "chats");
         setRecoveryScrollTop(state.scrollTop);
         pendingDriveRecoveryRef.current = null;
       }
@@ -4738,8 +4743,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       pendingSpecialistDirective ||
       emailDraftOpen ||
       gmailKycReplyRequest ||
-      queuedHandoffPrompt ||
-      connectorExternalModalOpen
+      queuedHandoffPrompt
     ) return "busy";
     try {
       const state = {
@@ -4779,7 +4783,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       return "unavailable";
     }
   }, [
-    activeActionRun, composerExpanded, connectorExternalModalOpen,
+    activeActionRun, composerExpanded,
     conversationId, drawerMode, emailDraftOpen, gmailKycReplyRequest,
     hasChatAccess, historyInteractionDisabled, input,
     isHistoryDrawerOpen, isLoadingHistory, isPkmMemoryWorking,
@@ -4791,6 +4795,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const clearPreparedDriveChatRecovery = useCallback(async () => {
     if (user?.uid) await clearDriveChatRecovery(user.uid);
   }, [user?.uid]);
+  // Connectors opens in the Profile pane over this chat. Lend it this chat's
+  // draft saver, so a sign-in that leaves the app brings the draft back.
+  useEffect(() => {
+    if (isPuppySurface) return undefined;
+    return registerChatConnectorRecoveryHost({
+      prepare: prepareDriveChatRecovery,
+      clear: clearPreparedDriveChatRecovery,
+    });
+  }, [clearPreparedDriveChatRecovery, isPuppySurface, prepareDriveChatRecovery]);
 
   const loadConversationList = useCallback(
     async (force = false) => {
@@ -8165,7 +8178,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     );
     setIsHistoryDrawerOpen(next.open);
     setDrawerMode(next.mode);
-    if (next.mode === "chats") setConnectorPanelInitialConnector(null);
     if (next.open && !isPuppySurface)
       void loadConversationList().catch(() => undefined);
   }, [drawerMode, isHistoryDrawerOpen, isPuppySurface, loadConversationList]);
@@ -8419,24 +8431,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
           open={isHistoryDrawerOpen}
           onOpenChange={handleHistoryDrawerOpenChange}
           mode={drawerMode}
-          externalModalOpen={connectorExternalModalOpen}
+          externalModalOpen={false}
           chats={renderHistorySidebar(
             "h-full w-full",
             () => handleHistoryDrawerOpenChange(false),
             false,
             "mobile",
           )}
-          connections={
-            <ConnectorsPanel
-              open={isHistoryDrawerOpen && drawerMode === "connections"}
-              initialConnector={connectorPanelInitialConnector}
-              onBack={() => setDrawerMode("chats")}
-              onClose={() => handleHistoryDrawerOpenChange(false)}
-              onExternalModalChange={setConnectorExternalModalOpen}
-              onPrepareRecovery={prepareDriveChatRecovery}
-              onClearRecovery={clearPreparedDriveChatRecovery}
-            />
-          }
+          // Connectors opens in the Profile pane (openConnectorSurface), so
+          // this drawer only ever holds chat history.
+          connections={null}
         />
 
         <section

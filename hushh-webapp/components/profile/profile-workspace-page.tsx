@@ -15,8 +15,6 @@ import {
   SpinnerGapIcon as Loader2,
   ArrowsClockwiseIcon as RefreshCw,
   UserCircleIcon as User,
-  ShieldCheck,
-  ScrollText,
 } from "@/components/icons";
 import {
   AccentRowIcon,
@@ -81,6 +79,10 @@ import { GeminiRuntimeSettingsCard } from "@/components/connections/gemini-runti
 import { VoicePreferencesPanel } from "@/components/profile/voice-preferences-panel";
 import { ConnectedSystemsPanel } from "@/components/profile/connected-systems-panel";
 import { buildProfileConnectorsStackEntry } from "@/components/profile/profile-connectors-section";
+import {
+  buildProfileLegalStackEntries,
+  ProfileLegalRows,
+} from "@/components/profile/profile-legal-section";
 import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-availability";
 import { ThemeToggleLean } from "@/components/theme-toggle";
 import {
@@ -4368,6 +4370,14 @@ function ProfilePageContent({
         updateView: updateProfileView,
       }),
     );
+  } else if (activePanel === "legal") {
+    // Public documents: no vault needed to read them.
+    profileStackEntries.push(
+      ...buildProfileLegalStackEntries({
+        detail: activeDetail,
+        updateView: updateProfileView,
+      }),
+    );
   } else if (!routeBlockedByVault && activePanel === "preferences") {
     profileStackEntries.push({
       key: "panel:preferences",
@@ -4613,21 +4623,14 @@ function ProfilePageContent({
             </SettingsGroup>
 
             <SettingsGroup title="Legal" separatorInset>
-              <SettingsRow
-                icon={ShieldCheck}
-                iconTone="capability"
-                title="Privacy Policy"
-                testId="profile-legal-privacy-row"
-                chevron
-                onClick={() => router.push(ROUTES.PRIVACY)}
-              />
-              <SettingsRow
-                icon={ScrollText}
-                iconTone="capability"
-                title="Terms of Use"
-                testId="profile-legal-terms-row"
-                chevron
-                onClick={() => router.push(ROUTES.TERMS)}
+              {/* Read in place: Profile never leaves the pane for /terms. */}
+              <ProfileLegalRows
+                onOpen={(document) =>
+                  updateProfileView(
+                    { panel: "legal", detail: document },
+                    "push",
+                  )
+                }
               />
             </SettingsGroup>
 

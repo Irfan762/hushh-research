@@ -89,7 +89,8 @@ describe("Agent One chat workspace wiring contract", () => {
     expect(source).toContain("onOpenConnectors={!isPuppySurface");
     expect(source).toContain("openConnectorSurface(undefined, trigger)");
     expect(source).not.toContain("connectionsAvailable");
-    expect(source).toContain("initialConnector={connectorPanelInitialConnector}");
+    // The catalog is Connectors in the Profile pane, opened over the chat.
+    expect(source).toContain("profileConnectorsLocation(");
   });
 
   it("keeps slow history warming out of the canonical chat interaction path", () => {
