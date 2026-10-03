@@ -39,6 +39,14 @@ const LINES: Record<(typeof ALL_STAGES)[number], string> = {
   workspace: "Getting One ready",
 };
 const TITLE = "Hussh One is getting ready";
+// The labels the old per-guard loaders painted (fixture LEGACY table).
+const LEGACY_LABELS: Record<(typeof STAGES)[number], string> = {
+  session: "Checking session...",
+  vault: "Checking vault...",
+  phone: "Checking phone requirement...",
+  setup: "Checking setup...",
+  workspace: "Opening chat…",
+};
 // Splash.imageset: a 2732 px square, the ink box at x 1174..1558, y 1165..1567.
 const SPLASH = { size: 2732, left: 1174, top: 1165, width: 385, height: 403 };
 const SHOT_DIR = process.env.BOOT_SURFACE_SHOT_DIR;
@@ -261,7 +269,10 @@ async function walkChain(page: Page, mode: "new" | "legacy"): Promise<string[]> 
       await showStage(page, stage);
     } else {
       await page.evaluate((next) => window.bootFixture.legacy(next as never), stage);
-      await page.locator("[data-legacy-loader]").waitFor();
+      // Wait for THIS stage's loader: under load a bare selector can match the
+      // previous stage's element before React swaps it, and the walk would
+      // then miss the very jumps it exists to find.
+      await page.locator(`[data-legacy-loader="${LEGACY_LABELS[stage]}"]`).waitFor();
     }
     const probe = await page.evaluate(() => {
       const anchor =
