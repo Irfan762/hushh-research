@@ -3,8 +3,8 @@
 Joining a Circle is explicit relationship consent. Membership creates a
 source-aware connection origin with every active Circle member, but never
 creates a trusted edge, SMS selection, live-location grant, capability token,
-or encrypted envelope. Every active member may invite an existing direct
-connection without requiring another connection request or a code. Circle
+or encrypted envelope. The owner may add an existing direct connection
+without requiring another connection request or a code. Circle
 governance (rename, removal, code rotation, and deletion) remains owner-only.
 """
 
@@ -108,6 +108,21 @@ TRUSTED_SYSTEM_CIRCLE_NAME = "Trusted"
 # managed Circle. The ordinary default also remains compatible with migration
 # 158's replay-safe `member_limit BETWEEN 2 AND 100` constraint.
 TRUSTED_SYSTEM_CIRCLE_MEMBER_LIMIT = CIRCLE_DEFAULT_MEMBER_LIMIT
+
+# Historical connection projections were owner-private, not roster-sharing
+# decisions. Only the owner or a member explicitly added by that owner may
+# read a Trusted roster. Keep old rows intact; bootstrap must not promote them.
+# The placeholders below are fixed SQL aliases supplied by these readers,
+# never request input. Keep one admission rule for all four read surfaces.
+_TRUSTED_ROSTER_VIEWER_SQL = """(
+    {circle}.system_kind IS DISTINCT FROM 'trusted'
+    OR {circle}.owner_user_id = :{viewer}
+    OR COALESCE(
+      {membership}.metadata @> jsonb_build_object(
+        'addedVia', 'direct_add', 'addedBy', {circle}.owner_user_id
+      ), FALSE
+    )
+)"""
 
 # What the product called it before. Rows still carrying this are renamed on
 # the next bootstrap; a name the OWNER chose is never touched.
@@ -779,7 +794,7 @@ class OneLocationCircleService:
     def list_circles(self, *, user_id: str) -> list[dict[str, Any]]:
         try:
             result = self._db.execute_raw(
-                """
+                f"""
                 SELECT
                   c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind,
@@ -798,9 +813,10 @@ class OneLocationCircleService:
                  AND active_members.status = 'active'
                 WHERE mine.user_id = :user_id
                   AND mine.status = 'active'
+                  AND {_TRUSTED_ROSTER_VIEWER_SQL.format(circle="c", membership="mine", viewer="user_id")}
                 GROUP BY c.id, mine.role, owner_identity.display_name
                 ORDER BY c.updated_at DESC, c.created_at DESC
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id},
             )
             circles = [self._circle_summary(row) for row in (result.data or [])]
@@ -822,7 +838,7 @@ class OneLocationCircleService:
         cleaned_circle_id = _clean_circle_id(circle_id)
         try:
             summary_result = self._db.execute_raw(
-                """
+                f"""
                 SELECT
                   c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind,
@@ -842,6 +858,7 @@ class OneLocationCircleService:
                   ON mine.circle_id = c.id
                  AND mine.user_id = :user_id
                  AND mine.status = 'active'
+                 AND {_TRUSTED_ROSTER_VIEWER_SQL.format(circle="c", membership="mine", viewer="user_id")}
                 LEFT JOIN one_location_circle_memberships active_members
                   ON active_members.circle_id = c.id
                  AND active_members.status = 'active'
@@ -863,7 +880,7 @@ class OneLocationCircleService:
                   active_code.id, active_code.circle_id,
                   active_code.code_hash, active_code.expires_at,
                   active_code.metadata
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id, "circle_id": cleaned_circle_id},
             )
             summary_row = next(iter(summary_result.data or []), None)
@@ -996,7 +1013,7 @@ class OneLocationCircleService:
         cleaned_circle_id = _clean_circle_id(circle_id)
         try:
             result = self._db.execute_raw(
-                """
+                f"""
                 SELECT
                   c.id, c.name, c.kind, c.member_limit, c.is_system, c.photo_url,
                   c.system_kind, c.created_at, c.updated_at,
@@ -1017,6 +1034,7 @@ class OneLocationCircleService:
                   ON mine.circle_id = c.id
                  AND mine.user_id = :user_id
                  AND mine.status = 'active'
+                 AND {_TRUSTED_ROSTER_VIEWER_SQL.format(circle="c", membership="mine", viewer="user_id")}
                 LEFT JOIN LATERAL (
                   SELECT code.id, code.circle_id, code.code_hash,
                          code.expires_at, code.metadata
@@ -1029,7 +1047,7 @@ class OneLocationCircleService:
                 ) active_code ON TRUE
                 WHERE c.id = CAST(:circle_id AS UUID)
                   AND c.status = 'active'
-                """,
+                """,  # nosec B608 - Only static Trusted aliases; owner inputs remain bound.
                 {"user_id": user_id, "circle_id": cleaned_circle_id},
             )
             row = next(iter(result.data or []), None)
@@ -1091,6 +1109,7 @@ class OneLocationCircleService:
                    AND viewer.status = 'active'
                   WHERE circle.id = CAST(:circle_id AS UUID)
                     AND circle.status = 'active'
+                    AND {_TRUSTED_ROSTER_VIEWER_SQL.format(circle="circle", membership="viewer", viewer="viewer_user_id")}
                 ), candidates AS (
                   SELECT membership.user_id, membership.role, membership.joined_at,
                          identity.display_name, identity.email, identity.photo_url,
@@ -4858,12 +4877,10 @@ class OneLocationCircleService:
         you as a connection would keep receiving your live location, and -- SOS
         reads the system Circle's roster -- your address in an emergency.
 
-        Every non-owner membership for either person is ended, including one
-        in a third person's Circle. A Circle may authorize delivery through
-        shared membership without a remaining direct connection, so retaining
-        either person in any roster would leave a disconnected relationship
-        able to reappear through that Circle. Owners retain their own rows;
-        disconnecting a member never deletes a Circle.
+        End non-owner memberships only in Circles shared by both people,
+        including a third person's shared Circle. Membership in an unrelated
+        Circle cannot authorize delivery between this pair and stays intact.
+        Owners retain their own rows; disconnecting never deletes a Circle.
 
         `removed`, not `left`: neither of them chose to go. It also means the
         owner is the only one who can put them back, which is right -- if they
@@ -4878,6 +4895,16 @@ class OneLocationCircleService:
             conn.execute(
                 text(
                     """
+                    WITH shared_circles AS MATERIALIZED (
+                      SELECT first_member.circle_id
+                      FROM one_location_circle_memberships first_member
+                      JOIN one_location_circle_memberships second_member
+                        ON second_member.circle_id = first_member.circle_id
+                      WHERE first_member.user_id = :user_a
+                        AND first_member.status = 'active'
+                        AND second_member.user_id = :user_b
+                        AND second_member.status = 'active'
+                    )
                     UPDATE one_location_circle_memberships membership
                     SET status = 'removed',
                         ended_at = NOW(),
@@ -4891,7 +4918,8 @@ class OneLocationCircleService:
                       -- Never the owner's own row. The owner does not leave
                       -- their Circle by falling out with somebody in it.
                       AND membership.role = 'member'
-                       AND membership.user_id IN (:user_a, :user_b)
+                      AND membership.user_id IN (:user_a, :user_b)
+                      AND membership.circle_id IN (SELECT circle_id FROM shared_circles)
                     RETURNING
                       membership.circle_id::text AS circle_id,
                       membership.user_id AS user_id

@@ -2,6 +2,7 @@
 """Account deletion orchestration for full-account and persona-scoped cleanup."""
 
 import logging
+import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any, Dict, Literal
@@ -19,6 +20,12 @@ from hushh_mcp.services.account_deletion_provider_cleanup import (
     snapshot_provider_credentials_in_transaction,
 )
 from hushh_mcp.services.connection_graph_service import lock_connection_graph_users
+from hushh_mcp.services.hushh_tech_uat_database_attestation import (
+    UAT_DATABASE_ATTESTATION_SQL,
+    UAT_INSTANCE,
+    is_attested_hushh_tech_uat_database,
+    parse_connected_database_identity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1372,6 +1379,8 @@ class AccountService:
                 "direct_message_blocks",
                 "kai_gmail_receipts",
                 "kai_gmail_sync_runs",
+                # Retired intake still has historical mail records to erase.
+                "one_kyc_workflows",
                 "kai_gmail_connections",
                 "kai_receipt_memory_artifacts",
                 "kai_analyze_runs",
@@ -1688,12 +1697,28 @@ class AccountService:
                 "details": results,
             }
 
+    async def erase_uat_backend_account(self, user_id: str) -> Dict[str, Any]:
+        """Maintainer-only erasure; not exposed by any account HTTP route.
+
+        Firebase and provider grants may be shared with production. Erase the
+        UAT-owned records and retain its resurrection barrier, but never
+        delete, quarantine, or revoke those external authorities.
+        """
+        return await self._delete_full_account(user_id, requested_target="both", backend_only=True)
+
     async def _delete_full_account(
         self,
         user_id: str,
         *,
         requested_target: DeleteAccountTarget,
+        backend_only: bool = False,
     ) -> Dict[str, Any]:
+        if backend_only and (
+            os.getenv("ENVIRONMENT", "").strip().lower() == "production"
+            or os.getenv("APP_RUNTIME_PROFILE", "").strip().lower() == "production"
+            or os.getenv("CLOUDSQL_INSTANCE_CONNECTION_NAME", "") != UAT_INSTANCE
+        ):
+            raise ValueError("backend_only_erasure_requires_uat_database")
         logger.warning("🚨 FULL ACCOUNT DELETION requested for %s", user_id)
         results = {
             "actor_identity_cache": False,
@@ -1723,6 +1748,7 @@ class AccountService:
             "kai_gmail_connections": False,
             "kai_gmail_receipts": False,
             "kai_gmail_sync_runs": False,
+            "one_kyc_workflows": False,
             "kai_receipt_memory_artifacts": False,
             "consent_exports": False,
             "consent_export_refresh_jobs": False,
@@ -1808,6 +1834,12 @@ class AccountService:
         provider_credentials = ProviderCredentialSnapshot(user_id=user_id)
         try:
             with get_db_connection() as conn:
+                if backend_only:
+                    row = conn.execute(text(UAT_DATABASE_ATTESTATION_SQL)).mappings().first()
+                    if not row or not is_attested_hushh_tech_uat_database(
+                        parse_connected_database_identity(row)
+                    ):
+                        raise ValueError("backend_erasure_connected_database_not_uat")
                 params = {"user_id": user_id}
                 # The authenticated account UID is the only identity this
                 # full-erasure authority may tombstone. Phone-orphan cleanup
@@ -1818,12 +1850,18 @@ class AccountService:
                     conn,
                     user_ids=all_cleanup_user_ids,
                 )
-                cleanup_user_ids = (
-                    AccountDeletionLifecycleService.record_pending_many_in_transaction(
-                        conn,
-                        user_ids=all_cleanup_user_ids,
+                if backend_only:
+                    AccountDeletionLifecycleService.record_backend_only_erasure_in_transaction(
+                        conn, user_id=user_id
                     )
-                )
+                    cleanup_user_ids = ()
+                else:
+                    cleanup_user_ids = (
+                        AccountDeletionLifecycleService.record_pending_many_in_transaction(
+                            conn,
+                            user_ids=all_cleanup_user_ids,
+                        )
+                    )
                 results["account_deletion_tombstone"] = True
                 results["firebase_cleanup_intent_count"] = len(cleanup_user_ids)
                 self._delete_personal_agent_state(
@@ -1833,11 +1871,12 @@ class AccountService:
                 )
                 # Copy encrypted provider credentials before their rows go, so
                 # the grants can be released at the provider after commit.
-                provider_credentials = snapshot_provider_credentials_in_transaction(
-                    conn,
-                    user_id=user_id,
-                    table_exists=lambda table_name: self._table_exists(conn, table_name),
-                )
+                if not backend_only:
+                    provider_credentials = snapshot_provider_credentials_in_transaction(
+                        conn,
+                        user_id=user_id,
+                        table_exists=lambda table_name: self._table_exists(conn, table_name),
+                    )
                 self._clear_external_connector_data(conn, user_id, results, permanent=True)
                 self._delete_optional_user_tables(
                     conn,
@@ -1850,6 +1889,8 @@ class AccountService:
                         "direct_message_blocks",
                         "kai_gmail_receipts",
                         "kai_gmail_sync_runs",
+                        # Erase before actor_profiles can orphan the legacy rows.
+                        "one_kyc_workflows",
                         "kai_gmail_connections",
                         "kai_receipt_memory_artifacts",
                         "kai_analyze_runs",
@@ -2130,8 +2171,10 @@ class AccountService:
 
         # Outside the erasure try-block on purpose: the deletion has committed,
         # and releasing provider grants is bounded best effort that never raises.
-        results["provider_grant_release"] = await release_provider_grants_after_erasure(
-            provider_credentials
+        results["provider_grant_release"] = (
+            {"status": "preserved_backend_only"}
+            if backend_only
+            else await release_provider_grants_after_erasure(provider_credentials)
         )
         return {
             "success": True,

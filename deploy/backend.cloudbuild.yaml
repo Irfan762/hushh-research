@@ -193,6 +193,7 @@ steps:
         for s in $(echo "${_CURATED_CONNECTOR_SECRETS}" | tr '+' ' '); do
           add_secret "$s" "$s"
         done
+        add_secret "${_DIRECT_MESSAGE_ENCRYPTION_KEY_V1_SECRET}" "DIRECT_MESSAGE_ENCRYPTION_KEY_V1"
         add_secret ADVISORS_API_KEY ADVISORS_API_KEY
         add_secret INSURANCE_AGENTS_API_KEY INSURANCE_AGENTS_API_KEY
         add_secret NWS_NEARBY_API_KEY NWS_NEARBY_API_KEY
@@ -386,6 +387,7 @@ steps:
       - "_OMNIGATEWAY_EXT_CRM_CLIENT_ID_SECRET=${_OMNIGATEWAY_EXT_CRM_CLIENT_ID_SECRET}"
       - "_OMNIGATEWAY_EXT_CRM_CLIENT_SECRET_SECRET=${_OMNIGATEWAY_EXT_CRM_CLIENT_SECRET_SECRET}"
       - "_HUSHH_DEVELOPER_TOKEN_SECRET=${_HUSHH_DEVELOPER_TOKEN_SECRET}"
+      - "_DIRECT_MESSAGE_ENCRYPTION_KEY_V1_SECRET=${_DIRECT_MESSAGE_ENCRYPTION_KEY_V1_SECRET}"
       - "_HUSHH_UAT_PHONE_TEST_NUMBERS_SECRET=${_HUSHH_UAT_PHONE_TEST_NUMBERS_SECRET}"
       - "_HUSHH_UAT_PHONE_TEST_CODE_SECRET=${_HUSHH_UAT_PHONE_TEST_CODE_SECRET}"
       - "_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET=${_HUSHH_UAT_PHONE_TEST_CHALLENGE_SECRET_SECRET}"
@@ -414,8 +416,8 @@ steps:
 
   # Candidate-image GenAI probe under the exact runtime identity. This runs
   # before the calling workflow can promote a no-traffic revision when the
-  # change-aware verification plan selects it. Direct backend builds retain the
-  # conservative default of running this probe.
+  # operator explicitly opts in. Direct backend builds do not make paid model
+  # calls by default; schema, authority, provenance and health gates still run.
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     entrypoint: "bash"
     args:
@@ -425,7 +427,7 @@ steps:
         case "${_VERIFY_MANAGED_VERTEX_RUNTIME}" in
           true) ;;
           false)
-            echo "Skipping managed Vertex candidate probe: not selected by the verification plan."
+            echo "Skipping managed Vertex candidate probe: live model checks were not requested."
             exit 0
             ;;
           *)
@@ -629,6 +631,7 @@ substitutions:
   _OMNIGATEWAY_EXT_CRM_CLIENT_ID_SECRET: OMNIGATEWAY_EXT_CRM_CLIENT_ID
   _OMNIGATEWAY_EXT_CRM_CLIENT_SECRET_SECRET: OMNIGATEWAY_EXT_CRM_CLIENT_SECRET
   _HUSHH_DEVELOPER_TOKEN_SECRET: ""
+  _DIRECT_MESSAGE_ENCRYPTION_KEY_V1_SECRET: ""
   _HUSHH_TECH_LAUNCH_PEPPER_SECRET: ""
   _RATE_LIMIT_STORAGE_URI_SECRET: ""
   _HUSHH_UAT_PHONE_TEST_NUMBERS_SECRET: ""
@@ -725,7 +728,7 @@ substitutions:
   _RUNTIME_ENVIRONMENT: ""
   # Direct backend builds remain conservative. The UAT workflow explicitly
   # overrides this from its authoritative changed-SHA verification plan.
-  _VERIFY_MANAGED_VERTEX_RUNTIME: "true"
+  _VERIFY_MANAGED_VERTEX_RUNTIME: "false"
   _IMAGE_TAG: v2.1.0
   _DEPLOY_ENV: manual
   _DEPLOY_SOURCE: manual
