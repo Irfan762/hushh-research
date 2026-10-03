@@ -816,6 +816,17 @@ def _manifest_row_is_pinned(connector: Any) -> bool:
     )
 
 
+def _is_dead_catalog_card(item: ConnectorSummary) -> bool:
+    """A card the owner can do nothing with, so it is not sent at all.
+
+    The catalog says it is not ready (setup pending, discovery pending, or
+    unavailable) and there is no stored grant to disconnect or recover. A
+    half-set-up provider stays out of the product until it is actually usable;
+    a stored grant always keeps its card, so an owner can still Disconnect.
+    """
+    return item.catalogState is not None and item.status in {"not_connected", "revoked"}
+
+
 def _owner_status_fields(status: dict[str, Any] | None) -> dict[str, Any]:
     status = status or {}
     return {
@@ -1012,6 +1023,7 @@ async def list_connectors(token_data: dict = Depends(require_vault_owner_token))
         if not status or status.get("status") in {"not_connected", "revoked"}:
             continue
         result.connectors.append(_registry_summary(connector, status=status, available=False))
+    result.connectors = [item for item in result.connectors if not _is_dead_catalog_card(item)]
     return result
 
 

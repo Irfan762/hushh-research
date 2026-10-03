@@ -934,12 +934,19 @@ def test_curated_catalog_availability_comes_from_the_curated_adapter(
         lambda: SimpleNamespace(list_statuses=AsyncMock(return_value=[])),
     )
     body = client.get("/api/connectors").json()
-    assert body["connectors"][0]["available"] is configured
+    hubspot = [item for item in body["connectors"] if item["connectorId"] == "hubspot"]
+    if configured:
+        assert [item["available"] for item in hubspot] == [True]
+    else:
+        # Not connectable and no stored grant to recover: the card is not sent at all.
+        assert hubspot == []
     assert "curated_mcp_connectors" in body["features"]
     curated.connection_available.assert_awaited_once_with("hubspot", user_id="verified-owner")
 
 
-def test_reviewed_catalog_cards_are_projected_without_registry_rows(route_client, monkeypatch):
+def test_reviewed_providers_without_a_usable_row_are_not_offered_to_an_owner_with_no_grant(
+    route_client, monkeypatch
+):
     client, app, _ = route_client
     app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
     monkeypatch.setattr(
@@ -956,18 +963,11 @@ def test_reviewed_catalog_cards_are_projected_without_registry_rows(route_client
     response = client.get("/api/connectors")
 
     assert response.status_code == 200
-    cards = response.json()["connectors"]
-    assert [(card["connectorId"], card["catalogState"]) for card in cards] == [
-        ("hubspot", "setup_pending"),
-        ("notion", "setup_pending"),
-        ("attio", "discovery_pending"),
-    ]
-    assert all(card["catalogCard"] is True for card in cards)
-    assert all(card["curatedOAuth"] is False and card["available"] is False for card in cards)
-    assert all(
-        {"mcpEndpoint", "oauthAuthorizeUrl", "oauthTokenUrl", "clientIdEnv"}.isdisjoint(card)
-        for card in cards
-    )
+    # Reviewed providers with no usable runtime row (setup pending) or no runtime
+    # manifest yet (Attio, discovery pending) are not offered, and an owner with
+    # no stored grant has nothing to recover: the product shows no dead cards.
+    ids = {card["connectorId"] for card in response.json()["connectors"]}
+    assert ids.isdisjoint({"hubspot", "notion", "attio"})
 
 
 def test_catalog_requires_an_exact_manifest_pinned_row_before_connect_is_available(
@@ -985,12 +985,19 @@ def test_catalog_requires_an_exact_manifest_pinned_row_before_connect_is_availab
     monkeypatch.setattr(
         routes,
         "get_external_connector_registry_service",
-        lambda: SimpleNamespace(list_active_connectors=AsyncMock(return_value=[drifted_notion])),
+        lambda: SimpleNamespace(
+            list_active_connectors=AsyncMock(return_value=[drifted_notion]),
+            list_curated_connectors=AsyncMock(return_value=[drifted_notion]),
+        ),
     )
     monkeypatch.setattr(
         routes,
         "get_external_connector_credentials_service",
-        lambda: SimpleNamespace(list_statuses=AsyncMock(return_value=[])),
+        lambda: SimpleNamespace(
+            list_statuses=AsyncMock(
+                return_value=[{"connectorId": "notion", "status": "connected", "accountLabel": "x"}]
+            )
+        ),
     )
 
     response = client.get("/api/connectors")
@@ -1005,7 +1012,32 @@ def test_catalog_requires_an_exact_manifest_pinned_row_before_connect_is_availab
     assert not (notion["curatedOAuth"] and notion["available"])
 
 
-def test_registration_only_attio_card_ignores_a_similarly_named_registry_row(
+def test_a_drifted_row_with_no_stored_grant_is_not_offered(route_client, monkeypatch):
+    client, app, _ = route_client
+    app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
+    _wire_curated_service(
+        monkeypatch, SimpleNamespace(connection_available=AsyncMock(return_value=True))
+    )
+    drifted = _hubspot_definition(
+        connector_id="notion", mcp_endpoint="https://unreviewed.example/mcp"
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_external_connector_registry_service",
+        lambda: SimpleNamespace(list_active_connectors=AsyncMock(return_value=[drifted])),
+    )
+    monkeypatch.setattr(
+        routes,
+        "get_external_connector_credentials_service",
+        lambda: SimpleNamespace(list_statuses=AsyncMock(return_value=[])),
+    )
+
+    ids = {item["connectorId"] for item in client.get("/api/connectors").json()["connectors"]}
+
+    assert "notion" not in ids
+
+
+def test_registration_only_attio_is_never_surfaced_even_with_a_similarly_named_registry_row(
     route_client, monkeypatch
 ):
     client, app, _ = route_client
@@ -1024,12 +1056,8 @@ def test_registration_only_attio_card_ignores_a_similarly_named_registry_row(
 
     response = client.get("/api/connectors")
 
-    attio = next(item for item in response.json()["connectors"] if item["connectorId"] == "attio")
-    assert attio["displayName"] == "Attio"
-    assert attio["catalogCard"] is True
-    assert attio["catalogState"] == "discovery_pending"
-    assert attio["curatedOAuth"] is False
-    assert attio["available"] is False
+    # Registration-only: neither a card nor the operator's similarly named row is surfaced.
+    assert all(item["connectorId"] != "attio" for item in response.json()["connectors"])
 
 
 @pytest.mark.parametrize(
@@ -1067,7 +1095,14 @@ def test_the_catalog_marks_manifest_backed_oauth_providers_for_the_frontend(
         lambda: SimpleNamespace(list_statuses=AsyncMock(return_value=[])),
     )
     body = client.get("/api/connectors").json()
-    assert body["connectors"][0]["curatedOAuth"] is expected
+    entries = [
+        item for item in body["connectors"] if item["connectorId"] == definition.connector_id
+    ]
+    if expected:
+        assert [item["curatedOAuth"] for item in entries] == [True]
+    else:
+        # Never offered as a curated provider: hidden outright, or at least not marked curated.
+        assert all(item["curatedOAuth"] is False for item in entries)
 
 
 def test_inactive_curated_connector_is_reprojected_for_owner_recovery(route_client, monkeypatch):
