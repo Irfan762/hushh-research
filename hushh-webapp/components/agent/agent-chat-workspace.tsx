@@ -2865,7 +2865,7 @@ export function AgentChatWorkspace({
         </div>
         <div
           className={cn(
-            "fixed inset-0 z-[520] bg-foreground/25 backdrop-blur-sm transition-opacity duration-200 lg:hidden",
+            "fixed inset-0 z-[520] bg-foreground/25 transition-opacity duration-200 lg:hidden",
             isHistoryDrawerOpen ? "opacity-100" : "pointer-events-none opacity-0"
           )}
           aria-hidden="true"
@@ -2894,7 +2894,6 @@ export function AgentChatWorkspace({
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background",
             isPopover && "rounded-lg border border-black/10 shadow-sm dark:border-white/10"
           )}
-          inert={isHistoryDrawerOpen}
         >
           <div
             className={cn(
