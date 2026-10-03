@@ -175,6 +175,7 @@ export default defineConfig({
         /mail-overview\.layout\.spec\.ts/,
         /receipt-pagination\.layout\.spec\.ts/,
         /connections-drawer\.layout\.spec\.ts/,
+        /profile-legal-connectors\.layout\.spec\.ts/,
         /connect-living-circles\.layout\.spec\.ts/,
         // boot-surface: the one cold-start surface continues the iOS splash
         // inside the WKWebView, so its centring, zero-shift chain and splash
