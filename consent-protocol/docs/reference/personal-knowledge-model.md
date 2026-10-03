@@ -371,6 +371,20 @@ agents and checks the recorded answers; `hushh-webapp/__tests__/services/pkm-sav
 replays them through the resumable save job: every line saved or `not_memory`, zero
 unaccounted, with a negative control that loses lines without `not_memory`.
 
+**Re-preparing lines inside a saved step** (2026-10-02). A step can commit while lines
+inside it stay unaccounted: the agents dropped a segment, or its quote did not match
+(`unmatched_quote_count`, now kept on the step). The receipt's "Retry N lines" used to
+re-run only failed steps, so those lines read "not yet saved" for good. Retry
+(`retryPkmSaveJobLines`, called by `resumeExplicitPkmSaveJob` with `retry`) now also runs
+`addPkmSaveJobReprepareSteps`: each unaccounted line belongs to the deepest step covering
+it, and every contiguous run of such lines in a committed or needs-owner step becomes a
+child step over exactly those lines, carrying the heading chain that attributes them
+(`pkmSourceRunChunk`). The child's id is `sha256(jobId, "reprepare", parentId, run)`, so
+its commit scopes never collide with the parent's: the parent's saved cards are not sent
+again, and a second Retry before the child settles finds it and adds nothing. Proof, with
+the earlier Retry as the negative control: `hushh-webapp/__tests__/services/pkm-save-job.test.ts`
+("re-preparing lines a committed step left unaccounted").
+
 ### Memory evolves: superseded values stay in history
 
 A memory write whose merge agent chose create, extend or correct keeps the stored

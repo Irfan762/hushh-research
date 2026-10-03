@@ -29,19 +29,22 @@ import { runExplicitPkmSave } from "@/lib/agent/agent-pkm-explicit-save";
 import { sha256Hex } from "@/lib/personal-knowledge-model/mutation-plan";
 import { computePkmLineCoverage, locatePkmQuote } from "@/lib/pkm/pkm-save-coverage";
 import {
+  addPkmSaveJobReprepareSteps,
   buildPkmSaveJobCoverage,
   buildPkmSaveJobReceipt,
   createPkmSaveJob,
   loadPkmSaveJob,
   persistPkmSaveJob,
   resumeExplicitPkmSaveJob,
+  retryPkmSaveJob,
+  retryPkmSaveJobLines,
   runPkmSaveJob,
   startExplicitPkmSaveJob,
   withPkmSaveJobLock,
   type PkmSaveJob,
   type PkmSaveJobDeps,
 } from "@/lib/pkm/pkm-save-job";
-import { sourceChunkRange } from "@/lib/pkm/pkm-source-chunks";
+import { sourceChunkRange, sourceChunkText } from "@/lib/pkm/pkm-source-chunks";
 import { planSecretCaptures, UnguardedSecretError } from "@/lib/pkm/secret-span-guard";
 import { ApiService } from "@/lib/services/api-service";
 
@@ -680,5 +683,168 @@ describe("context transfer, recorded from the memory agents", () => {
     }));
     expect(job.state).toBe("completed_with_gaps");
     expect(coverage.totals.not_yet_saved).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * A step can commit while lines inside it stay unaccounted: the agents dropped
+ * a segment, or its quote did not match the owner's text
+ * (`preview_summary.unmatched_quote_count`). Before 2026-10-02 the owner's Retry
+ * re-ran only failed steps, so those lines read "not yet saved" for good. All
+ * content is synthetic.
+ */
+describe("re-preparing lines a committed step left unaccounted", () => {
+  const NOTE = [
+    "# Work (synthetic)",
+    "- Role: synthetic analyst",
+    "- Team: synthetic platform",
+    "- Office: synthetic north wing",
+    "- Manager: synthetic lead",
+  ].join("\n");
+  const DROPPED = ["- Team: synthetic platform", "- Manager: synthetic lead"];
+
+  /** The agents keep two of the four lines the first time they see them, then every line. */
+  function droppingAgent() {
+    const seen = new Set<string>();
+    const texts: string[] = [];
+    const answer = (message: string) => {
+      texts.push(message);
+      const lines = message.split("\n").filter((line) => line.startsWith("- "));
+      const kept = lines.filter((line) => !(DROPPED.includes(line) && !seen.has(line)));
+      lines.forEach((line) => seen.add(line));
+      return {
+        agent_id: "agent_memory_segmentation", agent_name: "Memory", model: "stub", used_fallback: false,
+        cards: kept.map((quote, index): AgentPkmPreviewCard => ({
+          card_id: `c${index}`, source_text: quote, write_mode: "can_save", target_domain: "professional",
+          candidate_payload: { note: quote.replace(/^-\s*/, "") }, structure_decision: { target_domain: "professional" },
+          merge_decision: { merge_mode: "create_entity" }, primary_json_path: `professional.note_${index + 1}`,
+        })),
+        preview_summary: { total_segments_detected: kept.length, unmatched_quote_count: lines.length - kept.length },
+      };
+    };
+    return { answer, texts };
+  }
+
+  async function committedWithGaps() {
+    const agent = droppingAgent();
+    const context = harness({
+      prepare: vi.fn(async ({ text }: { text: string }) => agent.answer(text)),
+      findDuplicate: () => null,
+    });
+    const job = await createPkmSaveJob({ userId: USER, message: NOTE, currentDomains: [], now: context.state.clock });
+    await runPkmSaveJob(job, context.deps);
+    return { ...context, agent, job };
+  }
+
+  const commitCalls = (deps: PkmSaveJobDeps) =>
+    (deps.commit as ReturnType<typeof vi.fn>).mock.calls.map(([params]) => params.idempotencyScopes as string[]);
+
+  it("starts from a committed step with two unaccounted lines", async () => {
+    const { job, server } = await committedWithGaps();
+    expect(job.steps).toHaveLength(1);
+    expect(job.steps[0]).toMatchObject({ state: "committed", unmatchedQuoteCount: 2 });
+    expect(job.state).toBe("completed_with_gaps");
+    expect(server.writes.size).toBe(2);
+    const coverage = buildPkmSaveJobReceipt(job).receipt.coverage!;
+    // The receipt offers "Retry 2 lines".
+    expect(coverage.notYetSavedLines).toBe(2);
+    expect(coverage.lines.filter((line) => line.status === "not_yet_saved").map((line) => line.text))
+      .toEqual(["Team: synthetic platform", "Manager: synthetic lead"]);
+  });
+
+  it("negative control: the Retry before this change prepares nothing and the lines stay unsaved", async () => {
+    const { job, deps, server, agent } = await committedWithGaps();
+    retryPkmSaveJob(job);
+    await runPkmSaveJob(job, deps);
+    expect(agent.texts).toHaveLength(1);
+    expect(server.writes.size).toBe(2);
+    expect(buildPkmSaveJobReceipt(job).receipt.coverage!.notYetSavedLines).toBe(2);
+    expect(job.state).toBe("completed_with_gaps");
+  });
+
+  it("re-prepares only the unaccounted lines on Retry, reaching every line with no duplicate write", async () => {
+    const { job, deps, server, agent, state } = await committedWithGaps();
+    const [parent] = job.steps;
+    const parentCommits = structuredClone(parent!.commits);
+    const parentScopes = commitCalls(deps)[0]!;
+
+    await retryPkmSaveJobLines(job, state.clock);
+    // Two runs (the saved Office line sits between them): two child steps.
+    expect(job.steps).toHaveLength(3);
+    const children = job.steps.slice(1);
+    expect(children.every((child) => child.reprepareOf === parent!.id && child.generation === 1)).toBe(true);
+    expect(new Set([parent!.id, ...children.map((child) => child.id)]).size).toBe(3);
+    // Each child carries only its own line, with the heading that attributes it.
+    expect(children.map((child) => sourceChunkText(job.source, child.chunk).trimEnd())).toEqual([
+      "# Work (synthetic)\n- Team: synthetic platform",
+      "# Work (synthetic)\n- Manager: synthetic lead",
+    ]);
+
+    await runPkmSaveJob(job, deps);
+    expect(agent.texts.slice(1).join("\n")).not.toMatch(/Role|Office/);
+    expect(job.state).toBe("completed");
+    const { coverage } = buildPkmSaveJobCoverage(job);
+    expect(coverage.totals.not_yet_saved).toBe(0);
+    expect(coverage.accounted).toBe(coverage.totals.lines);
+    expect(buildPkmSaveJobReceipt(job).receipt.coverage!.notYetSavedLines).toBe(0);
+    // Four stated facts, four writes, each under its own scope.
+    expect(server.writes.size).toBe(4);
+    const scopes = commitCalls(deps).flat();
+    expect(new Set(scopes).size).toBe(scopes.length);
+    // The parent's saved cards were never sent again.
+    expect(scopes.filter((scope) => scope.startsWith(`${parent!.id}:`))).toEqual(parentScopes);
+    expect(parent!.commits).toEqual(parentCommits);
+  });
+
+  it("is idempotent on a double Retry", async () => {
+    const { job, deps, server, agent } = await committedWithGaps();
+    await retryPkmSaveJobLines(job);
+    await retryPkmSaveJobLines(job);
+    expect(await addPkmSaveJobReprepareSteps(job)).toEqual([]);
+    expect(job.steps).toHaveLength(3);
+    await runPkmSaveJob(job, deps);
+    expect(server.writes.size).toBe(4);
+
+    const prepared = agent.texts.length;
+    const committed = commitCalls(deps).length;
+    await retryPkmSaveJobLines(job);
+    await runPkmSaveJob(job, deps);
+    expect(job.steps).toHaveLength(3);
+    expect(agent.texts).toHaveLength(prepared);
+    expect(commitCalls(deps)).toHaveLength(committed);
+
+    // A child's write replayed under its own scope is refused, not written twice.
+    const child = job.steps[1]!;
+    const replay = await server.commit({
+      cards: child.cards!, idempotencyScopes: child.cards!.map((_card, index) => `${child.id}:${index}`),
+    });
+    expect(replay.saved).toBe(0);
+    expect(server.writes.size).toBe(4);
+  });
+
+  it("works through the receipt's Retry (resume with retry)", async () => {
+    const agent = droppingAgent();
+    mocks.preview.mockImplementation(async ({ message }: { message: string }) => agent.answer(message));
+    const server = fakeServer();
+    mocks.add.mockImplementation(server.commit);
+    const started = await startExplicitPkmSaveJob({
+      userId: USER, message: NOTE, currentDomains: [], vaultKey: VAULT_KEY, vaultOwnerToken: "token",
+      assistantMessageId: "message-1",
+    });
+    expect(started.jobState).toBe("completed_with_gaps");
+    expect(started.receipt.coverage!.notYetSavedLines).toBe(2);
+
+    const retried = (await resumeExplicitPkmSaveJob({
+      userId: USER, jobId: started.jobId, vaultKey: VAULT_KEY, vaultOwnerToken: "token", retry: true,
+    }))!;
+    expect(retried.jobState).toBe("completed");
+    expect(retried.receipt.coverage).toMatchObject({ notYetSavedLines: 0, accountedLines: 5, totalLines: 5 });
+    expect(retried.receipt.saved).toBe(4);
+    expect(server.writes.size).toBe(4);
+    // Completed: nothing is left to retry, and a second tap writes nothing.
+    expect(await resumeExplicitPkmSaveJob({
+      userId: USER, jobId: started.jobId, vaultKey: VAULT_KEY, vaultOwnerToken: "token", retry: true,
+    })).toBeNull();
+    expect(server.writes.size).toBe(4);
   });
 });

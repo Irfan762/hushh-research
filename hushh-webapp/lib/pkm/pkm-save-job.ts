@@ -19,6 +19,11 @@
  *   degraded answer is retried, never filed as unreadable.
  * - Splits: `split_recommended` / `has_more_candidates` split the step with the
  *   existing splitter (splitPkmSourceChunk); each half becomes its own step.
+ * - Re-prepare: a step can commit while lines inside it stay unaccounted (the
+ *   agent dropped a segment, or its quote did not match: `unmatched_quote_count`).
+ *   The owner's Retry turns each run of those lines into a child step over just
+ *   those lines, with its own id and so its own idempotency scope; the parent's
+ *   saved cards are never sent again (addPkmSaveJobReprepareSteps).
  * - Idempotency: each card's commit id derives from sha256(jobId, span) plus the
  *   card's place in the step, so replaying a step cannot write a detail twice.
  * - One runner per job: a Web Lock across tabs, an in-process lock where Web
@@ -65,6 +70,7 @@ import {
 } from "@/lib/pkm/pkm-save-coverage";
 import {
   PKM_PROPOSAL_CHARS,
+  pkmSourceRunChunk,
   sourceChunkRange,
   sourceChunkText,
   splitPkmSourceChunk,
@@ -134,7 +140,13 @@ export type PkmSaveJobStep = {
   /** Exact quotes dropped because the same value is already in Memory. */
   duplicateQuotes?: string[];
   notMemory?: PkmSaveJobNotMemory[];
+  /** Quotes the server could not match to the owner's text; their lines stay unaccounted. */
+  unmatchedQuoteCount?: number;
   commits?: Record<string, PkmSaveJobCommit>;
+  /** The settled step whose unaccounted lines this step re-prepares. */
+  reprepareOf?: string;
+  /** 0 (absent) for a planned step; a re-prepare step is its parent's plus one. */
+  generation?: number;
 };
 
 export type PkmSaveJob = {
@@ -182,6 +194,8 @@ export type PkmSaveJobDeps = {
 
 const TERMINAL_JOB_STATES: ReadonlySet<PkmSaveJobState> = new Set(["completed", "completed_with_gaps"]);
 const SETTLED_STEP_STATES: ReadonlySet<PkmSaveJobStepState> = new Set(["committed", "needs_owner"]);
+/** A step whose own writes are done; only its unaccounted lines can be prepared again. */
+const REPREPARABLE_STEP_STATES = SETTLED_STEP_STATES;
 
 function stepId(jobId: string, chunk: PkmSourceChunk): Promise<string> {
   const range = sourceChunkRange(chunk);
@@ -254,6 +268,81 @@ export function retryPkmSaveJob(job: PkmSaveJob, now = Date.now()): PkmSaveJob {
     else step.attempt = 0;
   }
   if (TERMINAL_JOB_STATES.has(job.state)) job.state = "running";
+  return job;
+}
+
+/**
+ * Re-prepare what a settled step left unaccounted. Each "not yet saved" line
+ * belongs to the deepest step that covers it; when that step has committed (or
+ * waits only on the owner), every contiguous run of such lines becomes a child
+ * step over exactly those lines, inserted after its parent in source order.
+ *
+ * The child's id is sha256(jobId, "reprepare", parentId, run), so its commit
+ * scopes (`<id>:<card>`) can never collide with the parent's: the parent's
+ * saved cards are not sent again, and a fact the child writes is never refused
+ * as a replay of one the parent wrote. The id is deterministic, so a second
+ * Retry before the child settles finds it and adds nothing. Bounded by
+ * MAX_JOB_STEPS. Returns the steps it added.
+ */
+export async function addPkmSaveJobReprepareSteps(job: PkmSaveJob): Promise<PkmSaveJobStep[]> {
+  const { coverage } = buildPkmSaveJobCoverage(job);
+  const ownerOf = (start: number): PkmSaveJobStep | null => {
+    let owner: PkmSaveJobStep | null = null;
+    for (const step of job.steps) {
+      const range = sourceChunkRange(step.chunk);
+      if (start < range.start || start >= range.end) continue;
+      if (!owner || (step.generation ?? 0) > (owner.generation ?? 0)) owner = step;
+    }
+    return owner;
+  };
+  // Blank lines are not coverage lines, so they never break a run; any other
+  // line (saved, a heading, held) does.
+  const runs: Array<{ owner: PkmSaveJobStep; start: number; end: number }> = [];
+  let contiguous = false;
+  for (const line of coverage.lines) {
+    const owner = line.status === "not_yet_saved" ? ownerOf(line.start) : null;
+    if (!owner || !owner.cards || !REPREPARABLE_STEP_STATES.has(owner.state)) {
+      contiguous = false;
+      continue;
+    }
+    const last = runs[runs.length - 1];
+    if (contiguous && last?.owner === owner) last.end = line.end;
+    else runs.push({ owner, start: line.start, end: line.end });
+    contiguous = true;
+  }
+  const added: PkmSaveJobStep[] = [];
+  for (const run of runs) {
+    if (job.steps.length >= MAX_JOB_STEPS) break;
+    const id = await sha256Hex(`${job.id}:reprepare:${run.owner.id}:${run.start}:${run.end}`);
+    if (job.steps.some((step) => step.id === id)) continue;
+    const chunk = pkmSourceRunChunk(job.source, run.owner.chunk, run);
+    if (!chunk) continue;
+    const child: PkmSaveJobStep = {
+      id, chunk, state: "pending", attempt: 0, commitAttempt: 0,
+      reprepareOf: run.owner.id, generation: (run.owner.generation ?? 0) + 1,
+    };
+    // After the parent and any earlier steps inside it, so writes stay in source order.
+    const parentRange = sourceChunkRange(run.owner.chunk);
+    let at = job.steps.indexOf(run.owner) + 1;
+    while (at < job.steps.length) {
+      const range = sourceChunkRange(job.steps[at]!.chunk);
+      if (range.start < parentRange.start || range.start >= parentRange.end || range.start > run.start) break;
+      at += 1;
+    }
+    job.steps.splice(at, 0, child);
+    added.push(child);
+  }
+  if (added.length && TERMINAL_JOB_STATES.has(job.state)) job.state = "running";
+  return added;
+}
+
+/**
+ * The receipt's "Retry N lines": failed steps start a new round, and lines a
+ * settled step left unaccounted are prepared again as their own steps.
+ */
+export async function retryPkmSaveJobLines(job: PkmSaveJob, now = Date.now()): Promise<PkmSaveJob> {
+  retryPkmSaveJob(job, now);
+  await addPkmSaveJobReprepareSteps(job);
   return job;
 }
 
@@ -333,6 +422,11 @@ export async function runPkmSaveJob(
     step.duplicateQuotes = duplicateQuotes;
     step.notMemory = readNotMemory(preview);
     step.detectedFactCount = readCount(preview.preview_summary?.total_segments_detected) ?? preview.cards.length;
+    const unmatched = readCount(
+      (preview.preview_summary as { unmatched_quote_count?: unknown } | undefined)?.unmatched_quote_count,
+    );
+    if (unmatched) step.unmatchedQuoteCount = unmatched;
+    else delete step.unmatchedQuoteCount;
     if (issue) step.issue = issue;
     else delete step.issue;
     settleStep(step, "prepared");
@@ -906,6 +1000,6 @@ export async function resumeExplicitPkmSaveJob(
 ): Promise<ExplicitPkmSaveJobResult | null> {
   const job = await loadPkmSaveJob(params.userId, params.jobId, params.vaultKey);
   if (!job) return null;
-  if (params.retry) retryPkmSaveJob(job);
+  if (params.retry) await retryPkmSaveJobLines(job);
   return driveExplicitJob(job, params);
 }
