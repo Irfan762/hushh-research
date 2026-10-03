@@ -54,6 +54,7 @@ from hushh_mcp.services.external_mcp_client import (  # noqa: E402
 from hushh_mcp.services.external_mcp_connector_descriptor import (  # noqa: E402
     ExternalMcpConnectorDescriptorError,
     ValidatedExternalMcpConnectorDescriptor,
+    descriptor_to_row_values,
     load_and_validate_descriptor,
     validate_descriptor,
 )
@@ -143,15 +144,7 @@ def _apply(descriptor: ValidatedExternalMcpConnectorDescriptor, *, operator: str
     _require_matches_manifest(descriptor)
     raw = descriptor.raw
     db = get_db()
-    scopes_csv = " ".join(raw.get("oauthScopes") or [])
-    capability_policy = json.dumps(
-        {
-            "version": 1,
-            "chat": raw.get("chatAdmission"),
-            **({"tools": raw["toolAllowlist"]} if "toolAllowlist" in raw else {}),
-        }
-    )
-    redirect_uris = json.dumps(raw.get("registeredRedirectUris") or [])
+    values = descriptor_to_row_values(raw)
     result = db.execute_raw(
         """INSERT INTO external_mcp_connectors (
              connector_id, display_name, description, mcp_endpoint, auth_style,
@@ -188,19 +181,19 @@ def _apply(descriptor: ValidatedExternalMcpConnectorDescriptor, *, operator: str
            WHERE external_mcp_connectors.user_id IS NULL
            RETURNING connector_id""",
         {
-            "connector_id": raw["connectorId"],
-            "display_name": raw["displayName"],
-            "description": raw.get("description") or "",
-            "mcp_endpoint": raw["mcpEndpoint"],
-            "auth_style": raw["authStyle"],
-            "oauth_authorize_url": raw.get("oauthAuthorizeUrl"),
-            "oauth_token_url": raw.get("oauthTokenUrl"),
-            "oauth_scopes": scopes_csv or None,
-            "oauth_client_id_env": raw.get("oauthClientIdEnv"),
-            "oauth_client_secret_env": raw.get("oauthClientSecretEnv"),
-            "api_key_header_name": raw.get("apiKeyHeaderName"),
-            "capability_policy": capability_policy,
-            "redirect_uris": redirect_uris,
+            "connector_id": values["connector_id"],
+            "display_name": values["display_name"],
+            "description": values["description"],
+            "mcp_endpoint": values["mcp_endpoint"],
+            "auth_style": values["auth_style"],
+            "oauth_authorize_url": values["oauth_authorize_url"],
+            "oauth_token_url": values["oauth_token_url"],
+            "oauth_scopes": values["oauth_scopes"],
+            "oauth_client_id_env": values["oauth_client_id_env"],
+            "oauth_client_secret_env": values["oauth_client_secret_env"],
+            "api_key_header_name": values["api_key_header_name"],
+            "capability_policy": json.dumps(values["capability_policy"]),
+            "redirect_uris": json.dumps(values["registered_redirect_uris"]),
             "operator": operator,
         },
     )

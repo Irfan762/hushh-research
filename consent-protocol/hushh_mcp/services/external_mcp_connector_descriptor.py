@@ -166,3 +166,34 @@ def validate_descriptor(raw: Any) -> ValidatedExternalMcpConnectorDescriptor:
             )
 
     return ValidatedExternalMcpConnectorDescriptor(raw=raw)
+
+
+def descriptor_to_row_values(raw: dict[str, Any]) -> dict[str, Any]:
+    """The registry-row values a validated descriptor denotes.
+
+    The one builder behind both `configure_external_mcp_connector.py apply`
+    (which writes these values to the shared registry) and the development
+    overlay in the registry service (which only reads them), so the row a
+    manifest produces locally is, by construction, the row `apply` would write.
+    """
+    scopes_csv = " ".join(raw.get("oauthScopes") or [])
+    return {
+        "connector_id": raw["connectorId"],
+        "display_name": raw["displayName"],
+        "description": raw.get("description") or "",
+        "mcp_endpoint": raw["mcpEndpoint"],
+        "auth_style": raw["authStyle"],
+        "oauth_authorize_url": raw.get("oauthAuthorizeUrl"),
+        "oauth_token_url": raw.get("oauthTokenUrl"),
+        "oauth_scopes": scopes_csv or None,
+        "oauth_client_id_env": raw.get("oauthClientIdEnv"),
+        "oauth_client_secret_env": raw.get("oauthClientSecretEnv"),
+        "api_key_header_name": raw.get("apiKeyHeaderName"),
+        "transport_kind": "mcp",
+        "capability_policy": {
+            "version": 1,
+            "chat": raw.get("chatAdmission"),
+            **({"tools": raw["toolAllowlist"]} if "toolAllowlist" in raw else {}),
+        },
+        "registered_redirect_uris": list(raw.get("registeredRedirectUris") or []),
+    }

@@ -17,8 +17,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from hushh_mcp.services import connector_dev_runtime
 from hushh_mcp.services import external_connector_curated_oauth as oauth
-from hushh_mcp.services import external_connector_google_oauth as google_oauth
 from hushh_mcp.services.curated_connector_manifest import (
     MANIFEST_DIR,
     REGISTRATION_SPEC_DIR,
@@ -469,7 +469,7 @@ async def test_a_row_that_adds_an_unreviewed_redirect_is_never_served(
 def test_a_valid_manifest_row_keeps_the_development_loopback_callback(monkeypatch, notion_row):
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setattr(
-        google_oauth,
+        connector_dev_runtime,
         "get_app_runtime_settings",
         lambda: SimpleNamespace(app_frontend_origin="http://localhost:3000"),
     )
