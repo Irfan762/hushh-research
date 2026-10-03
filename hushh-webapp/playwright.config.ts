@@ -147,6 +147,9 @@ export default defineConfig({
         // reserved-offer-card: the receipt's "Add as Home in Location" rows and
         // Memory's read-only "Open in" row, tapped on an iPhone first.
         /reserved-offer-card\.layout\.spec\.ts/,
+        // mail-kyc-connect: where an identity fact's "Open in Mail" lands
+        // before Gmail is connected, tapped on an iPhone first; own document.
+        /mail-kyc-connect\.layout\.spec\.ts/,
         // secrets-card: the secure Secrets card (reveal, copy, offers) is met
         // on an iPhone first; its 4/8 pt grid is asserted in the shipped engine.
         /secrets-card\.layout\.spec\.ts/,

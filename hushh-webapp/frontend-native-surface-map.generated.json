@@ -2960,6 +2960,7 @@
         "profile.gmail.connect",
         "profile.gmail.disconnect",
         "profile.gmail.sync_now",
+        "route.one_gmail_kyc",
         "route.profile_receipts"
       ],
       "api_dependencies": [],
@@ -9544,5 +9545,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "ebd45498d0bb5769f1c03cc899c67dc6d9ab0bbc0f1595b157370c7423e58cdd"
+  "content_sha256": "e43d7924c4973e41b66685cf6b526f9c5f5357394e3528684a6a52f15a870cfb"
 }

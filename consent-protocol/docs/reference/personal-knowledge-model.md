@@ -709,11 +709,22 @@ on the Profile Secrets list (`hushh-webapp/lib/pkm/secret-offer-handoff.ts`,
 `SECRET_OFFER_ROUTES`). The target decrypts the value itself, and the owner
 commits with that feature's writer: `one_wallet_add`, or
 `kyc_identity_document_file` for `identity.identity_documents`. The filing card
-lives on Profile because the `/one/kyc` screen was retired on 2026-09-27; for
-the same reason the `identity.identity_profile`, `identity.identity_documents`
-and `professional.profile` entries carry no `offer_action`. A chat fact for those
-branches still lands in the `agent_memory` sibling, with nothing lost, but has no
-screen to open until an identity screen with a route action exists again.
+lives on Profile because the `/one/kyc` screen was retired on 2026-09-27.
+
+**Identity facts open Mail's KYC tab** (2026-10-02). The `identity.identity_profile`,
+`identity.identity_documents` and `professional.profile` entries offer
+`/one/gmail?workspace=kyc` (action `route.one_gmail_kyc`, "Review {label} in Mail"), so
+a chat fact for those branches is kept in its `agent_memory` sibling and offered there,
+and Memory shows "Open in Mail" on a reserved identity item. The link names the tab only
+(`buildGmailWorkspaceRoute` and `gmailDeepLinkWorkspace` in
+`hushh-webapp/lib/navigation/routes.ts`); identity takes no prefill. When Gmail is not
+connected the KYC tab shows its own "Connect Gmail to manage identity" entry instead of
+the general Mail status card, so the link is never a dead end
+(`hushh-webapp/components/gmail/mail-kyc-connect-entry.tsx`); a status error keeps the
+card because it carries the retry. A same-screen tab is not a route-index entry (the
+index keeps a query-qualified route only when it changes the screen), so the registry
+test accepts such an offer only when its path is indexed and the gateway declares that
+exact route on a wired route action whose screen is the path's own.
 
 ## Storage rules
 

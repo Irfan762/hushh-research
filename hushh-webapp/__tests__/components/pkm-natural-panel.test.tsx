@@ -1144,4 +1144,50 @@ describe("PkmNaturalPanel — Memory redesign", () => {
       expect(push).not.toHaveBeenCalled();
     });
   });
+
+  it("opens an identity item on Mail's KYC tab from Open in Mail", async () => {
+    const metadata = baseMetadata();
+    metadata.domains.push({
+      key: "identity",
+      displayName: "Identity",
+      icon: "user",
+      color: "neutral",
+      attributeCount: 0,
+      summary: {},
+      availableScopes: [],
+      lastUpdated: NOW,
+      readableUpdatedAt: NOW,
+      readableSourceLabel: "Mail KYC",
+    } as (typeof metadata.domains)[number]);
+    vi.spyOn(PersonalKnowledgeModelService, "getMetadata").mockResolvedValue(metadata as never);
+    const blob = { ...FULL_BLOB, identity: { identity_profile: { legal_name: "Ada Lovelace" } } };
+    vi.spyOn(PkmDomainResourceService, "getManyStaleFirst").mockImplementation(async (params) => {
+      const snapshots = Object.fromEntries(
+        params.domains
+          .filter((domain) => domain in blob)
+          .map((domain) => [domain, { data: blob[domain as keyof typeof blob] }]),
+      );
+      for (const [domain, snapshot] of Object.entries(snapshots)) {
+        params.onProgress?.({ domain, snapshot: snapshot as never, failed: false });
+      }
+      return { snapshots: snapshots as never, failedDomains: [] };
+    });
+
+    await openMainScreen();
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search Memory" }), {
+      target: { value: "Lovelace" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Open memory: Legal Name" }));
+    expect(await screen.findByRole("heading", { name: "Legal Name" })).toBeTruthy();
+    // Mail's KYC tab owns it: read-only here, opened there.
+    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByTestId("memory-detail-reserved-note")).toHaveTextContent(
+      "Mail manages this. Edit or remove it there.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open in Mail" }));
+    expect(push).toHaveBeenCalledTimes(1);
+    expect(push).toHaveBeenCalledWith("/one/gmail?workspace=kyc");
+    // The link names the tab only, never the fact.
+    expect(JSON.stringify(push.mock.calls)).not.toMatch(/Lovelace|Ada|legal/i);
+  });
 });

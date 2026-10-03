@@ -1868,6 +1868,7 @@
       "canonical_screen": "gmail",
       "voice_contract_file": "app/one/gmail/page.voice-action-contract.json",
       "action_ids": [
+        "route.one_gmail_kyc",
         "route.profile_receipts"
       ],
       "action_coverage": "inherited",

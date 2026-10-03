@@ -2881,6 +2881,144 @@
     },
     {
       "aliases": [
+        "Open Mail KYC",
+        "open kyc",
+        "open mail kyc",
+        "manage my identity details"
+      ],
+      "authorization": {
+        "guard_ids": [],
+        "ownership": "server_resolved_for_target_entity",
+        "predicates": [],
+        "server_revalidation": "identity_consent_and_domain_service"
+      },
+      "availability": {
+        "feature_flags": [],
+        "product_available": true
+      },
+      "capability_id": "route.one_gmail_kyc",
+      "confirmation": {
+        "mode": "none",
+        "required": false,
+        "requires_trusted_tap": false,
+        "surface": null
+      },
+      "description": "Opens Mail directly on its KYC tab, where identity details for KYC replies are managed. Shows the connect entry when Gmail is not connected.",
+      "execution": {
+        "binding_ref": "route:/one/gmail?workspace=kyc",
+        "executor": {
+          "kind": "existing_route",
+          "settlement": "directive_ledger_settlement"
+        },
+        "mode": "client_directive",
+        "outcome": "NAVIGATE",
+        "target": {
+          "path": "route",
+          "status": "wired",
+          "target": "/one/gmail?workspace=kyc"
+        }
+      },
+      "goal_id": "goal.route.one_gmail_kyc",
+      "idempotency": {
+        "scope": "action_and_normalized_slots",
+        "strategy": "action_directive_ledger"
+      },
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "kind": "action",
+      "label": "Open Mail KYC",
+      "navigation": {
+        "fallback": "/one/gmail?workspace=kyc",
+        "routes": [
+          "/one/gmail?workspace=kyc"
+        ],
+        "screens": [
+          "gmail"
+        ]
+      },
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "action_id": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "preconditions": {
+        "guard_ids": [],
+        "mounted_surface_required": false,
+        "requires_signed_in": false,
+        "requires_vault": false
+      },
+      "render_surface": null,
+      "required_entities": [],
+      "search_keywords": [
+        "kyc",
+        "identity",
+        "mail kyc"
+      ],
+      "settlement_proof": "validated_route_settlement",
+      "side_effect": {
+        "classification": "navigation"
+      },
+      "supported_entrypoints": [
+        "voice",
+        "chat",
+        "typed_search",
+        "command_bar",
+        "ui"
+      ],
+      "technical_interaction": {
+        "allowed_types": [
+          "oauth",
+          "native_permission"
+        ],
+        "policy": "platform_required_only",
+        "requires_user_interaction": false
+      },
+      "telemetry_event": "app_intelligence.action",
+      "version": 1
+    },
+    {
+      "aliases": [
         "Connect Gmail",
         "connect gmail",
         "link gmail"
@@ -37181,7 +37319,7 @@
         }
       ],
       "platform": "ios",
-      "projection_digest": "251a57f31c6d775f754fe51bce90b0421a0d2cbb1e56ec766e3613e814e4b2ec",
+      "projection_digest": "d164d46c483048031ada01fd025cd93e84dbaef25dd157283d736bf595727bee",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -37200,7 +37338,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "ee09feb06f41bf30",
+      "source_revision": "9d786fec1d5617bb",
       "supported_entrypoints": [
         "typed",
         "voice",
@@ -38718,7 +38856,7 @@
       ]
     },
     "schema_version": "one.capability_platform_projection.v1",
-    "source_revision": "ee09feb06f41bf30",
+    "source_revision": "9d786fec1d5617bb",
     "web": {
       "actions": [
         {
@@ -38761,7 +38899,7 @@
         }
       ],
       "platform": "web",
-      "projection_digest": "cdc81ddda127f51046d278dc009e0697e41f861215d8283b955272bd5659c4bb",
+      "projection_digest": "a1acf37086094cb26091a2f203845b630e0c60172845a9756f0f6bbe057a421b",
       "render_surfaces": [
         {
           "capability_id": "render.one_location_workflow_card",
@@ -38780,7 +38918,7 @@
         "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
         "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
       },
-      "source_revision": "ee09feb06f41bf30",
+      "source_revision": "9d786fec1d5617bb",
       "supported_entrypoints": [
         "typed",
         "voice"
@@ -40337,7 +40475,7 @@
       "renderer_key": "one_location_workflow_card"
     }
   ],
-  "revision": "ee09feb06f41bf30",
+  "revision": "9d786fec1d5617bb",
   "schema_version": "one.capability_graph.v1",
   "screens": [
     {
@@ -40755,6 +40893,7 @@
     },
     {
       "action_ids": [
+        "route.one_gmail_kyc",
         "route.profile_receipts"
       ],
       "capability_id": "screen:/one/gmail",
@@ -42041,9 +42180,13 @@
     }
   ],
   "semantic_diff": {
-    "added": [],
+    "added": [
+      "actions:route.one_gmail_kyc"
+    ],
     "breaking": [],
-    "changed": [],
+    "changed": [
+      "screens:screen:/one/gmail"
+    ],
     "compatible": [],
     "deprecated": [],
     "from_revision": "60f052ad508244d1",
@@ -44275,18 +44418,18 @@
     "capability_graph_evolution": "96b63878194651962b7fd3deceaac9d6223f7b170c16c67f813a3c72ca911946",
     "capability_runtime_compiler": "9a0b0b573b4e3ae42d2a49ce15f93a7cce70e5dc4046dea14922d7cd6ace9078",
     "capability_runtime_policy": "d3f4ec0d27231ef298372a48696f8ac238f7560d03d8e72c50c7bcb5b0ffd7a9",
-    "kai_action_gateway": "d992c638cb0261c31022bc583622de2f08615e0835e51f3257ab7e1035cc1002",
+    "kai_action_gateway": "cdf51c44d6cc2743e4aaf379bebf8cd26f7763595a3f9c0d0f67ce08afad04eb",
     "location_agent_manifest": "25952f13232f1d1adb7664da7c037b59cef093a1389caeb46af3d2771a12ff07",
     "location_knowledge_package": "054141b4aaf04ef13ce9bd139a1044287be8703c1e65015cc338a970d4fa51ed",
     "location_onboarding_runtime": "cd911f5e2e0f09352aeb89a74180a66fab79553423b126583f181d858459ae62",
     "location_workflow_api_contract": "4e65e07107cbf9a571c0a471005f18e3b31366fea6a1176b0d745e47a5b3d383",
     "product_agent_registry": "3865529e2802574f8a94990553b310302f2791b6913670f7e94cd425bed18aff",
-    "route_orchestration_index": "55b39926a1b6fbda093c53346e7e007aceba0ed6b3e5d61af244c8d70dd8e29a",
+    "route_orchestration_index": "7359f7af10375d39b2f3aeb15bf860d3d97f3167c5f3945f06146d351b455243",
     "service_knowledge_packages": "fc844f2d3e1b73763155fb0708676c62639bbf7115be9f5405553580f01894ba"
   },
-  "source_revision": "ee09feb06f41bf30",
+  "source_revision": "9d786fec1d5617bb",
   "workflow_revision_compatibility": {
-    "current_graph_revision": "ee09feb06f41bf30",
+    "current_graph_revision": "9d786fec1d5617bb",
     "schema_version": "one.workflow_revision_compatibility.v1",
     "workflows": [
       {

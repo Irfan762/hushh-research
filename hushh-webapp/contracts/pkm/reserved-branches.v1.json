@@ -177,14 +177,14 @@
       "send_to_model": "full"
     },
     {
-      "$comment": "Identity profile, identity documents and professional profile have no offer: the /one/kyc screen that committed them was retired on 2026-09-27 (143135256) and no route action replaces it yet. Chat facts still land in the agent_memory sibling, with nothing lost. A government id number kept in Secrets is filed from the Profile Secrets list (kyc_identity_document_file).",
+      "$comment": "Identity profile, identity documents and professional profile are committed on the KYC tab of Mail. The /one/kyc screen that used to commit them was retired on 2026-09-27 (143135256); the offer opens /one/gmail?workspace=kyc, which shows the KYC tab, or its Connect Gmail entry when Gmail is not connected. Chat facts still land in the agent_memory sibling, with nothing lost. A government id number kept in Secrets is filed from the Profile Secrets list (kyc_identity_document_file).",
       "domain": "identity",
       "branch_prefix": "identity_profile",
       "except": [],
       "owner_feature": "kyc",
       "writer_ids": ["kyc_identity_onboarding", "agent_chat_kyc_owner_confirmed"],
       "agent_memory_sibling": "identity.agent_memory",
-      "offer_action": null,
+      "offer_action": {"route_pattern": "/one/gmail?workspace=kyc", "action_id": "route.one_gmail_kyc", "label_template": "Review {label} in Mail"},
       "shareable": "policy",
       "send_to_model": "full"
     },
@@ -195,7 +195,7 @@
       "owner_feature": "kyc",
       "writer_ids": ["agent_chat_kyc_owner_confirmed", "kyc_identity_document_file"],
       "agent_memory_sibling": "identity.agent_memory",
-      "offer_action": null,
+      "offer_action": {"route_pattern": "/one/gmail?workspace=kyc", "action_id": "route.one_gmail_kyc", "label_template": "Review {label} in Mail"},
       "shareable": "policy",
       "send_to_model": "label_only"
     },
@@ -217,7 +217,7 @@
       "owner_feature": "kyc",
       "writer_ids": ["agent_chat_kyc_owner_confirmed"],
       "agent_memory_sibling": "professional.agent_memory",
-      "offer_action": null,
+      "offer_action": {"route_pattern": "/one/gmail?workspace=kyc", "action_id": "route.one_gmail_kyc", "label_template": "Review {label} in Mail"},
       "shareable": "policy",
       "send_to_model": "full"
     },

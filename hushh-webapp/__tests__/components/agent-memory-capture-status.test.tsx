@@ -7,7 +7,8 @@ vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { uid: "owner-1" } 
 
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
 import { emptyPkmSaveReceipt } from "@/lib/agent/pkm-save-receipt";
-import { takeReservedOfferPrefill } from "@/lib/pkm/reserved-offer";
+import { hasReservedOfferPrefill, takeReservedOfferPrefill, toReservedOfferItem } from "@/lib/pkm/reserved-offer";
+import { reservedEntryFor, reservedOfferLabel } from "@/lib/pkm/reserved-branches";
 
 afterEach(cleanup);
 describe("quiet Memory capture receipt", () => {
@@ -100,6 +101,34 @@ describe("quiet Memory capture receipt", () => {
       nickname: "Amex Gold",
     });
     expect(takeReservedOfferPrefill({ ownerUserId: "owner-1", ownerFeature: "wallet", kind: "wallet_card" })).toBeNull();
+  });
+
+  it("opens an identity fact's offer on Mail's KYC tab, with nothing of the fact in the link", () => {
+    navigation.push.mockReset();
+    // The offer as the server builds it from the registry entry.
+    const entry = reservedEntryFor("identity", "identity_profile")!;
+    const offer = toReservedOfferItem("legal-name", {
+      domain: "identity",
+      branch: "identity_profile",
+      subject: "legal name",
+      owner_feature: entry.ownerFeature,
+      agent_memory_sibling: entry.agentMemorySibling!,
+      offer_action: {
+        route_pattern: entry.offerAction!.routePattern,
+        action_id: entry.offerAction!.actionId,
+        label: reservedOfferLabel(entry.offerAction!, "legal name"),
+      },
+      registry_version: 1,
+    });
+    expect(offer).toMatchObject({ routePattern: "/one/gmail?workspace=kyc", label: "Review legal name in Mail", prefill: null });
+    render(<AgentMemoryCaptureStatus status={{ phase: "saved", saved: 1, receipt: { ...emptyPkmSaveReceipt(), saved: 1, offers: [offer!] } }} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review legal name in Mail" }));
+    expect(navigation.push).toHaveBeenCalledTimes(1);
+    expect(navigation.push).toHaveBeenCalledWith("/one/gmail?workspace=kyc");
+    expect(JSON.stringify(navigation.push.mock.calls)).not.toMatch(/legal|name/i);
+    // Identity takes no prefill, so nothing is staged for the KYC tab.
+    expect(hasReservedOfferPrefill({ ownerUserId: "owner-1", ownerFeature: "kyc" })).toBe(false);
   });
 
   it("shows no offer rows on a receipt without offers (negative control)", () => {

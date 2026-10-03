@@ -62,11 +62,13 @@ test.beforeAll(async () => {
   css = stripAppFontFaces(compiler.build([...candidates])) + productFontStyle();
 });
 
-async function open(page: Page, theme: "light" | "dark", state: "offers" | "memory") {
+// next-themes (attribute="class") puts `light` or `dark` on <html>, and the
+// flat Morphy card tokens at phone width are scoped to exactly those classes.
+async function open(page: Page, theme: "light" | "dark", state: "offers" | "memory" | "memory-kyc") {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.route("http://localhost/reserved-offer-card**", (route) => route.fulfill({
     contentType: "text/html",
-    body: `<!doctype html><html class="${theme === "dark" ? "dark" : ""}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div></body></html>`,
+    body: `<!doctype html><html class="${theme}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${css}</style></head><body><div id="root"></div></body></html>`,
   }));
   await page.goto(`http://localhost/reserved-offer-card?state=${state}`);
   await page.addScriptTag({ content: script });
@@ -174,8 +176,11 @@ for (const theme of ["light", "dark"] as const)
       const section = page.getByTestId("memory-save-offers");
       await expect(section).toBeVisible();
       const rows = section.getByTestId("reserved-offer-row");
+      // A receipt shows at most three offers (MAX_RECEIPT_OFFERS).
       await expect(rows).toHaveCount(3);
       await expect(rows.nth(0)).toHaveText("Add as Home in Location");
+      // An identity fact opens Mail's KYC tab, with the KYC registry glyph.
+      await expect(rows.nth(2)).toHaveText("Review legal name in Mail");
       // The whole label shows, so the app it opens is never cut off.
       for (const row of await rows.all()) {
         expect(await row.locator("[data-slot='settings-row-title']").evaluate(
@@ -246,7 +251,7 @@ for (const theme of ["light", "dark"] as const)
       const metrics = { width, theme, leftInset, rightInset, captionGap: gap, row: readings[0] };
       testInfo.annotations.push({ type: "geometry", description: JSON.stringify(metrics) });
       const shotDir = process.env.RESERVED_OFFER_SHOT_DIR;
-      if (shotDir && width === 393) {
+      if (shotDir) {
         await page.reload();
         await open(page, theme, "offers");
         await page.mouse.move(0, 0);
@@ -257,19 +262,20 @@ for (const theme of ["light", "dark"] as const)
       }
     });
 
+for (const [state, appName] of [["memory", "Location"], ["memory-kyc", "Mail"]] as const)
 for (const theme of ["light", "dark"] as const)
   for (const [width, height] of [[393, 852], [1440, 900]] as const)
-    test(`a reserved Memory item is read-only with Open in its app at ${width}px, ${theme}`, async ({ page }, testInfo) => {
+    test(`a reserved Memory item is read-only with Open in ${appName} at ${width}px, ${theme}`, async ({ page }, testInfo) => {
       await page.setViewportSize({ width, height });
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
-      await open(page, theme, "memory");
+      await open(page, theme, state);
       const reserved = page.getByTestId("memory-detail-reserved");
       await expect(reserved).toBeVisible();
       await expect(page.getByText("Edit", { exact: true })).toHaveCount(0);
       await expect(page.getByText("Forget Memory", { exact: true })).toHaveCount(0);
       const row = page.getByTestId("memory-detail-open-owner");
-      await expect(row).toHaveText("Open in Location");
+      await expect(row).toHaveText(`Open in ${appName}`);
 
       const reading = await readRow(row);
       assertRows([reading], `${width} ${theme}`);
@@ -304,12 +310,12 @@ for (const theme of ["light", "dark"] as const)
 
       testInfo.annotations.push({ type: "geometry", description: JSON.stringify({ width, theme, row: reading }) });
       const shotDir = process.env.RESERVED_OFFER_SHOT_DIR;
-      if (shotDir && width === 393) {
+      if (shotDir) {
         await page.reload();
-        await open(page, theme, "memory");
+        await open(page, theme, state);
         await page.mouse.move(0, 0);
         fs.mkdirSync(shotDir, { recursive: true });
-        fs.writeFileSync(path.join(shotDir, `geometry-memory-${width}-${theme}.json`), JSON.stringify({ width, theme, row: reading }, null, 2));
-        await page.locator("[data-pkm-memory-detail='true']").screenshot({ path: path.join(shotDir, `memory-reserved-${width}-${theme}.png`) });
+        fs.writeFileSync(path.join(shotDir, `geometry-${state}-${width}-${theme}.json`), JSON.stringify({ width, theme, row: reading }, null, 2));
+        await page.locator("[data-pkm-memory-detail='true']").screenshot({ path: path.join(shotDir, `${state}-reserved-${width}-${theme}.png`) });
       }
     });

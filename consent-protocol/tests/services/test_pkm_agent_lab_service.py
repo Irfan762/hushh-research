@@ -1242,6 +1242,56 @@ async def test_an_unreserved_branch_is_neither_rerouted_nor_offered(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_an_identity_profile_target_is_kept_with_an_offer_to_open_mail_kyc(monkeypatch):
+    """The KYC tab of Mail commits identity_profile; chat keeps the fact and offers it.
+
+    Until 2026-10-02 the identity entries had no offer_action (the /one/kyc
+    screen was retired), so this card carried reserved_offer None: the fact was
+    kept but nothing pointed the owner at a screen that could commit it.
+    """
+    service = PKMAgentLabService()
+    monkeypatch.setattr(
+        service, "_load_domain_registry_choices", AsyncMock(return_value=_registry_choices())
+    )
+    message = "My legal name is Ada Lovelace"
+    payload = {
+        "identity_profile": {"entities": {"legal_name": {"summary": "Legal name is Ada Lovelace."}}}
+    }
+    monkeypatch.setattr(
+        service,
+        "_run_agent_contract",
+        AsyncMock(
+            side_effect=_structure_contract_side_effect(
+                message=message,
+                domain="identity",
+                payload=payload,
+                reserved_offer={"branch": "identity.identity_profile", "label": "legal name"},
+            )
+        ),
+    )
+    result = await service.generate_structure_preview(
+        user_id="user-identity-offer", message=message, current_domains=["identity"]
+    )
+    card = result["preview_cards"][0]
+    assert card["target_domain"] == "identity"
+    assert list(card["candidate_payload"]) == ["agent_memory"]
+    assert "reserved_target_rerouted_to_sibling" in card["validation_hints"]
+    assert card["reserved_offer"] == {
+        "domain": "identity",
+        "branch": "identity_profile",
+        "subject": "legal name",
+        "owner_feature": "kyc",
+        "agent_memory_sibling": "identity.agent_memory",
+        "offer_action": {
+            "route_pattern": "/one/gmail?workspace=kyc",
+            "action_id": "route.one_gmail_kyc",
+            "label": "Review legal name in Mail",
+        },
+        "registry_version": 1,
+    }
+
+
+@pytest.mark.asyncio
 async def test_a_wallet_domain_target_is_kept_in_finance_memory_with_a_wallet_offer(monkeypatch):
     """`wallet` fails domain validation (owner-managed); its sibling is financial."""
     service = PKMAgentLabService()

@@ -18,6 +18,7 @@ import {
   touchedReservedBranches,
   writer,
 } from "@/lib/pkm/reserved-branches";
+import { buildGmailWorkspaceRoute, gmailDeepLinkWorkspace } from "@/lib/navigation/routes";
 
 /**
  * `contracts/pkm/reserved-branches.v1.json` decides which PKM branches belong to
@@ -53,24 +54,87 @@ describe("reserved-branch contract packaging", () => {
   });
 
   it("offers only routes and actions the generated contracts define", () => {
-    const routes = new Set(routeIndex.routes.map((route) => route.route_pattern));
-    const actions = new Map(
-      (gateway.actions as Array<{ action_id: string; execution_target?: { path?: string; target?: string } }>).map(
-        (action) => [action.action_id, action],
-      ),
-    );
-    for (const entry of contract.entries) {
-      const offer = entry.offer_action as { route_pattern: string; action_id: string } | null;
-      if (!offer) continue;
-      expect(routes.has(offer.route_pattern), offer.route_pattern).toBe(true);
-      const action = actions.get(offer.action_id);
-      expect(action, offer.action_id).toBeDefined();
-      if (action?.execution_target?.path === "route") {
-        expect(action.execution_target.target, offer.action_id).toBe(offer.route_pattern);
-      }
+    expect(offerRouteProblems(contract.entries)).toEqual([]);
+  });
+
+  it("opens identity facts on Mail's KYC tab, a tab the Mail page opens from the link", () => {
+    for (const [domain, branch] of [
+      ["identity", "identity_profile"],
+      ["identity", "identity_documents"],
+      ["professional", "profile"],
+    ] as const) {
+      const entry = contract.entries.find((item) => item.domain === domain && item.branch_prefix === branch);
+      expect(entry?.offer_action, `${domain}.${branch}`).toMatchObject({
+        route_pattern: buildGmailWorkspaceRoute("kyc"),
+        action_id: "route.one_gmail_kyc",
+      });
     }
+    const [routePath, query] = buildGmailWorkspaceRoute("kyc").split("?");
+    expect(routePath).toBe("/one/gmail");
+    expect(gmailDeepLinkWorkspace(new URLSearchParams(query).get("workspace"))).toBe("kyc");
+  });
+
+  it("refuses an offer to a route nobody declares (negative control)", () => {
+    const forged = [
+      // A query-qualified path the gateway does not declare.
+      { domain: "identity", branch_prefix: "x", offer_action: { route_pattern: "/one/gmail?workspace=private", action_id: "route.one_gmail_kyc" } },
+      // A real action, pointed somewhere it does not go.
+      { domain: "identity", branch_prefix: "y", offer_action: { route_pattern: "/one/gmail?workspace=receipts", action_id: "route.one_gmail_kyc" } },
+      // A path the route index does not know.
+      { domain: "identity", branch_prefix: "z", offer_action: { route_pattern: "/one/kyc", action_id: "route.one_gmail_kyc" } },
+    ];
+    expect(offerRouteProblems(forged)).toHaveLength(3);
   });
 });
+
+type GatewayAction = {
+  action_id: string;
+  reachability?: { routes?: string[]; screens?: string[] };
+  execution_target?: { status?: string; path?: string; target?: string };
+};
+
+/**
+ * Every offer must open a route the generated contracts define, through a wired
+ * route action that goes exactly there. A query-qualified route (a tab of one
+ * page) is in the route index only when its query changes the page's screen;
+ * a tab on the same screen is deliberately left to its path's entry. Such an
+ * offer is accepted only when its path is indexed, the gateway action declares
+ * that exact route, and the action's screen is the path's own screen.
+ */
+function offerRouteProblems(
+  entries: ReadonlyArray<{ domain: string; branch_prefix: string; offer_action?: unknown }>,
+): string[] {
+  const routes = new Map(routeIndex.routes.map((route) => [route.route_pattern, route]));
+  const actions = new Map((gateway.actions as GatewayAction[]).map((action) => [action.action_id, action]));
+  const problems: string[] = [];
+  for (const entry of entries) {
+    const offer = entry.offer_action as { route_pattern: string; action_id: string } | null | undefined;
+    if (!offer) continue;
+    const where = `${entry.domain}.${entry.branch_prefix} -> ${offer.route_pattern}`;
+    const action = actions.get(offer.action_id);
+    if (!action) {
+      problems.push(`${where}: no action ${offer.action_id}`);
+      continue;
+    }
+    if (action.execution_target?.path === "route" && action.execution_target.target !== offer.route_pattern) {
+      problems.push(`${where}: ${offer.action_id} goes to ${action.execution_target.target}`);
+      continue;
+    }
+    if (routes.has(offer.route_pattern)) continue;
+    const [routePath, query] = offer.route_pattern.split("?");
+    const base = routes.get(routePath!);
+    const sameScreenTab =
+      Boolean(query) &&
+      Boolean(base) &&
+      action.execution_target?.status === "wired" &&
+      action.execution_target?.path === "route" &&
+      (action.reachability?.routes ?? []).includes(offer.route_pattern) &&
+      (action.reachability?.screens ?? []).length === 1 &&
+      action.reachability!.screens![0] === base!.canonical_screen;
+    if (!sameScreenTab) problems.push(`${where}: not a route the index or the gateway defines`);
+  }
+  return problems;
+}
 
 describe("reserved-branch loader", () => {
   it("reserves a wildcard domain apart from its except branch", () => {

@@ -60,3 +60,25 @@ describe("Memory detail for an app-owned item", () => {
     expect(screen.queryByText("Open in Location")).toBeNull();
   });
 });
+
+describe("Memory detail for an identity item", () => {
+  it.each([
+    ["identity", { identity_profile: { legal_name: "Ada Lovelace" } }],
+    ["identity", { identity_documents: { passport: { issuing_country: "GB" } } }],
+    ["professional", { profile: { title: "Analyst" } }],
+  ] as const)("%s opens Mail's KYC tab: %j", (domain, value) => {
+    const onOpenOwner = detail(domain, value);
+    expect(screen.queryByText("Edit")).toBeNull();
+    expect(screen.getByTestId("memory-detail-reserved-note")).toHaveTextContent(
+      "Mail manages this. Edit or remove it there.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open in Mail" }));
+    expect(onOpenOwner).toHaveBeenCalledWith("/one/gmail?workspace=kyc");
+  });
+
+  it("keeps an identity agent_memory item editable, with no Open in (negative control)", () => {
+    detail("identity", { agent_memory: { entities: { mem_1: { summary: "Prefers a middle initial" } } } });
+    expect(screen.getByText("Edit")).toBeTruthy();
+    expect(screen.queryByText("Open in Mail")).toBeNull();
+  });
+});

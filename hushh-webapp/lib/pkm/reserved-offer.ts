@@ -46,7 +46,8 @@ export const RESERVED_OWNER_APP_NAMES: Readonly<Record<string, string>> = {
   finance: "Finance",
   ria: "RIA",
   location: "Location",
-  kyc: "Identity",
+  // Identity details are committed on Mail's KYC tab (/one/gmail?workspace=kyc).
+  kyc: "Mail",
   settings: "Preferences",
   wallet: "Wallet",
   gmail_receipts: "Receipts",
