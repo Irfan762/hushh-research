@@ -410,7 +410,9 @@ def git_state(root: Path = CONSENT_PROTOCOL_ROOT) -> dict[str, Any]:
     # which every run modifies. Other paths' uncommitted work is not the subject;
     # what is dirty here is listed, so a reader sees exactly what differed.
     status = run("status", "--porcelain", "--", ".", ":(exclude)artifacts/pkm-structure-agent")
-    dirty_paths = sorted(line[3:] for line in status.splitlines() if len(line) > 3)
+    # run() strips the output, which eats the first line's leading status
+    # column, so slice past the two-character status and strip the rest.
+    dirty_paths = sorted(line[2:].strip() for line in status.splitlines() if len(line) > 3)
     return {
         "sha": run("rev-parse", "HEAD") or "unknown",
         "dirty": bool(dirty_paths),
