@@ -368,6 +368,15 @@ export function OnboardingJourneyGuard({
   if (loaderActive) {
     return (
       <HushhLoader
+        stage={
+          shouldEjectSetupSurface
+            ? "workspace"
+            : redirecting
+              ? "setup"
+              : authLoading
+                ? "session"
+                : "setup"
+        }
         label={
           shouldEjectSetupSurface
             ? "Opening One..."

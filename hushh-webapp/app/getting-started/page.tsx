@@ -25,7 +25,12 @@ function GettingStartedContent() {
     router.replace(user ? ROUTES.ONE_HOME : loginUrl);
   }, [loading, user, router, loginUrl]);
 
-  return <HushhLoader variant="fullscreen" label="Preparing welcome…" />;
+  return (
+    <HushhLoader
+      stage={loading ? "session" : user ? "workspace" : "redirect"}
+      label="Preparing welcome…"
+    />
+  );
 }
 
 export default function GettingStartedPage() {
@@ -37,7 +42,7 @@ export default function GettingStartedPage() {
         authState="anonymous"
         dataState="loaded"
       />
-      <Suspense fallback={null}>
+      <Suspense fallback={<HushhLoader stage="session" label="Preparing welcome…" />}>
         <GettingStartedContent />
       </Suspense>
     </>

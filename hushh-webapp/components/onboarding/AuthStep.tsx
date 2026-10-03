@@ -869,7 +869,12 @@ export function AuthStep({
   }
 
   if (!hydrated || authLoading || user) {
-    return <HushhLoader label="Checking session..." variant="fullscreen" />;
+    return (
+      <HushhLoader
+        stage={!hydrated || authLoading ? "session" : "workspace"}
+        label="Checking session..."
+      />
+    );
   }
 
   const authOptions = isAndroid()
