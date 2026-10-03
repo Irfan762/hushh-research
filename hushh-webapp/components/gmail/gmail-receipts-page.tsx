@@ -1379,15 +1379,15 @@ export default function GmailReceiptsPage({
             : gmail.status?.last_sync_at || gmail.syncRun?.status === "completed"
               ? "Your latest receipts are ready."
               : "Organize your purchases in one place.";
-  const primaryActionLabel = receiptStorageReadOnly
-    ? "Receipt sync moving to device"
-    : isConnected
-    ? syncing
-      ? "Syncing receipts…"
-      : "Sync receipts"
-    : connectorState === "needs_reauthentication" || gmail.status?.revoked
+  const primaryActionLabel = !isConnected
+    ? connectorState === "needs_reauthentication" || gmail.status?.revoked
       ? "Reconnect Mail"
-      : "Connect Mail";
+      : "Connect Mail"
+    : receiptStorageReadOnly
+      ? "Receipt sync moving to device"
+      : syncing
+        ? "Syncing receipts…"
+        : "Sync receipts";
   const connectGmailHelper = Capacitor.isNativePlatform()
     ? "A secure Google account sheet opens next. Approve Mail access and return here automatically."
     : null;
