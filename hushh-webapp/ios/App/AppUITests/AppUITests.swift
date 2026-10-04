@@ -24,34 +24,6 @@ final class AppUITests: XCTestCase {
         vaultUnlockSubmitted = false
     }
 
-    func testPhysicalDeviceAutomationCanNavigateSettingsWithoutResettingOne() throws {
-        guard ProcessInfo.processInfo.environment["HUSHH_UI_AUTOMATION_READINESS_ONLY"] == "true" else {
-            throw XCTSkip("Opt-in physical-device control check, not product acceptance")
-        }
-        let app = XCUIApplication()
-        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
-            throw XCTSkip("One must already be running; this probe must not cold-launch it")
-        }
-        // Probe the OS independently of a protected WebView. Only public
-        // Settings navigation is touched; no preference or credential changes.
-        let settings = XCUIApplication(bundleIdentifier: "com.apple.Preferences")
-        settings.activate()
-        let general = settings.staticTexts["General"]
-        for _ in 0..<6 {
-            if general.exists { break }
-            let back = settings.navigationBars.buttons.firstMatch
-            guard back.exists else { break }
-            back.tap()
-        }
-        XCTAssertTrue(general.waitForExistence(timeout: 10), "Public Settings controls are unavailable")
-        general.tap()
-        XCTAssertTrue(settings.navigationBars["General"].waitForExistence(timeout: 10),
-                      "Native tap did not navigate to General")
-        settings.navigationBars.buttons.firstMatch.tap()
-        app.activate()
-        print("NATIVE_UI_CONTROL_READY public_settings_navigation")
-    }
-
     func testLocalSessionChatDrawerDoesNotReplaceThePage() throws {
         // Real device/session lane: no UITestMode, reviewer bootstrap, reset,
         // credentials, or account mutation. It exercises the installed local
@@ -166,6 +138,74 @@ final class AppUITests: XCTestCase {
         dismiss.tap()
         XCTAssertTrue(bar.waitForExistence(timeout: 10) && bar.isHittable)
         print("NATIVE_NAVIGATION_CONTINUITY tabs_overlay_single_webview")
+    }
+
+    func testLocalSessionNativeBackRetiresUnderProfileAndReturnsToOne() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_NATIVE_CHROME_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in Back pilot acceptance; requires the current Debug candidate")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running and unlocked; no cold launch or credential typing")
+        }
+        app.activate()
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let webView = hosts.firstMatch
+        XCTAssertTrue(webView.waitForExistence(timeout: 15), "The existing Capacitor host is unavailable")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "The candidate requires a normal vault unlock before warm-session proof")
+        XCTAssertFalse(app.buttons["Continue with Google"].exists, "Warm-session proof cannot substitute a new sign-in")
+        let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
+        let one = bar.buttons["One"]
+        XCTAssertTrue(one.waitForExistence(timeout: 15) && one.isHittable,
+                      "The existing session has not admitted native navigation")
+        one.tap()
+        let wallet = webView.links["Open Wallet"].firstMatch
+        XCTAssertTrue(wallet.waitForExistence(timeout: 15), "One must expose the existing Wallet route")
+        for _ in 0..<3 {
+            if wallet.isHittable { break }
+            webView.swipeUp()
+        }
+        XCTAssertTrue(wallet.isHittable)
+        wallet.tap()
+        let back = app.buttons["top-shell-back"].firstMatch
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable,
+                      "The candidate did not admit the native Back pilot")
+        XCTAssertEqual(back.frame.width, 44, accuracy: 1)
+        XCTAssertEqual(back.frame.height, 44, accuracy: 1)
+        XCTAssertFalse(webView.buttons["Go back"].exists, "DOM and native Back must not both be accessible")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Wallet lost the unlocked session")
+        XCTAssertEqual(hosts.count, 1)
+
+        let profile = app.buttons["Open Profile"].firstMatch
+        XCTAssertTrue(profile.exists && profile.isHittable)
+        profile.tap()
+        let close = app.buttons["Close Profile"].firstMatch
+        XCTAssertTrue(close.waitForExistence(timeout: 10) && close.isHittable)
+        let overlayRetirement = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
+        XCTAssertEqual(XCTWaiter.wait(for: [overlayRetirement], timeout: 10), .completed,
+                       "Native Back remained accessible under the Profile overlay")
+        close.tap()
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable)
+
+        XCUIDevice.shared.press(.home)
+        XCTAssertTrue(app.wait(for: .runningBackground, timeout: 5) || app.state == .runningBackgroundSuspended,
+                      "One did not enter the background")
+        guard [.runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            XCTFail("One stopped while backgrounded; the test must not cold-launch it")
+            return
+        }
+        app.activate()
+        XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable,
+                      "Back did not recover after normal background/resume")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Resume lost the unlocked session")
+        back.tap()
+        XCTAssertTrue(wallet.waitForExistence(timeout: 15), "Back did not invoke the existing return-to-One handler")
+        let routeRetirement = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: back)
+        XCTAssertEqual(XCTWaiter.wait(for: [routeRetirement], timeout: 10), .completed,
+                       "Native Back remained accessible after returning to One")
+        XCTAssertEqual(hosts.count, 1, "Back introduced another Capacitor host")
+        XCTAssertEqual(app.webViews.count, 1 + webView.webViews.count)
+        print("NATIVE_BACK_CONTINUITY layout_overlay_resume_existing_handler_single_host")
     }
 
     func testLocalSessionProfilePhotoPreviewDoesNotChangePhoto() throws {

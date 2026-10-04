@@ -163,9 +163,25 @@ contract checks, frontend typecheck, design/performance checks and a signed nati
 compile. Physical Back, VoiceOver/focus transfer, Dynamic Type, reduced motion/
 transparency, rotation, frame pacing and persistent WebView/document identity
 remain acceptance gates. CoreDevice reached the running iPhone over Wi-Fi, but
-attach-only XCUI timed out while enabling automation mode; iPad is not admitted.
+the initial attach-only XCUI attempt timed out enabling automation. That admission
+blocker is now resolved: a warm native tabs/Search/overlay test executed and passed
+on the previous installed app on 2026-10-04. The old-app Back negative control
+reached Wallet and failed specifically at native Back admission, as expected.
+The new production-targeted Debug candidate is installed; its attach-only Back
+check stops at the vault-unlock precondition after binary replacement. It has not
+passed physical Back acceptance. Installation is separate cold preparation, not
+continuity proof. No sign-out, account reset or reviewer bootstrap was used.
+iPad is not admitted.
 This is not release-readiness proof.
 The subsequent families are deliberately not enabled or described as delivered.
+
+The focused Back device contract in [AppUITests](../ios/App/AppUITests/AppUITests.swift)
+checks the 44-point slot, duplicate-control exclusion, complete accessibility
+retirement beneath Profile, normal background/resume and the existing return-to-One
+handler. It requires an already-running, unlocked app and never cold-launches a
+stopped process to make continuity pass. The obsolete public Settings locator
+probe was removed after direct product automation became available; no product
+acceptance assertion or release gate was removed.
 
 Physical iPhone evidence on 2026-10-03 covers the native Chat/One/Connect/Feed
 journey, return to selected Chat, Chat-drawer isolation, Search opening/isolation/
