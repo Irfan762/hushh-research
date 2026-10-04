@@ -1776,6 +1776,30 @@ function OwnerConnectorsPanel({
           : driveBusy;
   const mailConnected = Boolean(gmail.status?.connected && !gmail.status?.needs_reauth);
   const driveConnected = ["connected", "verifying"].includes(drive?.status ?? "");
+  const calendarNeedsReconnect = calendar.status?.status === "needs_reauth";
+  const calendarStatusLabel = calendar.error
+    ? "Status unavailable"
+    : !calendar.loaded
+      ? "Checking Calendar connection…"
+      : calendar.connected
+        ? "Connected"
+        : calendarNeedsReconnect
+          ? "Reconnect needed"
+          : "Not connected";
+  const calendarDescription = calendar.error
+    ? "We couldn’t check your calendar connection."
+    : !calendar.loaded
+      ? "Checking your calendar connection."
+      : calendar.connected
+        ? calendar.status?.access_level === "manage"
+          ? "Your private agent can help schedule meetings. You approve every change."
+          : "Your private agent can check your availability."
+        : calendarNeedsReconnect
+          ? "Reconnect to keep planning around your schedule."
+          : "Plan around your schedule.";
+  const calendarConnectLabel = calendarNeedsReconnect
+    ? "Reconnect Calendar"
+    : "Connect Calendar";
   const showConnector = (id: string) => {
     setConfirm(null);
     setActiveConnector(id);
@@ -1839,11 +1863,13 @@ function OwnerConnectorsPanel({
         ? "Status unavailable"
         : !calendar.loaded
           ? "Checking connection…"
-          : calendar.status?.status === "needs_reauth"
-            ? "Sign-in needed"
-            : undefined,
+          : calendar.connected
+            ? "Connected"
+            : calendarNeedsReconnect
+              ? "Reconnect needed"
+              : "Plan around your schedule.",
       action: !calendar.loaded || calendar.error ? undefined : {
-        label: calendar.connected ? "Disconnect Calendar" : "Connect Calendar",
+        label: calendar.connected ? "Disconnect Calendar" : calendarConnectLabel,
         onClick: () => {
           if (calendar.connected) {
             askToDisconnect("calendar", "calendar", true);
@@ -2483,16 +2509,83 @@ function OwnerConnectorsPanel({
               )}
             </section>}
             {activeConnector === "calendar" && (
-              <section className="space-y-3 rounded-xl border border-border p-3" aria-label="Calendar details">
-                <p role="status" className="text-sm">{calendar.error ? "Status unavailable" : calendar.connected ? "Connected" : calendar.status?.status === "needs_reauth" ? "Sign-in needed" : "Not connected"}</p>
-                {calendar.connected ? (
-                  <Button size="compact" variant="outline" disabled={calendarBusy} onClick={() => setConfirm("calendar")}>Disconnect Calendar</Button>
-                ) : (
-                  <Button size="compact" disabled={calendarBusy} onClick={() => connectCalendar()}>Connect Calendar</Button>
-                )}
-                {calendarPopupPending && <Button size="compact" variant="outline" onClick={() => calendarPopupCancel.current?.abort()}>Cancel sign-in</Button>}
-                {calendar.error ? <Button size="compact" variant="ghost" onClick={() => calendar.refresh()}>Retry</Button> : null}
-                {calendarBusy || calendarMessage ? <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{calendarPopupPending ? "Finish signing in with Google in the window that opened." : calendarBusy ? "Updating Calendar…" : calendarMessage}</p> : null}
+              <section
+                aria-label="Calendar details"
+                className="space-y-6 rounded-3xl border border-border bg-foreground/[0.04] p-5 sm:p-6"
+              >
+                <div className="space-y-1.5">
+                  <h3 className="text-xl font-semibold tracking-tight">
+                    Google Calendar
+                  </h3>
+                  <p className="text-sm leading-6 text-muted-foreground">
+                    {calendarDescription}
+                  </p>
+                </div>
+
+                <div className="space-y-3">
+                  <p role="status" className="text-lg font-medium">
+                    {calendarStatusLabel}
+                  </p>
+                  {calendar.connected ? (
+                    <Button
+                      className={touch}
+                      size="compact"
+                      variant="outline"
+                      disabled={calendarBusy}
+                      onClick={() => setConfirm("calendar")}
+                    >
+                      Disconnect Calendar
+                    </Button>
+                  ) : (
+                    <Button
+                      className={`${touch} h-12 px-6 text-base font-semibold`}
+                      disabled={calendarBusy}
+                      onClick={() => connectCalendar()}
+                    >
+                      {calendarConnectLabel}
+                    </Button>
+                  )}
+                  {!calendar.error && !calendar.connected && !calendarNeedsReconnect ? (
+                    <p className="text-sm text-muted-foreground">
+                      Private by default. Disconnect anytime.
+                    </p>
+                  ) : calendar.connected ? (
+                    <p className="text-sm text-muted-foreground">
+                      Disconnect anytime.
+                    </p>
+                  ) : null}
+                  {calendarPopupPending && (
+                    <Button
+                      size="compact"
+                      variant="outline"
+                      onClick={() => calendarPopupCancel.current?.abort()}
+                    >
+                      Cancel sign-in
+                    </Button>
+                  )}
+                  {calendar.error ? (
+                    <Button
+                      size="compact"
+                      variant="ghost"
+                      onClick={() => calendar.refresh()}
+                    >
+                      Retry
+                    </Button>
+                  ) : null}
+                  {calendarBusy || calendarMessage ? (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      className="text-sm text-muted-foreground"
+                    >
+                      {calendarPopupPending
+                        ? "Finish signing in with Google in the window that opened."
+                        : calendarBusy
+                          ? "Updating Calendar…"
+                          : calendarMessage}
+                    </p>
+                  ) : null}
+                </div>
               </section>
             )}
             {activeConnector === "plaid" && (
