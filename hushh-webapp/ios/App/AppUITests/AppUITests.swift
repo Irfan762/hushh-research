@@ -139,6 +139,67 @@ final class AppUITests: XCTestCase {
         print("CHAT_DRAWER_GESTURE_CONTINUITY body_swipe_fixed_host")
     }
 
+    func testLocalSessionVoiceBarCancelsFromItsBodyAndReturnsToChat() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in attach-only voice cancellation proof")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running; no cold launch or reset")
+        }
+        app.activate()
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let webView = hosts.firstMatch
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Normal vault unlock is required before voice proof")
+        for label in ["Close Profile", "Close chat history", "Close search"] {
+            let dismiss = app.buttons[label].firstMatch
+            if dismiss.exists && dismiss.isHittable { dismiss.tap() }
+        }
+        perfTapNav(app, label: "Chat")
+        let composer = webView.descendants(matching: .any).matching(NSPredicate(
+            format: "label == %@", "Message One"
+        )).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable)
+        let previousDraft = composer.value as? String ?? ""
+        let syntheticDraft = "Voice cancellation check. This unsent draft must remain available after stopping."
+        let insertedDraft = previousDraft.isEmpty || previousDraft == "Message One..."
+        let expectedDraft = insertedDraft ? syntheticDraft : previousDraft
+        if insertedDraft {
+            composer.tap()
+            composer.typeText(syntheticDraft)
+        }
+        let start = webView.buttons["Start voice mode"].firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
+        let cancel = webView.buttons.matching(NSPredicate(
+            format: "label IN %@", ["Stop voice", "Cancel voice command"]
+        )).firstMatch
+        defer {
+            if cancel.exists && cancel.isHittable { cancel.tap() }
+            if insertedDraft && composer.exists && composer.isHittable {
+                composer.tap()
+                composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: syntheticDraft.count))
+            }
+        }
+        // Exercise the real shared input adapter, never a test-only endpoint.
+        start.tap()
+        XCTAssertTrue(cancel.waitForExistence(timeout: 5) && cancel.isHittable,
+                      "The primary bar must be cancellable even while connecting")
+        XCTAssertEqual(webView.buttons.matching(NSPredicate(
+            format: "label IN %@", ["Stop voice", "Cancel voice command"]
+        )).count, 1, "Chat exposed duplicate active voice bars")
+        cancel.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5)).tap()
+        XCTAssertTrue(start.waitForExistence(timeout: 10) && start.isHittable,
+                      "Cancelling the body did not return to the existing Chat composer")
+        XCTAssertFalse(cancel.exists, "Stopped capture remained active")
+        XCTAssertTrue(composer.exists && composer.isHittable && composer.frame.height > 20,
+                      "Returning from voice left the text editor collapsed")
+        XCTAssertTrue((composer.value as? String) == expectedDraft,
+                      "Voice cancellation did not preserve the unsent draft")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Voice cancellation lost the unlocked vault")
+        XCTAssertEqual(hosts.count, 1)
+        print("VOICE_BAR_CONTINUITY body_cancel_single_dock_warm_chat")
+    }
+
     func testLocalSessionNativeTabsKeepTheSessionAndRespectOverlays() throws {
         guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
             throw XCTSkip("Opt-in attach-only native navigation proof")

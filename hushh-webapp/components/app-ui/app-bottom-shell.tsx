@@ -21,7 +21,7 @@ import { useNativeNavigationBottomInset } from "@/lib/capacitor/native-navigatio
 
 export type BottomShellModel = {
   navigationHidden: boolean;
-  /** Chat owns the primary text composer, so its idle voice launcher is omitted. */
+  /** Chat owns this same bar as its composer, including active voice controls. */
   agentBarHidden?: boolean;
   /** An immersive route owns the full viewport and has no persistent chrome. */
   hidden?: boolean;
@@ -41,10 +41,9 @@ export const AppBottomShell = memo(function AppBottomShell({ model }: { model: B
   const nativeBottomInset = useNativeNavigationBottomInset();
   const voiceActive = useAgentVoiceState((state) => state.active);
   const hidden = model.hidden && !command?.active && !voiceActive;
-  // A route may hide the idle launcher without interrupting a command already
-  // in progress. Active capture remains visible and cancellable.
-  const agentBarVisible =
-    !model.agentBarHidden || Boolean(command?.active) || voiceActive;
+  // The owner remains mounted above routes; Chat presents its active control
+  // in the composer slot, not a second overlapping shell launcher.
+  const agentBarVisible = !model.agentBarHidden;
   const shellRef = useRef<HTMLDivElement | null>(null);
   const navigationSlotRef = useRef<HTMLDivElement | null>(null);
   // AgentBar reads client-only auth and location-command state. Rendering its

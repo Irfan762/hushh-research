@@ -61,7 +61,7 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('"motion-step-enter flex w-full items-start gap-2"');
     expect(workspace).not.toContain("animate-in fade-in slide-in-from-bottom-1");
     expect(workspace).toContain('"agent-chat-composer"');
-    expect(workspace).toContain("bottom-chrome-surface min-h-14 rounded-[var(--app-input-radius)]");
+    expect(workspace).toContain("min-h-11 rounded-[var(--app-input-radius)]");
     // Persistent desktop column (2026-09-29): one solid chat-scoped surface
     // beside the conversation, separated by a hairline, never glass.
     expect(history).toContain('"border-r border-[color:var(--one-chat-divider)] bg-[color:var(--one-chat-sidebar)]"');
@@ -295,7 +295,14 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('data-agent-chat-route={isCanonicalChatRoute ? "root" : "embedded"}');
     expect(workspace).toContain("onKaiBottomChromeScroll(scrollTop)");
     expect(shell).toContain("agentBarHidden?: boolean");
-    expect(shell).toContain("!model.agentBarHidden || Boolean(command?.active) || voiceActive");
+    expect(shell).toContain("const agentBarVisible = !model.agentBarHidden");
+    expect(workspace).toContain('<AgentBar layout="slot" />');
+    expect(workspace).toContain("<AgentBarSurface");
+    expect(workspace).not.toContain("<AgentVoiceWaveInput");
+    // A command result can outlive capture. Never measure the hidden editor;
+    // its visibility change must trigger sizing when that result is dismissed.
+    expect(workspace).toContain("if (!textarea || showVoiceBar) return;");
+    expect(workspace).toContain("[composerExpanded, input, setComposerExpanded, showVoiceBar]");
     expect(providers).toContain("pathname === ROUTES.HOME");
     expect(providers).toContain("agentBarHidden:");
   });

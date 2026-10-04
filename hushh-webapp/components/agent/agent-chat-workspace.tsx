@@ -231,7 +231,11 @@ import {
   getWelcomePrompts,
 } from "@/lib/agent/agent-welcome-prompts";
 import type { ClientPrompt } from "@/lib/one-location/types";
-import { AgentVoiceWaveInput } from "@/components/agent/agent-voice-wave-input";
+import { AgentBar } from "@/components/agent/agent-bar";
+import { AgentBarSurface } from "@/components/agent/agent-bar-surface";
+import { useOptionalLocationCommand } from "@/components/agent/location-command-provider";
+import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
+import { useVoiceSessionStore } from "@/lib/one-voice/session-store";
 import { useAuth } from "@/hooks/use-auth";
 import { useEffectiveAvatarUrl } from "@/hooks/use-effective-avatar-url";
 import {
@@ -2856,7 +2860,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   });
 
   const voiceActive = voiceState !== "idle";
-  const voiceLevel = useAgentVoiceState((state) => state.level);
+  const commandPresentation = useOptionalLocationCommand();
+  const liveVoiceEnabled = useOneVoiceLiveEnabled();
+  const liveVoiceError = useVoiceSessionStore(state => state.state.error !== null);
+  const showVoiceBar = voiceActive || (liveVoiceEnabled
+    ? liveVoiceError
+    : Boolean(commandPresentation?.active) || commandPresentation?.view.phase === "result");
   const isToolWorking = activeFrontendToolCount > 0;
   const isPkmMemoryWorking = activePkmToolCount > 0;
   const isVisiblePkmMemoryWorking = visiblePkmToolCount > 0;
@@ -3415,7 +3424,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   useEffect(() => {
     const textarea = composerTextareaRef.current;
-    if (!textarea || voiceActive) return;
+    if (!textarea || showVoiceBar) return;
     const surface = composerSurfaceRef.current;
     const wasExpanded = composerExpanded;
     const previousHeight = textarea.style.height;
@@ -3435,7 +3444,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }
     // The expanded writing surface owns its fixed, spacious height.
     textarea.style.height = composerExpanded ? "" : `${nextHeight}px`;
-  }, [composerExpanded, input, setComposerExpanded, voiceActive]);
+  }, [composerExpanded, input, setComposerExpanded, showVoiceBar]);
 
   useLayoutEffect(() => {
     const fromRect = composerTransitionRectRef.current;
@@ -7836,7 +7845,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   // Agent Chat never owns audio. Its microphone affordance delegates to the
   // persistent Agent Bar, which is the sole owner of command capture.
   const startConversationalVoice = requestAgentConversation;
-  const cancelConversationalVoice = requestAgentConversationStop;
 
   // The single agent bar always works. Before the vault is unlocked it runs the
   // informational tier (help + navigation), so the access banner is a soft,
@@ -9989,8 +9997,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             </div>
           </div>
 
-          <form
-            onSubmit={handleSubmit}
+          <div
             inert={isHistoryDrawerOpen}
             data-agent-chat-composer-form={
               isCanonicalChatRoute ? "root" : "embedded"
@@ -10052,17 +10059,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   void removeQueuedPrompt(id);
                 }}
               />
-              {voiceActive ? (
-                <div className="rounded-[22px] bg-foreground/[0.045] p-2 shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]">
-                  <AgentVoiceWaveInput
-                    status={voiceState}
-                    level={voiceLevel}
-                    disabled={isVoiceConnecting}
-                    onCancel={cancelConversationalVoice}
-                  />
-                </div>
-              ) : (
-                <>
+              {showVoiceBar ? (
+                <AgentBar layout="slot" />
+              ) : null}
+              <form onSubmit={handleSubmit} hidden={showVoiceBar} inert={showVoiceBar}>
                   {activeDriveSearchSelection ? (
                     <div className="mb-2 flex min-w-0 items-center gap-2 rounded-[18px] bg-foreground/[0.045] px-3 py-1.5 text-sm" aria-label="Selected Drive file">
                       <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -10092,19 +10092,20 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                    * ("number 3 fopand" on a Galaxy S24 Ultra, 2026-09-22). The
                    * text box now stays the same element; only its size, the
                    * corner control and the labels change. */}
-                  <div
+                  <AgentBarSurface
                     ref={composerSurfaceRef}
                     data-testid={composerExpanded ? "agent-chat-composer-expanded" : "agent-chat-composer"}
                     className={cn(
                       composerExpanded
-                        ? "agent-chat-composer-surface relative mb-2 overflow-hidden rounded-[24px]"
+                        ? "agent-chat-composer-surface relative mb-2 block overflow-hidden rounded-[24px]"
                         : "agent-chat-composer-surface flex min-h-[3.75rem] items-center gap-2 overflow-hidden rounded-[var(--app-input-radius)] px-2.5 pl-3.5",
+                      !isCanonicalChatRoute && "max-w-none",
                       composerExpanded
                         ? isCanonicalChatRoute
-                          ? "bottom-chrome-surface"
+                          ? ""
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-foreground/[0.045]"
                         : isCanonicalChatRoute
-                          ? "bottom-chrome-surface min-h-14 rounded-[var(--app-input-radius)]"
+                          ? "min-h-11 rounded-[var(--app-input-radius)]"
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]",
                     )}
                   >
@@ -10174,11 +10175,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                             {composerActionRail}
                           </div>
                         </div>
-                  </div>
-                </>
-              )}
+                  </AgentBarSurface>
+                </form>
             </div>
-          </form>
+          </div>
         </div>
         </section>
       </div>

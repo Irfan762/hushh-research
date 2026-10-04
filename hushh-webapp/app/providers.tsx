@@ -408,8 +408,8 @@ function AppShellFrame({ children }: ProvidersProps) {
     () => ({
       navigationHidden: hideBottomNavigation,
       // The canonical Chat route already exposes its text composer. Keep the
-      // idle voice launcher out of that route's visual hierarchy while allowing
-      // an active command to remain visible and cancellable.
+      // shell launcher out of that route's visual hierarchy; Chat presents
+      // active voice in the same composer seat with the shared bar component.
       agentBarHidden:
         isAuthenticated && !authLoading && pathname === ROUTES.HOME,
       hidden: bottomChromeHidden,
