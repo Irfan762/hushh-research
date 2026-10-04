@@ -26,7 +26,8 @@ export type ChromeAcknowledgement = ChromeIdentity & {
 export type ChromeChoice = ChromeIdentity & { sequence: number; privacyGeneration: number };
 
 export interface HushhNativeChromePlugin {
-  getCapabilities(): Promise<{ contractVersion: number; families: "back"[] }>;
+  getCapabilities(): Promise<{ contractVersion: number; families: "back"[]; canvasAppearance?: boolean }>;
+  setCanvasAppearance(options: { documentId: string; revision: number; backgroundHex: string }): Promise<{ documentId: string; revision: number }>;
   prepare(options: ChromeProjection): Promise<ChromeAcknowledgement>;
   activate(options: ChromeIdentity): Promise<ChromeAcknowledgement>;
   retire(options: ChromeIdentity & { targetRevision?: number }): Promise<ChromeAcknowledgement>;
@@ -37,6 +38,25 @@ export interface HushhNativeChromePlugin {
 
 export const nativeChrome = registerPlugin<HushhNativeChromePlugin>("HushhNativeChrome");
 let revision = 0;
+let canvasRevision = 0;
+
+/** The existing CSS canvas is authoritative even when no native control is visible. */
+export async function syncNativeCanvasAppearance(): Promise<boolean> {
+  const backgroundHex = getComputedStyle(document.documentElement).getPropertyValue("--background").trim();
+  if (!/^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i.test(backgroundHex)) return false;
+  // Reserve ordering before discovery: a delayed older request must never
+  // repaint a theme that React has already replaced.
+  const projection = { documentId: nativeDocumentId(), revision: ++canvasRevision, backgroundHex };
+  const capability = await bounded(nativeChrome.getCapabilities());
+  if (capability.canvasAppearance !== true) return false; // Older wrappers retain their existing canvas.
+  if (projection.revision !== canvasRevision ||
+      getComputedStyle(document.documentElement).getPropertyValue("--background").trim() !== backgroundHex) return false;
+  const ack = await bounded(nativeChrome.setCanvasAppearance(projection));
+  if (ack.documentId !== projection.documentId || ack.revision !== projection.revision) {
+    throw new Error("NATIVE_CANVAS_ACK_UNCONFIRMED");
+  }
+  return true;
+}
 // A lease survives a React remount until native retirement is confirmed. This is
 // not persisted; the native document fence handles a WebView reload.
 let outstanding: ChromeIdentity | null = null;

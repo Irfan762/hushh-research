@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
-import { NativeChromeLease, hasOutstandingNativeChrome, retireNativeChrome, type ChromeAcknowledgement, type ChromeProjection } from "@/lib/capacitor/native-chrome";
+import { NativeChromeLease, hasOutstandingNativeChrome, retireNativeChrome, syncNativeCanvasAppearance, type ChromeAcknowledgement, type ChromeProjection } from "@/lib/capacitor/native-chrome";
 import { NativeShellBack } from "@/components/app-ui/native-shell-back";
 import { useSessionChromeSuppression } from "@/lib/auth/use-session-chrome-suppression";
 import { writeAccent } from "@/lib/theme/accent";
@@ -8,7 +8,7 @@ import { writeAccent } from "@/lib/theme/accent";
 vi.mock("next-themes", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
 
 const bridge = vi.hoisted(() => ({ platform: "ios", callbacks: new Map<string, (event: unknown) => void>(),
-  prepare: vi.fn(), activate: vi.fn(), retire: vi.fn(), confirmChoice: vi.fn(), getCapabilities: vi.fn() }));
+  prepare: vi.fn(), activate: vi.fn(), retire: vi.fn(), confirmChoice: vi.fn(), getCapabilities: vi.fn(), setCanvasAppearance: vi.fn() }));
 vi.mock("@capacitor/core", () => ({
   Capacitor: { isNativePlatform: () => bridge.platform !== "web", getPlatform: () => bridge.platform },
   registerPlugin: () => ({ ...bridge, addListener: async (name: string, callback: (event: unknown) => void) => {
@@ -32,9 +32,11 @@ describe("native chrome presentation lease", () => {
     document.documentElement.removeAttribute("data-accent");
     document.documentElement.style.removeProperty("--app-accent");
     document.documentElement.style.removeProperty("--app-accent-deep");
+    document.documentElement.style.removeProperty("--background");
     bridge.platform = "ios";
     bridge.callbacks.clear();
     bridge.getCapabilities.mockReset().mockResolvedValue({ contractVersion: 2, families: ["back"] });
+    bridge.setCanvasAppearance.mockReset().mockImplementation(async (value) => value);
     bridge.prepare.mockReset().mockImplementation(async (value: ChromeProjection) => ({ ...value, phase: "prepared" }));
     bridge.activate.mockReset().mockImplementation(async (value) => ({ ...value, phase: "active" }));
     bridge.retire.mockReset().mockImplementation(async (value) => ({ ...value, phase: "retired" }));
@@ -42,6 +44,24 @@ describe("native chrome presentation lease", () => {
     await retireNativeChrome("owner-a");
   });
   afterEach(async () => { cleanup(); await act(async () => { await Promise.resolve(); }); vi.restoreAllMocks(); });
+  it("uses the committed CSS canvas and cannot repaint an older theme after delayed discovery", async () => {
+    const discovery = deferred<{ contractVersion: number; families: "back"[]; canvasAppearance: boolean }>();
+    const capability = { contractVersion: 2, families: [] as "back"[], canvasAppearance: true };
+    document.documentElement.style.setProperty("--background", "#f2f2f7");
+    bridge.getCapabilities.mockReturnValueOnce(discovery.promise).mockResolvedValue(capability);
+    const old = syncNativeCanvasAppearance();
+    document.documentElement.style.setProperty("--background", "#0e0e10");
+    expect(await syncNativeCanvasAppearance()).toBe(true);
+    discovery.resolve(capability);
+    expect(await old).toBe(false);
+    expect(bridge.setCanvasAppearance).toHaveBeenCalledOnce();
+    expect(bridge.setCanvasAppearance.mock.calls[0][0]).toMatchObject({ documentId: "document-a", backgroundHex: "#0e0e10" });
+    bridge.getCapabilities.mockResolvedValue({ contractVersion: 2, families: [] });
+    expect(await syncNativeCanvasAppearance()).toBe(false);
+    bridge.getCapabilities.mockResolvedValue(capability);
+    bridge.setCanvasAppearance.mockImplementation(async (value) => ({ ...value, revision: value.revision - 1 }));
+    await expect(syncNativeCanvasAppearance()).rejects.toThrow("NATIVE_CANVAS_ACK_UNCONFIRMED");
+  });
   it("does not transfer interaction before matching layout and activation acknowledgements", async () => {
     const lease = new NativeChromeLease(projection, "owner-a");
     const action = vi.fn();

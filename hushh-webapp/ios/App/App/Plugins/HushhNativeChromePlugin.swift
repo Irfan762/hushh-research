@@ -138,6 +138,7 @@ final class HushhNativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
     let jsName = "HushhNativeChrome"
     let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "getCapabilities", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setCanvasAppearance", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "prepare", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "activate", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "retire", returnType: CAPPluginReturnPromise),
@@ -150,6 +151,9 @@ final class HushhNativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
     private var observers = [NSObjectProtocol]()
     private var keyboardVisible = false
     private var sequence = 0
+    // Reuse the existing monotonic document/retirement fence. A prior page's
+    // delayed appearance must not repaint the current document.
+    private var canvasState = HushhNativeChromeState()
 
     override func load() {
         DispatchQueue.main.async { [weak self] in
@@ -172,7 +176,40 @@ final class HushhNativeChromePlugin: CAPPlugin, CAPBridgedPlugin {
 
     @objc func getCapabilities(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
-            call.resolve(["contractVersion": HushhNativeControlAppearance.contractVersion, "families": self?.backAdmitted == true ? ["back"] : []])
+            call.resolve(["contractVersion": HushhNativeControlAppearance.contractVersion, "families": self?.backAdmitted == true ? ["back"] : [], "canvasAppearance": true])
+        }
+    }
+
+    /// App-authored canvas only, including pages without admitted navigation.
+    /// Never restyle the window, alter WebView opacity or uncover privacy/maps.
+    @objc func setCanvasAppearance(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let document = call.getString("documentId"),
+                  !document.isEmpty, document.count <= 128,
+                  let revision = call.getInt("revision"), revision >= 0,
+                  revision < HushhSessionPrivacyState.maximumJavaScriptSafeGeneration,
+                  let color = HushhNativeControlAppearance.color(call.getString("backgroundHex")),
+                  color.cgColor.alpha == 1, let host = self.bridge?.viewController?.view,
+                  let webView = self.bridge?.webView else {
+                call.reject("NATIVE_CANVAS_INVALID_STATE"); return
+            }
+            let shield = HushhSessionPrivacyShield.shared
+            shield.observeDocument(document)
+            guard shield.acceptsDocument(document),
+                  self.canvasState.prepare(.init(document: document, ownerEpoch: "app-canvas", revision: revision)) else {
+                call.reject("NATIVE_CANVAS_STALE_STATE"); return
+            }
+            // Capacitor's bridge root can be the WebView itself. In that case
+            // respect the same transparency guard as its backing canvas.
+            if host !== webView { host.backgroundColor = color }
+            // Google Maps may own a transparent WebView. Preserve that mode;
+            // the opaque page's backing and overscroll canvas follow CSS.
+            if webView.isOpaque {
+                webView.backgroundColor = color
+                webView.scrollView.backgroundColor = color
+                webView.underPageBackgroundColor = color
+            }
+            call.resolve(["documentId": document, "revision": revision])
         }
     }
 
