@@ -124,7 +124,7 @@ final class AppUITests: XCTestCase {
                 let dismiss = app.buttons[label].firstMatch
                 if dismiss.exists && dismiss.isHittable { dismiss.tap() }
             }
-            print("NATIVE_NAVIGATION_ADMISSION vault_unlock_visible=\(webView.buttons["Unlock"].exists) privacy_retry_visible=\(app.buttons["session-privacy-retry"].exists) native_chat_visible=\(app.buttons["one-native-tab-chat"].exists)")
+            print("NATIVE_NAVIGATION_ADMISSION vault_unlock_visible=\(webView.buttons["Unlock"].exists) secure_entry_visible=\(app.secureTextFields.firstMatch.exists) google_signin_visible=\(app.buttons["Continue with Google"].exists) privacy_cover_visible=\(app.otherElements["session-privacy-shield"].exists) privacy_retry_visible=\(app.buttons["session-privacy-retry"].exists) native_chat_visible=\(app.buttons["one-native-tab-chat"].exists)")
         }
         XCTAssertTrue(bar.waitForExistence(timeout: 30), "The installed candidate did not expose native tabs")
         func tab(_ name: String) -> XCUIElement { bar.buttons[name] }
