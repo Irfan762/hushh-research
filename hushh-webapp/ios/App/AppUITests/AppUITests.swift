@@ -200,6 +200,53 @@ final class AppUITests: XCTestCase {
         print("VOICE_BAR_CONTINUITY body_cancel_single_dock_warm_chat")
     }
 
+    func testLocalSessionLiveSpeechCompletesWithoutSpeakerEchoLoop() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in physical speakerphone proof")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running; no cold launch or reset")
+        }
+        app.activate()
+        let webView = app.webViews.matching(identifier: "native-webview").firstMatch
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Normal vault unlock is required before speech proof")
+        perfTapNav(app, label: "Chat")
+        let start = webView.buttons["Start voice mode"].firstMatch
+        XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
+        start.tap()
+        let stop = webView.buttons["Stop voice"].firstMatch
+        defer { if stop.exists && stop.isHittable { stop.tap() } }
+        XCTAssertTrue(stop.waitForExistence(timeout: 10), "LIVE_ADAPTER_UNAVAILABLE")
+        let listening = webView.staticTexts["Listening"].firstMatch
+        XCTAssertTrue(listening.waitForExistence(timeout: 25), "VOICE_LISTENING_UNAVAILABLE")
+        // The credential-free host harness speaks a fixed synthetic question
+        // only after this marker. It records neither microphone nor transcript.
+        print("VOICE_SPEECH_READY")
+        let input = webView.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@", "You", "ready for testing"
+        )).firstMatch
+        XCTAssertTrue(input.waitForExistence(timeout: 25), "VOICE_NO_RECOGNIZED_INPUT")
+        let output = webView.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@ AND NOT (label CONTAINS[c] %@)",
+            "One", "ready for testing", "still speaking"
+        )).firstMatch
+        XCTAssertTrue(output.waitForExistence(timeout: 45), "VOICE_RESPONSE_NOT_COMPLETED")
+        let settled = webView.staticTexts["Done"].firstMatch
+        XCTAssertTrue(settled.waitForExistence(timeout: 15), "VOICE_PLAYBACK_NOT_SETTLED")
+        let busy = webView.staticTexts.matching(NSPredicate(
+            format: "label IN %@", ["Speaking", "Understanding", "Working…"]
+        )).firstMatch
+        let quietUntil = Date().addingTimeInterval(5)
+        while Date() < quietUntil {
+            XCTAssertFalse(busy.exists, "VOICE_REENTERED_WITHOUT_NEW_INPUT")
+            Thread.sleep(forTimeInterval: 0.25)
+        }
+        XCTAssertTrue(stop.exists, "Voice session ended instead of settling")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Speech lost the unlocked vault")
+        print("VOICE_SPEECH_COMPLETED settled_without_echo_restart")
+    }
+
     func testLocalSessionNativeTabsKeepTheSessionAndRespectOverlays() throws {
         guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
             throw XCTSkip("Opt-in attach-only native navigation proof")
