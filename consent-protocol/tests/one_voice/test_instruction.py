@@ -245,6 +245,9 @@ def test_rule_thirteen_addresses_a_reply_by_the_email_it_answers():
     assert '"Email Priya" or "write to Priya" is send_mail' in rule
     assert "never pick one from a name" in rule
     assert "Forwarding, reply-all, a new subject and attachments are not possible here" in rule
+    # Live eval: "reply all ... say thanks everyone" became a sender-only
+    # reply_mail in about half the samples until the rule said no tool.
+    assert "say so, call no tool, and ask whether a reply to the sender alone would do" in rule
     # The rule names a tool the model is actually given.
     assert "- reply_mail: " in text
 
