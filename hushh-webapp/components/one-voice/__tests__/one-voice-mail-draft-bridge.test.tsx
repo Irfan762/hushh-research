@@ -1,9 +1,10 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OneVoiceMailDraftBridge } from "@/components/one-voice/one-voice-mail-draft-bridge";
 import { useVoiceSessionStore } from "@/lib/one-voice/session-store";
-import type { EmailDraft } from "@/lib/services/email-delivery-service";
+import { ConnectionsService } from "@/lib/services/connections-service";
+import { EmailDeliveryService, type EmailDraft } from "@/lib/services/email-delivery-service";
 
 const harness = vi.hoisted(() => ({
   user: { uid: "owner", getIdToken: vi.fn(async () => "firebase-token") } as { uid: string; getIdToken: () => Promise<string> } | null,
@@ -11,6 +12,7 @@ const harness = vi.hoisted(() => ({
   vaultToken: "vault-token",
   sendFailure: null as { message: string; code: string | null } | null,
   reviewedBody: null as string | null,
+  realCard: false,
 }));
 
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: harness.user }) }));
@@ -24,8 +26,18 @@ vi.mock("@/lib/vault/vault-context", () => ({
 vi.mock("@/components/vault/vault-unlock-dialog", () => ({
   VaultUnlockDialog: ({ open }: { open: boolean }) => open ? <div data-testid="mail-vault-dialog" /> : null,
 }));
-vi.mock("@/components/agent/email-draft-card", () => ({
-  EmailDraftCard: ({
+vi.mock("@/lib/services/email-delivery-service", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/services/email-delivery-service")>()),
+  EmailDeliveryService: {
+    draft: vi.fn(),
+    prepare: vi.fn(),
+    send: vi.fn(),
+    saveGmailDraft: vi.fn(),
+  },
+}));
+vi.mock("@/components/agent/email-draft-card", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/components/agent/email-draft-card")>();
+  const StubEmailDraftCard = ({
     initialDraft,
     verbatimInitialBody,
     getAuth,
@@ -58,8 +70,14 @@ vi.mock("@/components/agent/email-draft-card", () => ({
         else onSent(id);
       }}>Send</button>
     </section>
-  ),
-}));
+  );
+  return {
+    EmailDraftCard: (props: Parameters<typeof actual.EmailDraftCard>[0]) =>
+      harness.realCard
+        ? <actual.EmailDraftCard {...props} />
+        : <StubEmailDraftCard {...(props as unknown as Parameters<typeof StubEmailDraftCard>[0])} />,
+  };
+});
 
 const payload = () => ({
   draft: {
@@ -91,6 +109,10 @@ beforeEach(() => {
   harness.vaultToken = "vault-token";
   harness.sendFailure = null;
   harness.reviewedBody = null;
+  harness.realCard = false;
+  vi.mocked(EmailDeliveryService.prepare).mockReset();
+  vi.mocked(EmailDeliveryService.send).mockReset();
+  vi.mocked(EmailDeliveryService.saveGmailDraft).mockReset();
   act(() => useVoiceSessionStore.getState().reset());
 });
 afterEach(() => cleanup());
@@ -188,6 +210,34 @@ describe("OneVoiceMailDraftBridge", () => {
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(screen.getByTestId("one-voice-mail-delivery")).toHaveTextContent("Check Sent Mail before trying again");
     expect(screen.queryByRole("button", { name: "Review draft" })).toBeNull();
+  });
+
+  it("saves a voice-opened draft to Gmail Drafts through the real card without sending", async () => {
+    harness.realCard = true;
+    vi.spyOn(ConnectionsService, "listConnections").mockResolvedValue([]);
+    vi.mocked(EmailDeliveryService.saveGmailDraft).mockResolvedValue();
+    render(<OneVoiceMailDraftBridge />);
+    const report = openDraft();
+    expect(report).toHaveBeenCalledExactlyOnceWith("ok", { mounted: true });
+    expect(screen.getByTestId("one-email-draft-to")).toHaveValue("jhumma@example.com");
+
+    fireEvent.click(screen.getByTestId("one-email-draft-save-gmail"));
+
+    await waitFor(() => expect(screen.getByTestId("one-email-draft-save-gmail")).toHaveTextContent("Saved in Gmail Drafts"));
+    expect(EmailDeliveryService.saveGmailDraft).toHaveBeenCalledExactlyOnceWith({
+      firebaseIdToken: "firebase-token",
+      vaultOwnerToken: "vault-token",
+      draft: expect.objectContaining({
+        to: "jhumma@example.com",
+        subject: "Demo tomorrow",
+        body: "Tomorrow - I'll send the demo.\nThanks!",
+      }),
+    });
+    expect(EmailDeliveryService.prepare).not.toHaveBeenCalled();
+    expect(EmailDeliveryService.send).not.toHaveBeenCalled();
+    // Saving keeps the draft open for review; no delivery status appears.
+    expect(screen.getByTestId("one-email-draft-card")).toBeInTheDocument();
+    expect(screen.queryByTestId("one-voice-mail-delivery")).toBeNull();
   });
 
   it("rejects an initially locked step promptly and opens the unlock prompt without retaining the draft", () => {

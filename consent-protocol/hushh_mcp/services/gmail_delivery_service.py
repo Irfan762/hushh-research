@@ -890,7 +890,15 @@ class GmailDeliveryService:
                     headers={"Authorization": f"Bearer {access_token}"},
                     json=send_payload,
                 )
+            if response.status_code >= 500:
+                # A 5xx after the POST is ambiguous: Gmail may have delivered
+                # the message before failing. A reviewed resend could send a
+                # duplicate, so surface only the non-retryable unknown outcome.
+                await self._set_outcome_unknown(action_id=action_id, error_code="provider_5xx")
+                return {"action_id": action_id, "state": "outcome_unknown", "outcome_unknown": True}
             if response.status_code >= 400:
+                # Gmail rejected the request (4xx, including 429): nothing was
+                # sent, so the owner may safely review and send again.
                 await self._set_terminal(
                     action_id=action_id, state="failed", error_code="gmail_send_failed"
                 )

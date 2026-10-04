@@ -215,6 +215,14 @@ async def in_listing_order(
         raise
 
 
+def _coverage_scope(operation: str, query: str) -> str:
+    if operation == "read_message_by_id":
+        return "selected"
+    if operation == "list_needs_reply":
+        return "needs_reply"
+    return "search" if query else "newest"
+
+
 class GmailMetadataReader:
     """One owner, one observed Gmail grant, one bounded read per instance."""
 
@@ -668,9 +676,9 @@ class GmailMetadataReader:
             # What the read covered, so a count cannot imply a whole mailbox.
             # "newest" is the front of the mailbox and nothing more: five bodies
             # is this reader's budget, not evidence that five is all there is.
-            "scope": (
-                "selected" if operation == "read_message_by_id" else "search" if query else "newest"
-            ),
+            # "needs_reply" is a filtered set (threads that may need a reply),
+            # so it must never be described as the newest mail.
+            "scope": _coverage_scope(operation, query),
             # One row per thread for needs-reply, one per message everywhere else.
             "unit": "threads" if operation == "list_needs_reply" else "messages",
             "assessed": assessed,
