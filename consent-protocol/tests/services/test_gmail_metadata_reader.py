@@ -730,6 +730,7 @@ class _ProposalDb:
 
     def __init__(self):
         self.rows = {}
+        self.executed_receipts = []
 
     def execute_raw(self, sql, params):
         from types import SimpleNamespace
@@ -754,6 +755,9 @@ class _ProposalDb:
             )
         if "SET status = 'failed'" in sql:
             self.rows[params["proposal_id"]]["status"] = "failed"
+        elif "SET status = 'executed'" in sql:
+            self.rows[params["proposal_id"]]["status"] = "executed"
+            self.executed_receipts.append(params["proposal_id"])
         elif "WHERE proposal_id" in sql:
             self.rows.pop(params["proposal_id"], None)
         return SimpleNamespace(data=[])
@@ -816,6 +820,7 @@ async def test_mailbox_change_runs_only_after_review_with_exact_labels(action, l
 
     result = await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
     assert result == {"status": "executed", "action": action, "count": 2}
+    assert db.executed_receipts == [proposal["proposal_id"]]
     assert len(writes) == 1
     assert writes[0].url.path.endswith("/messages/batchModify")
     assert json.loads(writes[0].content) == {
@@ -874,6 +879,25 @@ async def test_unapproved_or_foreign_proposals_never_reach_gmail():
         await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
     assert writes == []
     assert db.rows[proposal["proposal_id"]]["status"] == "failed"
+
+
+async def test_mailbox_receipt_outage_preserves_provider_success_and_prevents_replay():
+    class ReceiptOutage(_ProposalDb):
+        def execute_raw(self, sql, params):
+            if "SET status = 'executed'" in sql:
+                raise RuntimeError("receipt unavailable")
+            return super().execute_raw(sql, params)
+
+    db = ReceiptOutage()
+    writes = []
+    service = _mailbox(_ModifyGmail(), db, _mailbox_provider(writes))
+    proposal = await service.propose(user_id="owner", action="archive", query="from:alice",
+                                     mailbox="inbox", limit=2, label="", require_access=_allowed)
+    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))["status"] == "executed"
+    assert len(writes) == 1
+    with pytest.raises(Exception, match="already used"):
+        await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
+    assert len(writes) == 1
 
 
 async def test_mailbox_change_without_modify_grant_asks_for_it_before_any_read():
