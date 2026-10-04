@@ -15,12 +15,14 @@ import asyncio
 import base64
 import json
 import logging
+import secrets
 import time
 import uuid
 from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal, Protocol
 
 from hushh_mcp.one_voice import protocol
@@ -56,6 +58,8 @@ from hushh_mcp.one_voice.tools.executor import (
     ToolExecutor,
 )
 from hushh_mcp.one_voice.tools.session import OPENABLE_SCREENS
+from hushh_mcp.services.gmail_delivery_service import GmailDeliveryError, get_owner_send_action
+from hushh_mcp.services.gmail_reply_source_service import open_reply_source_ref
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,16 @@ _NOT_SUCCESS = {
 # Bound for the per-session directive metadata and card_not_shown waiters.
 _DIRECTIVE_MEMORY = 128
 _SHOWN_WAITERS_MAX = 32
+# How long a review card's Send may still be reported to this session, and how
+# many such cards it remembers. A send after this is still delivered and still
+# shown on the card; One just does not speak it.
+MAIL_DELIVERY_TTL_SECONDS = 30 * 60
+_MAIL_DELIVERY_MEMORY = 16
+# Clock slack between the database that stamps a send action and this process,
+# when deciding the action was made after the card it is reported for.
+_MAIL_DELIVERY_SKEW = timedelta(seconds=60)
+# Reports per card: a failed send may be reviewed and sent again, once or twice.
+_MAIL_DELIVERY_REPORTS = 3
 # A client-executed step is still outstanding: neither a receipt nor a
 # rejection. It never counts as ok (so the turn cannot read "complete") and
 # never bumps the rejected counter; the settled result does one or the other.
@@ -222,6 +236,7 @@ class VoiceSession:
         conversations: ConversationStore | None = None,
         pending: PendingActionStore | None = None,
         clock: Callable[[], float] = time.monotonic,
+        mail_delivery_status: Callable[..., Awaitable[dict[str, Any] | None]] | None = None,
     ) -> None:
         self.transport = transport
         self.config = config
@@ -270,6 +285,11 @@ class VoiceSession:
         self.audio_out_chunks = 0
         self.dropped_audio_frames = 0
         self.client_steps: dict[str, dict[str, Any]] = {}
+        # Review cards this session opened, by the delivery_ref their Send
+        # reports with. The report only names a send action; the outcome is
+        # always re-read from the ledger through ``_mail_delivery_status``.
+        self.mail_deliveries: dict[str, dict[str, Any]] = {}
+        self._mail_delivery_status = mail_delivery_status or get_owner_send_action
         self.pending_receipts: dict[str, str] = {}
         self._last_turn_ok = False
         self.close_code: int | None = None
@@ -725,6 +745,8 @@ class VoiceSession:
             )
         elif isinstance(frame, protocol.ClientStepResultFrame):
             await self._client_step_result(frame)
+        elif isinstance(frame, protocol.MailDeliveryResultFrame):
+            await self._settle_mail_delivery(frame)
         elif isinstance(frame, protocol.UiSettledFrame):
             origin_turn_id = self._directive_turn_ids.pop(frame.directive_id, None)
             meta = self._directive_meta.pop(frame.directive_id, {})
@@ -761,6 +783,8 @@ class VoiceSession:
             screen_state=dict(sanitized.get("screen_state") or {}),
             os_location_permission=frame.os_location_permission,
             active_circle_id=frame.active_circle_id,
+            active_mail_ordinal=frame.active_mail_ordinal,
+            active_mail_offer_revision=frame.active_mail_offer_revision,
         )
         try:
             await self.conversations.save_screen_context(
@@ -800,6 +824,7 @@ class VoiceSession:
                 *self._pending_turn_ids.values(),
                 *self._shown_waiters.values(),
                 *(str(step.get("origin_turn_id") or "") for step in self.client_steps.values()),
+                *(str(item.get("origin_turn_id") or "") for item in self.mail_deliveries.values()),
                 *self._directive_turn_ids.values(),
                 self.turn.turn_id,
                 self._narration_origin_turn_id,
@@ -1167,24 +1192,149 @@ class VoiceSession:
                     result_public=settled.result,
                 )
             )
+        raw_draft = step.get("draft")
+        draft: dict[str, Any] = raw_draft if isinstance(raw_draft, dict) else {}
+        noun = "reply" if draft.get("mode") == "reply" else "draft"
+        if not opened:
+            # No card, so no Send can follow; its delivery report is never valid.
+            self.mail_deliveries.pop(str(step.get("delivery_ref") or ""), None)
         if not self._origin_is_stale(str(step.get("origin_turn_id") or "") or None):
             event: dict[str, Any] = {
                 "kind": "client_step",
                 "step": "open_mail_draft",
                 "status": "ok" if opened and unrecorded is None else "failed",
                 "spoken_facts": [
-                    "I couldn't verify the draft review state just now. Nothing was sent."
+                    f"I couldn't verify the {noun} review state just now. Nothing was sent."
                     if unrecorded is not None
-                    else "The draft is open for review. It has not been sent."
+                    else (
+                        "The reply is open for review in the original thread. It has not been sent."
+                        if noun == "reply"
+                        else "The draft is open for review. It has not been sent."
+                    )
                     if opened
-                    else "I couldn't confirm the draft opened. Nothing was sent."
+                    else f"I couldn't confirm the {noun} opened. Nothing was sent."
                     if uncertain
-                    else "The draft did not open. Nothing was sent."
+                    else f"The {noun} did not open. Nothing was sent."
                 ],
             }
             if unrecorded is not None:
                 event["reason_code"] = unrecorded
             await self._inject_event(event)
+
+    def _issue_mail_delivery(self, payload: dict[str, Any], origin_turn_id: str | None) -> str:
+        """Remember a review card so its Send can be reported back once it finishes.
+
+        The ref correlates; it authorizes nothing. What the card's Send did is
+        read from the send ledger when the report arrives, never taken from it.
+        """
+        raw_draft = payload.get("draft")
+        draft: dict[str, Any] = raw_draft if isinstance(raw_draft, dict) else {}
+        reply = draft.get("mode") == "reply"
+        delivery_ref = secrets.token_urlsafe(18)
+        while len(self.mail_deliveries) >= _MAIL_DELIVERY_MEMORY:
+            self.mail_deliveries.pop(next(iter(self.mail_deliveries)))
+        self.mail_deliveries[delivery_ref] = {
+            "mode": "reply" if reply else "compose",
+            # Server-minted and opaque to the client; read back only to learn
+            # which thread a "sent" reply had to land in.
+            "source_mail_ref": str(draft.get("source_mail_ref") or "") if reply else "",
+            "origin_turn_id": origin_turn_id,
+            "issued_at": datetime.now(timezone.utc),
+            "expires_at": self.clock() + MAIL_DELIVERY_TTL_SECONDS,
+            "reports": 0,
+        }
+        return delivery_ref
+
+    def _mail_delivery_outcome(self, delivery: dict[str, Any], row: dict[str, Any] | None) -> str:
+        """The ledger's answer for this card's Send, in five words.
+
+        ``unverified`` covers everything the ledger cannot vouch for: no such
+        action for this owner, an action older than the card (some earlier
+        send), a reply that landed outside its thread, or a send still in flight.
+        """
+        if row is None:
+            return "unverified"
+        created = row.get("created_at")
+        if not isinstance(created, datetime):
+            return "unverified"
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        if created < delivery["issued_at"] - _MAIL_DELIVERY_SKEW:
+            return "unverified"
+        state = str(row.get("state") or "")
+        if state == "sent":
+            if delivery["mode"] == "reply":
+                try:
+                    ref = open_reply_source_ref(
+                        delivery["source_mail_ref"],
+                        owner_user_id=self.ctx.user_id,
+                        allow_expired=True,
+                    )
+                except GmailDeliveryError:
+                    return "unverified"
+                if str(row.get("gmail_thread_id") or "") != ref.thread_id:
+                    return "unverified"
+            return "sent"
+        if state == "failed":
+            return "failed"
+        if state == "outcome_unknown":
+            return (
+                "thread_unconfirmed"
+                if str(row.get("safe_error_code") or "") == "reply_thread_mismatch"
+                else "outcome_unknown"
+            )
+        return "unverified"
+
+    async def _settle_mail_delivery(self, frame: protocol.MailDeliveryResultFrame) -> None:
+        """A review card's Send finished. Say what the ledger says, once.
+
+        Only reaches the model while the person is still on the turn that opened
+        the card; a late report never interrupts a newer question. The card shows
+        its own outcome either way, and nothing here retries or re-sends.
+        """
+        delivery = self.mail_deliveries.get(frame.delivery_ref)
+        if delivery is None or self.clock() > float(delivery["expires_at"]):
+            self.mail_deliveries.pop(frame.delivery_ref, None)
+            await self._send(protocol.error("protocol", "unknown_mail_delivery"))
+            return
+        delivery["reports"] = int(delivery.get("reports") or 0) + 1
+        try:
+            row = await self._mail_delivery_status(
+                user_id=self.ctx.user_id, action_id=frame.action_id
+            )
+        except Exception as exc:  # noqa: BLE001 - an unreadable ledger is "unverified"
+            logger.warning("one_voice.mail_delivery.read_failed error=%s", type(exc).__name__)
+            row = None
+        outcome = self._mail_delivery_outcome(delivery, row)
+        # A failed send can be reviewed and sent again from the same card, so
+        # its ref stays for the next report; anything else is final.
+        if outcome != "failed" or delivery["reports"] >= _MAIL_DELIVERY_REPORTS:
+            self.mail_deliveries.pop(frame.delivery_ref, None)
+        reply = delivery["mode"] == "reply"
+        logger.info("one_voice.mail_delivery mode=%s outcome=%s", delivery["mode"], outcome[:23])
+        noun = "reply" if reply else "email"
+        fact = {
+            "sent": (
+                "Your reply was sent in the original thread." if reply else "Your email was sent."
+            ),
+            "failed": f"Gmail didn't send the {noun}. Nothing was sent.",
+            "thread_unconfirmed": (
+                "Gmail took the reply, but I couldn't confirm it stayed in the original "
+                "thread. Check Sent Mail before trying again."
+            ),
+        }.get(
+            outcome,
+            f"I couldn't confirm whether the {noun} was sent. Check Sent Mail before trying again.",
+        )
+        if not self._origin_is_stale(str(delivery.get("origin_turn_id") or "") or None):
+            await self._inject_event(
+                {
+                    "kind": "mail_delivery",
+                    "mode": delivery["mode"],
+                    "status": outcome,
+                    "spoken_facts": [fact],
+                }
+            )
 
     async def _settle_sos_publish_step(
         self, step: dict[str, Any], frame: protocol.ClientStepResultFrame
@@ -1938,6 +2088,8 @@ class VoiceSession:
         if isinstance(step, dict) and step.get("kind"):
             step_id = uuid.uuid4().hex[:12]
             payload = {k: v for k, v in step.items() if k != "kind"}
+            if step["kind"] == "open_mail_draft":
+                payload["delivery_ref"] = self._issue_mail_delivery(payload, origin_turn_id)
             timeout_s = int(step.get("timeout_s") or CLIENT_STEP_TIMEOUT_SECONDS)
             requested_at = self.clock()
             self.client_steps[step_id] = {

@@ -1912,6 +1912,52 @@
     },
     {
       "circle_args": [],
+      "description": "Prepare a reply inside the same Gmail thread as an email you already showed the person. Use when they want to answer or respond to a particular email: by its position in the list you showed, the email they have open on screen, or the single email you just showed them. Pass their reply in message. Never call resolve_person for a reply: the server derives the recipient, subject and thread from the original email. Use send_mail instead for a new email to a named person, read_mail when they only want to know what mail says or what needs a reply, and open_mail when they only want to see it. If there is no email to answer yet, read their mail first or ask which one. This opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send reply in that card delivers it.",
+      "firebase_plane": false,
+      "gateway_action_id": "email.chat.turn",
+      "name": "reply_mail",
+      "parameters": {
+        "additionalProperties": false,
+        "description": "Which offered email to answer, and what to say. Never who or which thread.\n\nNo recipient, subject, address or message id: a reply is addressed by the\nemail it answers, and the server derives all of that from the message.",
+        "properties": {
+          "message": {
+            "description": "The reply to put in the review card: the person's own words, preserved exactly. If they gave only an instruction ('politely decline'), write a short reply from that instruction alone -- never add dates, amounts, commitments or facts they did not say. If they said nothing to put in it, ask what to say before calling this.",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Message",
+            "type": "string"
+          },
+          "ordinal": {
+            "anyOf": [
+              {
+                "maximum": 25,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The position of the email in the list of mail you last showed them, when they name one (the third email is 3). Leave it out when they mean the email they have open on screen, or the single email you just showed them: the server knows which one that is. Never guess a position.",
+            "title": "Ordinal"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "type": "object"
+      },
+      "person_args": [],
+      "policy": "confirm_voice",
+      "result_statuses": [
+        "draft_open_requested"
+      ],
+      "tier": "voice",
+      "ui_refresh": []
+    },
+    {
+      "circle_args": [],
       "description": "Server-verified outcome of a reset or deletion the device just ran. The runtime calls this after the device step settles; it reads the server, never the device's claim. Not for the person to ask for directly.",
       "firebase_plane": false,
       "gateway_action_id": "route.profile",

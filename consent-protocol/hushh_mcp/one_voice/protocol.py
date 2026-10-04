@@ -102,6 +102,11 @@ class AppContextFrame(_Frame):
     # separate from ``screen_state`` (which is rendered into the prompt and
     # carries no identifiers); the host reads it through the circle service.
     active_circle_id: str | None = Field(default=None, min_length=36, max_length=36)
+    # The mail row open on screen: its position in a server offer and that
+    # offer's revision. No message id ever travels this way; the server resolves
+    # the position against its own offer, and only while the revisions match.
+    active_mail_ordinal: int | None = Field(default=None, ge=1, le=25)
+    active_mail_offer_revision: int | None = Field(default=None, ge=0, le=1_000_000_000)
 
 
 class PendingShownFrame(_Frame):
@@ -138,6 +143,19 @@ class ClientStepResultFrame(_Frame):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class MailDeliveryResultFrame(_Frame):
+    """The device says a review card's Send finished. Never what happened.
+
+    Names the send action and the session-issued correlation only. There is no
+    status field on purpose: the relay re-reads the action server-side, so a
+    client cannot report a send that did not happen.
+    """
+
+    type: Literal["mail_delivery.result"]
+    delivery_ref: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    action_id: str = Field(min_length=36, max_length=36)
+
+
 class UiSettledFrame(_Frame):
     type: Literal["ui.settled"]
     directive_id: str = Field(min_length=1, max_length=64)
@@ -166,6 +184,7 @@ ClientFrame = Annotated[
     | CancelActionFrame
     | CandidateChooseFrame
     | ClientStepResultFrame
+    | MailDeliveryResultFrame
     | UiSettledFrame
     | InterruptFrame
     | PingFrame

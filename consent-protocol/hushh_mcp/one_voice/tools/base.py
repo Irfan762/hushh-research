@@ -421,6 +421,11 @@ class ScreenContext(BaseModel):
     # circle", never authority: every read of it goes through the authorized
     # circle service, and every mutation still needs the id confirmed.
     active_circle_id: str | None = None
+    # The mail row open on screen: its position and the offer it was drawn
+    # from. A hint for "this email", never authority: it names a position in a
+    # server offer, and it is honored only while that offer is the current one.
+    active_mail_ordinal: int | None = None
+    active_mail_offer_revision: int | None = None
 
 
 @dataclass
@@ -531,6 +536,12 @@ class ToolSpec:
     # tool itself. A shared gateway action is NOT enough on its own:
     # request_location and withdraw_request share one and do opposite things.
     correction_group: str | None = None
+    # For a tool whose arguments do not name what it acts on -- a position in a
+    # list the server offered, or the item open on screen -- the server-side
+    # identity of that target, resolved without I/O. Equal arguments against
+    # different targets are different proposals, so an open card is reused only
+    # for the same target. Returning ``None`` (unresolvable) never reuses one.
+    target_key: Callable[[ToolContext, Any], str | None] | None = None
 
     @property
     def correction_key(self) -> str:

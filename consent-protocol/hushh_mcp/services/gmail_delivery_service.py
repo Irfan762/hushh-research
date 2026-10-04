@@ -1038,6 +1038,30 @@ class GmailDeliveryService:
             )
 
 
+async def get_owner_send_action(*, user_id: str, action_id: str) -> dict[str, Any] | None:
+    """One owner's send action as the ledger recorded it, or None.
+
+    The voice relay asks this after a review card reports that its Send
+    finished: the report names an action, and this row -- never the report --
+    says what happened to it. Metadata only; there is no envelope here to return.
+    """
+    action_id = _text(action_id)
+    if not action_id or not _text(user_id):
+        return None
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT state, created_at, gmail_thread_id, safe_error_code
+            FROM gmail_owner_send_actions
+            WHERE action_id = $1 AND user_id = $2
+            """,
+            action_id,
+            user_id,
+        )
+    return dict(row) if row is not None else None
+
+
 _gmail_delivery_service: GmailDeliveryService | None = None
 
 
