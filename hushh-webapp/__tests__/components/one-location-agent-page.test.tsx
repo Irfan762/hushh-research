@@ -5673,6 +5673,14 @@ describe("OneLocationAgentPage", () => {
     expect(durationSelect.parentElement?.className).not.toContain(
       "max-w-[260px]",
     );
+    const createLinkSummaryRow = screen
+      .getByText("Create a temporary link")
+      .closest('[data-testid="settings-row"]');
+    expect(createLinkSummaryRow).toHaveClass("after:hidden");
+    expect(createLinkSummaryRow?.parentElement).toHaveAttribute(
+      "data-inset-separators",
+      "true",
+    );
     expect(screen.queryByText("Active links")).toBeNull();
     expect(screen.queryByText("Link stays live for")).toBeNull();
     // The paragraph that used to sit under the heading is gone.

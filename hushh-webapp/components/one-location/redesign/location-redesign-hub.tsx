@@ -4879,6 +4879,7 @@ function LinksHub({ vm }: { vm: LocationHubViewModel }) {
               leading={<LinkIdentityMark />}
               title="Create a temporary link"
               description="Anyone with this link can see your location until it expires."
+              className="after:hidden"
             />
             <div className={PUBLIC_LINK_CREATE_FORM_CLASSNAME}>
               <DurationSelector
