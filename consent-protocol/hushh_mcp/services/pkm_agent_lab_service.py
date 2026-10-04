@@ -3161,6 +3161,19 @@ class PKMAgentLabService:
         }
 
     @classmethod
+    def _repeats_an_entity_verbatim(
+        cls, message: str, existing_entities: list[dict[str, Any]]
+    ) -> bool:
+        def words(text: str) -> list[str]:
+            return re.findall(r"[a-z0-9]+", text.lower())
+
+        said = words(message)
+        return bool(said) and any(
+            isinstance(entity, dict) and words(str(entity.get("summary") or "")) == said
+            for entity in existing_entities
+        )
+
+    @classmethod
     def _resolve_mutation_target(
         cls,
         *,
@@ -3219,6 +3232,7 @@ class PKMAgentLabService:
         intent_frame: dict[str, Any],
         current_domains: list[str],
         existing_entities: list[dict[str, Any]] | None = None,
+        message: str = "",
     ) -> dict[str, Any]:
         decision = deepcopy(fallback)
         if isinstance(raw, dict):
@@ -3260,6 +3274,18 @@ class PKMAgentLabService:
                 mutation_intent=mutation_intent,
                 existing_entities=existing_entities or [],
             )
+        elif (
+            mutation_intent in {"extend", "update"}
+            and decision.get("merge_mode") == "no_op"
+            and fallback.get("merge_mode") == "extend_entity"
+            and not cls._repeats_an_entity_verbatim(message, existing_entities or [])
+        ):
+            # no_op is only for a word-for-word repeat (the shared kernel's
+            # rule). A reaffirmation that adds words ("I still plan around
+            # this: ...") extends the entity the word match found; the owner
+            # reviews it. Measured 2026-10-02: merge dropped one such
+            # statement in every release-chain repetition.
+            decision = deepcopy(fallback)
 
         if decision["merge_mode"] in {"correct_entity", "delete_entity"}:
             decision_scope = cls._entity_scope_from_path(
@@ -5311,6 +5337,7 @@ class PKMAgentLabService:
             intent_frame=intent_frame,
             current_domains=normalized_domains,
             existing_entities=self._existing_entities(simulated_state, compact=strict_small_model),
+            message=message,
         )
         merge_mode = str(merge_decision.get("merge_mode") or "")
         if merge_mode == "extend_entity":

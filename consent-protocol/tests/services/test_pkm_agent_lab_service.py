@@ -2963,3 +2963,33 @@ def test_upstream_and_deterministic_drops_still_stand(save_class, merge_mode, me
 
     assert preview["write_mode"] == "do_not_save"
     assert "structure_drop_kept_for_review" not in preview["validation_hints"]
+
+
+def test_a_reaffirmation_that_adds_words_extends_and_a_verbatim_repeat_stays_no_op() -> None:
+    fallback = {
+        "merge_mode": "extend_entity",
+        "target_domain": "travel",
+        "target_entity_id": "seat_preference",
+        "target_entity_path": "preferences.entities.seat_preference",
+        "match_confidence": 0.6,
+        "match_reason": "word match",
+        "source_agent": "memory_merge_agent",
+        "contract_version": 1,
+    }
+
+    def merge(message: str) -> dict:
+        return PKMAgentLabService._sanitize_merge_decision(
+            raw={"merge_mode": "no_op", "target_domain": "travel"},
+            fallback=fallback,
+            intent_frame={"mutation_intent": "extend"},
+            current_domains=["travel"],
+            existing_entities=[_SEAT_ENTITY],
+            message=message,
+        )
+
+    reaffirmed = merge("I still plan every trip around this: I book aisle seats.")
+    repeated = merge("I book aisle seats!")
+
+    assert reaffirmed["merge_mode"] == "extend_entity"
+    assert reaffirmed["target_entity_path"] == "preferences.entities.seat_preference"
+    assert repeated["merge_mode"] == "no_op"

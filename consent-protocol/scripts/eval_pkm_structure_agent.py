@@ -4596,11 +4596,7 @@ def _ledger_record(
         "status": status,
         "void_reasons": void_reasons,
         "reps": reps,
-        "git": (
-            {"sha": args.source_ref, "dirty": False, "source": "declared"}
-            if getattr(args, "source_ref", None)
-            else integrity.git_state()
-        ),
+        "git": getattr(args, "run_git_state", None) or _run_git_state(args),
         "capability_profile": integrity.capability_profile(
             service=service, model_override=model_override, strict_small_model=strict_small_model
         ),
@@ -4611,6 +4607,12 @@ def _ledger_record(
         "gate_failures": quality_gate.get("failures") or [],
         **(extra or {}),
     }
+
+
+def _run_git_state(args: argparse.Namespace) -> dict[str, Any]:
+    if getattr(args, "source_ref", None):
+        return {"sha": args.source_ref, "dirty": False, "source": "declared"}
+    return integrity.git_state()
 
 
 def _compare_ledger(args: argparse.Namespace) -> int:
@@ -4718,6 +4720,9 @@ async def main() -> int:
     report_path = Path(args.json_out).expanduser().resolve()
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # The code this process imports is the code at its start; other work can
+    # land in the tree while a run is under way, so record the start state.
+    args.run_git_state = _run_git_state(args)
     service = get_pkm_agent_lab_service()
     install_stage_observer(service)
     if args.phase == DOCUMENT_PHASE:
