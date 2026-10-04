@@ -82,6 +82,7 @@ import {
 import { CircleMemberActionsMenu } from "@/components/one-location/redesign/circles/circle-member-actions-menu";
 import {
   CIRCLE_SHEET_BODY_CLASSNAME,
+  CIRCLE_SHEET_CTA_CLASSNAME,
   CIRCLE_SHEET_FIRST_GROUP_HEADING_CLASSNAME,
   CIRCLE_SHEET_HEADER_CLASSNAME,
   CIRCLE_SHEET_NEXT_GROUP_HEADING_CLASSNAME,
@@ -687,7 +688,6 @@ export function CreateCircleFlow({
           onFocus={() => setNameFocused(true)}
           onBlur={() => {
             setNameFocused(false);
-            if (nameMissing) setNameRequirementActive(true);
           }}
           onChange={(event) => {
             const next = event.target.value;
@@ -2416,27 +2416,33 @@ export function CircleDetailFlow({
                     <FlowActionGroup
                       stacked
                       secondary={
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="standard"
-                          onClick={() => setInviteCodeSheetOpen(false)}
-                        >
-                          Cancel
-                        </Button>
+                        <div className={CIRCLE_SHEET_CTA_CLASSNAME}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="prominent"
+                            className="w-full justify-center"
+                            onClick={() => setInviteCodeSheetOpen(false)}
+                          >
+                            Cancel
+                          </Button>
+                        </div>
                       }
                       primary={
-                        <Button
-                          type="button"
-                          size="prominent"
-                          disabled={busy}
-                          isLoading={busy}
-                          onClick={() =>
-                            void generateCode(inviteCodeNeedsOwnerRotation)
-                          }
-                        >
-                          Create code
-                        </Button>
+                        <div className={CIRCLE_SHEET_CTA_CLASSNAME}>
+                          <Button
+                            type="button"
+                            size="prominent"
+                            className="w-full justify-center"
+                            disabled={busy}
+                            isLoading={busy}
+                            onClick={() =>
+                              void generateCode(inviteCodeNeedsOwnerRotation)
+                            }
+                          >
+                            Create code
+                          </Button>
+                        </div>
                       }
                     />
                   </div>

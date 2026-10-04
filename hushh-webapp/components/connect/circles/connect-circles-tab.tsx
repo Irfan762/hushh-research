@@ -16,8 +16,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Briefcase, ChevronRight, Heart, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
-import { InviteCodeRowIcon } from "@/components/icons/agents";
+import { Briefcase, ChevronRight, Heart, KeyRound, MapPin, Plus, ShieldCheck, TrendingUp, UsersRound, Wallet } from "@/components/icons";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
@@ -952,7 +951,7 @@ export function ConnectCirclesTab({
           </div>
           <div className="flex flex-wrap items-center gap-2.5">
             <Button type="button" variant="none" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full !border !border-[color:var(--app-card-border-standard)] !bg-[color:var(--app-card-surface-default-solid)]" onClick={() => go({ action: "join-circle" })} data-testid="connect-circle-join">
-              <InviteCodeRowIcon aria-hidden="true" className="mr-2 size-4" />
+              <KeyRound aria-hidden="true" className="mr-2 size-4" />
               Join with code
             </Button>
             <Button type="button" variant="blue" effect="fill" size="standard" showRipple={false} className="!min-h-11 !rounded-full" onClick={() => go({ action: "create-circle" })} data-testid="connect-circle-create">
