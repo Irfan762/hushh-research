@@ -46,7 +46,7 @@ export function AppChatHistoryEdgeGesture({ enabled, open = false, surfaceRef, d
   onOpen: () => void;
 }) {
   const action = useRef(onOpen);
-  action.current = onOpen;
+  useLayoutEffect(() => { action.current = onOpen; }, [onOpen]);
   const [dragging, setDragging] = useState(false);
   const reconcileClose = useRef<(() => void) | null>(null);
   const wasOpen = useRef(open);
