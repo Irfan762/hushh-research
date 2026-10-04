@@ -103,6 +103,7 @@ function publishLifecycle(state: "active" | "background") {
 
 import {
   VoiceSessionProvider,
+  type VoiceSessionDeps,
   useVoiceSession,
 } from "@/components/one-voice/voice-session-provider";
 import { OneVoicePanel } from "@/components/one-voice/one-voice-panel";
@@ -112,6 +113,7 @@ class FakeClient {
   static instances: FakeClient[] = [];
   readonly options: OneLiveClientOptions;
   readonly sent: string[] = [];
+  readonly perf: Array<{ metric: string; durationMs: number; turnId?: string }> = [];
   closeReasons: string[] = [];
   connected = 0;
   isReady = false;
@@ -140,6 +142,10 @@ class FakeClient {
     this.options.onClose(info);
   }
   sendAudio() {
+    return this.isReady;
+  }
+  sendPerf(metric: string, durationMs: number, turnId?: string) {
+    this.perf.push({ metric, durationMs, ...(turnId ? { turnId } : {}) });
     return this.isReady;
   }
   sendText(text: string) {
@@ -192,11 +198,16 @@ class FakeCapture {
   }
 }
 
+let playbackStarted: ((turnId: string) => void) | null = null;
 const playback = {
   enqueue: () => true,
   flush: () => undefined,
   fenceTurn: () => undefined,
   onSpeakingChanged: () => () => undefined,
+  onPlaybackStarted: (callback: (turnId: string) => void) => {
+    playbackStarted = callback;
+    return () => { playbackStarted = null; };
+  },
   close: () => undefined,
 };
 
@@ -232,7 +243,7 @@ function mockVisiblePendingGeometry(offscreenUntilScrolled = false) {
   });
 }
 
-function mount(enabled = true, children?: ReactNode) {
+function mount(enabled = true, children?: ReactNode, overrides: Partial<VoiceSessionDeps> = {}) {
   const capture = new FakeCapture();
   const deps = {
     createClient: (options: OneLiveClientOptions) => new FakeClient(options),
@@ -244,6 +255,7 @@ function mount(enabled = true, children?: ReactNode) {
       wsPath: "/api/one/voice/live",
     }),
     afterPaint: (callback: () => void) => callback(),
+    ...overrides,
   };
   const view = render(
     <VoiceSessionProvider enabled={enabled} deps={deps}>
@@ -266,6 +278,7 @@ beforeEach(() => {
   resetAgentConversationBrokerForTests();
   useVoiceSessionStore.getState().reset();
   FakeClient.instances = [];
+  playbackStarted = null;
   harness.leases = [];
   harness.pathname = "/one/location";
   harness.lifecycle = "active";
@@ -413,6 +426,38 @@ describe("VoiceSessionProvider ownership", () => {
     clock.mockReturnValue(at + 10_001);
     await act(async () => client.options.onFrame(audio));
     expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports client endpointing and first observed playback onset without content", async () => {
+    const clock = { now: 1000 };
+    const { capture } = mount(true, undefined, { perfNow: () => clock.now });
+    await act(async () => controller!.start());
+    const client = FakeClient.instances[0]!;
+    const level = capture.options!.onLevel!;
+    level(0.2); // Speech is observed.
+    for (clock.now = 1100; clock.now <= 1400; clock.now += 100)
+      level(0.01); // Quiet candidate starts at 1100 after a 300 ms hold.
+    clock.now = 1800;
+    await act(async () => client.options.onFrame({
+      type: "transcript.input", turn_id: "abcdef012345", text: "private words", final: true,
+    }));
+    expect(client.perf).toEqual([{
+      metric: "endpointing_client", durationMs: 700, turnId: "abcdef012345",
+    }]);
+
+    clock.now = 2000;
+    await act(async () => client.options.onFrame({
+      type: "audio", turn_id: "012345abcdef", origin_turn_id: "abcdef012345",
+      data: "AAAA", mime_type: "audio/pcm;rate=24000",
+    }));
+    expect(client.perf).toHaveLength(1); // enqueue is not output onset.
+    clock.now = 2120;
+    await act(async () => playbackStarted?.("012345abcdef"));
+    expect(client.perf).toEqual([
+      { metric: "endpointing_client", durationMs: 700, turnId: "abcdef012345" },
+      { metric: "audio_receive_to_audible", durationMs: 120, turnId: "012345abcdef" },
+    ]);
+    expect(JSON.stringify(client.perf)).not.toContain("private words");
   });
 
   it("stops old speech on a new voice input before a provider interrupt arrives", async () => {

@@ -891,9 +891,18 @@ async def test_mailbox_receipt_outage_preserves_provider_success_and_prevents_re
     db = ReceiptOutage()
     writes = []
     service = _mailbox(_ModifyGmail(), db, _mailbox_provider(writes))
-    proposal = await service.propose(user_id="owner", action="archive", query="from:alice",
-                                     mailbox="inbox", limit=2, label="", require_access=_allowed)
-    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))["status"] == "executed"
+    proposal = await service.propose(
+        user_id="owner",
+        action="archive",
+        query="from:alice",
+        mailbox="inbox",
+        limit=2,
+        label="",
+        require_access=_allowed,
+    )
+    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))[
+        "status"
+    ] == "executed"
     assert len(writes) == 1
     with pytest.raises(Exception, match="already used"):
         await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])

@@ -72,6 +72,16 @@ export type UiSettledFrame = {
   status?: "opened" | "failed" | "ignored";
 };
 export type InterruptFrame = { type: "interrupt" };
+/** Optional, content-free device timing. The relay validates the same bounds. */
+export type PerfFrame = {
+  type: "perf";
+  metric:
+    | "endpointing_client"
+    | "audio_receive_to_audible"
+    | "capture_callback_to_socket_enqueue";
+  duration_ms: number;
+  turn_id?: string;
+};
 export type PingFrame = { type: "ping" };
 export type EndFrame = { type: "end" };
 
@@ -87,6 +97,7 @@ export type ClientFrame =
   | ClientStepResultFrame
   | UiSettledFrame
   | InterruptFrame
+  | PerfFrame
   | PingFrame
   | EndFrame;
 
@@ -155,6 +166,8 @@ export type ToolResultPublic = {
 export type SessionReadyFrame = {
   type: "session.ready";
   protocol_version: typeof ONE_VOICE_PROTOCOL_VERSION;
+  /** New relays opt in to optional client perf frames; old relays omit this. */
+  client_perf?: boolean;
   session_id: string;
   conversation_id: string;
   model: string;

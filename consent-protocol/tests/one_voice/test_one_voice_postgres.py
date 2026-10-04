@@ -180,6 +180,45 @@ def test_sharing_on_requires_consent_then_persists(db):
 # --- pending actions ----------------------------------------------------------
 
 
+async def test_pending_proposal_and_spoken_confirm_db_call_budget(db, monkeypatch):
+    """Count real pending-store SQL trips so future policy changes expose their cost."""
+    await ConversationStore(db=db).open(
+        user_id="owner", conversation_id=CONV, model_id="m", model_location="l"
+    )
+    calls: list[str] = []
+    execute_raw = db.execute_raw
+
+    def recording_execute_raw(sql, params=None):
+        if "one_voice_pending_actions" in sql:
+            calls.append(sql)
+        return execute_raw(sql, params)
+
+    monkeypatch.setattr(db, "execute_raw", recording_execute_raw)
+    store = PendingActionStore(db=db)
+    assert await store.list_open(user_id="owner", conversation_id=CONV) == []
+    # The second read is a concurrency re-check after the executor's awaited prepare.
+    assert await store.list_open(user_id="owner", conversation_id=CONV) == []
+    row, _ = await store.create(
+        user_id="owner",
+        conversation_id=CONV,
+        tool_name="request_location",
+        gateway_action_id="location.send_request",
+        tier="voice",
+        args={"person": {"user_id": "other"}},
+        summary="ask",
+    )
+    assert len(calls) <= 13
+
+    await store.mark_shown(user_id="owner", pending_action_id=row.id)
+    calls.clear()
+    assert await store.get(user_id="owner", pending_action_id=row.id) is not None
+    await store.confirm(user_id="owner", pending_action_id=row.id, source="voice")
+    await store.resolve(
+        user_id="owner", pending_action_id=row.id, status="executed", result={"status": "ok"}
+    )
+    assert len(calls) <= 4
+
+
 async def test_pending_actions_single_open_cas_and_receipt(db):
     conversations = ConversationStore(db=db)
     await conversations.open(
