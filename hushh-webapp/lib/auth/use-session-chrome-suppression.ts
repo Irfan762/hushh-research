@@ -1,8 +1,17 @@
 "use client";
 
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useSyncExternalStore } from "react";
 
 const activeSuppressionTokens = new Set<symbol>();
+const listeners = new Set<() => void>();
+const subscribe = (listener: () => void) => {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+};
+
+export function useSessionChromeSuppressed(): boolean {
+  return useSyncExternalStore(subscribe, () => activeSuppressionTokens.size > 0, () => false);
+}
 
 function syncSessionChromeSuppression(): void {
   if (typeof document === "undefined") return;
@@ -10,6 +19,7 @@ function syncSessionChromeSuppression(): void {
     "data-session-check-active",
     activeSuppressionTokens.size > 0,
   );
+  listeners.forEach((listener) => listener());
 }
 
 /**

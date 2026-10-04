@@ -93,6 +93,11 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
         HushhNativeRouter()
     }
 
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        (bridge?.plugin(withName: "HushhNativeNavigation") as? HushhNativeNavigationPlugin)?.layoutTabBar()
+    }
+
     deinit {
         nativeTestPollTimer?.invalidate()
         nativeTestPollInFlight = false
@@ -207,6 +212,7 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
         bridge?.registerPluginInstance(HushhInvitationsPlugin())
         bridge?.registerPluginInstance(HushhVoiceInvocationPlugin())
         bridge?.registerPluginInstance(HushhSessionPrivacyPlugin())
+        bridge?.registerPluginInstance(HushhNativeNavigationPlugin())
         bridge?.registerPluginInstance(HushhStreamPlugin())
         bridge?.registerPluginInstance(HushhOAuthReturnPlugin())
         bridge?.registerPluginInstance(HushhPlaidLinkPlugin())

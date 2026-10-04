@@ -106,6 +106,90 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(open.waitForExistence(timeout: 10), "Chat page did not resume after closing the drawer")
     }
 
+    func testLocalSessionNativeTabsKeepTheSessionAndRespectOverlays() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in attach-only native navigation proof")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running and unlocked; no cold launch or credential typing")
+        }
+        app.activate()
+        let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
+        let webView = app.webViews.firstMatch
+        if !bar.exists {
+            // Resume the existing presentation, not a cold route or fixture.
+            // Report only control presence: never dump the protected hierarchy.
+            for label in ["Close Profile", "Close chat history", "Close search"] {
+                let dismiss = app.buttons[label].firstMatch
+                if dismiss.exists && dismiss.isHittable { dismiss.tap() }
+            }
+            print("NATIVE_NAVIGATION_ADMISSION vault_unlock_visible=\(webView.buttons["Unlock"].exists) privacy_retry_visible=\(app.buttons["session-privacy-retry"].exists) native_chat_visible=\(app.buttons["one-native-tab-chat"].exists)")
+        }
+        XCTAssertTrue(bar.waitForExistence(timeout: 30), "The installed candidate did not expose native tabs")
+        func tab(_ name: String) -> XCUIElement { bar.buttons[name] }
+        func tap(_ name: String) {
+            XCTAssertTrue(tab(name).waitForExistence(timeout: 15) && tab(name).isHittable,
+                          "Native tab is missing or isolated")
+            tab(name).tap()
+        }
+        tap("Chat")
+        XCTAssertEqual(app.webViews.count, 1, "Tabs must use one persistent WebView")
+        let history = webView.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open chat history")).firstMatch
+        XCTAssertTrue(history.waitForExistence(timeout: 30), "Chat did not settle without another vault unlock")
+        history.tap()
+        let close = app.buttons["Close chat history"]
+        XCTAssertTrue(close.waitForExistence(timeout: 10))
+        XCTAssertFalse(bar.exists && bar.isHittable, "Native tabs escaped the web overlay")
+        close.tap()
+        tap("One")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "A tab switch lost the unlocked session")
+        tap("Connect")
+        tap("Feed")
+        tap("Chat")
+        XCTAssertTrue(history.waitForExistence(timeout: 30))
+        XCTAssertEqual(app.webViews.count, 1)
+        XCTAssertTrue(tab("Chat").isSelected, "Final selection did not match the settled Chat destination")
+        tap("Search")
+        // Search is the existing command palette, never a new native route.
+        let dismiss = app.buttons["Close search"].firstMatch
+        XCTAssertTrue(dismiss.waitForExistence(timeout: 10),
+                      "Native Search did not open the existing command palette")
+        XCTAssertFalse(bar.exists && bar.isHittable, "Native tabs remained accessible under Search")
+        dismiss.tap()
+        XCTAssertTrue(bar.waitForExistence(timeout: 10) && bar.isHittable)
+        print("NATIVE_NAVIGATION_CONTINUITY tabs_overlay_single_webview")
+    }
+
+    func testLocalSessionProfilePhotoPreviewDoesNotChangePhoto() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in profile preview proof; no credentials or photo mutation")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running and unlocked")
+        }
+        app.activate()
+        let webView = app.webViews.firstMatch
+        let openProfile = app.buttons["Open Profile"].firstMatch
+        XCTAssertTrue(openProfile.waitForExistence(timeout: 15) && openProfile.isHittable)
+        openProfile.tap()
+        let photo = app.buttons["View profile photo"].firstMatch
+        XCTAssertTrue(photo.waitForExistence(timeout: 15) && photo.isHittable,
+                      "The reviewer profile must have an existing photo for this proof")
+        photo.tap()
+        XCTAssertTrue(app.buttons["Photo options"].waitForExistence(timeout: 10),
+                      "Photo preview did not open in place")
+        let close = app.buttons["Close"].firstMatch
+        XCTAssertTrue(close.exists && close.isHittable, "Photo preview lacks a close control")
+        close.tap()
+        XCTAssertTrue(photo.waitForExistence(timeout: 10), "Profile did not resume after closing preview")
+        XCTAssertEqual(app.webViews.count, 1, "Preview must retain the existing page")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Preview lost the unlocked session")
+        app.buttons["Close Profile"].firstMatch.tap()
+        print("PROFILE_PHOTO_PREVIEW_CONTINUITY open_close_without_mutation")
+    }
+
     func testLocalSessionMemorySwipeStopsOnAdd() throws {
         guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
             throw XCTSkip("Opt-in live-session check; requires an existing signed-in account")

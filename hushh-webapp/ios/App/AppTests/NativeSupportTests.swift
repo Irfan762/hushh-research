@@ -2,6 +2,21 @@ import XCTest
 @testable import App
 
 final class NativeSupportTests: XCTestCase {
+    func testNativeNavigationRejectsStaleUnknownAndRetiredDocumentStates() {
+        var state = HushhNativeNavigationState()
+        XCTAssertTrue(state.apply(document: "first", revision: 1, visible: true, selected: "chat"))
+        XCTAssertTrue(state.acceptsTap("dashboard", appIsActive: true, shielded: false, keyboardVisible: false))
+        XCTAssertTrue(state.apply(document: "first", revision: 3, visible: false, selected: "feed"))
+        XCTAssertFalse(state.apply(document: "first", revision: 2, visible: true, selected: "chat"))
+        XCTAssertFalse(state.apply(document: "first", revision: 4, visible: true, selected: "arbitrary-route"))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: false, keyboardVisible: false))
+        state.retireDocument()
+        XCTAssertFalse(state.apply(document: "first", revision: 5, visible: true, selected: "chat"))
+        XCTAssertTrue(state.apply(document: "second", revision: 1, visible: true, selected: "dashboard"))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: false, shielded: false, keyboardVisible: false))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: true, keyboardVisible: false))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: false, keyboardVisible: true))
+    }
     func testGoogleReauthenticationAcceptsEachStageExactlyOnce() {
         let fence = GoogleIdentityReauthenticationFence(expectedUserID: "a", now: 100)
         XCTAssertEqual(fence.claim(phase: 1, userID: "a", sameSession: true, now: 101), .ignored)
