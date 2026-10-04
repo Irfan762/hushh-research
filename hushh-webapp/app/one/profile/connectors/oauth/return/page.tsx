@@ -3,6 +3,7 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { useRouter } from "next/navigation";
+import { Loader2 } from "lucide-react";
 
 import { ROUTES } from "@/lib/navigation/routes";
 import { buildProfileConnectorsPaneHref } from "@/lib/navigation/profile-pane";
@@ -107,7 +108,8 @@ function DrivePopupReturn() {
       .catch(() => finish("failed"));
   }, [loading, user]);
   return (
-    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-6 text-center">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 text-center">
+      {finished ? null : <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />}
       <p role="status" className="text-sm text-muted-foreground">
         {message}
       </p>
@@ -199,7 +201,8 @@ function CuratedPopupReturn() {
       .catch(() => finish("failed"));
   }, [loading, user]);
   return (
-    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-6 text-center">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 text-center">
+      {finished ? null : <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />}
       <p role="status" className="text-sm text-muted-foreground">
         {message}
       </p>
