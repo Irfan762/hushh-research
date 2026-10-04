@@ -126,6 +126,11 @@ async function showStage(page: Page, stage: string) {
   await page.evaluate((next) => window.bootFixture.set(next as never), stage);
   await expect(page.locator("[data-boot-line='current']")).toContainText(LINES[stage as keyof typeof LINES]);
   await expect.poll(() => page.evaluate(() => window.bootFixture.state().phase)).toMatch(/^(visible|launch)$/);
+  // Measure at rest: the line's 6 pt entrance is motion, not layout, and a
+  // loaded runner can otherwise read it mid-flight.
+  await page.waitForFunction(() =>
+    document.querySelector("[data-boot-line='current']")?.getAnimations().every((animation) => animation.playState === "finished") ?? false,
+  );
   await expect(async () => {
     const a = await measure(page);
     await page.waitForTimeout(80);
