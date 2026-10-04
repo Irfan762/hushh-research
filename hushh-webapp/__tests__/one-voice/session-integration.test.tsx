@@ -131,6 +131,7 @@ class FakePlayback {
   fenced: string[] = [];
   closed = false;
   private listeners = new Set<(speaking: boolean) => void>();
+  private playbackStartedListeners = new Set<(turnId: string) => void>();
   enqueue(pcm16: Uint8Array, turnId: string) {
     this.enqueued.push({ bytes: pcm16.byteLength, turnId });
     return true;
@@ -144,6 +145,10 @@ class FakePlayback {
   onSpeakingChanged(callback: (speaking: boolean) => void) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
+  }
+  onPlaybackStarted(callback: (turnId: string) => void) {
+    this.playbackStartedListeners.add(callback);
+    return () => this.playbackStartedListeners.delete(callback);
   }
   speak(speaking: boolean) {
     for (const listener of this.listeners) listener(speaking);
