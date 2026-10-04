@@ -417,7 +417,9 @@ export function VaultLockGuard({ children }: VaultLockGuardProps) {
     ) {
       return <HushhLoader stage="session" label="Restoring reviewer session..." />;
     }
-    return <HushhLoader stage="redirect" label="Redirecting to login..." />;
+    return (
+      <HushhLoader stage="redirect" label="Redirecting to login..." holdThroughNavigation />
+    );
   }
 
   if (vaultCheckFailed) {

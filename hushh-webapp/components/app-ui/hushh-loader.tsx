@@ -29,6 +29,12 @@ export interface HushhLoaderProps {
    * privacy gate is a top-layer modal dialog.
    */
   presentation?: "surface" | "contained";
+  /**
+   * The guard is redirecting: keep the stage held through the navigation
+   * until the destination route commits, so the surface does not start its
+   * exit in the frames between the old route unmounting and the new one.
+   */
+  holdThroughNavigation?: boolean;
 }
 
 /**
@@ -55,8 +61,16 @@ const loaderVariants = cva("flex items-center justify-center text-muted-foregrou
   },
 });
 
-function BootStageHold({ stage, detail }: { stage: BootStage; detail?: string }) {
-  useBootStageClaim(stage);
+function BootStageHold({
+  stage,
+  detail,
+  holdThroughNavigation,
+}: {
+  stage: BootStage;
+  detail?: string;
+  holdThroughNavigation?: boolean;
+}) {
+  useBootStageClaim(stage, { holdThroughNavigation });
   return <span hidden data-boot-stage={stage} data-boot-detail={detail} />;
 }
 
@@ -66,12 +80,19 @@ export function HushhLoader({
   className,
   stage,
   presentation = "surface",
+  holdThroughNavigation = false,
 }: HushhLoaderProps) {
   if (stage) {
     if (presentation === "contained") {
       return <BootScene stage={stage} contained />;
     }
-    return <BootStageHold stage={stage} detail={label} />;
+    return (
+      <BootStageHold
+        stage={stage}
+        detail={label}
+        holdThroughNavigation={holdThroughNavigation}
+      />
+    );
   }
 
   if (variant === "compact") {

@@ -375,7 +375,9 @@ function AccountPhoneMandateGuard({
   }
 
   if (shouldRedirect && !isPhoneMandatePath(pathname)) {
-    return <HushhLoader stage="phone" label="Opening phone verification..." />;
+    return (
+      <HushhLoader stage="phone" label="Opening phone verification..." holdThroughNavigation />
+    );
   }
 
   return <>{children}</>;

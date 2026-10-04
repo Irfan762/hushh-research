@@ -20,6 +20,8 @@ import {
   type BootPhase,
   type BootStage,
 } from "@/lib/boot/boot-sequence";
+import { usePathname } from "next/navigation";
+
 import {
   markBootRouteCommitted,
   startBootSurface,
@@ -227,10 +229,12 @@ export function BootSurface() {
  * Rendered once inside the app shell, beside the route tree. Its first layout
  * effect is the proof that the route has committed, so an empty claim set
  * after it means "nothing to wait for" rather than "guards not mounted yet".
+ * Each later path change ends the holds a redirecting guard left behind.
  */
 export function BootRouteCommitted() {
+  const pathname = usePathname();
   useLayoutEffect(() => {
-    markBootRouteCommitted();
-  }, []);
+    markBootRouteCommitted(pathname);
+  }, [pathname]);
   return null;
 }

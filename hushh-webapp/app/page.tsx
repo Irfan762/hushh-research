@@ -160,6 +160,7 @@ function HomeContent() {
       <HushhLoader
         stage={loading ? "session" : "redirect"}
         label="Preparing welcome…"
+        holdThroughNavigation={!loading}
       />
     );
   }

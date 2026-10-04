@@ -30,6 +30,9 @@ import {
  * a clean hand-off to interactive screens, and a way out of a hang.
  */
 
+const navigation = vi.hoisted(() => ({ pathname: "/" }));
+vi.mock("next/navigation", () => ({ usePathname: () => navigation.pathname }));
+
 const { showAfterMs, minVisibleMs, exitMs, stuckAfterMs } = BOOT_TIMING;
 
 function run(initial: BootState, events: Array<[BootStage | null | "tick", number]>): BootState {
@@ -175,13 +178,22 @@ describe("boot surface with real guards", () => {
     resetBootSurfaceForTests();
   });
 
-  function Guard({ stage, interactive }: { stage: BootStage | null; interactive?: boolean }) {
+  function Guard({
+    stage,
+    interactive,
+    redirecting,
+  }: {
+    stage: BootStage | null;
+    interactive?: boolean;
+    redirecting?: boolean;
+  }) {
     if (interactive) return <button type="button">Unlock with passphrase</button>;
-    if (stage) return <HushhLoader stage={stage} label={`detail ${stage}`} />;
+    if (stage)
+      return <HushhLoader stage={stage} label={`detail ${stage}`} holdThroughNavigation={redirecting} />;
     return <main>Chat</main>;
   }
 
-  function App(props: { stage: BootStage | null; interactive?: boolean }) {
+  function App(props: { stage: BootStage | null; interactive?: boolean; redirecting?: boolean }) {
     return (
       <>
         <BootSurface />
@@ -265,6 +277,42 @@ describe("boot surface with real guards", () => {
     await advance(exitMs);
     expect(screen.getByRole("button", { name: "Unlock with passphrase" })).toBeInTheDocument();
     expect(screen.getByTestId("boot-surface")).toHaveAttribute("data-boot-phase", "idle");
+  });
+
+  it("holds a redirecting guard's stage until the destination route commits", async () => {
+    navigation.pathname = "/one";
+    const view = render(<App stage="redirect" redirecting />);
+    await advance(showAfterMs + 20);
+    const surface = screen.getByTestId("boot-surface");
+    expect(surface).toHaveAttribute("data-boot-phase", "visible");
+    // The guard unmounts a few frames before the destination commits.
+    view.rerender(<App stage={null} redirecting />);
+    await advance(120);
+    expect(surface).toHaveAttribute("data-boot-phase", "visible");
+    expect(screen.getByRole("status")).toHaveTextContent("Taking you to sign in");
+    // The destination commits on its own path: the hold ends and the surface exits.
+    navigation.pathname = "/login";
+    view.rerender(<App stage={null} />);
+    await advance(10);
+    expect(surface).toHaveAttribute("data-boot-phase", "exiting");
+    navigation.pathname = "/";
+  });
+
+  it("never lets a hold stall a page that does not navigate", async () => {
+    // A non-redirecting stage releases at once.
+    const view = render(<App stage="session" />);
+    await advance(showAfterMs + minVisibleMs);
+    view.rerender(<App stage={null} />);
+    await advance(10);
+    expect(screen.getByTestId("boot-surface")).toHaveAttribute("data-boot-phase", "exiting");
+    // A redirect whose navigation never commits is released by the safety timer.
+    view.rerender(<App stage="redirect" redirecting />);
+    await advance(showAfterMs + 20);
+    view.rerender(<App stage={null} redirecting />);
+    await advance(3_900);
+    expect(screen.getByTestId("boot-surface")).toHaveAttribute("data-boot-phase", "visible");
+    await advance(200);
+    expect(screen.getByTestId("boot-surface")).toHaveAttribute("data-boot-phase", "exiting");
   });
 
   it("offers Try again when a stage hangs", async () => {

@@ -93,7 +93,9 @@ function SignedInGate({ children }: { children: ReactNode }) {
     return <HushhLoader stage="session" label="Checking session..." />;
   }
   if (!user) {
-    return <HushhLoader stage="redirect" label="Redirecting to login..." />;
+    return (
+      <HushhLoader stage="redirect" label="Redirecting to login..." holdThroughNavigation />
+    );
   }
   return <>{children}</>;
 }

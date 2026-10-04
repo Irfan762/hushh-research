@@ -30,7 +30,11 @@ export default function OneSetupPage() {
 
   if (loading || !user) {
     return (
-      <HushhLoader stage={loading ? "session" : "redirect"} label="Preparing setup…" />
+      <HushhLoader
+        stage={loading ? "session" : "redirect"}
+        label="Preparing setup…"
+        holdThroughNavigation={!loading}
+      />
     );
   }
 

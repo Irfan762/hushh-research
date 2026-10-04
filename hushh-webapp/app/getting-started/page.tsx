@@ -29,6 +29,7 @@ function GettingStartedContent() {
     <HushhLoader
       stage={loading ? "session" : user ? "workspace" : "redirect"}
       label="Preparing welcome…"
+      holdThroughNavigation={!loading}
     />
   );
 }

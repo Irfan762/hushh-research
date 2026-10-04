@@ -873,6 +873,7 @@ export function AuthStep({
       <HushhLoader
         stage={!hydrated || authLoading ? "session" : "workspace"}
         label="Checking session..."
+        holdThroughNavigation={hydrated && !authLoading && Boolean(user)}
       />
     );
   }

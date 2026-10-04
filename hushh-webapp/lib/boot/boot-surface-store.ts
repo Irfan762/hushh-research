@@ -55,6 +55,9 @@ let settleQueued = false;
 let markedStage: BootStage | null = null;
 let markedStageAt = 0;
 let readyMarked = false;
+let committedPath: string | null = null;
+const NAVIGATION_HOLD_SAFETY_MS = 4_000;
+const navigationHolds = new Map<number, ReturnType<typeof setTimeout>>();
 
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -169,20 +172,64 @@ export function startBootSurface(launch: BootLaunch = detectLaunch()): void {
   scheduleEvaluate(false);
 }
 
-/** The route tree has committed at least once, so an empty claim set is real. */
-export function markBootRouteCommitted(): void {
-  if (routeCommitted) return;
-  routeCommitted = true;
+function dropNavigationHolds(): void {
+  if (navigationHolds.size === 0) return;
+  for (const [id, timer] of navigationHolds) {
+    clearTimeout(timer);
+    claims.delete(id);
+  }
+  navigationHolds.clear();
   scheduleEvaluate(false);
 }
 
+/**
+ * A route has committed. The first call proves the route tree exists, so an
+ * empty claim set is real. A call with a new path ends every navigation hold:
+ * the destination's own guards claimed in this same commit, before this
+ * effect ran, so the evaluation sees them.
+ */
+export function markBootRouteCommitted(path: string | null = null): void {
+  const pathChanged = committedPath !== null && path !== committedPath;
+  committedPath = path;
+  if (!routeCommitted) {
+    routeCommitted = true;
+    scheduleEvaluate(false);
+    return;
+  }
+  if (pathChanged) queueMicrotask(dropNavigationHolds);
+}
+
+export type BootClaimOptions = {
+  /**
+   * For a guard that is redirecting: keep the stage held after it unmounts,
+   * until the destination route commits (or a 4 s safety release). The old
+   * route can unmount a frame or more before the new one commits; without
+   * this the surface would start its exit between two steps of one boot.
+   */
+  holdThroughNavigation?: boolean;
+};
+
 /** Hold the surface on a stage until the returned release is called. */
-export function claimBootStage(stage: BootStage): () => void {
+export function claimBootStage(
+  stage: BootStage,
+  options: BootClaimOptions = {},
+): () => void {
   const id = ++claimSequence;
   claims.set(id, stage);
   scheduleEvaluate(true);
   return () => {
-    if (!claims.delete(id)) return;
+    if (!claims.has(id) || navigationHolds.has(id)) return;
+    if (options.holdThroughNavigation) {
+      navigationHolds.set(
+        id,
+        setTimeout(() => {
+          navigationHolds.delete(id);
+          if (claims.delete(id)) scheduleEvaluate(false);
+        }, NAVIGATION_HOLD_SAFETY_MS),
+      );
+      return;
+    }
+    claims.delete(id);
     scheduleEvaluate(false);
   };
 }
@@ -213,11 +260,15 @@ export function useBootSurfaceState(): BootState {
  * Registered in a layout effect so the claim exists before the frame that
  * would otherwise paint the bare route underneath.
  */
-export function useBootStageClaim(stage: BootStage | null): void {
+export function useBootStageClaim(
+  stage: BootStage | null,
+  options: BootClaimOptions = {},
+): void {
+  const holdThroughNavigation = options.holdThroughNavigation === true;
   useLayoutEffect(() => {
     if (!stage) return undefined;
-    return claimBootStage(stage);
-  }, [stage]);
+    return claimBootStage(stage, { holdThroughNavigation });
+  }, [stage, holdThroughNavigation]);
 }
 
 /** Test seam: forget every claim, timer and mark, back to the cold document. */
@@ -226,6 +277,9 @@ export function resetBootSurfaceForTests(
 ): void {
   claims.clear();
   listeners.clear();
+  for (const timer of navigationHolds.values()) clearTimeout(timer);
+  navigationHolds.clear();
+  committedPath = null;
   if (deadlineTimer !== null) clearTimeout(deadlineTimer);
   deadlineTimer = null;
   settleQueued = false;

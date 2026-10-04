@@ -29,7 +29,11 @@ export default function OneHomePage() {
 
   if (loading || !user) {
     return (
-      <HushhLoader stage={loading ? "session" : "redirect"} label="Opening One…" />
+      <HushhLoader
+        stage={loading ? "session" : "redirect"}
+        label="Opening One…"
+        holdThroughNavigation={!loading}
+      />
     );
   }
 

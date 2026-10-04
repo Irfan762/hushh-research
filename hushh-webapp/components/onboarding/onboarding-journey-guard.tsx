@@ -368,6 +368,7 @@ export function OnboardingJourneyGuard({
   if (loaderActive) {
     return (
       <HushhLoader
+        holdThroughNavigation={shouldEjectSetupSurface || redirecting}
         stage={
           shouldEjectSetupSurface
             ? "workspace"
