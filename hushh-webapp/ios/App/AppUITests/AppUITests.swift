@@ -114,15 +114,19 @@ final class AppUITests: XCTestCase {
         close.tap()
         XCTAssertTrue(open.waitForExistence(timeout: 10), "Chat page did not resume after closing the drawer")
         print("CHAT_CHECK_TOGGLE_READY")
-        let body = webView.descendants(matching: .any).matching(NSPredicate(
-            format: "label == %@", "Agent conversation history"
-        )).firstMatch
-        XCTAssertTrue(body.waitForExistence(timeout: 10), "The conversation gesture surface is missing")
-        print("CHAT_CHECK_BODY_READY")
+        // Physical WebKit can omit the empty transcript region from its AX
+        // tree. Anchor a real pan in the transcript's bottom clearance using
+        // the visible header/composer, not a synthetic AX-only body element.
         let hostFrame = webView.frame
         let composerFrame = composer.frame
-        let start = body.coordinate(withNormalizedOffset: CGVector(dx: 0.20, dy: 0.55))
-        let end = body.coordinate(withNormalizedOffset: CGVector(dx: 0.83, dy: 0.55))
+        let gestureY = composerFrame.minY - 48
+        XCTAssertGreaterThan(gestureY, open.frame.maxY + 44,
+                             "The conversation has no unobstructed body clearance")
+        XCTAssertGreaterThan(hostFrame.width, 150)
+        print("CHAT_CHECK_BODY_READY")
+        let origin = webView.coordinate(withNormalizedOffset: .zero)
+        let start = origin.withOffset(CGVector(dx: hostFrame.width * 0.20, dy: gestureY - hostFrame.minY))
+        let end = origin.withOffset(CGVector(dx: hostFrame.width * 0.83, dy: gestureY - hostFrame.minY))
         start.press(forDuration: 0.05, thenDragTo: end, withVelocity: .slow, thenHoldForDuration: 0.05)
         XCTAssertTrue(close.waitForExistence(timeout: 10), "A body swipe did not open chat history")
         print("CHAT_CHECK_SWIPE_OPEN")
