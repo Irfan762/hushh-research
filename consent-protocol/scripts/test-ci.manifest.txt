@@ -563,6 +563,10 @@ tests/test_consent_redaction.py
 tests/test_consent_outcome_delivery_postgres.py
 tests/test_consent_listener_notifications.py
 tests/test_feed_metadata_allowlist.py
+# Useful Feed outcomes: real source transitions, audience/privacy/dedupe and
+# canonical Kai terminal delivery/cleanup. PostgreSQL runs in the serial lane.
+tests/test_feed_agent_outcomes_postgres.py
+tests/test_kai_feed_outcomes.py
 # Wave 2 consent (CONTRACT-2, 2026-09-28). One sensitivity authority, deny by
 # default, on the catalog, request progress and the shared card (C7). A
 # sensitive value never reaches the model on the continuation path: the real
