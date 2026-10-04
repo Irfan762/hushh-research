@@ -95,6 +95,7 @@ function connect() {
 }
 
 beforeEach(() => {
+  vi.stubGlobal("PointerEvent", MouseEvent);
   harness.session = makeSession();
   harness.native = false;
   vi.mocked(navigateToAgentChat).mockClear();
@@ -104,7 +105,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("OneVoiceControl", () => {
   it("idles as the Talk to One pill with the launcher identity and starts a session on tap", () => {
@@ -126,10 +127,12 @@ describe("OneVoiceControl", () => {
     );
     expect(start).toHaveAttribute("data-agent-action", "voice");
     expect(start).toHaveTextContent("Talk to One");
-    fireEvent.click(start);
+    fireEvent.pointerDown(start, { button: 0 });
+    fireEvent.click(start, { detail: 1 });
     expect(harness.session!.start).toHaveBeenCalledWith({
       source: "agent_bar",
     });
+    expect(harness.session!.start).toHaveBeenCalledOnce();
 
     expect(screen.queryByTestId("one-voice-panel")).toBeNull();
     expect(screen.queryByTestId("one-voice-stop")).toBeNull();
@@ -166,7 +169,8 @@ describe("OneVoiceControl", () => {
     fireEvent.click(screen.getByTestId("one-voice-mute"));
     expect(harness.session!.setMuted).toHaveBeenCalledWith(true);
     fireEvent.click(screen.getByTestId("one-voice-agent-bar-start-icon"));
-    expect(harness.session!.interrupt).toHaveBeenCalledTimes(1);
+    expect(harness.session!.stop).toHaveBeenCalledWith("tap");
+    expect(harness.session!.interrupt).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("one-voice-stop"));
     expect(harness.session!.stop).toHaveBeenCalledWith("tap");
     // The shell keeps the bottom chrome visible while a session runs.

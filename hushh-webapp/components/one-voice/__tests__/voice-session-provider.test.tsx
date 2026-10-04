@@ -12,6 +12,7 @@ import {
   type AgentConversationOutcome,
 } from "@/lib/agent/agent-voice-settings";
 import { updateVoicePreferences } from "@/lib/agent/voice-preferences";
+import { forgetSpeakerphoneSafePreference, writeSpeakerphoneSafePreference } from "@/lib/one-voice/speakerphone-preferences";
 import type {
   CaptureStartOptions,
   CaptureStartResult,
@@ -34,6 +35,7 @@ const harness = vi.hoisted(() => ({
     released: string[];
   }>,
   pathname: "/one/location",
+  platform: "web",
   lifecycle: "active" as "active" | "background",
   lifecycleListeners: new Set<() => void>(),
 }));
@@ -47,7 +49,7 @@ vi.mock("@/lib/agent/agent-runtime-context", () => ({
   useAgentRuntimeStateOptional: () => null,
 }));
 vi.mock("@capacitor/core", () => ({
-  Capacitor: { isNativePlatform: () => false, getPlatform: () => "web" },
+  Capacitor: { isNativePlatform: () => false, getPlatform: () => harness.platform },
 }));
 vi.mock("@capacitor/app", () => ({ App: {} }));
 vi.mock("@/lib/services/api-service", () => ({
@@ -268,6 +270,8 @@ beforeEach(() => {
   FakeClient.instances = [];
   harness.leases = [];
   harness.pathname = "/one/location";
+  harness.platform = "web";
+  forgetSpeakerphoneSafePreference("owner-1");
   harness.lifecycle = "active";
   harness.lifecycleListeners.clear();
   harness.vault = {
@@ -288,6 +292,76 @@ afterEach(() => {
 });
 
 describe("VoiceSessionProvider ownership", () => {
+  it.each(["ios-default", "owner-preference", "late-microphone"] as const)(
+    "drops speaker echo and its tail when protection is selected by %s",
+    async (mode) => {
+      if (mode === "ios-default") harness.platform = "ios";
+      if (mode === "owner-preference") writeSpeakerphoneSafePreference("owner-1", true);
+      const { capture, deps, rerender } = mount();
+      let speaking!: (value: boolean) => void;
+      let ready!: () => void;
+      let at = 10_000;
+      deps.now = () => at;
+      deps.createPlayback = () => ({ ...playback, onSpeakingChanged: callback => {
+        speaking = callback;
+        return () => undefined;
+      } });
+      if (mode === "late-microphone") capture.start = async options => {
+        capture.options = options;
+        capture.started++;
+        await new Promise<void>(resolve => { ready = resolve; });
+        return { sampleRate: 48_000, echoCancellation: false };
+      };
+      rerender(<VoiceSessionProvider enabled deps={deps}><Probe /></VoiceSessionProvider>);
+      let starting!: Promise<void>;
+      await act(async () => { starting = controller!.start(); });
+      await waitFor(() => expect(capture.started).toBe(1));
+      if (mode === "late-microphone") {
+        act(() => speaking(true));
+        await act(async () => { ready(); await starting; });
+      } else {
+        await act(async () => starting);
+        act(() => speaking(true));
+      }
+      expect(controller!.state.halfDuplex).toBe(true);
+      const send = vi.spyOn(FakeClient.instances[0]!, "sendAudio");
+      capture.options!.onFrame(new Uint8Array(640));
+      expect(send).not.toHaveBeenCalled();
+      act(() => speaking(false));
+      capture.options!.onFrame(new Uint8Array(640));
+      expect(send).not.toHaveBeenCalled();
+      at += 250;
+      capture.options!.onFrame(new Uint8Array(640));
+      expect(send).toHaveBeenCalledOnce();
+    },
+  );
+  it("Stop settles during lazy client loading and retires its late resources without closing a newer session", async () => {
+    const { deps, rerender } = mount();
+    let resolveClient!: (value: FakeClient) => void;
+    let oldOptions!: OneLiveClientOptions;
+    const retiredPlayback = { ...playback, close: vi.fn(), flush: vi.fn() };
+    deps.createPlayback = () => retiredPlayback;
+    deps.createClient = (options) => {
+      oldOptions = options;
+      return new Promise<FakeClient>(resolve => { resolveClient = resolve; });
+    };
+    rerender(<VoiceSessionProvider enabled deps={deps}><Probe /></VoiceSessionProvider>);
+    let pending!: Promise<void>;
+    await act(async () => { pending = controller!.start(); });
+    expect(controller!.state.phase).toBe("connecting");
+    act(() => controller!.stop());
+    expect(controller!.state.phase).toBe("idle");
+    deps.createClient = options => new FakeClient(options);
+    deps.createPlayback = () => playback;
+    await act(async () => { await controller!.start(); });
+    const current = FakeClient.instances[0]!;
+    await act(async () => { resolveClient(new FakeClient(oldOptions)); await pending; });
+    expect(retiredPlayback.close).toHaveBeenCalledOnce();
+    expect(FakeClient.instances[1]!.connected).toBe(0);
+    expect(FakeClient.instances[1]!.closeReasons).toEqual(["local:cancelled"]);
+    expect(current.closeReasons).toEqual([]);
+    expect(controller!.state.phase).toBe("listening");
+  });
   it("announces itself owner-ready only while enabled", () => {
     const { rerender } = mount(false);
     expect(isAgentConversationOwnerReady()).toBe(false);
@@ -458,7 +532,11 @@ describe("VoiceSessionProvider ownership", () => {
 
   it("acknowledges the exact pending card after React mounts it on screen", async () => {
     mockVisiblePendingGeometry();
-    mount(true, <PendingPanelProbe />);
+    const { deps } = mount(true, <PendingPanelProbe />);
+    // Control paint explicitly: async act can itself cross a real rAF on a
+    // busy host, making an assertion before that rAF nondeterministic.
+    let paint!: () => void;
+    deps.afterPaint = callback => { paint = callback; };
     await act(async () => controller!.start());
     const client = FakeClient.instances[0]!;
     const pending = pendingActionFrame();
@@ -467,6 +545,7 @@ describe("VoiceSessionProvider ownership", () => {
     expect(screen.getByTestId("one-voice-pending-action").getAttribute("data-pending-action-id"))
       .toBe(pending.pending_action_id);
     expect(client.sent).not.toContain(`pending_shown:${pending.pending_action_id}`);
+    act(() => paint());
     await waitFor(() =>
       expect(client.sent).toContain(`pending_shown:${pending.pending_action_id}`),
     );

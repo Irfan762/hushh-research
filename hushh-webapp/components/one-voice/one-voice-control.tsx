@@ -33,6 +33,7 @@ import { usePathname } from "next/navigation";
 import { AudioLines, Keyboard, Send, X } from "@/components/icons";
 
 import { useVoiceSession } from "@/components/one-voice/voice-session-provider";
+import { AgentBarSurface } from "@/components/agent/agent-bar-surface";
 import { useAuth } from "@/hooks/use-auth";
 import { isNative } from "@/lib/capacitor/platform";
 import { getKaiChromeState } from "@/lib/navigation/kai-chrome-state";
@@ -254,7 +255,7 @@ export function OneVoiceControl({
           </form>
         ) : null}
       </div>
-      <div
+      <AgentBarSurface
         data-testid="one-voice-agent-bar"
         data-agent-dock="one-agent-dock"
         data-voice-phase={state.phase}
@@ -263,10 +264,10 @@ export function OneVoiceControl({
         }
         role="group"
         aria-label="One private agent"
-        className={cn(
-          "bottom-chrome-surface pointer-events-auto relative flex items-center overflow-hidden rounded-full transition-opacity motion-reduce:transition-none",
-          BOTTOM_CHROME_COLUMN_CLASSNAME,
-        )}
+        className="transition-opacity motion-reduce:transition-none"
+        onClick={(event) => {
+          if (active && event.target === event.currentTarget) session.stop("tap");
+        }}
       >
         {active ? (
           <VoiceStatePill
@@ -295,7 +296,13 @@ export function OneVoiceControl({
             data-voice-phase={state.phase}
             aria-label="Talk to One"
             disabled={!session.enabled}
-            onClick={() => start("agent_bar")}
+            onPointerDown={(event) => {
+              if (event.button === 0 && (event.isPrimary || !event.pointerType)) start("agent_bar");
+            }}
+            onClick={(event) => {
+              // Pointer starts on press, never again on the following click.
+              if (event.detail === 0) start("agent_bar");
+            }}
             className="agent-bar-voice-launcher relative flex h-11 min-w-0 flex-1 touch-manipulation select-none items-center gap-2 rounded-l-full px-3 text-left text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[color:var(--app-focus-ring)] disabled:opacity-60"
           >
             <AudioLines className="h-5 w-5 shrink-0" aria-hidden />
@@ -314,7 +321,7 @@ export function OneVoiceControl({
         >
           <Keyboard className="h-4 w-4" aria-hidden />
         </button>
-      </div>
+      </AgentBarSurface>
     </div>
   );
 }
