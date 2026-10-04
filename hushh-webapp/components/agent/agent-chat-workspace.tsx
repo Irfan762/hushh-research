@@ -8405,6 +8405,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         )}
       >
         <AgentConnectionsDrawer
+          gestureSurfaceRef={transcriptRef}
+          gestureEnabled={isCanonicalChatRoute && hasChatAccess && !isPuppySurface}
+          onGestureOpen={toggleHistoryDrawer}
           triggerRef={historyDrawerTriggerRef}
           fallbackFocusRef={historyDrawerFallbackRef}
           open={isHistoryDrawerOpen}
@@ -8755,7 +8758,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 transcriptUserScrollRef.current = true;
               }}
               className={cn(
-                "h-full w-full overflow-y-auto px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
+                "h-full w-full touch-pan-y overflow-y-auto px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
                 "pb-[calc(var(--agent-chat-composer-bottom,5rem)+max(5.5rem,var(--agent-chat-composer-stack-height,0px)+1.75rem))] lg:px-8",
               )}
               tabIndex={0}

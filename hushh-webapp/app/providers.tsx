@@ -45,7 +45,6 @@ import { resolveAppRouteLayout } from "@/lib/navigation/app-route-layout";
 import { AppTopShell } from "@/components/app-ui/top-app-bar";
 import { AppEdgeBackGesture } from "@/components/app-ui/app-edge-back-gesture";
 import { AppProfileEdgeGesture } from "@/components/app-ui/app-profile-edge-gesture";
-import { AppChatHistoryEdgeGesture } from "@/components/app-ui/app-chat-history-edge-gesture";
 import { ProfilePane } from "@/components/app-ui/profile-pane";
 import { TopShellRouteSwipe } from "@/components/app-ui/top-shell-route-swipe";
 import { AgentRuntimeStateProvider } from "@/lib/agent/agent-runtime-context";
@@ -668,7 +667,6 @@ function AppShellFrame({ children }: ProvidersProps) {
                   {!hidesPersistentChrome ? <AgentVoiceEdgeGlow /> : null}
                   {!hidesPersistentChrome ? <AppEdgeBackGesture /> : null}
                   <AppProfileEdgeGesture enabled={profilePaneEnabled} />
-                  <AppChatHistoryEdgeGesture enabled={isCanonicalChatRoute} />
                   <AppBottomShell model={bottomShellModel} />
                   <ProfilePane
                     open={profilePaneOpen}
