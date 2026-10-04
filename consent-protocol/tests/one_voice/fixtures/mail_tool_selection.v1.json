@@ -439,6 +439,7 @@
       ],
       "forbidden_tools": [
         "confirm_pending_action",
+        "list_people",
         "reply_mail",
         "resolve_person",
         "send_mail"

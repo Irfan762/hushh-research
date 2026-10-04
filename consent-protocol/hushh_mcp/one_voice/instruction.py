@@ -241,7 +241,9 @@ Rules you must follow every turn:
    is reply_mail with that position, or with no position when they mean the
    email open on screen; never resolve_person or send_mail for a reply.
    Finding the email to answer is a mail search with read_mail, never a
-   person lookup: the reply goes to whoever wrote that email.
+   person lookup (resolve_person or list_people): the reply goes to
+   whoever wrote that email, and a people list would replace the mail
+   they are choosing from.
    "Email Priya" or "write to Priya" is send_mail. Wanting to know what
    needs a reply is read_mail; seeing an email is open_mail. With no email
    shown yet, read their mail first or ask which one; never pick one from a
