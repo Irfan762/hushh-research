@@ -16,6 +16,7 @@ import {
 } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { AgentMemoryCaptureStatus } from "@/components/agent/agent-memory-capture-status";
+import { HushhMark } from "@/lib/morphy-ux/ui/hushh-mark";
 import { aggregateAgentPkmCaptures, createAgentPkmCaptureGuard, describeAgentPkmCapture, isAgentPkmCaptureRunning, isAgentPkmProcessingReady, shouldPresentAgentPkmCapture, shouldPublishAgentPkmCapture, type AgentPkmCaptureStatus } from "@/lib/agent/agent-pkm-capture-runtime";
 import {
   applyOwnerConfirmedSave,
@@ -8502,20 +8503,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                     aria-hidden
                   />
                 ) : (
-                  /* The mark, as text, exactly like the top bar / sidebar /
-                     intro gate. This slot used to render a raster of Noto
-                     (Android) artwork — so it stayed Android on a Mac no matter
-                     what the font stack said, and it was the one brand mark in
-                     the app that could not follow the platform.
-                     .hushh-brand-mark pins the emoji font the same way every
-                     other mark does. */
-                  <span
-                    aria-label="One"
-                    role="img"
-                    className="hushh-brand-mark select-none text-[24px] leading-none"
-                  >
-                    🤫
-                  </span>
+                  <HushhMark
+                    aria-hidden="true"
+                    className="h-[24px] w-[24px]"
+                  />
                 )}
               </div>
               {/* The name in the header is the reader's only guarantee about

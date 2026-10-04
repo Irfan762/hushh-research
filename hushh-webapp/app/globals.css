@@ -7797,14 +7797,10 @@ html.native-android .boot-surface[data-boot-phase="launch"] {
 
 .boot-mark-glyph {
   position: absolute;
-  inset: -50%;
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-family: var(--font-app-emoji), sans-serif;
-  font-size: calc(var(--boot-mark-size) / 0.96);
-  line-height: 1;
-  translate: 0 calc(var(--boot-mark-size) / 0.96 * 0.0267);
   user-select: none;
 }
 
