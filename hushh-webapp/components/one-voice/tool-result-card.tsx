@@ -15,6 +15,7 @@
  */
 
 import {
+  Component,
   useCallback,
   useEffect,
   useId,
@@ -103,6 +104,7 @@ const CIRCLE_TOOLS = new Set([
   "delete_circle",
   "add_circle_member",
   "add_circle_members",
+  "add_all_connections",
   "remove_circle_member",
   "leave_circle",
   "respond_circle_invite",
@@ -872,7 +874,17 @@ export function mailCoverageLine(coverage: unknown): string | null {
   const returned = count(row.returned);
   const assessed = count(row.assessed);
   const scope = text(row.scope);
-  if (returned !== null) {
+  if (returned !== null && scope === "needs_reply") {
+    // A filtered set: threads that may need a reply. Never "newest N", which
+    // would describe the front of the mailbox rather than what was kept, and the
+    // threads checked to find them are a separate server-counted fact.
+    parts.push(
+      `${returned} ${unitNoun(row.unit, returned)} that may need a reply`,
+    );
+    if (assessed !== null && assessed > returned) {
+      parts.push(`${assessed} checked`);
+    }
+  } else if (returned !== null) {
     parts.push(
       Array.isArray(row.analysis_requested) && assessed !== null && assessed < returned
         ? `${assessed} of ${returned} message texts checked`
@@ -1248,6 +1260,43 @@ function MailDetail({
   );
 }
 
+/**
+ * Keeps a mail detail that fails to render from taking the panel with it.
+ *
+ * The fallback is a static line: it reads nothing, opens nothing and dispatches
+ * nothing, so a malformed result can never turn into a new read or an open. The
+ * error is not logged -- what threw may carry message content. A new result
+ * gets a fresh attempt.
+ */
+class MailDetailBoundary extends Component<
+  { result: ToolResultPublic; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidUpdate(prev: { result: ToolResultPublic }) {
+    if (this.state.failed && prev.result !== this.props.result) {
+      this.setState({ failed: false });
+    }
+  }
+
+  render() {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <p
+        data-testid="one-voice-mail-detail-error"
+        className="mt-2 text-[13px] text-[color:var(--app-secondary-label)]"
+      >
+        Couldn&apos;t show these messages.
+      </p>
+    );
+  }
+}
+
 function Detail({
   family,
   result,
@@ -1271,7 +1320,11 @@ function Detail({
     case "status":
       return <StatusDetail result={result} />;
     case "mail":
-      return <MailDetail result={result} onOpenMail={onOpenMail} />;
+      return (
+        <MailDetailBoundary result={result}>
+          <MailDetail result={result} onOpenMail={onOpenMail} />
+        </MailDetailBoundary>
+      );
     default:
       return null;
   }

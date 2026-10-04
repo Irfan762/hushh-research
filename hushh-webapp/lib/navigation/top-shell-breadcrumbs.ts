@@ -179,6 +179,7 @@ function profilePanelLabel(panel: ProfilePanel | null): string | null {
   if (panel === "referrals") return "Invite friends";
   if (panel === "support") return "Support & feedback";
   if (panel === "gmail") return "Mail";
+  if (panel === "legal") return "Legal";
   if (panel === "regulatory") return "Regulatory profile";
   return null;
 }
@@ -223,6 +224,8 @@ function profileOriginCrumbLabel(backHref: string): string {
     [ROUTES.GMAIL]: "Mail",
     [ROUTES.PKM]: "Memory",
     [ROUTES.PKM_RECENT]: "Recently learned",
+    [ROUTES.PKM_LOCATION]: "Location",
+    [ROUTES.PKM_LOCATION_DETAIL]: "Detail",
     [ROUTES.ONE_MARKETPLACE]: "Marketplace",
     [ROUTES.CONNECTED_SYSTEMS]: "Connected Systems",
     [ROUTES.CONSENTS]: "Consent Center",
@@ -334,6 +337,25 @@ function resolveTopShellBreadcrumbInner(
   pathname = normalizeBreadcrumbPathname(pathname);
   const resolvedConnectedSystemLabel =
     String(connectedSystemLabel || "").trim() || "CRM";
+
+  // Terms and Privacy are public pages inside the app shell. Sign-in is the
+  // only in-app screen that links to them (Profile reads them in place), so
+  // Back returns to sign-in; a signed-in person who lands here by address is
+  // forwarded home by sign-in itself. "Legal" names the same section Profile
+  // shows, and has no address of its own.
+  if (pathname === ROUTES.TERMS || pathname === ROUTES.PRIVACY) {
+    return {
+      backHref: ROUTES.LOGIN,
+      width: "profile",
+      align: "center",
+      items: [
+        { label: "Legal" },
+        {
+          label: pathname === ROUTES.TERMS ? "Terms of Use" : "Privacy Policy",
+        },
+      ],
+    };
+  }
 
   if (pathname === ROUTES.CONNECT_SETTINGS) {
     return {
@@ -1033,6 +1055,21 @@ function resolveTopShellBreadcrumbInner(
       // Memory owns the visible route title; the shell retains only the
       // implicit One root so deterministic back navigation stays intact.
       items: [{ label: "One", href: ROUTES.ONE_HOME }],
+    };
+  }
+
+  if (pathname === ROUTES.PKM_LOCATION || pathname === ROUTES.PKM_LOCATION_DETAIL) {
+    const detail = pathname === ROUTES.PKM_LOCATION_DETAIL;
+    return {
+      backHref: detail ? ROUTES.PKM_LOCATION : ROUTES.PKM,
+      width: "profile",
+      align: "center",
+      items: [
+        { label: "One", href: ROUTES.ONE_HOME },
+        { label: "Memory", href: ROUTES.PKM },
+        { label: "Location", ...(detail ? { href: ROUTES.PKM_LOCATION } : {}) },
+        ...(detail ? [{ label: "Detail" }] : []),
+      ],
     };
   }
 

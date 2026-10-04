@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   ToolResultCard,
@@ -278,6 +278,8 @@ describe("ToolResultCard", () => {
   it("classifies tools into families and tones", () => {
     expect(toolResultFamily("list_people")).toBe("people");
     expect(toolResultFamily("rename_circle")).toBe("circles");
+    expect(toolResultFamily("add_circle_members")).toBe("circles");
+    expect(toolResultFamily("add_all_connections")).toBe("circles");
     expect(toolResultFamily("share_with")).toBe("shares");
     expect(toolResultFamily("create_public_link")).toBe("links");
     expect(toolResultFamily("get_location_settings")).toBe("status");
@@ -406,6 +408,93 @@ describe("ToolResultCard", () => {
     expect(
       mailCoverageLine({ returned: 3, assessed: 9, unit: "messages", scope: "newest" }),
     ).toBe("3 of 9 checked");
+  });
+
+  it("names a needs-reply read as a filtered set, never as the newest mail", () => {
+    // The reader checked 9 threads and kept 3. "newest 3" or "3 of 9 checked"
+    // would both describe a different read than the one that happened.
+    expect(
+      mailCoverageLine({ returned: 3, assessed: 9, unit: "threads", scope: "needs_reply" }),
+    ).toBe("3 conversations that may need a reply · 9 checked");
+    expect(
+      mailCoverageLine({ returned: 1, unit: "threads", scope: "needs_reply" }),
+    ).toBe("1 conversation that may need a reply");
+    // Negative control: an unnarrowed read is still the front of the mailbox.
+    expect(
+      mailCoverageLine({ returned: 3, unit: "threads", scope: "newest" }),
+    ).toBe("newest 3 conversations");
+  });
+
+  it("contains a mail detail that cannot render, without reading or opening anything", () => {
+    const silence = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+    const calls: unknown[] = [];
+    const onOpenMail = async (input: unknown) => {
+      calls.push(input);
+      throw new Error("must not be called");
+    };
+    // A row whose fields cannot be read stands in for any malformed payload
+    // that makes the detail throw while rendering.
+    const poisoned: Record<string, unknown> = { source_ref: "mail:1" };
+    Object.defineProperty(poisoned, "subject", {
+      enumerable: true,
+      get() {
+        throw new Error("malformed row");
+      },
+    });
+    const base: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["I found 1 conversation that may need a reply."],
+      sources: [],
+      coverage: { unit: "threads", returned: 1, scope: "needs_reply" },
+      offer_revision: 7,
+      conversation_id: "22222222-2222-4222-8222-222222222222",
+    };
+    try {
+      const { rerender } = render(
+        <ToolResultCard
+          result={{ ...base, items: [poisoned] }}
+          tool="read_mail"
+          ok
+          onOpenMail={onOpenMail}
+        />,
+      );
+      expect(
+        screen.getByTestId("one-voice-mail-detail-error"),
+      ).toHaveTextContent("Couldn't show these messages.");
+      // The rest of the card is still there.
+      expect(
+        screen.getByText("I found 1 conversation that may need a reply."),
+      ).toBeInTheDocument();
+      expect(screen.queryByTestId("one-voice-mail-detail")).toBeNull();
+      // The failure is static: no read, no open, no directive.
+      expect(calls).toEqual([]);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(dispatchSpy).not.toHaveBeenCalled();
+
+      // Negative control: a well-formed result renders its rows normally.
+      rerender(
+        <ToolResultCard
+          result={{
+            ...base,
+            items: [{ source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" }],
+          }}
+          tool="read_mail"
+          ok
+          onOpenMail={onOpenMail}
+        />,
+      );
+      expect(screen.queryByTestId("one-voice-mail-detail-error")).toBeNull();
+      expect(screen.getByText("Q3 deck")).toBeInTheDocument();
+      expect(screen.getByLabelText("Mail").children).toHaveLength(1);
+      expect(calls).toEqual([]);
+    } finally {
+      dispatchSpy.mockRestore();
+      vi.unstubAllGlobals();
+      silence.mockRestore();
+    }
   });
 });
 

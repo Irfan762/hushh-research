@@ -819,10 +819,62 @@ describe("EmailDraftCard", () => {
 
     await waitFor(() => expect(onSendFailed).toHaveBeenCalledTimes(1));
     expect(onSendFailed).toHaveBeenCalledWith(
-      expect.objectContaining({ code: "EMAIL_ACTION_OUTCOME_UNKNOWN" }),
+      expect.objectContaining({
+        code: "EMAIL_ACTION_OUTCOME_UNKNOWN",
+        message: "We could not confirm delivery. Check Sent Mail before trying again.",
+      }),
       null,
     );
     expect(onSent).not.toHaveBeenCalled();
+
+    // The message may already be delivered: this card must never send it again.
+    fireEvent.click(screen.getByTestId("one-email-draft-send"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(EmailDeliveryService.prepare).toHaveBeenCalledTimes(1);
+    expect(EmailDeliveryService.send).toHaveBeenCalledTimes(1);
+    expect(onSendFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the edited Cc and Bcc recipients in the reviewed envelope", async () => {
+    vi.mocked(EmailDeliveryService.prepare).mockResolvedValue({ actionId: "action-cc", expiresAt: null });
+    vi.mocked(EmailDeliveryService.send).mockResolvedValue({
+      messageId: "msg-cc",
+      threadId: null,
+      outcomeUnknown: false,
+    });
+    render(
+      <EmailDraftCard
+        initialInstruction=""
+        initialDraft={{ to: "pat@example.com", cc: "", bcc: "", subject: "Demo", body: "Hello" }}
+        getAuth={getAuth}
+        onRequireVault={vi.fn()}
+        onDismiss={vi.fn()}
+        onSent={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByTestId("one-email-draft-cc")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "+ CC / BCC" }));
+    fireEvent.change(screen.getByTestId("one-email-draft-cc"), {
+      target: { value: "priya@example.com" },
+    });
+    fireEvent.change(screen.getByTestId("one-email-draft-bcc"), {
+      target: { value: "audit@example.com" },
+    });
+    fireEvent.click(screen.getByTestId("one-email-draft-send"));
+
+    await waitFor(() => expect(EmailDeliveryService.send).toHaveBeenCalledTimes(1));
+    const reviewed = expect.objectContaining({
+      to: "pat@example.com",
+      cc: "priya@example.com",
+      bcc: "audit@example.com",
+    });
+    expect(EmailDeliveryService.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ draft: reviewed }),
+    );
+    expect(EmailDeliveryService.send).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: "action-cc", draft: reviewed }),
+    );
   });
   it("offers Connect Gmail in the connections drawer when Gmail was never connected", async () => {
     vi.mocked(EmailDeliveryService.draft).mockRejectedValue(

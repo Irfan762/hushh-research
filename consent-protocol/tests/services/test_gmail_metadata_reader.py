@@ -165,6 +165,9 @@ async def test_needs_reply_does_not_fetch_invites_or_full_messages():
     assert result["coverage"]["unit"] == "threads"
     assert result["coverage"]["returned"] == 1
     assert result["coverage"]["assessed"] == 1
+    # A filtered set, not the front of the mailbox: "your newest conversations"
+    # would misdescribe threads chosen because they may need a reply.
+    assert result["coverage"]["scope"] == "needs_reply"
 
 
 async def test_list_recent_reads_newest_inbox_page_without_a_search_expression():
@@ -195,6 +198,8 @@ async def test_list_recent_reads_newest_inbox_page_without_a_search_expression()
     ]
     # The person asked for exactly the newest two; older mail is not an omission.
     assert result["truncated"] is False
+    # Negative control for the needs-reply scope: an unfiltered read stays "newest".
+    assert result["coverage"]["scope"] == "newest"
     serialized = json.dumps(result)
     assert "UNEXPECTED_BODY_MUST_NOT_LEAVE" not in serialized
     assert "message-1" not in serialized
@@ -327,6 +332,36 @@ async def test_late_result_suppressed_on_any_observation_change(mutation):
 
     with pytest.raises(GmailMetadataError, match="connection_changed"):
         await _reader(gmail, respond).read("search_inbox", {"query": "invoice"})
+
+
+@pytest.mark.parametrize("expected", ["other-account", "synthetic-account"])
+async def test_expected_account_fence_refuses_before_any_gmail_request(expected):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if request.url.path.endswith("/messages/m-1"):
+            return _response(_full_message("m-1", [_part("text/plain", "hello")]))
+        return _response({"messages": []})
+
+    reader = GmailMetadataReader(
+        gmail=_Gmail(),
+        user_id="owner",
+        require_access=_allowed,
+        transport=httpx.MockTransport(respond),
+        expect_account=expected,
+    )
+    arguments = {"message_ids": ["m-1"]}
+    if expected == "other-account":
+        # Ids resolved in another mailbox mean nothing here; no request may go out.
+        with pytest.raises(GmailMetadataError, match="source_changed"):
+            await reader.read("read_message_by_id", arguments)
+        assert calls == []
+        return
+    # Negative control: the account the ids came from proceeds to Gmail.
+    result = await reader.read("read_message_by_id", arguments)
+    assert len(calls) == 1
+    assert result["coverage"]["scope"] == "selected"
 
 
 async def test_read_can_be_revalidated_after_interpretation():
@@ -695,6 +730,7 @@ class _ProposalDb:
 
     def __init__(self):
         self.rows = {}
+        self.executed_receipts = []
 
     def execute_raw(self, sql, params):
         from types import SimpleNamespace
@@ -719,6 +755,9 @@ class _ProposalDb:
             )
         if "SET status = 'failed'" in sql:
             self.rows[params["proposal_id"]]["status"] = "failed"
+        elif "SET status = 'executed'" in sql:
+            self.rows[params["proposal_id"]]["status"] = "executed"
+            self.executed_receipts.append(params["proposal_id"])
         elif "WHERE proposal_id" in sql:
             self.rows.pop(params["proposal_id"], None)
         return SimpleNamespace(data=[])
@@ -781,6 +820,7 @@ async def test_mailbox_change_runs_only_after_review_with_exact_labels(action, l
 
     result = await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
     assert result == {"status": "executed", "action": action, "count": 2}
+    assert db.executed_receipts == [proposal["proposal_id"]]
     assert len(writes) == 1
     assert writes[0].url.path.endswith("/messages/batchModify")
     assert json.loads(writes[0].content) == {
@@ -839,6 +879,34 @@ async def test_unapproved_or_foreign_proposals_never_reach_gmail():
         await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
     assert writes == []
     assert db.rows[proposal["proposal_id"]]["status"] == "failed"
+
+
+async def test_mailbox_receipt_outage_preserves_provider_success_and_prevents_replay():
+    class ReceiptOutage(_ProposalDb):
+        def execute_raw(self, sql, params):
+            if "SET status = 'executed'" in sql:
+                raise RuntimeError("receipt unavailable")
+            return super().execute_raw(sql, params)
+
+    db = ReceiptOutage()
+    writes = []
+    service = _mailbox(_ModifyGmail(), db, _mailbox_provider(writes))
+    proposal = await service.propose(
+        user_id="owner",
+        action="archive",
+        query="from:alice",
+        mailbox="inbox",
+        limit=2,
+        label="",
+        require_access=_allowed,
+    )
+    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))[
+        "status"
+    ] == "executed"
+    assert len(writes) == 1
+    with pytest.raises(Exception, match="already used"):
+        await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])
+    assert len(writes) == 1
 
 
 async def test_mailbox_change_without_modify_grant_asks_for_it_before_any_read():

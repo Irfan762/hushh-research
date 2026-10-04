@@ -809,21 +809,24 @@ describe("supported connector catalog", () => {
     expect(screen.queryByRole("button", { name: "Back to connectors" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Close connectors" })).not.toBeInTheDocument();
     expect(screen.queryByRole("searchbox", { name: "Search connectors" })).not.toBeInTheDocument();
-    const gmailRow = screen.getByRole("button", { name: /^Gmail/ });
-    fireEvent.click(gmailRow);
-    fireEvent.click(gmailRow);
+    expect(screen.getByTestId("profile-connector-row-calendar")).toHaveTextContent(
+      "Plan around your schedule.",
+    );
+    const calendarRow = screen.getByRole("button", { name: /^Calendar/ });
+    fireEvent.click(calendarRow);
+    fireEvent.click(calendarRow);
     // Asked once: a double tap never stacks two identical history entries.
-    expect(onActiveConnectorChange).toHaveBeenCalledExactlyOnceWith("gmail");
+    expect(onActiveConnectorChange).toHaveBeenCalledExactlyOnceWith("calendar");
     view.rerender(
       <ConnectorsPanel
         open
         surface="profile"
-        activeConnector="gmail"
+        activeConnector="calendar"
         onActiveConnectorChange={onActiveConnectorChange}
         {...callbacks}
       />,
     );
-    expect(await screen.findByRole("button", { name: "Connect Mail" })).toBeInTheDocument();
+    expect(await screen.findByRole("region", { name: "Calendar details" })).toBeInTheDocument();
   });
 
   it("offers explicit Gmail draft permission only for a connected account without it", async () => {
@@ -926,6 +929,81 @@ describe("supported connector catalog", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Disconnect" }));
     await waitFor(() => expect(state.calendarDisconnect).toHaveBeenCalledExactlyOnceWith("synthetic-firebase-token", "owner-a"));
     await waitFor(() => expect(state.calendarRefresh).toHaveBeenCalledOnce());
+  });
+
+  it("keeps Calendar copy concise before and after connection", async () => {
+    const view = render(panel());
+    fireEvent.click(await screen.findByRole("button", { name: "Calendar" }));
+    const calendar = await screen.findByRole("region", {
+      name: "Calendar details",
+    });
+
+    expect(
+      within(calendar).getByRole("heading", { name: "Google Calendar" }),
+    ).toBeInTheDocument();
+    expect(
+      within(calendar).getByText("Plan around your schedule."),
+    ).toBeInTheDocument();
+    expect(within(calendar).getByText("Not connected")).toBeInTheDocument();
+    expect(
+      within(calendar).getByRole("button", { name: "Connect Calendar" }),
+    ).toBeInTheDocument();
+    expect(
+      within(calendar).getByText("Private by default. Disconnect anytime."),
+    ).toBeInTheDocument();
+
+    state.calendar = {
+      connected: false,
+      loaded: true,
+      error: null,
+      status: { status: "needs_reauth" },
+    };
+    view.rerender(panel());
+
+    expect(
+      await within(calendar).findByText(
+        "Reconnect to keep planning around your schedule.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(calendar).getByText("Reconnect needed")).toBeInTheDocument();
+    expect(
+      within(calendar).getByRole("button", { name: "Reconnect Calendar" }),
+    ).toBeInTheDocument();
+
+    state.calendar = {
+      connected: true,
+      loaded: true,
+      error: null,
+      status: { status: "connected", access_level: "manage" },
+    };
+    view.rerender(panel());
+
+    expect(
+      await within(calendar).findByText(
+        "Your private agent can help schedule meetings. You approve every change.",
+      ),
+    ).toBeInTheDocument();
+    expect(within(calendar).getByText("Connected")).toBeInTheDocument();
+    expect(
+      within(calendar).getByRole("button", { name: "Disconnect Calendar" }),
+    ).toBeInTheDocument();
+    expect(
+      within(calendar).getByText("Disconnect anytime."),
+    ).toBeInTheDocument();
+
+    state.calendar = {
+      connected: true,
+      loaded: true,
+      error: null,
+      status: { status: "connected", access_level: "read" },
+    };
+    view.rerender(panel());
+
+    expect(
+      await within(calendar).findByText(
+        "Your private agent can check your availability.",
+      ),
+    ).toBeInTheDocument();
   });
 
   describe("disconnect state transitions", () => {

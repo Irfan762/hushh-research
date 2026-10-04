@@ -149,6 +149,8 @@ tests/test_adk_a2a_compliance_script.py
 tests/test_agent_manifests.py
 tests/test_hushh_adk_single_turn.py
 tests/services/test_pkm_agent_lab_service.py
+# A pasted context transfer is kept whole (Phase 4): recorded server answers.
+tests/services/test_context_transfer_is_kept.py
 tests/test_ria_claim_flow.py
 tests/test_ria_iam_service_architecture.py
 tests/test_kai_optimize_realtime_contract.py
@@ -348,6 +350,13 @@ tests/test_information_chat_service.py
 # reporting as one that ran. None of them is caught by a type error or a 500.
 tests/test_consent_lifecycle_chat.py
 tests/test_internal_path_keys.py
+# Reserved-branch registry: three identical copies, the shadow hook that logs a
+# would-be refusal with labels only, and the server writer labels it catalogues.
+tests/test_reserved_branches.py
+# Secrets area: the shared secret-pattern contract (three copies, the same cases
+# on both sides), spans without values, the per-item grant shape, and the
+# plaintext summary envelope that refuses a leaked label or value.
+tests/test_secrets_area.py
 tests/test_scope_catalog_self_corrects_stale_rows.py
 tests/services/test_structure_decision_is_the_models.py
 tests/services/test_intent_frame_is_the_models.py
@@ -478,6 +487,16 @@ tests/one_voice/test_tools_sharing.py
 tests/one_voice/test_tools_circles.py
 tests/one_voice/test_tools_sos.py
 tests/one_voice/test_tools_mail.py
+tests/one_voice/test_mail_send.py
+tests/one_voice/test_relay_mail_send.py
+tests/one_voice/test_live_mail_tool_selection_eval.py
+# Mail delivery and read contracts the voice path relies on: one Send per
+# reviewed draft, no retry on an unknown outcome, nonpersisting personal-info
+# assessment, and narration off unless switched on.
+tests/services/test_gmail_delivery_service.py
+tests/test_one_gmail_delivery_routes.py
+tests/services/test_gmail_personal_information_request_service.py
+tests/services/test_voice_narration.py
 tests/one_voice/test_relay_external_content_isolation.py
 tests/one_voice/test_tools_profile.py
 tests/one_voice/test_tools_account_lifecycle.py
@@ -500,6 +519,8 @@ tests/test_one_output_privacy.py
 tests/test_one_text_attachments.py
 tests/test_governed_mcp_toolset.py
 tests/test_one_turn_location.py
+# Owner standing style: closed schema, template-only prompt section, no authority.
+tests/test_one_owner_style.py
 tests/test_mcp_review_service.py
 tests/test_mcp_review_wire_contract.py
 # Custom connectors: reads free, writes reviewed. The review policy follows the
@@ -545,6 +566,10 @@ tests/test_consent_redaction.py
 tests/test_consent_outcome_delivery_postgres.py
 tests/test_consent_listener_notifications.py
 tests/test_feed_metadata_allowlist.py
+# Useful Feed outcomes: real source transitions, audience/privacy/dedupe and
+# canonical Kai terminal delivery/cleanup. PostgreSQL runs in the serial lane.
+tests/test_feed_agent_outcomes_postgres.py
+tests/test_kai_feed_outcomes.py
 # Wave 2 consent (CONTRACT-2, 2026-09-28). One sensitivity authority, deny by
 # default, on the catalog, request progress and the shared card (C7). A
 # sensitive value never reaches the model on the continuation path: the real

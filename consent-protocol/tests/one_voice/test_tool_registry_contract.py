@@ -188,7 +188,7 @@ async def test_executor_resolves_tools_only_by_exact_name():
     from hushh_mcp.one_voice.tools.base import EntityContext, ScreenContext, ToolContext
     from hushh_mcp.one_voice.tools.executor import ToolExecutor
 
-    source = inspect.getsource(executor_module.ToolExecutor.call)
+    source = inspect.getsource(executor_module.ToolExecutor._call)
     assert "registry.get_tool(name)" in source
     ctx = ToolContext(
         user_id="owner-1",
@@ -243,3 +243,18 @@ def test_one_voice_package_has_no_lexical_matcher_on_the_path():
                 ):
                     offences.append(f"{rel}:{node.lineno} {name}")
     assert offences == []
+
+
+def test_voice_mail_is_exactly_read_open_access_and_a_reviewed_draft():
+    """Mail on voice is four tools. Archive, label, read-state, trash, reply and
+    forward are mailbox mutations that need their own policy review; none may
+    appear as a voice tool by accident."""
+    declared = {item["name"] for item in registry.declarations()}
+    mail_tools = {name for name in declared if "mail" in name}
+    assert mail_tools == {"get_mail_access", "read_mail", "open_mail", "send_mail"}
+    for forbidden in ("archive", "label", "mark_read", "unread", "trash", "reply", "forward"):
+        assert not [name for name in declared if forbidden in name], forbidden
+    send = registry.get_tool("send_mail")
+    assert send is not None and send.policy.value == "confirm_voice"
+    assert send.device_step is True, "only a live session can open the review card"
+    assert set(send.private_args) == {"subject", "message"}

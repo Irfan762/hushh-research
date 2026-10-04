@@ -175,6 +175,8 @@ export const ROUTES = {
   CALENDAR: "/one/calendar",
   PKM: "/one/pkm",
   PKM_RECENT: "/one/pkm/recent",
+  PKM_LOCATION: "/one/pkm/location",
+  PKM_LOCATION_DETAIL: "/one/pkm/location/detail",
   ONE_MARKETPLACE: "/one/marketplace",
   /** Owner setup and management for the Apple Wallet profile pass. */
   ONE_WALLET_CARD: "/one/wallet-card",
@@ -260,6 +262,27 @@ export const ROUTES = {
   /** One-release redirect only. Optimize is no longer a product surface. */
   KAI_OPTIMIZE_COMPAT: "/one/kai/optimize",
 } as const;
+
+/**
+ * Mail tabs a link may open directly (`/one/gmail?workspace=kyc`). Overview is
+ * the page's own default, so it never needs a link.
+ */
+export const GMAIL_DEEP_LINK_WORKSPACES = ["kyc", "receipts"] as const;
+export type GmailDeepLinkWorkspace = (typeof GMAIL_DEEP_LINK_WORKSPACES)[number];
+
+/** The Mail tab a `workspace` query names, or undefined for anything else. */
+export function gmailDeepLinkWorkspace(
+  value: string | null | undefined,
+): GmailDeepLinkWorkspace | undefined {
+  return (GMAIL_DEEP_LINK_WORKSPACES as readonly string[]).includes(String(value ?? ""))
+    ? (value as GmailDeepLinkWorkspace)
+    : undefined;
+}
+
+/** The link that opens Mail on one tab; the tab name is the only query. */
+export function buildGmailWorkspaceRoute(workspace: GmailDeepLinkWorkspace): string {
+  return withQuery(ROUTES.GMAIL, { workspace });
+}
 
 export function buildMarketplaceRiaProfileRoute(riaId?: string | null) {
   return withQuery(ROUTES.MARKETPLACE_RIA_PROFILE, { riaId });

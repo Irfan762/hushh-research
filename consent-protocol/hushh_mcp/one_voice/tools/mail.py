@@ -261,7 +261,7 @@ def _spoken(coverage: dict[str, Any]) -> list[str]:
         failed = coverage.get("analysis_failed") or []
         assessed = coverage.get("assessed")
         checked = assessed if isinstance(assessed, int) else returned
-        line = f"I checked {checked} messages."
+        line = f"I checked {checked} message{'' if checked == 1 else 's'}."
         for category in requested:
             if category not in names:
                 continue
@@ -285,6 +285,14 @@ def _spoken(coverage: dict[str, Any]) -> list[str]:
     scope = str(coverage.get("scope") or "")
     if scope == "selected":
         line = f"I have that {singular}." if returned == 1 else f"I have those {returned} {noun}."
+    elif scope == "needs_reply":
+        # A filtered set, not the front of the mailbox: "your 3 newest" would
+        # describe a different read than the one that happened.
+        line = (
+            f"I found 1 {singular} that may need a reply."
+            if returned == 1
+            else f"I found {returned} {noun} that may need a reply."
+        )
     elif scope == "newest":
         # Nothing was narrowed, so this is the front of the mailbox. Saying "I
         # found 5" for an update would report a budget as a total.
@@ -411,6 +419,13 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
         # Anything that is not a successful read did not happen. Never an empty
         # inbox: "I found nothing" and "I could not look" are different answers
         # and the person acts differently on each.
+        # The stage is the one fact the spoken line hides and an incident needs;
+        # both values are short server enums, never provider or mail text.
+        logger.info(
+            "one_voice.mail_read reason=%s stage=%s",
+            (status or "failed")[:23],
+            str(outcome.get("failure_stage") or "none")[:23],
+        )
         access_failure = _REJECT_SPOKEN.get(status)
         analysis_speech = (
             _analysis_failure_speech(outcome.get("analysis_failed"))
@@ -715,6 +730,10 @@ def _no_recipient_email(name: str) -> Rejected:
     )
 
 
+def _recipient_changed(fact: str) -> Rejected:
+    return Rejected(reason_code="recipient_changed", spoken_facts=[fact])
+
+
 async def _prepare_send_mail(ctx: ToolContext, args: SendMailInput) -> Prepared | ToolResult:
     person = ctx.entities.person(args.recipient.user_id)
     if person is None or person.relationship != "connected":
@@ -723,6 +742,16 @@ async def _prepare_send_mail(ctx: ToolContext, args: SendMailInput) -> Prepared 
             spoken_facts=["I can draft only to a confirmed connection with an email address."],
         )
     row = await asyncio.to_thread(_mail_connection, ctx, args.recipient.user_id)
+    if row is None:
+        # Confirmed earlier in the conversation, but no longer an active
+        # connection. That is a different fact from "no address on file", and
+        # the person acts on it differently.
+        return Rejected(
+            reason_code="recipient_not_connected",
+            spoken_facts=[
+                f"You aren't connected with {person.display_name} any more, so I can't draft this."
+            ],
+        )
     address = _recipient_email(row, args.subject, args.message)
     if address is None:
         return _no_recipient_email(person.display_name)
@@ -746,11 +775,16 @@ async def _send_mail(ctx: ToolContext, args: SendMailInput) -> ToolResult:
         or person.relationship != "connected"
         or prepared.get("recipient_user_id") != args.recipient.user_id
     ):
-        return Rejected(
-            reason_code="recipient_changed",
-            spoken_facts=["That connection changed. I didn't open a draft; please ask again."],
+        return _recipient_changed(
+            "That connection changed. I didn't open a draft; please ask again."
         )
     row = await asyncio.to_thread(_mail_connection, ctx, args.recipient.user_id)
+    if row is None:
+        # Connected when the card was shown, not any more: the approval was for
+        # a recipient this draft can no longer be addressed to.
+        return _recipient_changed(
+            "That connection changed. I didn't open a draft; please ask again."
+        )
     address = _recipient_email(row, args.subject, args.message)
     if address is None:
         return _no_recipient_email(person.display_name)
@@ -759,9 +793,8 @@ async def _send_mail(ctx: ToolContext, args: SendMailInput) -> ToolResult:
         str(prepared.get("email_binding") or ""),
         _email_binding(ctx, args.recipient.user_id, to_email),
     ):
-        return Rejected(
-            reason_code="recipient_changed",
-            spoken_facts=["That email address changed. I didn't open a draft; please ask again."],
+        return _recipient_changed(
+            "That email address changed. I didn't open a draft; please ask again."
         )
     preview = " ".join(args.message.split())
     if len(preview) > 180:

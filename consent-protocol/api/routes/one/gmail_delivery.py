@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from api.middleware import require_firebase_auth, require_vault_owner_token
 from hushh_mcp.services.actor_identity_service import ActorIdentityService
+from hushh_mcp.services.email_delegated_read import mail_latency
 from hushh_mcp.services.gmail_delivery_service import (
     GmailDeliveryError,
     create_reviewed_gmail_draft,
@@ -220,15 +221,16 @@ async def gmail_email_prepare(
             payload=payload,
             source_workflow_id=payload.source_workflow_id,
         )
-        prepared = cast(
-            dict[str, Any],
-            await get_gmail_delivery_service().prepare(
-                user_id=user_id,
-                draft_payload=draft_payload,
-                idempotency_key=payload.idempotency_key,
-                reply_context=reply_context,
-            ),
-        )
+        with mail_latency("deliver_prep", logger):
+            prepared = cast(
+                dict[str, Any],
+                await get_gmail_delivery_service().prepare(
+                    user_id=user_id,
+                    draft_payload=draft_payload,
+                    idempotency_key=payload.idempotency_key,
+                    reply_context=reply_context,
+                ),
+            )
         if reply_context is None:
             return prepared
         normalized = normalize_draft(draft_payload)
@@ -306,15 +308,19 @@ async def gmail_email_send(
             payload=payload,
             source_workflow_id=payload.source_workflow_id,
         )
-        result = cast(
-            dict[str, Any],
-            await get_gmail_delivery_service().execute(
-                user_id=user_id,
-                action_id=payload.action_id,
-                draft_payload=draft_payload,
-                reply_context=reply_context,
-            ),
-        )
+        with mail_latency("deliver", logger) as span:
+            result = cast(
+                dict[str, Any],
+                await get_gmail_delivery_service().execute(
+                    user_id=user_id,
+                    action_id=payload.action_id,
+                    draft_payload=draft_payload,
+                    reply_context=reply_context,
+                ),
+            )
+            if result.get("outcome_unknown"):
+                # Ambiguous provider answer: never logged as a delivered send.
+                span.status = "unknown"
         if payload.source_workflow_id:
             return cast(
                 dict[str, Any],
