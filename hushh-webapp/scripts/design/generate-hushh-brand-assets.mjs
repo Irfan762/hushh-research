@@ -8,10 +8,7 @@ import sharp from "sharp";
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const WEB_ROOT = resolve(SCRIPT_DIR, "../..");
 const REPO_ROOT = resolve(WEB_ROOT, "..");
-const SOURCE_PATH = resolve(
-  WEB_ROOT,
-  "assets/brand/hushh-mark-source.png",
-);
+const SOURCE_PATH = resolve(WEB_ROOT, "assets/brand/hushh-mark-source.png");
 const CHECK_ONLY = process.argv.includes("--check");
 const APP_ICON_BACKGROUND = "#1d1d1f";
 // Android system surfaces can mask the adaptive launcher artwork. Keep its
@@ -26,12 +23,148 @@ const TRANSPARENT = { r: 0, g: 0, b: 0, alpha: 0 };
 const changed = [];
 const stale = [];
 
+const PNG_SIGNATURE = Buffer.from([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
+const ICO_SIGNATURE = Buffer.from([0x00, 0x00, 0x01, 0x00]);
+const MAX_RASTER_CHANNEL_DELTA = 1;
+const MAX_RASTER_CHANGED_CHANNELS = 4;
+
+function hasSignature(buffer, signature) {
+  return (
+    buffer.length >= signature.length &&
+    buffer.subarray(0, signature.length).equals(signature)
+  );
+}
+
+async function pngPixelsMatch(existing, expected) {
+  try {
+    const [existingImage, expectedImage] = await Promise.all([
+      sharp(existing).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+      sharp(expected).ensureAlpha().raw().toBuffer({ resolveWithObject: true }),
+    ]);
+
+    if (
+      existingImage.info.width !== expectedImage.info.width ||
+      existingImage.info.height !== expectedImage.info.height ||
+      existingImage.info.channels !== expectedImage.info.channels ||
+      existingImage.data.length !== expectedImage.data.length
+    ) {
+      return false;
+    }
+
+    let changedChannels = 0;
+    for (let index = 0; index < existingImage.data.length; index += 1) {
+      const delta = Math.abs(
+        existingImage.data[index] - expectedImage.data[index],
+      );
+      if (delta > MAX_RASTER_CHANNEL_DELTA) return false;
+      if (delta > 0) {
+        changedChannels += 1;
+        if (changedChannels > MAX_RASTER_CHANGED_CHANNELS) return false;
+      }
+    }
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function decodeIcoFrames(buffer) {
+  if (!hasSignature(buffer, ICO_SIGNATURE) || buffer.length < 6) return null;
+
+  const count = buffer.readUInt16LE(4);
+  const directoryEnd = 6 + count * 16;
+  if (count === 0 || directoryEnd > buffer.length) return null;
+
+  const frames = [];
+  for (let index = 0; index < count; index += 1) {
+    const entryOffset = 6 + index * 16;
+    const frameLength = buffer.readUInt32LE(entryOffset + 8);
+    const frameOffset = buffer.readUInt32LE(entryOffset + 12);
+    const frameEnd = frameOffset + frameLength;
+    if (
+      frameOffset < directoryEnd ||
+      frameEnd < frameOffset ||
+      frameEnd > buffer.length
+    ) {
+      return null;
+    }
+
+    const encodedWidth = buffer.readUInt8(entryOffset);
+    const encodedHeight = buffer.readUInt8(entryOffset + 1);
+    frames.push({
+      width: encodedWidth === 0 ? 256 : encodedWidth,
+      height: encodedHeight === 0 ? 256 : encodedHeight,
+      planes: buffer.readUInt16LE(entryOffset + 4),
+      bitDepth: buffer.readUInt16LE(entryOffset + 6),
+      buffer: buffer.subarray(frameOffset, frameEnd),
+    });
+  }
+
+  return frames;
+}
+
+async function icoFramesMatch(existing, expected) {
+  const existingFrames = decodeIcoFrames(existing);
+  const expectedFrames = decodeIcoFrames(expected);
+  if (
+    existingFrames === null ||
+    expectedFrames === null ||
+    existingFrames.length !== expectedFrames.length
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < existingFrames.length; index += 1) {
+    const existingFrame = existingFrames[index];
+    const expectedFrame = expectedFrames[index];
+    if (
+      existingFrame.width !== expectedFrame.width ||
+      existingFrame.height !== expectedFrame.height ||
+      existingFrame.planes !== expectedFrame.planes ||
+      existingFrame.bitDepth !== expectedFrame.bitDepth ||
+      !hasSignature(existingFrame.buffer, PNG_SIGNATURE) ||
+      !hasSignature(expectedFrame.buffer, PNG_SIGNATURE) ||
+      !(await pngPixelsMatch(existingFrame.buffer, expectedFrame.buffer))
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+async function generatedAssetMatches(existing, expected) {
+  if (existing.equals(expected)) return true;
+
+  // libvips resampling can round a handful of channels by one level across
+  // native and WASM/Linux/macOS backends. Keep that tolerance deliberately
+  // tiny; dimensions must match and any real pixel drift still fails. Text
+  // assets remain byte-for-byte reproducible.
+  if (
+    hasSignature(existing, PNG_SIGNATURE) &&
+    hasSignature(expected, PNG_SIGNATURE)
+  ) {
+    return pngPixelsMatch(existing, expected);
+  }
+  if (
+    hasSignature(existing, ICO_SIGNATURE) &&
+    hasSignature(expected, ICO_SIGNATURE)
+  ) {
+    return icoFramesMatch(existing, expected);
+  }
+
+  return false;
+}
+
 async function emit(path, buffer) {
   const absolutePath = resolve(WEB_ROOT, path);
   if (CHECK_ONLY) {
     try {
       const existing = await readFile(absolutePath);
-      if (!existing.equals(buffer)) stale.push(path);
+      if (!(await generatedAssetMatches(existing, buffer))) stale.push(path);
     } catch {
       stale.push(path);
     }
@@ -48,7 +181,9 @@ async function emitRepo(path, buffer) {
   if (CHECK_ONLY) {
     try {
       const existing = await readFile(absolutePath);
-      if (!existing.equals(buffer)) stale.push(`../${path}`);
+      if (!(await generatedAssetMatches(existing, buffer))) {
+        stale.push(`../${path}`);
+      }
     } catch {
       stale.push(`../${path}`);
     }
@@ -229,10 +364,7 @@ await emit("app/favicon.ico", encodeIco(faviconImages));
 const sourceIcon = await opaqueIcon(256, 256, 140, 146);
 await emit("assets/icon.png", sourceIcon);
 await emit("assets/icon-only.png", sourceIcon);
-await emit(
-  "assets/icon-foreground.png",
-  await markLayer(256, 256, 140, 146),
-);
+await emit("assets/icon-foreground.png", await markLayer(256, 256, 140, 146));
 await emit(
   "assets/icon-background.png",
   await solidPng(256, 256, APP_ICON_BACKGROUND),
@@ -279,13 +411,7 @@ for (const filename of [
 ]) {
   await emit(
     `ios/App/App/Assets.xcassets/Splash.imageset/${filename}`,
-    await opaqueIcon(
-      2732,
-      2732,
-      202,
-      202,
-      LIGHT_SPLASH_BACKGROUND,
-    ),
+    await opaqueIcon(2732, 2732, 202, 202, LIGHT_SPLASH_BACKGROUND),
   );
 }
 for (const filename of [
@@ -295,13 +421,7 @@ for (const filename of [
 ]) {
   await emit(
     `ios/App/App/Assets.xcassets/Splash.imageset/${filename}`,
-    await opaqueIcon(
-      2732,
-      2732,
-      203,
-      203,
-      IOS_DARK_SPLASH_BACKGROUND,
-    ),
+    await opaqueIcon(2732, 2732, 203, 203, IOS_DARK_SPLASH_BACKGROUND),
   );
 }
 
@@ -326,12 +446,7 @@ for (const [density, size, markWidth, markHeight] of androidLaunchers) {
     markHeight,
     ANDROID_APP_ICON_BACKGROUND,
   );
-  const adaptiveForeground = await markLayer(
-    size,
-    size,
-    markWidth,
-    markHeight,
-  );
+  const adaptiveForeground = await markLayer(size, size, markWidth, markHeight);
   const adaptiveBackground = await solidPng(
     size,
     size,
