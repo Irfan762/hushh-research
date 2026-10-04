@@ -222,10 +222,37 @@ def test_rule_thirteen_keeps_voice_away_from_sending_and_from_duplicate_drafts()
     assert "The action card's button is Confirm, not Send" in rule
     assert "Only the later draft_opened client-step result proves it appeared" in rule
     assert "Only the person's Send tap delivers mail: you never send" in rule
+    # "Sent" is the delivery's own settled report, never a draft result or memory.
+    assert "Say mail was sent only from a [ONE_EVENT] mail_delivery whose status is sent" in rule
+    assert "failed, outcome_unknown, thread_unconfirmed and unverified are not sent" in rule
     # An unverified draft may already be on screen: never offer it again unasked.
     assert "open_mail_draft client-step result with reason_code storage_unavailable" in rule
     assert "storage_unavailable or draft_not_settled" in rule
     assert "never prepare the same draft again unless the person asks for it" in rule
+
+
+def test_rule_thirteen_addresses_a_reply_by_the_email_it_answers():
+    """A reply's recipient comes from the email. A person lookup or a new
+    send_mail for it would address whoever the model picked from a name."""
+    text = _build()
+    rule = _rule(text, 13)
+    assert "When send_mail or reply_mail returns confirmation_required" in rule
+    assert (
+        "is reply_mail with that position, or with no position when they mean the "
+        "email open on screen"
+    ) in rule
+    assert "never resolve_person or send_mail for a reply" in rule
+    # Live eval: after the mail search for "reply to Ayesha's email", a
+    # list_people lookup replaced the mail list on screen (2 of 2 samples).
+    assert "never a person lookup (resolve_person or list_people)" in rule
+    assert '"Email Priya" or "write to Priya" is send_mail' in rule
+    assert "never pick one from a name" in rule
+    assert "Forwarding, reply-all, a new subject and attachments are not possible here" in rule
+    # Live eval: "reply all ... say thanks everyone" became a sender-only
+    # reply_mail in about half the samples until the rule said no tool.
+    assert "say so, call no tool, and ask whether a reply to the sender alone would do" in rule
+    # The rule names a tool the model is actually given.
+    assert "- reply_mail: " in text
 
 
 def test_rule_four_lets_an_independent_follow_up_proceed_while_a_draft_opens():

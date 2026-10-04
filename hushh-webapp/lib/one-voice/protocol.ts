@@ -39,6 +39,14 @@ export type AppContextFrame = {
    * reads through the authorized circle service, never authority.
    */
   active_circle_id?: string | null;
+  /**
+   * The mail row open on screen: its position in a server offer and that
+   * offer's revision, so "reply to this" resolves server-side. Never a message
+   * id. Sent both together or not at all; the relay honors them only while
+   * that offer is still its current one.
+   */
+  active_mail_ordinal?: number;
+  active_mail_offer_revision?: number;
 };
 export type PendingShownFrame = { type: "pending_action.shown"; pending_action_id: string };
 export type ConfirmActionFrame = {
@@ -65,6 +73,16 @@ export type ClientStepResultFrame = {
   step_id: string;
   status: "ok" | "failed";
   payload?: Record<string, unknown>;
+};
+/**
+ * A review card's Send finished. Names the send action and the session-issued
+ * delivery ref only: there is no status, because the relay re-reads the send
+ * action server-side and a client cannot report a send that did not happen.
+ */
+export type MailDeliveryResultFrame = {
+  type: "mail_delivery.result";
+  delivery_ref: string;
+  action_id: string;
 };
 export type UiSettledFrame = {
   type: "ui.settled";
@@ -95,6 +113,7 @@ export type ClientFrame =
   | CancelActionFrame
   | CandidateChooseFrame
   | ClientStepResultFrame
+  | MailDeliveryResultFrame
   | UiSettledFrame
   | InterruptFrame
   | PerfFrame
@@ -177,6 +196,12 @@ export type SessionReadyFrame = {
   pending_actions: PendingActionPublic[];
   setup_progress: Record<string, unknown> | null;
   output_mime_type: typeof OUTPUT_MIME;
+  /**
+   * Additive client capabilities this relay accepts ("active_mail",
+   * "mail_delivery"). Absent on an older relay, which refuses those keys and
+   * frames outright, so the client sends them only when they are listed.
+   */
+  features?: string[];
 };
 export type AudioOutFrame = {
   type: "audio";

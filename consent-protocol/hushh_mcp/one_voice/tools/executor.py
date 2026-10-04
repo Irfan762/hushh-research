@@ -60,6 +60,9 @@ LOOKUP_TOOLS: dict[str, Literal["person", "circle"]] = {
 # Key under which a card's prepared-effect snapshot rides in the stored args.
 # Stripped before the input model sees the args again at execution.
 PREPARED_KEY = "_prepared"
+# Key inside that snapshot naming the server-side target of a positional
+# proposal (``ToolSpec.target_key``), so a duplicate is the same target too.
+TARGET_KEY = "target_key"
 # Reason code when voice storage could not be read or written. Fails closed:
 # nothing is proposed, confirmed or cancelled on a read that did not happen,
 # and the session stays up (this used to end it with close code 4013).
@@ -303,7 +306,8 @@ class ToolExecutor:
                     parsed=parsed,
                 )
             timings["pending"] = _elapsed_ms(pending_started)
-            existing = self._open_duplicate(ctx, spec, parsed, open_rows)
+            target = self._target_key(ctx, spec, parsed)
+            existing = self._open_duplicate(ctx, spec, parsed, open_rows, target=target)
             if existing is not None:
                 # The same proposal is already waiting. Minting a second row
                 # would cancel the card the person may be answering, so the
@@ -397,6 +401,8 @@ class ToolExecutor:
                 args_json[PREPARED_KEY] = dict(prepared.snapshot)
             else:
                 summary = spec.summarize(ctx, parsed) if spec.summarize else spec.description
+            if target is not None:
+                args_json[PREPARED_KEY] = {**args_json.get(PREPARED_KEY, {}), TARGET_KEY: target}
             create_started = time.monotonic()
             try:
                 # Re-read just before the insert: only cards still open now are
@@ -479,12 +485,26 @@ class ToolExecutor:
             result.ui_refresh = sorted(set(result.ui_refresh) | set(spec.ui_refresh))
         return ToolCallOutcome(result=result, spec=spec, parsed=parsed, superseded=superseded)
 
+    @staticmethod
+    def _target_key(ctx: ToolContext, spec: ToolSpec, parsed: Any) -> str | None:
+        if spec.target_key is None:
+            return None
+        try:
+            return spec.target_key(ctx, parsed)
+        except Exception as exc:  # noqa: BLE001 - unresolvable target: never reuse a card
+            logger.warning(
+                "one_voice.tool.target_failed tool=%s error=%s", spec.name, type(exc).__name__
+            )
+            return None
+
     def _open_duplicate(
         self,
         ctx: ToolContext,
         spec: ToolSpec,
         parsed: Any,
         open_rows: list[PendingAction],
+        *,
+        target: str | None = None,
     ) -> PendingAction | None:
         """An open voice-tier row for the same tool with identical arguments.
 
@@ -493,8 +513,12 @@ class ToolExecutor:
         row's own sealed payload in memory: public args alone cannot tell two
         dictations to one recipient apart, and a different dictation is a new
         proposal. Nothing about the draft is stored or logged to make this check.
+        A tool with a ``target_key`` must also name the same target: "the second
+        one" of a newer list is a different email from the second of the old.
         """
         if spec.policy is not ToolPolicy.confirm_voice:
+            return None
+        if spec.target_key is not None and target is None:
             return None
         wanted = parsed.model_dump(mode="json")
         public_wanted = {
@@ -505,6 +529,11 @@ class ToolExecutor:
                 row.tool_name != spec.name
                 or row.tier != "voice"
                 or _person_visible(row.args) != public_wanted
+            ):
+                continue
+            stored = row.args.get(PREPARED_KEY)
+            if target is not None and (
+                not isinstance(stored, dict) or stored.get(TARGET_KEY) != target
             ):
                 continue
             if not spec.private_args:

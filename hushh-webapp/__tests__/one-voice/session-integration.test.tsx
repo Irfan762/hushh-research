@@ -299,6 +299,41 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     expect(mounted.capture.started).toBe(1);
   });
 
+  it("puts the open mail row on the wire, and reports a finished Send as its delivery ref and action id only", async () => {
+    const { server } = await startSession(mount());
+    const conversationId = server.frames("auth")[0]!.conversation_id;
+    await waitFor(() => expect(server.frames("app_context")).toHaveLength(1));
+    // Omitted, not null, while no row is open: the relay refuses unknown keys.
+    expect(server.frames("app_context")[0]).not.toHaveProperty("active_mail_ordinal");
+    expect(server.frames("app_context")[0]).not.toHaveProperty("active_mail_offer_revision");
+
+    await act(async () => {
+      controller!.setActiveMail!({ ordinal: 2, offerRevision: 7, conversationId });
+    });
+    await waitFor(() => expect(server.frames("app_context")).toHaveLength(2));
+    expect(server.frames("app_context")[1]).toMatchObject({
+      screen_id: "one_location",
+      route: "/one/location",
+      active_mail_ordinal: 2,
+      active_mail_offer_revision: 7,
+    });
+
+    const deliveryRef = "Zr4mQ8vX2kLp9TnB_wYc7H-E";
+    const actionId = "6f1c2b9a-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+    await act(async () => {
+      controller!.reportMailDelivery!(deliveryRef, actionId);
+    });
+    // No outcome travels: the relay re-reads the send action itself, and an
+    // extra key such as a status would get the frame refused.
+    expect(server.frames("mail_delivery.result")).toStrictEqual([
+      {
+        type: "mail_delivery.result",
+        delivery_ref: deliveryRef,
+        action_id: actionId,
+      },
+    ]);
+  });
+
   it("streams captured frames as audio and plays audio frames per turn; interrupt fences", async () => {
     const mounted = await startSession(mount());
     const { server, capture, playback } = mounted;
