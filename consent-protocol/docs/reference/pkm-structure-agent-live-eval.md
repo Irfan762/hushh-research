@@ -166,6 +166,58 @@ archive is not a git checkout. Confirm the archive imports its own
 `hushh_mcp` first; the corpus lives in the eval script, so both sides answer the
 same cases.
 
+## Results: old instructions against new (2026-10-03)
+
+Gemini 3.6 Flash, `low` thinking on every memory agent, production prompt path,
+`direct_client` adapter (the regional Vertex client; the ADK single-turn path
+was not exercised), google-genai 2.23.0, google-adk 2.9.0. Every entry n=3,
+every planted control graded correctly (12/12 negative and 6/6 positive per
+synthetic run, 9/9 and 6/6 for the document), zero provider refusals. Old is
+`c7b319179` graded by the new judge (`--source-ref`); new is `1ab1f7c6e`.
+Ledger sequence numbers in brackets; `--compare` accepts every pair below.
+
+| Rate (mean ± spread) | Release chain old [2] | Release chain new [8] | Context transfer old [3] / [11] | Context transfer new [6] / [9] / [10] |
+|---|---|---|---|---|
+| schema | 0.958 ± 0.000 | 1.000 ± 0.000 | 1.000 / 1.000 | 1.000 / 1.000 / 0.972 ± 0.083 |
+| intent | 0.750 ± 0.083 | 0.917 ± 0.000 | 0.861 ± 0.083 / 0.917 | 0.917 / 0.917 / 0.889 ± 0.083 |
+| mutation | 0.736 ± 0.042 | 0.917 ± 0.000 | 1.000 / 0.972 ± 0.083 | 1.000 / 0.972 ± 0.083 / 0.917 ± 0.250 |
+| domain | 0.958 ± 0.000 | 0.986 ± 0.042 | 1.000 / 0.944 ± 0.167 | 1.000 / 0.889 ± 0.250 / 0.889 ± 0.333 |
+| durable coverage | 0.697 ± 0.091 | 0.985 ± 0.045 | 1.000 / 0.939 ± 0.182 | 1.000 / 0.879 ± 0.273 / 0.849 ± 0.455 |
+| fallback | 0.000 | 0.000 | 0.000 / 0.056 ± 0.167 | 0.000 / 0.111 ± 0.250 / 0.139 ± 0.417 |
+| gate | fail | **pass** | fail / fail | **pass** / fail / fail |
+
+Document (line by line, 151 memory lines): old [4] line coverage 0.993 ± 0.013,
+fallback 0.026 ± 0.077; new [7] 1.000 ± 0.000, fallback 0.000. No disclaimer
+saved by either. Both pass.
+
+Reading it:
+
+- The release chain moves from failing four gates to passing all of them. The
+  durable statements it lost were dropped by merge (8), intent (7), and service
+  rules (5) on the old instructions; on the new, by merge once.
+- Context transfer is at parity on answered cases. The failures in [9], [10]
+  and old [11] are provider latency: one repetition each hit the 45 s preview
+  budget (inner timeouts 4, 5, and 2), graded as fallbacks, while the other
+  repetitions were perfect. Old and new time out in the same window. A timeout
+  is not voided, because latency is a property of the subject; it is why the
+  spread gate fails.
+- `payload_authored_by_model_rate` is 0.0 for old and new: see
+  [the prompt contract](pkm-prompt-contract.md#the-saved-payload-is-not-model-authored).
+- Remaining label disagreements, reported rather than retuned: `ct_finance_pref`
+  expects `preference` while five corpus cases label a money preference
+  `financial_event`; release case 035 expects `plan_or_goal`/`extend` with no
+  earlier travel plan in the chain; case 012 expects `extend` for a second
+  cuisine preference the agents treat as a new subject.
+
+Provenance notes, kept because the ledger is append-only:
+
+- [0] and [1] are an earlier old-head run from a deleted scratch checkout; [5]
+  is the new head before `1ab1f7c6e` (coverage 0.939, fail).
+- [5] to [7] recorded the tree state at the end of each run while other lanes
+  committed; none of those commits touched a file the eval imports. [7] lists
+  two service files as dirty because they were edited after that process had
+  imported the code. Since `1ab1f7c6e` the state is recorded at run start.
+
 ## Live Model Policy
 
 Current live eval mode:
