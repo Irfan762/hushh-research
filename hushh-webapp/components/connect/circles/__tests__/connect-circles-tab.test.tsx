@@ -571,6 +571,12 @@ describe("ConnectCirclesTab", () => {
     const onStateChange = vi.fn();
     const view = render(<ConnectCirclesTab currentUserId="first-owner" onStateChange={onStateChange} />);
     await screen.findByText("Private family");
+    // The relay runs in a passive effect that can flush after the DOM shows the
+    // list, so wait for the first owner's settled report before clearing, or
+    // that legitimate report lands after the clear and reads as a leak.
+    await waitFor(() => expect(onStateChange).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ownerId: "first-owner", loading: false, count: 1 }),
+    ));
     onStateChange.mockClear();
     mocks.vaultOwnerToken = "second-token";
     mocks.listCircles.mockRejectedValueOnce(new Error("offline"));
