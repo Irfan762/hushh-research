@@ -5648,16 +5648,17 @@ describe("OneLocationAgentPage", () => {
       name: /Create link/i,
     });
     expect(createLinkButton).toHaveClass(
-      "self-start",
       "h-[50px]",
       "min-h-[50px]",
       "w-full",
-      "max-w-[244px]",
+      "rounded-full",
     );
     expect(createLinkButton.className).not.toContain("mx-auto");
     expect(createLinkButton.parentElement).toHaveClass(
+      "mx-auto",
       "w-full",
-      "min-[380px]:pl-16",
+      "max-w-[244px]",
+      "items-stretch",
     );
     expect(screen.getByText("Temporary link")).toBeTruthy();
     expect(
@@ -5668,11 +5669,10 @@ describe("OneLocationAgentPage", () => {
     expect(screen.getByText("Duration")).toBeTruthy();
     const durationSelect = screen.getByRole("combobox", { name: "Duration" });
     expect(durationSelect).toBeTruthy();
-    expect(durationSelect.parentElement).toHaveClass(
-      "w-full",
+    expect(durationSelect.parentElement).toHaveClass("w-full");
+    expect(durationSelect.parentElement?.className).not.toContain(
       "max-w-[260px]",
     );
-    expect(durationSelect.parentElement?.className).not.toContain("mx-auto");
     expect(screen.queryByText("Active links")).toBeNull();
     expect(screen.queryByText("Link stays live for")).toBeNull();
     // The paragraph that used to sit under the heading is gone.

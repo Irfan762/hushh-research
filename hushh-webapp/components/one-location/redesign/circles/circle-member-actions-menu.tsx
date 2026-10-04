@@ -463,15 +463,19 @@ export function CircleMemberActionsMenu({
                   ) : null}
                 </div>
 
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="prominent"
+                <div
                   className={cn("mt-2", MEMBER_ACTIONS_SHEET_CTA_CLASSNAME)}
-                  onClick={closeSheet}
                 >
-                  Cancel
-                </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="prominent"
+                    className="w-full justify-center text-center"
+                    onClick={closeSheet}
+                  >
+                    Cancel
+                  </Button>
+                </div>
               </div>
             )}
           </DrawerContent>

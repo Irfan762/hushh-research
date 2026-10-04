@@ -77,9 +77,10 @@ describe("Profile, Location People, and Location Links consistency contract", ()
     expect(ctaLayout).toContain("DURATION_EQUAL_BUTTONS_GROUP_CLASSNAME");
     expect(ctaLayout).toContain("w-full space-y-3 sm:max-w-[320px]");
     expect(ctaLayout).toContain(
-      "h-[50px] min-h-[50px] w-full max-w-[244px]",
+      "mx-auto flex w-full max-w-[244px] flex-col items-stretch",
     );
-    expect(ctaLayout).toContain("min-[380px]:pl-16");
+    expect(ctaLayout).toContain("h-[50px] min-h-[50px] w-full rounded-full");
+    expect(ctaLayout).not.toContain("min-[380px]:pl-16");
   });
 
   it("keeps Location Links concise without duplicate active-card title or live pill copy", () => {

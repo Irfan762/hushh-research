@@ -9,17 +9,14 @@
 export const PUBLIC_LINK_CONTROLS_CLASSNAME =
   "w-full space-y-3 sm:max-w-[320px]";
 
-/** Aligns the create-link controls with the title column after the leading
- *  icon on a phone, while preserving enough width for the canonical CTA on
- *  narrower devices. */
+/** Gives the create-link form one centered iOS control measure. */
 export const PUBLIC_LINK_CREATE_FORM_CLASSNAME =
-  "flex w-full flex-col items-start space-y-3 px-4 pb-4 pt-2 min-[380px]:pl-16";
+  "mx-auto flex w-full max-w-[244px] flex-col items-stretch space-y-3 pb-4 pt-2";
 
-export const PUBLIC_LINK_DURATION_GROUP_CLASSNAME =
-  "w-full max-w-[260px]";
+export const PUBLIC_LINK_DURATION_GROUP_CLASSNAME = "w-full";
 
 export const PUBLIC_LINK_PRIMARY_CTA_CLASSNAME =
-  "ui-text-button-label h-[50px] min-h-[50px] w-full max-w-[244px] self-start rounded-full px-6 bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90";
+  "ui-text-button-label h-[50px] min-h-[50px] w-full rounded-full px-6 bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90";
 
 export const DURATION_EQUAL_BUTTONS_GROUP_CLASSNAME =
   "grid w-full grid-cols-3 gap-2";
@@ -27,10 +24,10 @@ export const DURATION_EQUAL_BUTTON_CLASSNAME = "min-h-11 min-w-0 px-3";
 
 /** The final share action stays prominent without becoming a full-card slab. */
 export const SHARE_CONFIRM_ACTIONS_CLASSNAME =
-  "mx-auto w-full max-w-[320px] space-y-2.5";
+  "mx-auto w-full max-w-[244px] space-y-2.5";
 
 export const SHARE_CONFIRM_PRIMARY_CTA_CLASSNAME =
-  "ui-text-button-label h-[50px] min-h-[50px] w-full rounded-[14px] bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35";
+  "ui-text-button-label h-[50px] min-h-[50px] w-full rounded-full bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90 disabled:bg-black/10 disabled:text-black/35 disabled:opacity-100 dark:disabled:bg-white/10 dark:disabled:text-white/35";
 
 export const SHARE_CONFIRM_SECONDARY_CTA_CLASSNAME =
   "ui-text-button-label h-11 min-h-11 w-full rounded-[14px] bg-transparent text-[color:var(--app-accent)] hover:bg-transparent";

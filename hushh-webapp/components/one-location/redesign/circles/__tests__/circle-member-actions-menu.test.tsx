@@ -134,9 +134,13 @@ describe("CircleMemberActionsMenu on a phone", () => {
     expect(actionMenu).toHaveClass("w-full", "max-w-[244px]");
     expect(MEMBER_ACTIONS_SHEET_CTA_CLASSNAME).toContain("max-w-[244px]");
     expect(MEMBER_ACTIONS_SHEET_ITEM_CLASSNAME).toContain("min-h-[50px]");
-    expect(
-      within(sheet).getByRole("button", { name: "Cancel" }),
-    ).toHaveClass("h-[50px]", "max-w-[244px]");
+    const cancel = within(sheet).getByRole("button", { name: "Cancel" });
+    expect(cancel).toHaveClass("h-[50px]", "w-full", "justify-center");
+    expect(cancel.parentElement).toHaveClass(
+      "mx-auto",
+      "w-full",
+      "max-w-[244px]",
+    );
   });
 
   it("shares with the member and closes the sheet", async () => {
