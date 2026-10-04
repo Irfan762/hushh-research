@@ -250,9 +250,9 @@ async def test_reply_card_names_a_position_and_keeps_the_email_server_side(reply
     ("case", "ordinal", "expected", "summary"),
     [
         # The row open on screen, drawn from the current list.
-        ("screen_row", None, OFFERED[2], "prepare a reply to the email you have open"),
+        ("screen_row", None, OFFERED[2], "prepare a reply to the email you opened"),
         # The single email just shown.
-        ("single_offer", None, OFFERED[1], "prepare a reply to the email you have open"),
+        ("single_offer", None, OFFERED[1], "prepare a reply to the email I just showed you"),
         # A spoken position wins over the row on screen.
         ("position_over_screen", 1, OFFERED[0], "prepare a reply to email 1 in your list"),
     ],
@@ -282,6 +282,8 @@ async def test_reply_targets_the_email_the_person_means(
         # The screen still shows a row from a list that has since been replaced.
         ("stale_screen_row", None, "reply_target_required"),
         ("nothing_offered", None, "reply_target_required"),
+        # A position with no list ever shown is not an old list: say so.
+        ("never_shown_position", 2, "mail_not_shown"),
         ("expired_offer", 2, "mail_offer_expired"),
         ("position_not_shown", 5, "mail_ordinal_not_offered"),
     ],
@@ -291,7 +293,7 @@ async def test_reply_refuses_to_guess_which_email(reply_harness, case, ordinal, 
     if case == "stale_screen_row":
         h.ctx.screen = ScreenContext(active_mail_ordinal=2, active_mail_offer_revision=h.revision)
         h.ctx.entities.offer_mail(NEWER, account=ACCOUNT, mailbox="inbox")
-    elif case == "nothing_offered":
+    elif case in {"nothing_offered", "never_shown_position"}:
         h.ctx.entities.offered_mail = None
     elif case == "expired_offer":
         stale = datetime.now(timezone.utc) - timedelta(seconds=OFFER_TTL_SECONDS + 60)

@@ -916,7 +916,8 @@ _REPLY_REFUSALS: dict[str, tuple[str, str]] = {
     ),
     reply_source.TARGET_IS_OWNER: (
         "reply_target_is_owner",
-        "That email is from you, so a reply would come back to you. I didn't prepare one.",
+        # True whether the owner sent it or only its Reply-To names them.
+        "A reply to that email would come back to you, so I didn't prepare one.",
     ),
     reply_source.TARGET_AMBIGUOUS: (
         "reply_target_ambiguous",
@@ -967,9 +968,18 @@ def _reply_off() -> Rejected:
     )
 
 
+# How a reply's target was found, which decides the sentence that names it: a
+# position the person said, the row they opened, or the one email just shown.
+ReplyTargetSource = Literal["position", "opened", "shown"]
+_REPLY_TARGET_SUMMARY = {
+    "opened": "prepare a reply to the email you opened",
+    "shown": "prepare a reply to the email I just showed you",
+}
+
+
 def _resolve_reply_target(
     ctx: ToolContext, ordinal: int | None
-) -> tuple[int, OfferedMail, str] | Rejected:
+) -> tuple[int, OfferedMail, str, ReplyTargetSource] | Rejected:
     """The offered message a reply answers, or the honest reason there is none.
 
     An explicit position wins. Without one, the row open on screen is used, and
@@ -980,6 +990,7 @@ def _resolve_reply_target(
     front of the person, so "reply to it" can only mean it.
     """
     offer = ctx.entities.offered_mail
+    source: ReplyTargetSource = "position"
     if ordinal is None:
         hint = ctx.screen.active_mail_ordinal
         if (
@@ -987,9 +998,9 @@ def _resolve_reply_target(
             and offer is not None
             and ctx.screen.active_mail_offer_revision == offer.revision
         ):
-            ordinal = hint
+            ordinal, source = hint, "opened"
         elif offer is not None and len(offer.message_ids) == 1:
-            ordinal = 1
+            ordinal, source = 1, "shown"
         else:
             return Rejected(
                 reason_code="reply_target_required",
@@ -997,7 +1008,12 @@ def _resolve_reply_target(
                     "Which email should I reply to? Open it, or ask me to show your mail first."
                 ],
             )
-    if offer is None or not ctx.entities.offered_mail_is_fresh():
+    if offer is None:
+        return Rejected(
+            reason_code="mail_not_shown",
+            spoken_facts=["I haven't shown you any mail yet. Ask me to show your mail first."],
+        )
+    if not ctx.entities.offered_mail_is_fresh():
         return Rejected(
             reason_code="mail_offer_expired",
             spoken_facts=["That Mail list is a while old. Ask me to show your mail again."],
@@ -1010,14 +1026,14 @@ def _resolve_reply_target(
             reason_code="mail_ordinal_not_offered",
             spoken_facts=[f"I only showed you {shown} {noun}. Which one did you mean?"],
         )
-    return ordinal, offer, message_id
+    return ordinal, offer, message_id, source
 
 
 def _reply_target_key(ctx: ToolContext, args: ReplyMailInput) -> str | None:
     resolved = _resolve_reply_target(ctx, args.ordinal)
     if isinstance(resolved, Rejected):
         return None
-    _ordinal, offer, message_id = resolved
+    _ordinal, offer, message_id, _source = resolved
     return str(
         reply_source.reply_target_key(
             owner_user_id=ctx.user_id, account=offer.account, message_id=message_id
@@ -1054,7 +1070,7 @@ async def _prepare_reply_mail(ctx: ToolContext, args: ReplyMailInput) -> Prepare
     resolved = _resolve_reply_target(ctx, args.ordinal)
     if isinstance(resolved, Rejected):
         return resolved
-    ordinal, offer, message_id = resolved
+    ordinal, offer, message_id, target_source = resolved
     gmail = ctx.services.get("gmail") or get_gmail_receipts_service()
     try:
         # Send readiness is checked before the card, not discovered at the tap:
@@ -1080,10 +1096,8 @@ async def _prepare_reply_mail(ctx: ToolContext, args: ReplyMailInput) -> Prepare
     return Prepared(
         # The card and the model read this sentence. A position is safe to say;
         # the sender and subject are someone else's words and are not.
-        summary=(
-            f"prepare a reply to email {ordinal} in your list"
-            if args.ordinal is not None
-            else "prepare a reply to the email you have open"
+        summary=_REPLY_TARGET_SUMMARY.get(
+            target_source, f"prepare a reply to email {ordinal} in your list"
         ),
         snapshot={
             "source_mail_ref": reply_source.seal_reply_source_ref(
