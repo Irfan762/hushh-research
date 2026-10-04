@@ -260,6 +260,12 @@ for (const theme of ["light", "dark"] as const) {
   });
 
   test.describe(`desktop (${theme})`, () => {
+    test("starter tracks remain symmetric at the tablet breakpoint", async ({ page }) => {
+      await mount(page, theme);
+      await page.setViewportSize({ width: 640, height: 900 });
+      await assertContract(page, 640);
+    });
+
     test.use({ viewport: { width: 1440, height: 900 } });
 
     test("chips sit under One's reply, and the keyboard walks them", async ({ page }) => {
