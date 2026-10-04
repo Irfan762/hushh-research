@@ -1445,11 +1445,11 @@
       "action_ids": [
         "consent.chat.turn",
         "location.chat.turn",
-        "route.location_memory_home",
         "route.one_agents",
         "route.one_feed",
         "route.one_location",
         "route.one_pkm",
+        "route.one_pkm_location_home",
         "route.voice_settings",
         "wallet.add",
         "wallet.list",
@@ -3307,9 +3307,9 @@
         "screen": "pkm_location",
         "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
         "proactivity": "on_entry",
-        "primary_action_id": "route.location_memory_home",
+        "primary_action_id": "route.one_pkm_location_home",
         "happy_path_action_ids": [
-          "route.location_memory_home"
+          "route.one_pkm_location_home"
         ],
         "required_inputs": [],
         "recoveries": {
@@ -3331,7 +3331,7 @@
       "canonical_screen": "pkm_location",
       "voice_contract_file": null,
       "action_ids": [
-        "route.location_memory_home"
+        "route.one_pkm_location_home"
       ],
       "action_coverage": "inherited",
       "delegation_policy": {
@@ -3354,9 +3354,9 @@
         "screen": "pkm_location_detail",
         "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
         "proactivity": "on_entry",
-        "primary_action_id": "route.location_memory_home",
+        "primary_action_id": "route.one_pkm_location_home",
         "happy_path_action_ids": [
-          "route.location_memory_home"
+          "route.one_pkm_location_home"
         ],
         "required_inputs": [],
         "recoveries": {
@@ -3378,7 +3378,7 @@
       "canonical_screen": "pkm_location_detail",
       "voice_contract_file": null,
       "action_ids": [
-        "route.location_memory_home"
+        "route.one_pkm_location_home"
       ],
       "action_coverage": "inherited",
       "delegation_policy": {

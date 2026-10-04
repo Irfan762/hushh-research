@@ -937,9 +937,9 @@
       "screen": "pkm_location",
       "entryCue": "You can say \u201cOpen Memory\u201d to return to the Memory home from this list.",
       "proactivity": "on_entry",
-      "primaryActionId": "route.location_memory_home",
+      "primaryActionId": "route.one_pkm_location_home",
       "happyPathActionIds": [
-        "route.location_memory_home"
+        "route.one_pkm_location_home"
       ],
       "requiredInputs": [],
       "recoveries": {
@@ -975,9 +975,9 @@
       "screen": "pkm_location_detail",
       "entryCue": "You can say \u201cOpen Memory\u201d to return to the Memory home from this list.",
       "proactivity": "on_entry",
-      "primaryActionId": "route.location_memory_home",
+      "primaryActionId": "route.one_pkm_location_home",
       "happyPathActionIds": [
-        "route.location_memory_home"
+        "route.one_pkm_location_home"
       ],
       "requiredInputs": [],
       "recoveries": {

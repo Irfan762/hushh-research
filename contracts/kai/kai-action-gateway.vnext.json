@@ -12439,7 +12439,7 @@
       }
     },
     {
-      "action_id": "route.location_memory_home",
+      "action_id": "route.one_pkm_location_home",
       "surface_id": "one_agents",
       "label": "Open Memory",
       "aliases": [
@@ -12510,14 +12510,14 @@
         ]
       },
       "goal": {
-        "goal_id": "goal.route.location_memory_home",
+        "goal_id": "goal.route.one_pkm_location_home",
         "required_inputs": [],
         "input_resolvers": [],
         "slot_schema": {},
         "workflow_steps": [
           {
             "type": "action",
-            "action_id": "route.location_memory_home",
+            "action_id": "route.one_pkm_location_home",
             "label": "Open Memory",
             "failure_behavior": "stop",
             "settlement_target": {
