@@ -84,6 +84,18 @@ for (const width of [390, 1440]) for (const theme of ["light", "dark"]) {
     await expect(page.getByText("Cafe", { exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Clear Location memory search" }).click();
     await expect(page.getByText("Home", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: /^Location details: Note/ }).click();
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    const editor = page.getByRole("textbox", { name: "New value for Note" });
+    const initial = "Editable first line\nEditable second line " + "Full note ".repeat(30);
+    await expect(editor).toHaveValue(initial);
+    const corrected = initial.replace("Editable first", "Corrected first");
+    await editor.fill(corrected);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByRole("button", { name: /^Location details: Note/ })).toContainText(corrected.trim());
+    await page.getByRole("button", { name: /^Location details: Note/ }).click();
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "New value for Note" })).toHaveValue(corrected);
     expect(errors).toEqual([]);
   });
 }

@@ -272,8 +272,8 @@ describe("PkmNaturalPanel — Memory redesign", () => {
   });
 
   it("edits the same routed entity after array reordering using the fresh coordinator data", async () => {
-    const a = { id: "a", note: "Same note" };
-    const b = { id: "b", note: "Same note" };
+    const a = { entity_id: "a", note: "Same note" };
+    const b = { entity_id: "b", note: "Same note" };
     const data = { agent_memory: { places: [a, b] }, saved_places: { schema_version: 2, locations: [{ id: "home", label: "Home", address: "Unchanged address" }] } };
     setupLocation(data);
     const selector = buildLocationMemoryPresentation({ data }).sections.find((section) => section.key === "agent_memory")!.fields[0]!.selector;
@@ -311,6 +311,30 @@ describe("PkmNaturalPanel — Memory redesign", () => {
     await waitFor(() => expect(screen.getAllByText(/This detail has changed/).length).toBeGreaterThan(0));
     expect(fresh).toEqual(original);
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it.each(["home", "recent"] as const)("opens a represented place label directly from %s", async (view) => {
+    const data = { saved_places: { locations: [{ id: "home", label: "Home", category: "home", address: "Synthetic street", addressBase: "Synthetic street" }] } };
+    setupLocation(data);
+    vi.mocked(PkmDomainResourceService.getManyStaleFirst).mockImplementation(async (params) => {
+      const snapshot = { data };
+      params.onProgress?.({ domain: "location", snapshot: snapshot as never, failed: false });
+      return { snapshots: { location: snapshot } as never, failedDomains: [] };
+    });
+    const rendered = render(<PkmNaturalPanel view={view} />);
+    if (view === "home") {
+      await screen.findByTestId("memory-category-location");
+      fireEvent.change(screen.getByRole("searchbox", { name: "Search Memory" }), { target: { value: "Home" } });
+    }
+    fireEvent.click(await screen.findByRole("button", { name: "Open memory: Label" }));
+    const href = push.mock.lastCall![0] as string;
+    expect(href).toMatch(/^\/one\/pkm\/location\/detail\?memory=[a-f0-9]{16}$/);
+    rendered.unmount();
+    render(<PkmNaturalPanel view="location-detail" locationMemoryId={new URL(href, "https://example.test").searchParams.get("memory")} />);
+    await screen.findByRole("heading", { name: "Label" });
+    expect(screen.getAllByText("Home").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Open in Location" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Edit", exact: true })).toBeNull();
   });
 
   it("recovers an unavailable Location domain, and keeps an invalid detail link fail closed", async () => {

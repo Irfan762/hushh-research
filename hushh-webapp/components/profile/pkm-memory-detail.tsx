@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { SettingsGroup, SettingsRow } from "@/components/app-ui/settings-ui";
 import { reservedOwnerGlyph } from "@/components/agent/reserved-offer-rows";
@@ -107,6 +108,7 @@ export function PkmMemoryDetail({
   const primary = displayLabel ?? labels.primary;
   const secondary = displayValue ?? labels.secondary;
   const fullValue = displayValue ?? card.value;
+  const Editor = /[\r\n]/.test(fullValue) ? Textarea : Input;
   const [editOpen, setEditOpen] = useState(false);
   const [forgetOpen, setForgetOpen] = useState(false);
   const [sharingOpen, setSharingOpen] = useState(false);
@@ -235,7 +237,7 @@ export function PkmMemoryDetail({
             <DialogTitle>Edit Memory</DialogTitle>
           </DialogHeader>
           <p className="text-sm font-medium text-foreground">{primary}</p>
-          <Input
+          <Editor
             value={editValue}
             onChange={(event) => setEditValue(event.target.value)}
             aria-label={`New value for ${primary}`}

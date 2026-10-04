@@ -11,9 +11,69 @@ import {
   updatePkmDomainValue,
 } from "@/lib/pkm/pkm-memory-cards";
 import type { PersonalKnowledgeModelMetadata } from "@/lib/services/personal-knowledge-model-service";
-import { buildLocationMemoryPresentation, resolveLocationMemoryField } from "@/lib/profile/location-memory-presentation";
+import { buildLocationMemoryPresentation, findLocationMemoryFieldForCard, resolveLocationMemoryField } from "@/lib/profile/location-memory-presentation";
 
 describe("Location memory read projection", () => {
+  it("routes represented title and address leaves from search without adding duplicate display rows", () => {
+    const data = { saved_places: { locations: [{ id: "home", label: "Home", category: "home", address: "Synthetic street", addressBase: "Synthetic street" }] }, visit_notes: { visits: [{ placeId: "cafe", label: "Cafe", note: "Synthetic visit" }] } };
+    const presentation = buildLocationMemoryPresentation({ data });
+    expect(presentation.sections.flatMap((section) => section.fields).map((field) => field.value)).toEqual(["Synthetic street", "Synthetic visit"]);
+    const cards = buildPkmMemoryCardsFromNode({ domain: "location", domainTitle: "Location", value: data, sourceLabel: "Saved memory", updatedAt: null, pathSegments: [] });
+    for (const card of cards) {
+      const field = findLocationMemoryFieldForCard(presentation, card);
+      expect(field?.card.path).toEqual(card.path);
+      expect(field?.selector, card.path).toMatch(/^[a-f0-9]{16}$/);
+      expect(resolveLocationMemoryField(presentation, field?.selector)?.card.pathSegments).toEqual(card.pathSegments);
+      expect(field?.card.reservedOwner?.appName).toBe("Location");
+    }
+  });
+
+  it("does not confuse a represented record label with a nested future field of the same name", () => {
+    const data = { saved_places: { locations: [{ id: "home", label: "Home", addressDetails: { label: "Entrance" } }] } };
+    const presentation = buildLocationMemoryPresentation({ data });
+    const [label] = buildPkmMemoryCardsFromNode({ domain: "location", domainTitle: "Location", value: "Home", sourceLabel: "Saved memory", updatedAt: null, pathSegments: ["saved_places", "locations", 0, "label"] });
+    const field = findLocationMemoryFieldForCard(presentation, label!);
+    expect(resolveLocationMemoryField(presentation, field?.selector)?.value).toBe("Home");
+    expect(presentation.sections[0]!.fields.map((entry) => entry.value)).toEqual(["Entrance"]);
+  });
+
+  it("matches canonical typed paths when dotted legacy keys have the same display path and value", () => {
+    const data = { agent_memory: { "a.b": "Same", a: { b: "Same" } } };
+    const presentation = buildLocationMemoryPresentation({ data });
+    const cards = buildPkmMemoryCardsFromNode({ domain: "location", domainTitle: "Location", value: data, sourceLabel: "Saved memory", updatedAt: null, pathSegments: [] });
+    expect(cards[0]!.path).toBe(cards[1]!.path);
+    for (const card of cards) {
+      const field = findLocationMemoryFieldForCard(presentation, card);
+      expect(resolveLocationMemoryField(presentation, field?.selector)?.card.pathSegments).toEqual(card.pathSegments);
+    }
+    expect(findLocationMemoryFieldForCard({ ...presentation, navigationFields: [presentation.sections[0]!.fields[0]!] }, cards[0]!)).toBeNull();
+  });
+
+  it("keeps writer entity identities stable for equal visible records and rejects indistinguishable fallback records", () => {
+    const a = { entity_id: "a", note: "Same note" };
+    const b = { entity_id: "b", note: "Same note" };
+    const first = buildLocationMemoryPresentation({ data: { agent_memory: { places: [a, b] } } });
+    const selector = first.sections[0]!.fields[0]!.selector;
+    const next = buildLocationMemoryPresentation({ data: { agent_memory: { places: [b, a] } } });
+    expect(resolveLocationMemoryField(next, selector)?.card.pathSegments).toEqual(["agent_memory", "places", 1, "note"]);
+    const ambiguous = buildLocationMemoryPresentation({ data: { agent_memory: { places: [{ note: "Same note", secret_key: "hidden-a" }, { note: "Same note", secret_key: "hidden-b" }] } } });
+    expect(ambiguous.sections[0]!.fields).toHaveLength(2);
+    expect(ambiguous.sections[0]!.fields.every((field) => field.selector === null)).toBe(true);
+    expect(resolveLocationMemoryField(ambiguous, selector)).toBeNull();
+  });
+
+  it("bounds fallback identity traversal before serialization of deep and wide legacy arrays", () => {
+    let deep: unknown = "Deep leaf";
+    for (let level = 0; level < 10_000; level += 1) deep = { child: deep };
+    for (const items of [[{ note: "Readable", deep }], [{ note: "Readable", children: Array.from({ length: 20_001 }, () => null) }]]) {
+      const presentation = buildLocationMemoryPresentation({ data: { agent_memory: { places: items } } });
+      expect(presentation.incomplete).toBe(true);
+      const readable = presentation.sections.flatMap((section) => section.fields).find((field) => field.value === "Readable");
+      expect(readable).toBeDefined();
+      expect(readable?.selector).toBeNull();
+    }
+  });
+
   it("retains legacy nested facts, primitive values and malformed collection entries without changing their paths", () => {
     const presentation = buildLocationMemoryPresentation({ data: { saved_places: { locations: ["Legacy place", { label: "Label only" }, { category: "home" }] }, legacy: { addresses: [{ note: "Legacy note", enabled: false, floor: 0 }] }, home_city: "Synthetic city" } });
     const fields = presentation.sections.flatMap((section) => section.fields);

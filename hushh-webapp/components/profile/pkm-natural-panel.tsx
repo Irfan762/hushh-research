@@ -11,7 +11,7 @@ import { SearchClearButton } from "@/components/app-ui/search-clear-button";
 
 import { PkmMemoryRow } from "@/components/profile/pkm-memory-row";
 import { LocationMemoryView } from "@/components/profile/location-memory-view";
-import { buildLocationMemoryPresentation, resolveLocationMemoryField } from "@/lib/profile/location-memory-presentation";
+import { buildLocationMemoryPresentation, findLocationMemoryFieldForCard, resolveLocationMemoryField } from "@/lib/profile/location-memory-presentation";
 import { ROUTES } from "@/lib/navigation/routes";
 import { PkmMemoryLevel } from "@/components/profile/pkm-memory-level";
 import {
@@ -1415,7 +1415,7 @@ export function PkmNaturalPanel({
     if (card.domain === "location") {
       const snapshot = locationSnapshot.current;
       const presentation = buildLocationMemoryPresentation({ data: snapshot?.session === memoryReadSession ? snapshot.data : null });
-      const field = presentation.sections.flatMap((section) => section.fields).find((item) => item.card.path === card.path && item.card.valueFingerprint === card.valueFingerprint);
+      const field = findLocationMemoryFieldForCard(presentation, card);
       router.push(field?.selector ? `${ROUTES.PKM_LOCATION_DETAIL}?memory=${field.selector}` : ROUTES.PKM_LOCATION);
       return;
     }

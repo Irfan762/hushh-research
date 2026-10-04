@@ -30,7 +30,7 @@ export function LocationMemoryView({ presentation, loading, error, onRetry, onOp
         : sections.map((section) => (
           <SettingsGroup key={section.key} title={section.title} separatorInset testId={`location-memory-${section.key}`}>
             {section.fields.map((field) => <SettingsRow
-              key={field.card.path}
+              key={JSON.stringify(field.card.pathSegments)}
               title={field.label}
               description={field.value}
               onClick={field.selector ? () => onOpen(field) : undefined}
