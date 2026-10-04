@@ -342,6 +342,9 @@ describe("supported connector catalog", () => {
     let assign: ReturnType<typeof vi.fn>;
     beforeEach(() => {
       assign = vi.fn();
+      // The full-page tests below run the blocked-popup fallback; the in-session
+      // popup describe at the end of this block opens a window instead.
+      vi.spyOn(window, "open").mockReturnValue(null);
       Object.defineProperty(window, "location", {
         configurable: true,
         value: { origin: "https://uat.one.hushh.ai", assign },
@@ -356,6 +359,7 @@ describe("supported connector catalog", () => {
     });
     afterEach(() => {
       Object.defineProperty(window, "location", { configurable: true, value: realLocation });
+      vi.mocked(window.open).mockRestore();
       // eslint-disable-next-line no-restricted-globals -- Clear the synthetic handoff marker.
       sessionStorage.clear();
     });
@@ -447,29 +451,6 @@ describe("supported connector catalog", () => {
       expect(state.startOAuthConnect).not.toHaveBeenCalled();
     });
 
-    it("starts the web sign-in with a curated handoff marker", async () => {
-      state.overview.mockResolvedValue(withFlag([hubspot]));
-      render(panel());
-      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
-      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
-      expect(state.startOAuthConnect).toHaveBeenCalledWith({
-        vaultOwnerToken: "synthetic-owner-token",
-        connectorId: "hubspot",
-        redirectUri: "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
-        flow: "web",
-      });
-      expect(assign).toHaveBeenCalledWith(
-        "https://mcp.hubspot.com/oauth/authorize/user?state=signed",
-      );
-      // eslint-disable-next-line no-restricted-globals -- Read the redacted correlation marker.
-      const marker = JSON.parse(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1") ?? "null");
-      expect(marker).toMatchObject({
-        ownerUserId: "owner-a",
-        curatedConnector: { connectorId: "hubspot" },
-        returnTo: "connector_settings",
-      });
-    });
-
     it("offers a second curated provider with no provider-specific frontend code", async () => {
       state.overview.mockResolvedValue(withFlag([hubspot, notion]));
       state.startOAuthConnect.mockReset().mockResolvedValue({
@@ -478,61 +459,25 @@ describe("supported connector catalog", () => {
         attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
         connectorId: "notion",
       });
+      const providerPopup = {
+        closed: false,
+        close: vi.fn(),
+        document: { title: "", body: { textContent: "" } },
+        location: { replace: vi.fn() },
+      };
+      vi.mocked(window.open).mockReturnValue(providerPopup as unknown as Window);
       render(panel());
       expect(await screen.findByRole("button", { name: "Connect HubSpot" })).toBeInTheDocument();
       fireEvent.click(await screen.findByRole("button", { name: "Connect Notion" }));
-      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
+      await waitFor(() =>
+        expect(providerPopup.location.replace).toHaveBeenCalledExactlyOnceWith(
+          "https://mcp.notion.com/authorize?state=signed",
+        ),
+      );
       expect(state.startOAuthConnect).toHaveBeenCalledWith(
         expect.objectContaining({ connectorId: "notion", flow: "web" }),
       );
-      expect(assign).toHaveBeenCalledWith("https://mcp.notion.com/authorize?state=signed");
-      // eslint-disable-next-line no-restricted-globals -- Read the redacted correlation marker.
-      const marker = JSON.parse(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1") ?? "null");
-      expect(marker).toMatchObject({ curatedConnector: { connectorId: "notion" } });
-    });
-
-    it("re-enables Connect when the page is restored from the back/forward cache", async () => {
-      state.overview.mockResolvedValue(withFlag([hubspot]));
-      render(panel());
-      const connect = await screen.findByRole("button", { name: "Connect HubSpot" });
-      fireEvent.click(connect);
-      await waitFor(() => expect(assign).toHaveBeenCalledOnce());
-      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeDisabled());
-      act(() => {
-        window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
-      });
-      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
-    });
-
-    it("retires an OAuth start after same-owner token renewal", async () => {
-      let settle!: (value: unknown) => void;
-      state.startOAuthConnect.mockImplementation(() => new Promise((done) => { settle = done; }));
-      state.overview.mockResolvedValue(withFlag([hubspot]));
-      const view = render(panel());
-      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
-      await waitFor(() => expect(state.startOAuthConnect).toHaveBeenCalledOnce());
-      state.token = "renewed-owner-token";
-      view.rerender(panel());
-      await waitFor(() => expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled());
-      await act(async () => settle({
-        authorizeUrl: "https://mcp.hubspot.com/oauth/authorize/user?state=old",
-        attemptId: "old-attempt", connectorId: "hubspot",
-      }));
-      expect(assign).not.toHaveBeenCalled();
-      expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
-    });
-
-    it("refuses a non-https authorize URL", async () => {
-      state.startOAuthConnect.mockResolvedValue({
-        authorizeUrl: "http://evil.invalid/authorize",
-        expiresAt: new Date(Date.now() + 600_000).toISOString(),
-        attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
-        connectorId: "hubspot",
-      });
-      state.overview.mockResolvedValue(withFlag([hubspot]));
-      render(panel());
-      fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
-      await waitFor(() => expect(state.startOAuthConnect).toHaveBeenCalled());
+      // The sign-in happens in the popup; this window never leaves the app.
       expect(assign).not.toHaveBeenCalled();
     });
 
@@ -585,6 +530,254 @@ describe("supported connector catalog", () => {
       state.overview.mockResolvedValue(withFlag([{ ...hubspot, status: "needs_reauth" }]));
       render(panel());
       expect(await screen.findByRole("button", { name: "Reconnect HubSpot" })).toBeInTheDocument();
+    });
+
+    describe("signs in inside the session", () => {
+      const ATTEMPT_KEY = "one_curated_popup_attempt_v1";
+      const AUTHORIZE_URL = "https://mcp.hubspot.com/oauth/authorize/user?state=signed";
+      const fakePopup = () =>
+        ({
+          closed: false,
+          close: vi.fn(),
+          document: { title: "", body: { textContent: "" } },
+          location: { replace: vi.fn() },
+        }) as unknown as Window & { close: ReturnType<typeof vi.fn>; location: { replace: ReturnType<typeof vi.fn> } };
+      const settlementOf = (outcome = "succeeded") => {
+        const attempt = JSON.parse(window.localStorage.getItem(ATTEMPT_KEY) ?? "null") as {
+          connectorId: string; attemptId: string; expiresAt: number;
+        };
+        return { type: "curated_oauth_settlement", ...attempt, outcome };
+      };
+      const post = (data: unknown, source: unknown, origin = window.location.origin) =>
+        act(async () => {
+          window.dispatchEvent(new MessageEvent("message", { data, origin, source: source as Window }));
+        });
+      let popup: ReturnType<typeof fakePopup>;
+      beforeEach(() => {
+        if (typeof window.localStorage?.setItem !== "function") {
+          const store = new Map<string, string>();
+          Object.defineProperty(window, "localStorage", {
+            configurable: true,
+            value: {
+              get length() { return store.size; },
+              clear: () => store.clear(),
+              getItem: (key: string) => store.get(key) ?? null,
+              key: (index: number) => Array.from(store.keys())[index] ?? null,
+              removeItem: (key: string) => { store.delete(key); },
+              setItem: (key: string, value: string) => { store.set(key, value); },
+            },
+          });
+        }
+        popup = fakePopup();
+        vi.mocked(window.open).mockReturnValue(popup);
+      });
+      afterEach(() => {
+        window.localStorage.clear();
+      });
+      const connectHubspot = async () => {
+        state.overview.mockResolvedValue(withFlag([hubspot]));
+        const view = render(panel());
+        fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
+        return view;
+      };
+
+      it("opens the window in the click before any awaited work and never navigates this window", async () => {
+        await connectHubspot();
+        // Synchronous: no await happened between the click and these assertions.
+        expect(window.open).toHaveBeenCalledOnce();
+        expect(vi.mocked(window.open).mock.invocationCallOrder[0]).toBeLessThan(
+          state.startOAuthConnect.mock.invocationCallOrder[0],
+        );
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalledExactlyOnceWith(AUTHORIZE_URL));
+        expect(state.startOAuthConnect).toHaveBeenCalledWith(expect.objectContaining({
+          vaultOwnerToken: "synthetic-owner-token",
+          connectorId: "hubspot",
+          redirectUri: "https://uat.one.hushh.ai/one/profile/connectors/oauth/return",
+          flow: "web",
+        }));
+        expect(assign).not.toHaveBeenCalled();
+        // eslint-disable-next-line no-restricted-globals -- No full-page handoff is saved.
+        expect(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1")).toBeNull();
+        const marker = window.localStorage.getItem(ATTEMPT_KEY) ?? "";
+        expect(marker).toContain("hubspot");
+        expect(marker).not.toMatch(/synthetic-owner-token|state=signed/);
+        expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeInTheDocument();
+      });
+
+      it("re-reads the owner-authenticated status when the popup settles, and only for its own popup", async () => {
+        await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        const before = state.overview.mock.calls.length;
+        await post(settlementOf(), popup, "https://attacker.invalid");
+        await post(settlementOf(), window);
+        await post({ ...settlementOf(), connectorId: "notion" }, popup);
+        await post({ ...settlementOf(), type: "drive_oauth_settlement" }, popup);
+        expect(state.overview).toHaveBeenCalledTimes(before);
+        expect(popup.close).not.toHaveBeenCalled();
+        await post(settlementOf("failed"), popup);
+        await waitFor(() => expect(state.overview).toHaveBeenCalledTimes(before + 1));
+        // The popup said "failed" and the re-read status is still not connected.
+        expect(await screen.findByText("Sign-in did not finish. Try again.")).toBeInTheDocument();
+        expect(popup.close).toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+        expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("stays in place and says why when the popup and tab are both blocked", async () => {
+        // A full-page redirect would reload the app and re-lock the vault, which is
+        // exactly what signing in inside the session exists to avoid.
+        vi.mocked(window.open).mockReturnValue(null);
+        await connectHubspot();
+        expect(
+          await screen.findByText("Allow pop-ups for One, then try again. Your chat and draft stay here."),
+        ).toBeInTheDocument();
+        expect(state.startOAuthConnect).not.toHaveBeenCalled();
+        expect(assign).not.toHaveBeenCalled();
+        // eslint-disable-next-line no-restricted-globals -- No full-page handoff is ever saved.
+        expect(sessionStorage.getItem("one_drive_chat_recovery_handoff_v1")).toBeNull();
+        expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+      });
+
+      it("cancels cleanly: closes the popup, clears busy and ignores a late settlement", async () => {
+        await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        const attempt = settlementOf();
+        const before = state.overview.mock.calls.length;
+        fireEvent.click(screen.getByRole("button", { name: "Cancel sign-in" }));
+        expect(await screen.findByText("Sign-in cancelled.")).toBeInTheDocument();
+        expect(popup.close).toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+        expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
+        await post(attempt, popup);
+        expect(state.overview).toHaveBeenCalledTimes(before);
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("closes the popup when the panel unmounts mid sign-in", async () => {
+        const view = await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        view.unmount();
+        await waitFor(() => expect(popup.close).toHaveBeenCalled());
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("ends the sign-in when the vault re-locks", async () => {
+        const view = await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        state.token = null;
+        view.rerender(panel());
+        await waitFor(() => expect(popup.close).toHaveBeenCalled());
+        expect(assign).not.toHaveBeenCalled();
+        state.token = "synthetic-owner-token";
+        view.rerender(panel());
+        expect(await screen.findByRole("button", { name: "Connect HubSpot" })).toBeEnabled();
+        expect(screen.queryByRole("button", { name: "Cancel sign-in" })).not.toBeInTheDocument();
+      });
+
+      it("keeps the sign-in open through a routine owner-token renewal and reads status with the new token", async () => {
+        // The vault renews its owner token shortly before expiry. Someone who is
+        // on the provider's consent page at that moment must not lose the window.
+        const view = await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        state.token = "renewed-owner-token";
+        view.rerender(panel());
+        await waitFor(() => expect(state.overview).toHaveBeenLastCalledWith("renewed-owner-token"));
+        expect(popup.close).not.toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Cancel sign-in" })).toBeInTheDocument();
+        const before = state.overview.mock.calls.length;
+        await post(settlementOf(), popup);
+        await waitFor(() => expect(state.overview.mock.calls.length).toBeGreaterThan(before));
+        expect(state.overview).toHaveBeenLastCalledWith("renewed-owner-token");
+        expect(popup.close).toHaveBeenCalled();
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("ends the sign-in when the owner changes", async () => {
+        const view = await connectHubspot();
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        state.user.uid = "owner-b";
+        view.rerender(panel());
+        await waitFor(() => expect(popup.close).toHaveBeenCalled());
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("reports the connection when the re-read status says it is connected", async () => {
+        state.overview
+          .mockResolvedValueOnce(withFlag([hubspot]))
+          .mockResolvedValue(withFlag([{ ...hubspot, status: "connected", accountLabel: "owner@example.invalid" }]));
+        render(panel());
+        fireEvent.click(await screen.findByRole("button", { name: "Connect HubSpot" }));
+        await waitFor(() => expect(popup.location.replace).toHaveBeenCalled());
+        await post(settlementOf(), popup);
+        expect(await screen.findByText("HubSpot connected.")).toBeInTheDocument();
+      });
+
+      it("opens only one window when the button is tapped twice in the same frame", async () => {
+        state.overview.mockResolvedValue(withFlag([hubspot]));
+        render(panel());
+        const connect = await screen.findByRole("button", { name: "Connect HubSpot" });
+        act(() => {
+          connect.click();
+          connect.click();
+        });
+        expect(window.open).toHaveBeenCalledOnce();
+        await waitFor(() => expect(state.startOAuthConnect).toHaveBeenCalledOnce());
+      });
+
+      it("closes the popup and re-enables Connect when the sign-in cannot start", async () => {
+        state.startOAuthConnect.mockRejectedValue(new Error("synthetic start failure"));
+        await connectHubspot();
+        expect(await screen.findByText("Could not start HubSpot. Try again.")).toBeInTheDocument();
+        expect(popup.close).toHaveBeenCalled();
+        expect(popup.location.replace).not.toHaveBeenCalled();
+        expect(screen.getByRole("button", { name: "Connect" })).toBeEnabled();
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("refuses a non-https authorize URL and closes the popup", async () => {
+        state.startOAuthConnect.mockResolvedValue({
+          authorizeUrl: "http://evil.invalid/authorize",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
+          connectorId: "hubspot",
+        });
+        await connectHubspot();
+        expect(await screen.findByText("Could not start HubSpot. Try again.")).toBeInTheDocument();
+        expect(popup.location.replace).not.toHaveBeenCalled();
+        expect(popup.close).toHaveBeenCalled();
+        expect(window.localStorage.getItem(ATTEMPT_KEY)).toBeNull();
+        expect(assign).not.toHaveBeenCalled();
+      });
+
+      it("refuses a start for a different connector and closes the popup", async () => {
+        state.startOAuthConnect.mockResolvedValue({
+          authorizeUrl: AUTHORIZE_URL,
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+          attemptId: "attempt-abcdefghijklmnopqrstuvwxyz0123456789",
+          connectorId: "notion",
+        });
+        await connectHubspot();
+        expect(await screen.findByText("Could not start HubSpot. Try again.")).toBeInTheDocument();
+        expect(popup.location.replace).not.toHaveBeenCalled();
+        expect(popup.close).toHaveBeenCalled();
+      });
+
+      it("still refuses on the native app without opening a window", async () => {
+        state.overview.mockResolvedValue(withFlag([hubspot]));
+        render(panel());
+        const connect = await screen.findByRole("button", { name: "Connect HubSpot" });
+        vi.spyOn(Capacitor, "isNativePlatform").mockReturnValue(true);
+        try {
+          fireEvent.click(connect);
+          expect(await screen.findByText("Connect HubSpot on the web. It works here once connected.")).toBeInTheDocument();
+          expect(window.open).not.toHaveBeenCalled();
+          expect(state.startOAuthConnect).not.toHaveBeenCalled();
+          expect(assign).not.toHaveBeenCalled();
+        } finally {
+          vi.mocked(Capacitor.isNativePlatform).mockRestore();
+        }
+      });
     });
   });
 

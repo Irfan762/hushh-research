@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from functools import partial
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
@@ -11,8 +12,13 @@ from fastapi.testclient import TestClient
 
 from api.middleware import require_firebase_auth, require_vault_owner_token
 from api.routes import external_connectors as routes
+from hushh_mcp.services import external_connector_oauth_service as generic_oauth
+from hushh_mcp.services.external_connector_curated_oauth import CuratedConnectorOAuthError
 from hushh_mcp.services.external_connector_google_oauth import DriveOAuthError
-from hushh_mcp.services.external_connector_oauth_service import ExternalConnectorOAuthError
+from hushh_mcp.services.external_connector_oauth_service import (
+    ExternalConnectorOAuthError,
+    ExternalConnectorOAuthService,
+)
 from hushh_mcp.services.external_connector_registry_service import (
     ConnectorRegistrationError,
     ExternalMcpConnectorDefinition,
@@ -186,7 +192,21 @@ def route_client(monkeypatch):
             raise ExternalConnectorOAuthError("OAuth state is invalid")
         return "synthetic-attempt"
 
-    service = SimpleNamespace(_verify_state=verify, drive=lambda: drive)
+    curated = SimpleNamespace(
+        complete=AsyncMock(return_value={"connectorId": "notion", "status": "connected"})
+    )
+    service = SimpleNamespace(
+        _verify_state=verify,
+        drive=lambda: drive,
+        curated=lambda: curated,
+        _execute=AsyncMock(return_value=[{"connector_id": "google_drive"}]),
+        _registry=SimpleNamespace(get_connector=AsyncMock(return_value=None)),
+        complete=AsyncMock(side_effect=AssertionError("vault-only legacy path")),
+    )
+    # The real dispatcher runs against the fakes above, so the route's wiring
+    # to the Drive/curated/refuse decision is what these tests exercise.
+    service.complete_web_popup = partial(ExternalConnectorOAuthService.complete_web_popup, service)
+    service.curated_adapter = curated
     monkeypatch.setattr(routes, "get_external_connector_oauth_service", lambda: service)
     app = FastAPI()
     app.include_router(routes.router)
@@ -768,6 +788,134 @@ def test_web_popup_rejects_another_attempt_before_exchange(route_client):
     )
     assert response.status_code == 409
     drive.complete.assert_not_called()
+
+
+_WEB_BODY = {
+    "state": "signed-synthetic-state",
+    "code": "synthetic-code",
+    "attemptId": "synthetic-attempt",
+}
+
+
+def _operator_row():
+    return SimpleNamespace(owner_user_id=None)
+
+
+def test_curated_popup_completion_needs_only_firebase_auth(route_client):
+    client, app, drive = route_client
+    service = routes.get_external_connector_oauth_service()
+    service._execute.return_value = [{"connector_id": "notion"}]
+    service._registry.get_connector.return_value = _operator_row()
+    assert client.post("/api/connectors/oauth/complete/web", json=_WEB_BODY).status_code == 401
+    # No vault dependency override: only Firebase auth is satisfied.
+    app.dependency_overrides[require_firebase_auth] = lambda: "verified-owner"
+    response = client.post("/api/connectors/oauth/complete/web", json=_WEB_BODY)
+    assert response.status_code == 200
+    assert response.json()["connectorId"] == "notion"
+    assert response.json()["status"] == "connected"
+    service.curated_adapter.complete.assert_awaited_once_with(
+        state=_WEB_BODY["state"], code=_WEB_BODY["code"], expected_user_id="verified-owner"
+    )
+    drive.complete.assert_not_called()
+    service.complete.assert_not_called()
+
+
+def test_curated_popup_rejects_another_attempt_before_any_adapter(route_client):
+    client, app, drive = route_client
+    service = routes.get_external_connector_oauth_service()
+    service._execute.return_value = [{"connector_id": "notion"}]
+    service._registry.get_connector.return_value = _operator_row()
+    app.dependency_overrides[require_firebase_auth] = lambda: "verified-owner"
+    response = client.post(
+        "/api/connectors/oauth/complete/web", json={**_WEB_BODY, "attemptId": "different-attempt"}
+    )
+    assert response.status_code == 409
+    service._execute.assert_not_called()
+    service.curated_adapter.complete.assert_not_called()
+    drive.complete.assert_not_called()
+
+
+@pytest.mark.parametrize("registry_row", [None, SimpleNamespace(owner_user_id="private-owner")])
+def test_popup_refuses_non_drive_non_operator_connectors_without_the_legacy_path(
+    route_client, monkeypatch, registry_row
+):
+    client, app, drive = route_client
+    service = routes.get_external_connector_oauth_service()
+    service._execute.return_value = [{"connector_id": "legacy_crm"}]
+    service._registry.get_connector.return_value = registry_row
+    http = Mock(side_effect=AssertionError("legacy HTTP"))
+    monkeypatch.setattr(generic_oauth.httpx, "AsyncClient", http)
+    app.dependency_overrides[require_firebase_auth] = lambda: "verified-owner"
+    response = client.post("/api/connectors/oauth/complete/web", json=_WEB_BODY)
+    assert response.status_code == 409
+    service.complete.assert_not_called()
+    http.assert_not_called()
+    service.curated_adapter.complete.assert_not_called()
+    drive.complete.assert_not_called()
+
+
+def test_popup_refuses_a_missing_or_consumed_attempt(route_client):
+    client, app, drive = route_client
+    service = routes.get_external_connector_oauth_service()
+    service._execute.return_value = []
+    app.dependency_overrides[require_firebase_auth] = lambda: "verified-owner"
+    response = client.post("/api/connectors/oauth/complete/web", json=_WEB_BODY)
+    assert response.status_code == 409
+    service.curated_adapter.complete.assert_not_called()
+    drive.complete.assert_not_called()
+    # A consumed curated attempt reaches the adapter, whose atomic claim refuses it.
+    service._execute.return_value = [{"connector_id": "notion"}]
+    service._registry.get_connector.return_value = _operator_row()
+    service.curated_adapter.complete.side_effect = CuratedConnectorOAuthError(
+        "attempt_unavailable", status_code=409
+    )
+    response = client.post("/api/connectors/oauth/complete/web", json=_WEB_BODY)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "attempt_unavailable"
+
+
+def test_curated_popup_completes_as_the_firebase_user_and_the_body_cannot_name_one(route_client):
+    # The request model carries no identity field at all, so a body-supplied owner
+    # is dropped before the route runs. Pin that, or a later "convenience" field
+    # could quietly let a caller complete another user's attempt.
+    identity_fields = [
+        name for name in routes.CompleteWebOAuthRequest.model_fields if "user" in name.lower()
+    ]
+    assert identity_fields == []
+    client, app, _ = route_client
+    service = routes.get_external_connector_oauth_service()
+    service._execute.return_value = [{"connector_id": "notion"}]
+    service._registry.get_connector.return_value = _operator_row()
+
+    async def claim(*, state, code, expected_user_id):
+        if expected_user_id != "attempt-owner":
+            raise CuratedConnectorOAuthError("attempt_unavailable", status_code=409)
+        return {"connectorId": "notion", "status": "connected"}
+
+    service.curated_adapter.complete.side_effect = claim
+    app.dependency_overrides[require_firebase_auth] = lambda: "someone-else"
+    response = client.post(
+        "/api/connectors/oauth/complete/web", json={**_WEB_BODY, "userId": "attempt-owner"}
+    )
+    assert response.status_code == 409
+    service.curated_adapter.complete.assert_awaited_once_with(
+        state=_WEB_BODY["state"], code=_WEB_BODY["code"], expected_user_id="someone-else"
+    )
+
+
+def test_vault_complete_is_unchanged_and_still_requires_the_vault_token(route_client):
+    client, app, _ = route_client
+    service = routes.get_external_connector_oauth_service()
+    service.complete.side_effect = None
+    service.complete.return_value = {"connectorId": "notion", "status": "connected"}
+    body = {"state": "signed-synthetic-state", "code": "synthetic-code"}
+    app.dependency_overrides[require_firebase_auth] = lambda: "verified-owner"
+    assert client.post("/api/connectors/oauth/complete", json=body).status_code == 401
+    app.dependency_overrides[require_vault_owner_token] = lambda: {"user_id": "verified-owner"}
+    assert client.post("/api/connectors/oauth/complete", json=body).status_code == 200
+    service.complete.assert_awaited_once_with(
+        state=body["state"], code=body["code"], expected_user_id="verified-owner"
+    )
 
 
 def test_deactivation_does_not_hide_owner_disconnect_status(route_client, monkeypatch):

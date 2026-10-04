@@ -199,6 +199,34 @@ class ExternalConnectorOAuthService:
             "expiresAt": expires_at.isoformat(),
         }
 
+    async def complete_web_popup(
+        self, *, state: str, code: str, expected_user_id: str
+    ) -> dict[str, Any]:
+        """Finish an in-session popup sign-in with Firebase identity only.
+
+        Only Drive and operator-owned curated attempts may complete without the
+        Vault Owner token: both adapters atomically claim the unexpired attempt
+        for `expected_user_id` and seal credentials server-side. Every other
+        connector, including the legacy generic exchange, stays vault-only.
+        """
+        attempt_id = self._verify_state(state)
+        rows = await self._execute(
+            """SELECT connector_id
+               FROM external_connector_oauth_attempts
+               WHERE attempt_id = :attempt_id""",
+            {"attempt_id": attempt_id},
+        )
+        connector_id = _clean(rows[0]["connector_id"]) if rows else ""
+        if connector_id == "google_drive":
+            return await self.drive().complete(
+                state=state, code=code, expected_user_id=expected_user_id
+            )
+        if connector_id and _is_operator_owned(await self._registry.get_connector(connector_id)):
+            return await self.curated().complete(
+                state=state, code=code, expected_user_id=expected_user_id
+            )
+        raise ExternalConnectorOAuthError("attempt_unavailable", status_code=409)
+
     async def complete(self, *, state: str, code: str, expected_user_id: str) -> dict[str, Any]:
         attempt_id = self._verify_state(state)
         rows = await self._execute(

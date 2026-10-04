@@ -188,3 +188,71 @@ async def test_operator_owned_row_never_falls_back_to_legacy_oauth_complete(monk
 
     assert wrapper._execute.await_count == 1
     credentials.decrypt_secret.assert_not_called()
+
+
+def _popup_wrapper(row, attempt_rows, lifecycle=None):
+    registry = SimpleNamespace(get_connector=AsyncMock(return_value=row))
+    credentials = SimpleNamespace(decrypt_secret=Mock(side_effect=AssertionError("legacy path")))
+    wrapper = generic_oauth.ExternalConnectorOAuthService(
+        db=object(), registry=registry, credentials=credentials
+    )
+    wrapper._verify_state = lambda _state: "attempt-1"
+    wrapper._execute = AsyncMock(return_value=attempt_rows)
+    if lifecycle is not None:
+        wrapper.curated = lambda: _adapter(wrapper, registry, credentials, lifecycle)
+    return wrapper
+
+
+@pytest.mark.asyncio
+async def test_popup_completion_passes_the_caller_identity_to_the_curated_claim():
+    # The real adapter refuses the attempt when the atomic claim, which is bound
+    # to the Firebase user the route passes, does not match the attempt owner.
+    lifecycle = SimpleNamespace(claim_attempt=AsyncMock(return_value=None))
+    wrapper = _popup_wrapper(
+        _notion_row({"chat": "reviewed"}), [{"connector_id": "notion"}], lifecycle
+    )
+
+    with pytest.raises(curated_oauth.CuratedConnectorOAuthError, match="attempt_unavailable"):
+        await wrapper.complete_web_popup(state="signed", code="code", expected_user_id="intruder")
+
+    lifecycle.claim_attempt.assert_awaited_once_with(attempt_id="attempt-1", user_id="intruder")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("attempt_rows", "registry_row"),
+    [
+        ([], None),
+        ([{"connector_id": "legacy_crm"}], None),
+        ([{"connector_id": "legacy_crm"}], SimpleNamespace(owner_user_id="private-owner")),
+    ],
+)
+async def test_popup_completion_refuses_everything_but_drive_and_operator_rows(
+    monkeypatch, attempt_rows, registry_row
+):
+    wrapper = _popup_wrapper(registry_row, attempt_rows)
+    wrapper.complete = AsyncMock(side_effect=AssertionError("vault-only legacy path"))
+    wrapper.drive = Mock(side_effect=AssertionError("drive adapter"))
+    wrapper.curated = Mock(side_effect=AssertionError("curated adapter"))
+    http = Mock(side_effect=AssertionError("legacy HTTP"))
+    monkeypatch.setattr(generic_oauth.httpx, "AsyncClient", http)
+
+    with pytest.raises(generic_oauth.ExternalConnectorOAuthError) as refused:
+        await wrapper.complete_web_popup(state="signed", code="code", expected_user_id="owner")
+
+    assert refused.value.status_code == 409
+    http.assert_not_called()
+    wrapper.complete.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_popup_completion_keeps_drive_on_the_drive_adapter():
+    drive = SimpleNamespace(complete=AsyncMock(return_value={"status": "verifying"}))
+    wrapper = _popup_wrapper(None, [{"connector_id": "google_drive"}])
+    wrapper.drive = lambda: drive
+    wrapper.curated = Mock(side_effect=AssertionError("curated adapter"))
+
+    result = await wrapper.complete_web_popup(state="signed", code="code", expected_user_id="owner")
+
+    assert result == {"status": "verifying"}
+    drive.complete.assert_awaited_once_with(state="signed", code="code", expected_user_id="owner")

@@ -1110,19 +1110,23 @@ async def complete_oauth_connect(
 async def complete_web_popup(
     body: CompleteWebOAuthRequest, user_id: str = Depends(require_firebase_auth)
 ):
-    # Only Drive's v2 path accepts this exception. It atomically claims an
-    # unexpired attempt previously created by this owner using Vault Owner auth.
-    # No opener token is copied into the popup or persisted in attempt state.
+    # Drive and operator-owned curated connectors accept this exception: both
+    # adapters atomically claim an unexpired attempt previously created by this
+    # same owner using Vault Owner auth, and seal credentials server-side with
+    # no vault-derived key. Every other connector (the legacy generic exchange)
+    # is refused here and stays vault-only. No opener token is copied into the
+    # popup or persisted in attempt state.
     try:
         oauth = get_external_connector_oauth_service()
         if oauth._verify_state(body.state) != body.attemptId:
             raise DriveOAuthError("attempt_unavailable", status_code=409)
-        return await oauth.drive().complete(
+        return await oauth.complete_web_popup(
             state=body.state, code=body.code, expected_user_id=user_id
         )
     except (
         ExternalConnectorOAuthError,
         DriveOAuthError,
+        CuratedConnectorOAuthError,
         ConnectorLifecycleError,
         ExternalConnectorCredentialError,
     ) as error:
