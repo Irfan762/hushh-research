@@ -1,7 +1,6 @@
 {
   "contract_name": "dev_minimum_schema",
-  "expected_migration_version": 281,
-  "migration_version_policy": "minimum",
+  "expected_migration_version": 281,  "migration_version_policy": "minimum",
   "required_functions": [
     "block_gmail_receipt_cache_writes",
     "project_calendar_mail_feed",
