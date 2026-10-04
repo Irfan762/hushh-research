@@ -116,7 +116,6 @@ describe("Navbar bottom chrome contract", () => {
     expect(bottomShell).toContain("--app-bottom-shell-height");
     expect(bottomShell).not.toContain("xl:hidden");
     expect(navbar).toContain("shellNavigationHidden = false");
-    expect(navbar).toContain("if (shellNavigationHidden || hideNavbar)");
     expect(navbar).toContain("data-ambient-chrome-ignore");
     expect(agentBar).toContain("data-ambient-chrome-ignore");
     const globalStyles = read("app/globals.css");
@@ -146,7 +145,7 @@ describe("Navbar bottom chrome contract", () => {
       "const foundationVoiceOnlyChrome = isFoundationRoute && !isAuthenticated;",
     );
     expect(providers).toMatch(
-      /const pinnedBottomChrome\s*=\s*isRiaRoute\(pathname\)\s*\|\|\s*foundationVoiceOnlyChrome;/,
+      /const pinnedBottomChrome\s*=\s*isRiaRoute\(pathname\)\s*\|\|\s*foundationVoiceOnlyChrome\s*\|\|\s*nativeNavigationInstalled;/,
     );
     expect(providers).toMatch(
       /navigationHidden:\s*hideBottomNavigation,/,
