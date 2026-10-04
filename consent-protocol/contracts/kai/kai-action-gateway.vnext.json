@@ -3287,7 +3287,9 @@
           "gmail"
         ],
         "hidden_navigable": true,
-        "navigation_prerequisites": [],
+        "navigation_prerequisites": [
+          "navigate to Gmail surface on its KYC tab if route is currently outside Gmail scope"
+        ],
         "active_personas": [
           "investor",
           "ria"

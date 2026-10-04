@@ -61,7 +61,9 @@
         "routes": ["/one/gmail?workspace=kyc"],
         "screens": ["gmail"],
         "hidden_navigable": true,
-        "navigation_prerequisites": []
+        "navigation_prerequisites": [
+          "navigate to Gmail surface on its KYC tab if route is currently outside Gmail scope"
+        ]
       },
       "guard_ids": [],
       "risk_level": "low",
