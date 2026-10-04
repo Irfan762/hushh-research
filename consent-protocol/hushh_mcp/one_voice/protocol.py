@@ -16,6 +16,10 @@ from hushh_mcp.one_voice.tools.base import LOCATION_UPDATES_PENDING as _LOCATION
 from hushh_mcp.one_voice.tools.mail import MAIL_OPEN_DISPATCHED as _MAIL_OPEN_DISPATCHED
 
 PROTOCOL_VERSION = "one-voice-v1"
+# Additive client capabilities this relay accepts, advertised in session.ready.
+# A client sends the matching keys or frames only when its relay lists them, so
+# a newer app never has a whole frame refused by an older or rolled-back relay.
+RELAY_FEATURES: tuple[str, ...] = ("active_mail", "mail_delivery")
 INPUT_MIME = "audio/pcm;rate=16000"
 OUTPUT_MIME = "audio/pcm;rate=24000"
 MAX_AUDIO_FRAME_B64_CHARS = 1_000_000
@@ -237,6 +241,7 @@ def session_ready(
         "pending_actions": pending_actions,
         "setup_progress": setup_progress,
         "output_mime_type": OUTPUT_MIME,
+        "features": list(RELAY_FEATURES),
     }
 
 

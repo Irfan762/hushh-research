@@ -717,3 +717,14 @@ def test_a_send_report_names_an_action_and_never_an_outcome(change):
     )
     with pytest.raises(protocol.FrameError):
         protocol.parse_client_frame(json.dumps({**VALID_REPORT, **change}))
+
+
+async def test_session_ready_names_the_reply_frames_this_relay_accepts(relay):
+    """A newer app sends active-mail keys and Send reports only to a relay that lists them.
+
+    Both are refused by an older or rolled-back relay (`extra="forbid"`): the
+    whole app_context frame would be dropped, and a delivery report would show
+    the person a protocol error.
+    """
+    (ready,) = relay.transport.frames("session.ready")
+    assert {"active_mail", "mail_delivery"} <= set(ready["features"])

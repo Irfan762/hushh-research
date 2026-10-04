@@ -112,6 +112,8 @@ export interface VoiceLiveClientLike {
   sendAudio(pcm16: Uint8Array): boolean;
   sendText(text: string, requestId?: string): boolean;
   sendAppContext(context: AppContextInput): void;
+  /** Optional so older test doubles keep compiling; the real client has it. */
+  mailDeliveryResult?(deliveryRef: string, actionId: string): boolean;
   pendingShown(pendingActionId: string): boolean;
   confirm(
     pendingActionId: string,
@@ -404,6 +406,8 @@ type ClientStepEntry = {
 type LiveSession = {
   conversationId: string;
   isReconnect: boolean;
+  /** What this relay advertised in session.ready; empty until it does. */
+  features: Set<string>;
   client: VoiceLiveClientLike;
   capture: VoiceCaptureLike | null;
   captureReady: boolean;
@@ -632,13 +636,32 @@ export function VoiceSessionProvider({
 
   // -- app context ------------------------------------------------------------
 
+  // The mail row open on screen. A ref rather than state: nothing renders from
+  // it, it rides on every app_context this provider builds (each frame
+  // replaces the relay's whole screen context), and changing it resends one.
+  const activeMailRef = useRef<{
+    ordinal: number;
+    offerRevision: number;
+    conversationId: string;
+  } | null>(null);
+
   const sendAppContext = useCallback(() => {
     const session = sessionRef.current;
     if (!session || session.tornDown) return;
+    const activeMail = activeMailRef.current;
     const frame = buildAppContextFrame({
       runtime: runtimeRef.current,
       pathname: pathnameRef.current,
       osLocationPermission: osPermissionRef.current,
+      // Only in the conversation whose offer drew the row (a position means
+      // nothing against another conversation's list), and only to a relay that
+      // accepts the keys: an older one would refuse the whole frame.
+      activeMail:
+        activeMail &&
+        activeMail.conversationId === session.conversationId &&
+        session.features.has("active_mail")
+          ? activeMail
+          : null,
     });
     const { type: _type, ...context } = frame;
     void _type;
@@ -985,6 +1008,11 @@ export function VoiceSessionProvider({
       };
       switch (frame.type) {
         case "session.ready": {
+          session.features = new Set(
+            Array.isArray(frame.features)
+              ? frame.features.filter((item): item is string => typeof item === "string")
+              : [],
+          );
           sendAppContext();
           // The reducer renders the first re-listed card. If the server never
           // heard it was shown (its pending_action frame was lost to a
@@ -1227,6 +1255,7 @@ export function VoiceSessionProvider({
       const session: LiveSession = {
         conversationId: input.conversationId,
         isReconnect: input.isReconnect,
+        features: new Set(),
         client: null as unknown as VoiceLiveClientLike,
         capture: null,
         captureReady: false,
@@ -1737,6 +1766,7 @@ export function VoiceSessionProvider({
   useEffect(() => {
     // A different account never continues the previous conversation.
     conversationIdRef.current = null;
+    activeMailRef.current = null;
     stopRef.current("account_changed");
   }, [user?.uid]);
   useEffect(() => () => stopRef.current("unmount"), []);
@@ -1886,6 +1916,32 @@ export function VoiceSessionProvider({
     [],
   );
 
+  const setActiveMail = useCallback(
+    (hint: { ordinal: number; offerRevision: number; conversationId: string } | null) => {
+      const current = activeMailRef.current;
+      if (
+        hint === current ||
+        (hint &&
+          current &&
+          hint.ordinal === current.ordinal &&
+          hint.offerRevision === current.offerRevision &&
+          hint.conversationId === current.conversationId)
+      ) {
+        return;
+      }
+      activeMailRef.current = hint;
+      sendAppContext();
+    },
+    [sendAppContext],
+  );
+
+  const reportMailDelivery = useCallback((deliveryRef: string, actionId: string) => {
+    const session = sessionRef.current;
+    // A relay that never listed the frame would answer it with a protocol error.
+    if (!session || session.tornDown || !session.features.has("mail_delivery")) return;
+    session.client.mailDeliveryResult?.(deliveryRef, actionId);
+  }, []);
+
   const cancelPending = useCallback(() => {
     const session = sessionRef.current;
     const current = readState();
@@ -1945,6 +2001,8 @@ export function VoiceSessionProvider({
       chooseCandidate,
       clearView,
       reportClientStep,
+      setActiveMail,
+      reportMailDelivery,
     }),
     [
       enabled,
@@ -1960,6 +2018,8 @@ export function VoiceSessionProvider({
       chooseCandidate,
       clearView,
       reportClientStep,
+      setActiveMail,
+      reportMailDelivery,
     ],
   );
 

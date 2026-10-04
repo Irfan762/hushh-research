@@ -508,7 +508,9 @@ async def test_the_connected_address_arms_the_self_reply_guard():
     "failure,code,status",
     [
         (GmailMetadataError("source_changed"), "REPLY_SOURCE_UNAVAILABLE", 409),
-        (GmailMetadataError("connection_changed"), "REPLY_ACCOUNT_CHANGED", 409),
+        # A refresh or grant re-check racing the read; a different account is
+        # refused before the read, by the expected-account check.
+        (GmailMetadataError("connection_changed"), "REPLY_SOURCE_RETRYABLE", 503),
         (GmailMetadataError("connect_required"), "GMAIL_NOT_CONNECTED", 409),
         (GmailMetadataError("reconnect_required"), "GMAIL_READ_PERMISSION_REQUIRED", 409),
         (GmailMetadataError("permission_denied"), "GMAIL_READ_PERMISSION_REQUIRED", 409),
@@ -634,3 +636,20 @@ async def test_a_stale_or_foreign_ref_is_refused_before_any_read(sealed_for, age
     assert failure.value.code == code
     assert connections.reads == 0
     assert reader.created == [] and reader.requested == []
+
+
+@pytest.mark.parametrize(
+    "sender", ["janedoe+news@gmail.com", "Jane.Doe@googlemail.com", "j.a.n.e.d.o.e@gmail.com"]
+)
+def test_a_gmail_address_that_reaches_the_owners_inbox_is_the_owner(sender):
+    """Gmail ignores dots and a +tag, so each of these delivers to the owner."""
+    failure = _refusal(_message(sender=f"Jane <{sender}>"), owner_email="jane.doe@gmail.com")
+    assert failure.code == "REPLY_TARGET_IS_OWNER"
+
+
+def test_dots_and_tags_merge_nothing_outside_gmail():
+    """Negative control: elsewhere a dot is part of a different mailbox."""
+    source = _derive(
+        _message(sender="Jane <janedoe@company.com>"), owner_email="jane.doe@company.com"
+    )
+    assert source.recipient_email == "janedoe@company.com"

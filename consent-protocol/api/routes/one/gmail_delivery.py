@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from api.middleware import require_firebase_auth, require_vault_owner_token
-from hushh_mcp.one_voice.config import voice_mail_reply_enabled
+from hushh_mcp.one_voice.config import voice_mail_reads_enabled, voice_mail_reply_enabled
 from hushh_mcp.services.actor_identity_service import ActorIdentityService
 from hushh_mcp.services.email_delegated_read import mail_latency
 from hushh_mcp.services.gmail_delivery_service import (
@@ -162,9 +162,14 @@ def _as_http_error(exc: Exception) -> HTTPException:
     )
 
 
+def _reply_enabled() -> bool:
+    """A reply re-reads the original email, so both voice mail switches gate it."""
+    return voice_mail_reply_enabled() and voice_mail_reads_enabled()
+
+
 async def _reply_access() -> None:
     """Re-checked by the source read around its provider hop."""
-    if not voice_mail_reply_enabled():
+    if not _reply_enabled():
         raise PermissionError("Mail replies are disabled")
 
 
@@ -221,7 +226,7 @@ async def _resolve_delivery_payload(
             "A reply in the original thread cannot include a Drive attachment.",
             status_code=422,
         )
-    if not voice_mail_reply_enabled():
+    if not _reply_enabled():
         raise GmailDeliveryError(
             "MAIL_REPLY_UNAVAILABLE",
             "Replying from One is switched off.",

@@ -567,3 +567,53 @@ async def test_reply_logs_never_carry_the_email_or_its_reference(
     )
     for value in private_values:
         assert value not in caplog.text
+
+
+async def test_the_position_an_email_was_read_by_keeps_naming_it(reply_harness):
+    """After "read me the second one" the list is that one email, read from position 2.
+
+    Measured on the real Live head: one run in three then asked for
+    `reply_mail(ordinal=2)` and was refused "I only showed you 1 message". The
+    position it was read by is the one the person still uses, so it names that
+    message for a reply and a spoken open alike -- and only that position.
+    """
+    h = reply_harness
+    # The ordinal read's own offer: just the second message, read from position 2.
+    h.ctx.entities.offer_mail([OFFERED[1]], account=ACCOUNT, mailbox="inbox", selected_ordinal=2)
+
+    proposal = await _propose(h, ordinal=2)
+
+    assert proposal.result.status == "confirmation_required"
+    assert proposal.result.summary == "prepare a reply to email 2 in your list"
+    assert h.reader.reads == [OFFERED[1]]
+    opened = await h.executor.call(h.ctx, "open_mail", {"ordinal": 2})
+    # The surface draws that one email as its first row, so that is what it opens.
+    assert (opened.result.status, opened.result.ordinal) == ("mail_open_dispatched", 1)
+
+    # Negative controls: another position from the old list is not on screen,
+    # and a fresh list forgets the old position entirely.
+    other = await h.executor.call(h.ctx, "open_mail", {"ordinal": 3})
+    assert other.result.reason_code == "mail_ordinal_not_offered"
+    h.ctx.entities.offer_mail([OFFERED[0]], account=ACCOUNT, mailbox="inbox")
+    stale = await h.executor.call(h.ctx, "open_mail", {"ordinal": 2})
+    assert stale.result.reason_code == "mail_ordinal_not_offered"
+
+
+async def test_a_yes_after_a_newer_list_opens_no_reply(reply_harness):
+    """The card said "email 2 in your list"; after a new list that names another email.
+
+    The yes is refused rather than read as approving whatever the sentence now
+    points at. The confirming test above is the negative control: the same yes
+    with the list unchanged opens the review card.
+    """
+    h = reply_harness
+    proposal = await _propose(h, ordinal=2)
+    h.ctx.entities.offer_mail(NEWER, account=ACCOUNT, mailbox="inbox")
+
+    confirmed = await _confirm(h, proposal.pending.id)
+
+    assert confirmed.result.reason_code == "reply_list_changed"
+    assert "client_step" not in confirmed.result.public()
+    # Refused before any provider read: only the proposal's read happened.
+    assert h.reader.reads == [OFFERED[1]]
+    _assert_scrubbed(confirmed.pending)

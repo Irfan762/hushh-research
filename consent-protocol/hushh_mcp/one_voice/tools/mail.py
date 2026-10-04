@@ -464,9 +464,12 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
             offered_ids,
             account=str(handback.get("account") or ""),
             mailbox=str(handback.get("mailbox") or "inbox"),
+            # A message read by its position keeps answering to that position.
+            selected_ordinal=args.ordinal,
         )
     else:
         ctx.entities.offered_mail = None
+        ctx.entities.offered_mail_selected_ordinal = None
     returned = coverage.get("returned")
     # A successful read with nothing in it is "empty". Anything else is "ok",
     # including a read whose count the server could not establish, because a
@@ -544,7 +547,8 @@ async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
         )
     # Presence only. The message itself is fetched by the surface through the
     # resolver, so this handler performs no provider read and cannot duplicate one.
-    if ctx.entities.offered_mail_message_id(args.ordinal) is None:
+    position = ctx.entities.offered_mail_position(args.ordinal)
+    if position is None:
         shown = len(offer.message_ids)
         noun = "message" if shown == 1 else "messages"
         return Rejected(
@@ -552,7 +556,8 @@ async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
             spoken_facts=[f"I only showed you {shown} {noun}. Which one did you mean?"],
         )
     return MailOpenDispatched(
-        ordinal=args.ordinal,
+        # The row the surface draws, which is what it opens by.
+        ordinal=position,
         offer_revision=offer.revision,
         conversation_id=ctx.conversation_id,
         spoken_facts=["Opening it."],
@@ -846,11 +851,12 @@ class ReplyMailInput(ToolInput):
         min_length=1,
         max_length=4000,
         description=(
-            "The reply to put in the review card: the person's own words, preserved "
-            "exactly. If they gave only an instruction ('politely decline'), write a "
-            "short reply from that instruction alone -- never add dates, amounts, "
-            "commitments or facts they did not say. If they said nothing to put in "
-            "it, ask what to say before calling this."
+            "The finished reply text, as it should read in the email. When they "
+            "dictate it, their words exactly. When they only describe it (decline, "
+            "accept, thank them), write that short reply yourself as the email "
+            "body -- never pass their description through as the text -- and add "
+            "no dates, amounts, commitments or facts they did not give. Never empty: "
+            "if they have not said what to reply, ask them first."
         ),
     )
 
@@ -910,8 +916,7 @@ _REPLY_REFUSALS: dict[str, tuple[str, str]] = {
     ),
     reply_source.TARGET_IS_OWNER: (
         "reply_target_is_owner",
-        "That email is from you, so a reply would come back to you. "
-        "I can write a new email to the person instead.",
+        "That email is from you, so a reply would come back to you. I didn't prepare one.",
     ),
     reply_source.TARGET_AMBIGUOUS: (
         "reply_target_ambiguous",
@@ -1084,6 +1089,10 @@ async def _prepare_reply_mail(ctx: ToolContext, args: ReplyMailInput) -> Prepare
             "source_mail_ref": reply_source.seal_reply_source_ref(
                 source, owner_user_id=ctx.user_id
             ),
+            # The list the card's sentence points into. A newer list makes "email
+            # 2 in your list" name a different email, so the yes no longer
+            # approves what it seems to.
+            "offer_revision": offer.revision,
         },
     )
 
@@ -1094,6 +1103,15 @@ async def _reply_mail(ctx: ToolContext, args: ReplyMailInput) -> ToolResult:
     if refused is not None:
         return refused
     prepared = ctx.prepared or {}
+    offer = ctx.entities.offered_mail
+    if offer is None or offer.revision != prepared.get("offer_revision"):
+        return Rejected(
+            reason_code="reply_list_changed",
+            spoken_facts=[
+                "Your mail list changed since I asked, so I didn't open the reply. "
+                "Nothing was sent. Tell me which email to answer."
+            ],
+        )
     gmail = ctx.services.get("gmail") or get_gmail_receipts_service()
     try:
         # The email is read again after the yes: the card opens on what the
@@ -1224,7 +1242,9 @@ TOOLS: tuple[ToolSpec, ...] = (
             "showed the person. Use when they want to answer or respond to a "
             "particular email: by its position in the list you showed, the email "
             "they have open on screen, or the single email you just showed them. "
-            "Pass their reply in message. Never call "
+            "Pass the finished reply text in message. Call it only once they have "
+            "said what the reply should say; if they have not, ask what to say "
+            "instead and do not call it with an empty message. Never call "
             "resolve_person for a reply: the server derives the recipient, subject "
             "and thread from the original email. Use send_mail instead for a new "
             "email to a named person, read_mail when they only want to know what "

@@ -664,3 +664,26 @@ def test_an_unexpected_delivery_failure_is_still_the_generic_503():
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "GMAIL_DELIVERY_UNAVAILABLE"
     assert "private" not in response.text
+
+
+def test_withdrawing_voice_mail_reads_also_stops_offered_mail_replies():
+    """A reply re-reads the email it answers, so the voice read switch withdraws it too."""
+    with (
+        _reply_routes(enabled=True) as h,
+        patch.object(module, "voice_mail_reads_enabled", return_value=False),
+    ):
+        refused = h.client.post(
+            "/api/one/email/send",
+            json={**_envelope(), **_request("send"), "source_mail_ref": _REPLY_REF},
+        )
+        # Negative control: information-request replies do not answer to it.
+        kyc_reply = h.client.post(
+            "/api/one/email/prepare",
+            json={**_envelope(), **_request("prepare"), "source_workflow_id": "workflow-1"},
+        )
+
+    assert refused.status_code == 403
+    assert refused.json()["detail"]["code"] == "MAIL_REPLY_UNAVAILABLE"
+    h.resolve.assert_not_awaited()
+    h.delivery.execute.assert_not_awaited()
+    assert kyc_reply.status_code == 200

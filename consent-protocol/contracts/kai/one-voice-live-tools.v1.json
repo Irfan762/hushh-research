@@ -1912,7 +1912,7 @@
     },
     {
       "circle_args": [],
-      "description": "Prepare a reply inside the same Gmail thread as an email you already showed the person. Use when they want to answer or respond to a particular email: by its position in the list you showed, the email they have open on screen, or the single email you just showed them. Pass their reply in message. Never call resolve_person for a reply: the server derives the recipient, subject and thread from the original email. Use send_mail instead for a new email to a named person, read_mail when they only want to know what mail says or what needs a reply, and open_mail when they only want to see it. If there is no email to answer yet, read their mail first or ask which one. This opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send reply in that card delivers it.",
+      "description": "Prepare a reply inside the same Gmail thread as an email you already showed the person. Use when they want to answer or respond to a particular email: by its position in the list you showed, the email they have open on screen, or the single email you just showed them. Pass the finished reply text in message. Call it only once they have said what the reply should say; if they have not, ask what to say instead and do not call it with an empty message. Never call resolve_person for a reply: the server derives the recipient, subject and thread from the original email. Use send_mail instead for a new email to a named person, read_mail when they only want to know what mail says or what needs a reply, and open_mail when they only want to see it. If there is no email to answer yet, read their mail first or ask which one. This opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send reply in that card delivers it.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "reply_mail",
@@ -1921,7 +1921,7 @@
         "description": "Which offered email to answer, and what to say. Never who or which thread.\n\nNo recipient, subject, address or message id: a reply is addressed by the\nemail it answers, and the server derives all of that from the message.",
         "properties": {
           "message": {
-            "description": "The reply to put in the review card: the person's own words, preserved exactly. If they gave only an instruction ('politely decline'), write a short reply from that instruction alone -- never add dates, amounts, commitments or facts they did not say. If they said nothing to put in it, ask what to say before calling this.",
+            "description": "The finished reply text, as it should read in the email. When they dictate it, their words exactly. When they only describe it (decline, accept, thank them), write that short reply yourself as the email body -- never pass their description through as the text -- and add no dates, amounts, commitments or facts they did not give. Never empty: if they have not said what to reply, ask them first.",
             "maxLength": 4000,
             "minLength": 1,
             "title": "Message",

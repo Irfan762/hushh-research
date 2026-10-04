@@ -224,6 +224,17 @@ def _thread_headers(headers: dict[str, str]) -> tuple[str | None, str | None]:
     return in_reply_to, " ".join([chain[0], *reversed(kept)])
 
 
+_GMAIL_DOMAINS = frozenset({"gmail.com", "googlemail.com"})
+
+
+def _mailbox_key(address: str) -> str:
+    """One key per Gmail mailbox: dots and a +tag in the local part reach the same inbox."""
+    local, _, domain = address.strip().lower().rpartition("@")
+    if domain in _GMAIL_DOMAINS:
+        return local.split("+", 1)[0].replace(".", "") + "@gmail.com"
+    return f"{local}@{domain}"
+
+
 def _recipient(headers: dict[str, str], *, owner_email: str) -> tuple[str, str]:
     """``Reply-To`` wins; ``From`` otherwise. One address, never the owner's own.
 
@@ -249,8 +260,9 @@ def _recipient(headers: dict[str, str], *, owner_email: str) -> tuple[str, str]:
             TARGET_AMBIGUOUS, "That email names more than one reply address.", status_code=422
         )
     address = normalized[0]
-    senders = {value.strip().lower() for _name, value in getaddresses([sender]) if value}
-    if owner_email and (address == owner_email or owner_email in senders):
+    owner = _mailbox_key(owner_email) if owner_email else ""
+    senders = {_mailbox_key(value) for _name, value in getaddresses([sender]) if value}
+    if owner and (_mailbox_key(address) == owner or owner in senders):
         raise _error(
             TARGET_IS_OWNER,
             "That email is from you, so its reply would come back to you.",
@@ -303,7 +315,9 @@ _READER_ERRORS: dict[str, tuple[str, str]] = {
     "connect_required": (NOT_CONNECTED, "Connect Mail before replying."),
     "reconnect_required": (RECONNECT_REQUIRED, "Reconnect Mail before replying."),
     "permission_denied": (RECONNECT_REQUIRED, "Mail didn't allow reading that email."),
-    "connection_changed": (ACCOUNT_CHANGED, "Your Mail connection changed. Review it again."),
+    # The fence's own check already caught a different account before the read;
+    # here it is a token refresh or grant re-check racing this read: retryable.
+    "connection_changed": (RETRYABLE, "Your Mail connection changed while I was checking."),
     "source_changed": (SOURCE_UNAVAILABLE, "That email can't be found now."),
 }
 
