@@ -347,13 +347,13 @@ class VoiceSession:
         self._awaiting_first_audio = True
         self._tool_response_at = None
 
-    def _log_latency(self, phase: str, started: float | None) -> None:
+    def _log_latency(self, phase: str, started: float | None, turn_id: str | None = None) -> None:
         if started is None:
             return
         logger.info(
             "one_voice.latency session=%s turn=%s phase=%s ms=%d",
             self.session_id,
-            self.turn.turn_id,
+            turn_id or self.turn.turn_id,
             phase,
             int((self.clock() - started) * 1000),
         )
@@ -1095,10 +1095,22 @@ class VoiceSession:
     async def _settle_mail_draft_step(
         self, step: dict[str, Any], frame: protocol.ClientStepResultFrame
     ) -> None:
-        """A review card is open only after the owning UI confirms its mount."""
+        """A review card is open only after the owning UI confirms its mount.
+
+        The ledger write is what makes "open" true. When it cannot be made --
+        storage is unreachable, or the row is no longer in the state that write
+        expects (its earlier resolve never landed) -- the draft is reported as
+        unverified: never opened, never sent, and never "nothing is pending".
+        The card may well be on screen; nothing re-opens, re-drafts or sends it.
+        """
         pending = step.get("pending")
         if not isinstance(pending, PendingAction):
             return
+        self._log_latency(
+            "draft_step",
+            step.get("requested_at"),
+            turn_id=str(step.get("origin_turn_id") or "") or None,
+        )
         opened = (
             frame.status == "ok"
             and frame.payload.get("mounted") is True
@@ -1108,36 +1120,71 @@ class VoiceSession:
             self.clock() > float(step.get("expires_at") or 0)
             or frame.payload.get("reason") in {"timeout", "no_handler", "surface_unmounted"}
         )
-        settled = await self.pending.settle_mail_draft_step(
-            user_id=self.ctx.user_id,
-            pending_action_id=pending.id,
-            opened=opened,
-            uncertain=uncertain,
-        )
+        unrecorded: str | None = None
+        try:
+            settled = await self.pending.settle_mail_draft_step(
+                user_id=self.ctx.user_id,
+                pending_action_id=pending.id,
+                opened=opened,
+                uncertain=uncertain,
+            )
+        except PendingActionStorageError as exc:
+            self._storage_failed("settle", exc)
+            settled, unrecorded = None, "storage_unavailable"
         if settled is None:
-            return
-        await self._send(
-            protocol.pending_resolved(
-                pending_action_id=settled.id,
-                status=settled.status,
-                result_public=settled.result,
+            if unrecorded is None:
+                # The row is not in the state a settlement expects, typically
+                # because the resolve after the handler never landed and it is
+                # still "confirmed". Close it the way storage's own recovery
+                # would (resolve is the one owner of that transition, and it
+                # scrubs the sealed dictation); a no-op for any other state.
+                try:
+                    await self.pending.resolve(
+                        user_id=self.ctx.user_id,
+                        pending_action_id=pending.id,
+                        status="failed",
+                        result={"status": "draft_open_unconfirmed", "needs": None},
+                    )
+                except PendingActionStorageError as exc:
+                    self._storage_failed("settle", exc)
+            unrecorded = unrecorded or "draft_not_settled"
+            await self._send(
+                protocol.pending_resolved(
+                    pending_action_id=pending.id,
+                    status="failed",
+                    result_public={
+                        "status": "draft_open_unconfirmed",
+                        "needs": None,
+                        "reason_code": unrecorded,
+                    },
+                )
             )
-        )
+        else:
+            await self._send(
+                protocol.pending_resolved(
+                    pending_action_id=settled.id,
+                    status=settled.status,
+                    result_public=settled.result,
+                )
+            )
         if not self._origin_is_stale(str(step.get("origin_turn_id") or "") or None):
-            await self._inject_event(
-                {
-                    "kind": "client_step",
-                    "step": "open_mail_draft",
-                    "status": "ok" if opened else "failed",
-                    "spoken_facts": [
-                        "The draft is open for review. It has not been sent."
-                        if opened
-                        else "I couldn't confirm the draft opened. Nothing was sent."
-                        if uncertain
-                        else "The draft did not open. Nothing was sent."
-                    ],
-                }
-            )
+            event: dict[str, Any] = {
+                "kind": "client_step",
+                "step": "open_mail_draft",
+                "status": "ok" if opened and unrecorded is None else "failed",
+                "spoken_facts": [
+                    "I couldn't verify the draft review state just now. Nothing was sent."
+                    if unrecorded is not None
+                    else "The draft is open for review. It has not been sent."
+                    if opened
+                    else "I couldn't confirm the draft opened. Nothing was sent."
+                    if uncertain
+                    else "The draft did not open. Nothing was sent."
+                ],
+            }
+            if unrecorded is not None:
+                event["reason_code"] = unrecorded
+            await self._inject_event(event)
 
     async def _settle_sos_publish_step(
         self, step: dict[str, Any], frame: protocol.ClientStepResultFrame

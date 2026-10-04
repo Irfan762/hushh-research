@@ -625,6 +625,109 @@ async def test_provider_transport_failure_becomes_outcome_unknown_without_retry(
     )
 
 
+def _status_send_harness(monkeypatch, status_code: int, *, later_state: str):
+    """One prepared action whose Gmail send POST answers with ``status_code``."""
+    module = _signing_key(monkeypatch)
+    posts: list[object] = []
+
+    class _Response:
+        content = b""
+
+        def __init__(self):
+            self.status_code = status_code
+
+    class _StatusClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            posts.append(kwargs.get("json"))
+            return _Response()
+
+    gmail = _Gmail()
+    gmail.get_send_access_token = AsyncMock(return_value="token")
+    service = GmailDeliveryService(gmail_service=gmail)
+    envelope_hmac = service._envelope_hmac(normalize_draft(_envelope()))
+    conn = _ActionConn(
+        [
+            {
+                "action_id": "action",
+                "state": "prepared",
+                "expires_at": "later",
+                "sent_at": None,
+                "envelope_hmac": envelope_hmac,
+            },
+            {"action_id": "action", "state": "sending", "expires_at": "later", "sent_at": None},
+            # What a second execute of the same action reads after the first.
+            {
+                "action_id": "action",
+                "state": later_state,
+                "expires_at": "later",
+                "sent_at": None,
+                "envelope_hmac": envelope_hmac,
+            },
+        ]
+    )
+    monkeypatch.setattr(
+        module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(conn))
+    )
+    monkeypatch.setattr(module.httpx, "AsyncClient", _StatusClient)
+    return service, conn, posts
+
+
+def _recorded_states(conn) -> list[str]:
+    return [
+        args[1]
+        for query, args in conn.calls
+        if "UPDATE gmail_owner_send_actions" in query and "SET state = $2" in query
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [500, 502, 503])
+async def test_gmail_5xx_after_send_post_is_outcome_unknown_and_never_resent(
+    monkeypatch, status_code
+):
+    # Gmail may have delivered the message before answering 5xx, so the
+    # action must become the non-retryable unknown outcome, not a failure
+    # the owner is invited to send again.
+    service, conn, posts = _status_send_harness(
+        monkeypatch, status_code, later_state="outcome_unknown"
+    )
+
+    result = await service.execute(user_id="owner", action_id="action", draft_payload=_envelope())
+
+    assert result == {"action_id": "action", "state": "outcome_unknown", "outcome_unknown": True}
+    assert _recorded_states(conn) == ["outcome_unknown"]
+    assert len(posts) == 1
+
+    with pytest.raises(GmailDeliveryError) as second:
+        await service.execute(user_id="owner", action_id="action", draft_payload=_envelope())
+    assert second.value.code == "ACTION_NOT_SENDABLE"
+    assert len(posts) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 429])
+async def test_gmail_4xx_send_rejection_stays_a_definite_failure(monkeypatch, status_code):
+    # Negative control: Gmail refused the request, nothing was delivered, and
+    # the owner may review the draft and send it again.
+    service, conn, posts = _status_send_harness(monkeypatch, status_code, later_state="failed")
+
+    with pytest.raises(GmailDeliveryError) as error:
+        await service.execute(user_id="owner", action_id="action", draft_payload=_envelope())
+
+    assert error.value.code == "GMAIL_SEND_FAILED"
+    assert _recorded_states(conn) == ["failed"]
+    assert len(posts) == 1
+
+
 @pytest.mark.asyncio
 async def test_prepare_binds_server_verified_attachment_without_persisting_bytes(monkeypatch):
     module = _signing_key(monkeypatch)
