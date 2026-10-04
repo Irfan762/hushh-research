@@ -98,7 +98,7 @@ The intent ontology is fixed:
 ## Honest harness
 
 The judging rules of `.codex/skills/puppy-one-harness/references/judging-contract.md`
-apply here (`scripts/pkm_eval_integrity.py`):
+apply here (`consent-protocol/scripts/pkm_eval_integrity.py`):
 
 - **The judge is never the answerer.** Gemini answers; a pure scorer
   (`_score_case`, `score_passage`) grades against labels authored in the corpus.
@@ -159,8 +159,8 @@ python3 scripts/eval_pkm_structure_agent.py --phase release_chain_24 --skip-shad
 Grade the old instructions with the new judge: extract the old commit with
 `git archive <sha> consent-protocol hushh-webapp/__tests__/fixtures/pkm` into a
 scratch directory (no worktree, no `node_modules`), copy the three harness files
-(`scripts/eval_pkm_structure_agent.py`, `scripts/pkm_eval_integrity.py`,
-`scripts/pkm_eval_document.py`) over it, and run it with this checkout's
+(`consent-protocol/scripts/eval_pkm_structure_agent.py`, `consent-protocol/scripts/pkm_eval_integrity.py`,
+`consent-protocol/scripts/pkm_eval_document.py`) over it, and run it with this checkout's
 `.venv/bin/python` and `--source-ref <sha>`, which the ledger records because an
 archive is not a git checkout. Confirm the archive imports its own
 `hushh_mcp` first; the corpus lives in the eval script, so both sides answer the
@@ -202,7 +202,7 @@ Reading it:
   is not voided, because latency is a property of the subject; it is why the
   spread gate fails.
 - `payload_authored_by_model_rate` is 0.0 for old and new: see
-  [the prompt contract](pkm-prompt-contract.md#the-saved-payload-is-not-model-authored).
+  [the prompt contract](./pkm-prompt-contract.md#the-saved-payload-is-not-model-authored).
 - Remaining label disagreements, reported rather than retuned: `ct_finance_pref`
   expects `preference` while five corpus cases label a money preference
   `financial_event`; release case 035 expects `plan_or_goal`/`extend` with no
