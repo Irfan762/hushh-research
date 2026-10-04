@@ -1,5 +1,22 @@
 BEGIN;
 DO $$
+DECLARE
+  source_sql TEXT;
+  old_fragment TEXT := '(''connection_accepted'', ''connection_rejected'')';
+  new_fragment TEXT := '(''connection_accepted'', ''connection_rejected'', ''connection_withdrawn'')';
+BEGIN
+  SELECT pg_get_functiondef('public.resolve_feed_counterpart_user_id(text,text,text,text)'::regprocedure)
+    INTO source_sql;
+  IF (LENGTH(source_sql)-LENGTH(REPLACE(source_sql,old_fragment,'')))/LENGTH(old_fragment)=2 THEN
+    RETURN;
+  END IF;
+  IF (LENGTH(source_sql)-LENGTH(REPLACE(source_sql,new_fragment,'')))/LENGTH(new_fragment)<>2 THEN
+    RAISE EXCEPTION 'feed_withdrawn_counterpart_rollback_mismatch';
+  END IF;
+  EXECUTE REPLACE(source_sql,new_fragment,old_fragment);
+END;
+$$;
+DO $$
 DECLARE v_table TEXT;
 BEGIN
   FOREACH v_table IN ARRAY ARRAY[

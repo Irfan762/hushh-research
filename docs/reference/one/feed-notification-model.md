@@ -258,6 +258,9 @@ bundle, Calendar/Mail success and Drive request/payment publishers. It adds:
 Connections withdrawal writes both participants' history in the existing source
 transaction, with counterpart labels and `actor_is_self`, only after the guarded
 pending update succeeds. A retry or lost race writes no additional history.
+Migration 269 extends the existing indexed counterpart resolver
+to withdrawals, preserving both audiences' current photos and server-only identity
+mappings; it does not place user IDs or photo snapshots in Feed metadata.
 
 Kai analysis/import workers keep the first recognized terminal immutable and
 close generators in the owning task. Failed/canceled outcomes follow source

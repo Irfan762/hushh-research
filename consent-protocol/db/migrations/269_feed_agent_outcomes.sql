@@ -1,5 +1,25 @@
 BEGIN;
 
+-- Extend the current indexed identity resolver in place. Keep source/audience
+-- checks, current-photo reads and retained mappings owned by migrations202-204.
+DO $$
+DECLARE
+  source_sql TEXT;
+  old_fragment TEXT := '(''connection_accepted'', ''connection_rejected'')';
+  new_fragment TEXT := '(''connection_accepted'', ''connection_rejected'', ''connection_withdrawn'')';
+BEGIN
+  SELECT pg_get_functiondef('public.resolve_feed_counterpart_user_id(text,text,text,text)'::regprocedure)
+    INTO source_sql;
+  IF (LENGTH(source_sql)-LENGTH(REPLACE(source_sql,new_fragment,'')))/LENGTH(new_fragment)=2 THEN
+    RETURN;
+  END IF;
+  IF (LENGTH(source_sql)-LENGTH(REPLACE(source_sql,old_fragment,'')))/LENGTH(old_fragment)<>2 THEN
+    RAISE EXCEPTION 'feed_withdrawn_counterpart_resolver_mismatch';
+  END IF;
+  EXECUTE REPLACE(source_sql,old_fragment,new_fragment);
+END;
+$$;
+
 -- Presentation only: closed outcomes, stable replay keys, no provider content.
 -- Keep the existing 252/260/262 publishers intact, including bundle and payment
 -- aggregation. No historical scan, new authority, or provider action is added.

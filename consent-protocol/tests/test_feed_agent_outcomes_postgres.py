@@ -4,10 +4,13 @@ import json
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
+
+from hushh_mcp.services.feed_service import FeedService
 
 ROOT = Path(__file__).resolve().parents[1]
 MIGRATION = ROOT / "db/migrations/269_feed_agent_outcomes.sql"
@@ -35,6 +38,15 @@ def projection_db():
                   source_domain TEXT,event_type TEXT,source_row_id TEXT,metadata JSONB,
                   actor_label TEXT,created_at TIMESTAMPTZ DEFAULT NOW());
                 CREATE TABLE actor_identity_cache(user_id TEXT PRIMARY KEY,display_name TEXT);
+                CREATE TABLE actor_profiles(user_id TEXT PRIMARY KEY);
+                CREATE TABLE feed_event_counterparts(feed_event_id BIGINT PRIMARY KEY
+                  REFERENCES feed_events(id) ON DELETE CASCADE, counterpart_user_id TEXT
+                  REFERENCES actor_profiles(user_id) ON DELETE CASCADE);
+                CREATE TABLE connection_requests(id UUID PRIMARY KEY,requester_user_id TEXT,addressee_user_id TEXT);
+                CREATE TABLE connections(id UUID PRIMARY KEY,user_a_id TEXT,user_b_id TEXT);
+                CREATE TABLE one_location_events(id BIGSERIAL PRIMARY KEY,owner_user_id TEXT,
+                  recipient_user_id TEXT,actor_user_id TEXT,event_type TEXT,grant_id UUID,
+                  request_id UUID,referral_id UUID,metadata JSONB,created_at TIMESTAMPTZ);
                 CREATE UNIQUE INDEX uq_feed_events_source_projection ON feed_events
                   (user_id,source_domain,event_type,source_row_id) WHERE source_row_id IS NOT NULL;
                 CREATE TABLE google_calendar_action_proposals(proposal_id TEXT PRIMARY KEY,user_id TEXT,status TEXT);
@@ -64,6 +76,20 @@ def projection_db():
                 CREATE TABLE one_location_circle_member_invites(id UUID PRIMARY KEY,circle_id UUID,
                   inviter_user_id TEXT,invitee_user_id TEXT,status TEXT);
             """)
+            )
+            # Unchanged production resolver and identity trigger bodies, rather
+            # than a fake resolver, protect the retained/current-avatar seam.
+            marker = "CREATE OR REPLACE FUNCTION public.resolve_feed_counterpart_user_id("
+            resolver = (ROOT / "db/migrations/204_feed_counterpart_indexed_lookup.sql").read_text(
+                encoding="utf-8"
+            )
+            connection.exec_driver_sql(marker + resolver.split(marker, 1)[1].split("COMMIT;", 1)[0])
+            marker = "CREATE OR REPLACE FUNCTION public.populate_feed_counterpart_identity()"
+            identity = (ROOT / "db/migrations/202_feed_counterpart_identity.sql").read_text(
+                encoding="utf-8"
+            )
+            connection.exec_driver_sql(
+                marker + identity.split(marker, 1)[1].split("-- Backfill", 1)[0]
             )
         apply(engine, MIGRATION)
         apply(engine, MIGRATION)
@@ -496,9 +522,126 @@ def test_projection_failure_isolated_and_rollback_reapply(projection_db):
 def test_identity_lookup_outage_does_not_undo_circle_transition(projection_db):
     circle, invite = str(uuid.uuid4()), str(uuid.uuid4())
     with projection_db.begin() as c:
-        c.execute(text("INSERT INTO one_location_circles VALUES(:id,'owner','Family','active')"), {'id': circle})
-        c.execute(text("INSERT INTO one_location_circle_member_invites VALUES(:id,:circle,'owner','invitee','pending')"), {'id': invite, 'circle': circle})
+        c.execute(
+            text("INSERT INTO one_location_circles VALUES(:id,'owner','Family','active')"),
+            {"id": circle},
+        )
+        c.execute(
+            text(
+                "INSERT INTO one_location_circle_member_invites VALUES(:id,:circle,'owner','invitee','pending')"
+            ),
+            {"id": invite, "circle": circle},
+        )
         c.execute(text("DROP TABLE actor_identity_cache"))
         c.execute(text("UPDATE one_location_circle_member_invites SET status='declined'"))
-        assert c.execute(text("SELECT status FROM one_location_circle_member_invites")).scalar_one() == 'declined'
+        assert (
+            c.execute(text("SELECT status FROM one_location_circle_member_invites")).scalar_one()
+            == "declined"
+        )
         assert outcomes(c) == []
+
+
+def test_withdrawal_counterpart_current_photo_scope_and_rollback(projection_db):
+    request = str(uuid.uuid4())
+    with projection_db.begin() as c:
+        c.execute(text("INSERT INTO actor_profiles VALUES('owner'),('peer'),('stranger')"))
+        c.execute(
+            text(
+                "ALTER TABLE actor_identity_cache ADD COLUMN photo_url TEXT, ADD COLUMN custom_photo_url TEXT"
+            )
+        )
+        c.execute(
+            text(
+                "INSERT INTO actor_identity_cache VALUES('owner','Owner','https://example.test/owner.png',NULL),('peer','Aarav','https://example.test/peer.png',NULL)"
+            )
+        )
+        c.execute(
+            text("INSERT INTO connection_requests VALUES(:id,'owner','peer')"), {"id": request}
+        )
+        for user in ("owner", "peer"):
+            c.execute(
+                text(
+                    "INSERT INTO feed_events(user_id,source_domain,event_type,source_row_id,metadata) VALUES(:user,'connections','connection_withdrawn',:request,'{}')"
+                ),
+                {"user": user, "request": request},
+            )
+        rows = {r.user_id: dict(r._mapping) for r in c.execute(text("SELECT * FROM feed_events"))}
+        assert {
+            (r.user_id, r.counterpart_user_id)
+            for r in c.execute(
+                text(
+                    "SELECT f.user_id,c.counterpart_user_id FROM feed_events f JOIN feed_event_counterparts c ON c.feed_event_id=f.id"
+                )
+            )
+        } == {("owner", "peer"), ("peer", "owner")}
+        for user, source in [
+            ("stranger", request),
+            ("owner", request + ":invalid"),
+            ("owner", "invalid"),
+        ]:
+            assert (
+                c.execute(
+                    text(
+                        "SELECT resolve_feed_counterpart_user_id(:user,'connections','connection_withdrawn',:source)"
+                    ),
+                    {"user": user, "source": source},
+                ).scalar_one()
+                is None
+            )
+
+    class Db:
+        def execute_raw(self, sql, params):
+            with projection_db.begin() as c:
+                return SimpleNamespace(
+                    data=[dict(row) for row in c.execute(text(sql), params).mappings()]
+                )
+
+    service = FeedService()
+    service._db = Db()
+
+    def photo(user):
+        item = service._to_item(service._with_counterpart_photos(user, [rows[user]])[0])
+        assert "counterpart_user_id" not in item
+        assert "counterpart_user_id" not in item["metadata"]
+        return item["metadata"].get("counterpart_photo_url")
+
+    def resolve(user, event):
+        with projection_db.connect() as c:
+            return c.execute(
+                text("SELECT resolve_feed_counterpart_user_id(:user,'connections',:event,:source)"),
+                {"user": user, "event": event, "source": request},
+            ).scalar_one()
+
+    assert photo("owner") == "https://example.test/peer.png"
+    assert photo("peer") == "https://example.test/owner.png"
+    assert service._durable_counterpart_photos("stranger", [rows["owner"]]) == {}
+    with projection_db.begin() as c:
+        c.execute(
+            text("DELETE FROM feed_event_counterparts WHERE feed_event_id=:id"),
+            {"id": rows["owner"]["id"]},
+        )
+        c.execute(
+            text(
+                "UPDATE actor_identity_cache SET custom_photo_url='https://example.test/new.png' WHERE user_id='peer'"
+            )
+        )
+    assert photo("owner") == "https://example.test/new.png"  # exact source fallback
+    with projection_db.begin() as c:
+        c.execute(
+            text(
+                "UPDATE actor_identity_cache SET custom_photo_url=NULL,photo_url=NULL WHERE user_id='peer'"
+            )
+        )
+    assert photo("owner") is None  # never revive a snapshot
+    apply(projection_db, ROLLBACK)
+    apply(projection_db, ROLLBACK)
+    assert resolve("owner", "connection_withdrawn") is None
+    for event in ("connection_accepted", "connection_rejected"):
+        assert resolve("owner", event) == "peer"
+        assert resolve("peer", event) == "owner"
+        assert resolve("stranger", event) is None
+    assert photo("peer") == "https://example.test/owner.png"  # retained history mapping
+    apply(projection_db, MIGRATION)
+    assert resolve("owner", "connection_withdrawn") == "peer"
+    assert resolve("stranger", "connection_withdrawn") is None
+    assert photo("peer") == "https://example.test/owner.png"
