@@ -364,6 +364,93 @@ async def test_expected_account_fence_refuses_before_any_gmail_request(expected)
     assert result["coverage"]["scope"] == "selected"
 
 
+def _reply_payload():
+    return {
+        "id": "m-1",
+        "threadId": "thread-1",
+        "internalDate": "1790000000000",
+        "labelIds": ["INBOX", "UNREAD"],
+        "payload": {
+            "headers": [
+                {"name": "From", "value": "Alice <alice@example.com>"},
+                {"name": "Reply-To", "value": "alice@example.com"},
+                {"name": "Subject", "value": "Project plan"},
+                {"name": "Message-ID", "value": "<plan-1@example.com>"},
+                {"name": "References", "value": "<root@example.com>"},
+            ]
+        },
+    }
+
+
+@pytest.mark.parametrize("expected", ["other-account", "synthetic-account"])
+async def test_reply_source_reads_only_routing_headers_in_the_offering_account(expected):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return _response(_reply_payload())
+
+    reader = GmailMetadataReader(
+        gmail=_Gmail(),
+        user_id="owner",
+        require_access=_allowed,
+        transport=httpx.MockTransport(respond),
+        expect_account=expected,
+    )
+    if expected == "other-account":
+        # An id offered in one mailbox is never fetched from another.
+        with pytest.raises(GmailMetadataError, match="source_changed"):
+            await reader.reply_source("m-1")
+        assert calls == []
+        return
+    # Negative control: the offering account makes exactly one metadata request,
+    # for that message's routing headers and never its body.
+    assert await reader.reply_source("m-1") == _reply_payload()
+    assert len(calls) == 1
+    request = calls[0]
+    assert (request.method, request.url.host) == ("GET", "gmail.googleapis.com")
+    assert request.url.path == "/gmail/v1/users/me/messages/m-1"
+    assert request.url.params["format"] == "metadata"
+    assert request.url.params.get_list("metadataHeaders") == [
+        "From",
+        "Reply-To",
+        "To",
+        "Subject",
+        "Message-ID",
+        "References",
+    ]
+    assert request.url.params["fields"] == "id,threadId,internalDate,labelIds,payload/headers"
+
+
+@pytest.mark.parametrize(
+    "message_id",
+    ["", "../profile", "m-1/trash", "m 1", "m-1\n", "m" * 201, None, 7],
+    ids=["empty", "path", "subpath", "space", "trailing_newline", "too_long", "none", "number"],
+)
+async def test_reply_source_refuses_an_unusable_id_before_any_request(message_id):
+    reader = _reader(_Gmail(), lambda _: pytest.fail("provider called"))
+    with pytest.raises(GmailMetadataError, match="invalid_argument"):
+        await reader.reply_source(message_id)
+
+
+@pytest.mark.parametrize(
+    "provider,code",
+    [
+        (lambda: _response({"error": "private-provider-content"}, 404), "source_changed"),
+        (lambda: _response({**_reply_payload(), "id": "m-2"}), "invalid_response"),
+        (
+            lambda: _response({k: v for k, v in _reply_payload().items() if k != "threadId"}),
+            "invalid_response",
+        ),
+        (lambda: _response({**_reply_payload(), "threadId": "../thread"}), "invalid_response"),
+    ],
+    ids=["deleted", "another_message", "no_thread", "unusable_thread"],
+)
+async def test_reply_source_never_returns_a_message_other_than_the_one_requested(provider, code):
+    with pytest.raises(GmailMetadataError, match=code):
+        await _reader(_Gmail(), lambda _: provider()).reply_source("m-1")
+
+
 async def test_read_can_be_revalidated_after_interpretation():
     gmail = _Gmail()
     reader = _reader(gmail, lambda _: _response({"messages": []}))
@@ -891,9 +978,18 @@ async def test_mailbox_receipt_outage_preserves_provider_success_and_prevents_re
     db = ReceiptOutage()
     writes = []
     service = _mailbox(_ModifyGmail(), db, _mailbox_provider(writes))
-    proposal = await service.propose(user_id="owner", action="archive", query="from:alice",
-                                     mailbox="inbox", limit=2, label="", require_access=_allowed)
-    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))["status"] == "executed"
+    proposal = await service.propose(
+        user_id="owner",
+        action="archive",
+        query="from:alice",
+        mailbox="inbox",
+        limit=2,
+        label="",
+        require_access=_allowed,
+    )
+    assert (await service.execute(user_id="owner", proposal_id=proposal["proposal_id"]))[
+        "status"
+    ] == "executed"
     assert len(writes) == 1
     with pytest.raises(Exception, match="already used"):
         await service.execute(user_id="owner", proposal_id=proposal["proposal_id"])

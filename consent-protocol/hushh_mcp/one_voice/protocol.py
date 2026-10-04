@@ -16,6 +16,10 @@ from hushh_mcp.one_voice.tools.base import LOCATION_UPDATES_PENDING as _LOCATION
 from hushh_mcp.one_voice.tools.mail import MAIL_OPEN_DISPATCHED as _MAIL_OPEN_DISPATCHED
 
 PROTOCOL_VERSION = "one-voice-v1"
+# Additive client capabilities this relay accepts, advertised in session.ready.
+# A client sends the matching keys or frames only when its relay lists them, so
+# a newer app never has a whole frame refused by an older or rolled-back relay.
+RELAY_FEATURES: tuple[str, ...] = ("active_mail", "mail_delivery")
 INPUT_MIME = "audio/pcm;rate=16000"
 OUTPUT_MIME = "audio/pcm;rate=24000"
 MAX_AUDIO_FRAME_B64_CHARS = 1_000_000
@@ -102,6 +106,11 @@ class AppContextFrame(_Frame):
     # separate from ``screen_state`` (which is rendered into the prompt and
     # carries no identifiers); the host reads it through the circle service.
     active_circle_id: str | None = Field(default=None, min_length=36, max_length=36)
+    # The mail row open on screen: its position in a server offer and that
+    # offer's revision. No message id ever travels this way; the server resolves
+    # the position against its own offer, and only while the revisions match.
+    active_mail_ordinal: int | None = Field(default=None, ge=1, le=25)
+    active_mail_offer_revision: int | None = Field(default=None, ge=0, le=1_000_000_000)
 
 
 class PendingShownFrame(_Frame):
@@ -138,6 +147,19 @@ class ClientStepResultFrame(_Frame):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class MailDeliveryResultFrame(_Frame):
+    """The device says a review card's Send finished. Never what happened.
+
+    Names the send action and the session-issued correlation only. There is no
+    status field on purpose: the relay re-reads the action server-side, so a
+    client cannot report a send that did not happen.
+    """
+
+    type: Literal["mail_delivery.result"]
+    delivery_ref: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    action_id: str = Field(min_length=36, max_length=36)
+
+
 class UiSettledFrame(_Frame):
     type: Literal["ui.settled"]
     directive_id: str = Field(min_length=1, max_length=64)
@@ -166,6 +188,7 @@ ClientFrame = Annotated[
     | CancelActionFrame
     | CandidateChooseFrame
     | ClientStepResultFrame
+    | MailDeliveryResultFrame
     | UiSettledFrame
     | InterruptFrame
     | PingFrame
@@ -218,6 +241,7 @@ def session_ready(
         "pending_actions": pending_actions,
         "setup_progress": setup_progress,
         "output_mime_type": OUTPUT_MIME,
+        "features": list(RELAY_FEATURES),
     }
 
 

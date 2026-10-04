@@ -58,6 +58,13 @@ export type OpenMail = (input: {
   conversationId: string;
 }) => Promise<OpenedMailMessage>;
 
+/** Which offered mail row is open on screen, for "reply to this". */
+export type ActiveMailSelection = {
+  ordinal: number;
+  offerRevision: number;
+  conversationId: string;
+};
+
 export type ToolResultCardProps = {
   result: ToolResultPublic;
   tool: string;
@@ -70,6 +77,12 @@ export type ToolResultCardProps = {
    * render in the tests does.
    */
   onOpenMail?: OpenMail;
+  /**
+   * Told which row is open (after its message is on screen) and when none is,
+   * so a spoken "reply to this" can resolve it. Never called on unmount: a new
+   * question can unmount the card a moment before the reply is asked for.
+   */
+  onActiveMailChange?: (selection: ActiveMailSelection | null) => void;
 };
 
 export type ToolResultFamily =
@@ -919,9 +932,11 @@ export function mailCoverageLine(coverage: unknown): string | null {
 function MailDetail({
   result,
   onOpenMail,
+  onActiveMailChange,
 }: {
   result: ToolResultPublic;
   onOpenMail?: OpenMail;
+  onActiveMailChange?: (selection: ActiveMailSelection | null) => void;
 }) {
   // Which row is open, and the message behind it. Expanding in place rather than
   // navigating is what makes "Back returns to the same list, order and position"
@@ -934,6 +949,16 @@ function MailDetail({
   // person has already closed -- or a different row -- is dropped instead of
   // being painted under the wrong heading.
   const requestRef = useRef(0);
+  // Whether this card is the one currently naming an open row, so it clears
+  // that name when it leaves the screen, and only then.
+  const publishedRef = useRef(false);
+  const publish = useCallback(
+    (selection: ActiveMailSelection | null) => {
+      publishedRef.current = selection !== null;
+      onActiveMailChange?.(selection);
+    },
+    [onActiveMailChange],
+  );
   const regionId = useId();
   const offerRevision =
     typeof result.offer_revision === "number" ? result.offer_revision : null;
@@ -951,6 +976,9 @@ function MailDetail({
       setOpenRef(ref);
       setMessage(null);
       setFailure(null);
+      // Whatever was open has just closed; until this one is on screen, no row
+      // is "this email".
+      publish(null);
       if (!onOpenMail || offerRevision === null || !conversationId) {
         settle?.("failed", "no_resolver");
         return;
@@ -967,6 +995,9 @@ function MailDetail({
           return;
         }
         setMessage(opened);
+        // Only now is this row the one on screen, so only now may "reply to
+        // this" mean it.
+        publish({ ordinal, offerRevision, conversationId });
         // Settled on the render, not on the dispatch: a resolved handler is not
         // evidence the person is looking at the message.
         settle?.("opened");
@@ -976,12 +1007,13 @@ function MailDetail({
           return;
         }
         setFailure(mailOpenMessage(error));
+        publish(null);
         settle?.("failed", "open_failed");
       } finally {
         if (requestRef.current === ticket) setLoading(false);
       }
     },
-    [conversationId, offerRevision, onOpenMail],
+    [conversationId, offerRevision, onOpenMail, publish],
   );
 
   const toggle = useCallback(
@@ -994,11 +1026,42 @@ function MailDetail({
         setMessage(null);
         setFailure(null);
         setLoading(false);
+        publish(null);
         return;
       }
       await openAt(ordinal);
     },
-    [openAt, openRef],
+    [openAt, openRef, publish],
+  );
+
+  // A newer list can arrive in this same card. Its rows are different messages,
+  // so whatever was open belonged to the old list: close it, and stop naming it
+  // as the email on screen. Only a change after mount counts; mounting a list
+  // closes nothing.
+  const offerKey = `${conversationId ?? ""}:${offerRevision ?? ""}`;
+  const offerKeyRef = useRef(offerKey);
+  useEffect(() => {
+    if (offerKeyRef.current === offerKey) return;
+    offerKeyRef.current = offerKey;
+    requestRef.current += 1;
+    setOpenRef(null);
+    setMessage(null);
+    setFailure(null);
+    setLoading(false);
+    publish(null);
+  }, [offerKey, publish]);
+
+  // Leaving the screen (Clear view, a collapsed panel, another kind of answer)
+  // ends "this email". A new question no longer unmounts a mail list -- the
+  // reducer keeps it until that question has its own result -- so this cannot
+  // race a "reply to this" that is still being asked.
+  const publishOnLeaveRef = useRef(publish);
+  publishOnLeaveRef.current = publish;
+  useEffect(
+    () => () => {
+      if (publishedRef.current) publishOnLeaveRef.current(null);
+    },
+    [],
   );
 
   // A spoken "open the second one" arrives here, so it runs the same code a tap
@@ -1301,10 +1364,12 @@ function Detail({
   family,
   result,
   onOpenMail,
+  onActiveMailChange,
 }: {
   family: ToolResultFamily;
   result: ToolResultPublic;
   onOpenMail?: OpenMail;
+  onActiveMailChange?: (selection: ActiveMailSelection | null) => void;
 }) {
   switch (family) {
     case "sos":
@@ -1322,7 +1387,11 @@ function Detail({
     case "mail":
       return (
         <MailDetailBoundary result={result}>
-          <MailDetail result={result} onOpenMail={onOpenMail} />
+          <MailDetail
+            result={result}
+            onOpenMail={onOpenMail}
+            onActiveMailChange={onActiveMailChange}
+          />
         </MailDetailBoundary>
       );
     default:
@@ -1338,6 +1407,7 @@ export function ToolResultCard({
   ok,
   className,
   onOpenMail,
+  onActiveMailChange,
 }: ToolResultCardProps) {
   const tone = toneForResult(result, ok);
   const family = toolResultFamily(tool, result.status);
@@ -1440,7 +1510,12 @@ export function ToolResultCard({
               Nothing was changed.
             </p>
           ) : null}
-          <Detail family={family} result={result} onOpenMail={onOpenMail} />
+          <Detail
+            family={family}
+            result={result}
+            onOpenMail={onOpenMail}
+            onActiveMailChange={onActiveMailChange}
+          />
         </div>
       </div>
     </div>

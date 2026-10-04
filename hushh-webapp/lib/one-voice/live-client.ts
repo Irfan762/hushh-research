@@ -623,6 +623,15 @@ export class OneLiveClient {
     });
   }
 
+  /** Report that a review card's Send finished; the relay reads the outcome itself. */
+  mailDeliveryResult(deliveryRef: string, actionId: string): boolean {
+    return this.sendControl({
+      type: "mail_delivery.result",
+      delivery_ref: deliveryRef,
+      action_id: actionId,
+    });
+  }
+
   uiSettled(
     directiveId: string,
     status: "opened" | "failed" | "ignored",
