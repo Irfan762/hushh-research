@@ -246,15 +246,35 @@ def test_one_voice_package_has_no_lexical_matcher_on_the_path():
 
 
 def test_voice_mail_is_exactly_read_open_access_and_a_reviewed_draft():
-    """Mail on voice is four tools. Archive, label, read-state, trash, reply and
-    forward are mailbox mutations that need their own policy review; none may
-    appear as a voice tool by accident."""
+    """Mail on voice is five tools. Archive, label, read-state, trash and forward
+    are mailbox mutations that need their own policy review; none may appear as
+    a voice tool by accident.
+
+    Reply was reviewed: its recipient, subject and thread are derived from the
+    message it answers, never from the model, and only the owner's Send tap
+    delivers it. It is the only reply tool."""
     declared = {item["name"] for item in registry.declarations()}
     mail_tools = {name for name in declared if "mail" in name}
-    assert mail_tools == {"get_mail_access", "read_mail", "open_mail", "send_mail"}
-    for forbidden in ("archive", "label", "mark_read", "unread", "trash", "reply", "forward"):
+    assert mail_tools == {"get_mail_access", "read_mail", "open_mail", "send_mail", "reply_mail"}
+    for forbidden in ("archive", "label", "mark_read", "unread", "trash", "forward"):
         assert not [name for name in declared if forbidden in name], forbidden
+    assert [name for name in declared if "reply" in name] == ["reply_mail"]
     send = registry.get_tool("send_mail")
     assert send is not None and send.policy.value == "confirm_voice"
     assert send.device_step is True, "only a live session can open the review card"
     assert set(send.private_args) == {"subject", "message"}
+    reply = registry.get_tool("reply_mail")
+    assert reply is not None and reply.policy.value == "confirm_voice"
+    assert reply.device_step is True, "only a live session can open the review card"
+    assert reply.private_args == ("message",)
+    # Addressed by the email it answers: the model can name a position and the
+    # owner's words, and nothing a recipient, subject or thread could ride in.
+    assert reply.person_args == () and reply.circle_args == ()
+    parameters = reply.declaration()["parameters_json_schema"]
+    assert set(parameters["properties"]) == {"ordinal", "message"}
+    assert parameters["additionalProperties"] is False
+    # A lookup made for something else never cancels the card the person is answering.
+    assert reply.lookup_targets == ()
+    # The same words about a different email are a different proposal, and the
+    # card is prepared from a fresh read of the source before it is shown.
+    assert reply.target_key is not None and reply.prepare is not None

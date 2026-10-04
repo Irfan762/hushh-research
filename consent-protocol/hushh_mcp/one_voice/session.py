@@ -1294,8 +1294,12 @@ class VoiceSession:
         """
         delivery = self.mail_deliveries.get(frame.delivery_ref)
         if delivery is None or self.clock() > float(delivery["expires_at"]):
+            # A card this session did not open (the socket reconnected), or one
+            # that outlived the window. Its mail was still sent and its card
+            # still shows the outcome; One just does not speak it. Not a
+            # protocol error, which the panel would show the person as one.
             self.mail_deliveries.pop(frame.delivery_ref, None)
-            await self._send(protocol.error("protocol", "unknown_mail_delivery"))
+            logger.info("one_voice.mail_delivery outcome=untracked")
             return
         delivery["reports"] = int(delivery.get("reports") or 0) + 1
         try:

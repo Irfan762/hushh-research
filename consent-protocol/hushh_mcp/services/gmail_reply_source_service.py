@@ -61,8 +61,10 @@ _ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 _MESSAGE_ID = re.compile(r"<[!-;=?-~]{1,995}>")
 _MAX_HEADER_CHARS = 2000
 # A deep thread's References line is trimmed, never refused: the first id
-# (the thread root) and the newest ids are what threading clients read.
+# (the thread root) and the newest ids are what threading clients read. The raw
+# bound only keeps parsing linear; the reader's response budget caps it anyway.
 _MAX_REFERENCES_CHARS = 1800
+_MAX_RAW_REFERENCES_CHARS = 64_000
 _MAX_NAME_CHARS = 200
 _MAX_SUBJECT_CHARS = 256
 # Labels a reply is never prepared against in this release. A message in Trash
@@ -190,21 +192,36 @@ def _thread_headers(headers: dict[str, str]) -> tuple[str | None, str | None]:
 
     A malformed ``Message-ID`` is dropped rather than refused: Gmail threads by
     ``threadId``, and a value that is not one angle-bracketed id would only
-    confuse other clients. Newlines anywhere are refused (header injection).
+    confuse other clients. Newlines anywhere are refused (header injection). A
+    long chain keeps its root and the newest ids that fit, in one pass.
     """
     raw_message_id = _safe_header(headers.get("message-id", ""))
-    raw_references = _safe_header(headers.get("references", ""))
+    raw_references = headers.get("references", "")
+    if (
+        "\r" in raw_references
+        or "\n" in raw_references
+        or len(raw_references) > _MAX_RAW_REFERENCES_CHARS
+    ):
+        raise _error(HEADERS_INVALID, "That email's reply details can't be used.")
     match = _MESSAGE_ID.fullmatch(raw_message_id.strip()) if raw_message_id else None
     in_reply_to = match.group(0) if match else None
     chain = _MESSAGE_ID.findall(raw_references)
     if in_reply_to and (not chain or chain[-1] != in_reply_to):
         chain.append(in_reply_to)
-    while len(chain) > 2 and len(" ".join(chain)) > _MAX_REFERENCES_CHARS:
-        del chain[1]
-    references = " ".join(chain) or None
-    if references and len(references) > _MAX_REFERENCES_CHARS:
-        references = in_reply_to
-    return in_reply_to, references
+    if not chain:
+        return in_reply_to, None
+    newest = chain[-1]
+    if len(chain) == 1 or len(chain[0]) + 1 + len(newest) > _MAX_REFERENCES_CHARS:
+        # The direct parent outranks the root when both cannot fit.
+        return in_reply_to, newest
+    kept = [newest]
+    size = len(chain[0]) + 1 + len(newest)
+    for item in reversed(chain[1:-1]):
+        if size + 1 + len(item) > _MAX_REFERENCES_CHARS:
+            break
+        kept.append(item)
+        size += 1 + len(item)
+    return in_reply_to, " ".join([chain[0], *reversed(kept)])
 
 
 def _recipient(headers: dict[str, str], *, owner_email: str) -> tuple[str, str]:

@@ -91,11 +91,21 @@ def _is_email_agent_intro_instruction(instruction: str) -> bool:
     return any(phrase in normalized for phrase in _EMAIL_AGENT_INTRO_PHRASES)
 
 
-@dataclass(frozen=True)
 class GmailDeliveryError(RuntimeError):
-    code: str
-    message: str
-    status_code: int = 400
+    """An authored refusal that is safe to show the owner, with its HTTP status.
+
+    A plain exception on purpose, not a frozen dataclass. Python assigns
+    ``__traceback__`` to an exception as it leaves a ``@contextmanager`` block
+    (and ``add_note`` assigns ``__notes__``); a frozen ``__setattr__`` turns that
+    into ``FrozenInstanceError``, so every refusal raised inside the delivery
+    latency span reached the browser as a 503 instead of its own code.
+    """
+
+    def __init__(self, code: str, message: str, status_code: int = 400) -> None:
+        super().__init__(code, message, status_code)
+        self.code = code
+        self.message = message
+        self.status_code = status_code
 
     def __str__(self) -> str:
         return self.message

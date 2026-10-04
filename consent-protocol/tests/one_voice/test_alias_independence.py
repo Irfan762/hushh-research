@@ -321,6 +321,50 @@ def test_send_mail_binds_and_opens_review_with_every_alias_emptied(emptied_gatew
     assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
 
 
+def test_reply_mail_binds_and_opens_review_with_every_alias_emptied(emptied_gateway, monkeypatch):
+    """A reply is a position in a list this server offered plus the owner's
+    words; its recipient comes from the email. None of that is phrase matching,
+    so it reaches the review card with every gateway alias emptied."""
+    from hushh_mcp.one_voice.tools import mail
+    from tests.one_voice.test_mail_reply import (
+        ACCOUNT,
+        OFFERED,
+        SENDER_ADDRESS,
+        install_reply_doubles,
+    )
+    from tests.one_voice.test_tools_people import OWNER
+    from tests.one_voice.test_tools_people import make_ctx as make_people_ctx
+
+    assert registry.validate_gateway_binding() == []
+    tool = next(tool for tool in mail.TOOLS if tool.name == "reply_mail")
+    entry = action_gateway.get_action_gateway_action(tool.gateway_action_id)
+    assert entry is not None
+    assert dict.__getitem__(entry, "aliases") == []
+    assert dict.__getitem__(entry, "search_keywords") == []
+    emptied_gateway.clear()  # The gateway inspection above is not part of execution.
+
+    ctx, _connections, _location = make_people_ctx()
+    install_reply_doubles(monkeypatch, ctx)
+    ctx.entities.offer_mail(OFFERED, account=ACCOUNT, mailbox="inbox")
+    executor = ToolExecutor(pending_store=MemoryPendingStore())
+
+    card = asyncio.run(
+        executor.call(ctx, "reply_mail", {"ordinal": 2, "message": "Thursday works for me."})
+    )
+    assert card.result.status == "confirmation_required"
+    assert card.result.tier == "voice"
+    assert card.pending is not None
+    asyncio.run(executor.pending.mark_shown(user_id=OWNER, pending_action_id=card.pending.id))
+    opened = asyncio.run(
+        executor.call(ctx, "confirm_pending_action", {"pending_action_id": card.pending.id})
+    )
+    assert opened.result.status == "draft_open_requested"
+    assert opened.result.client_step["kind"] == "open_mail_draft"
+    assert opened.result.client_step["draft"]["to"] == SENDER_ADDRESS
+    assert opened.result.client_step["draft"]["mode"] == "reply"
+    assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
+
+
 def _source_files() -> list[Path]:
     return sorted(p for p in ONE_VOICE_ROOT.rglob("*.py") if "__pycache__" not in p.parts)
 
