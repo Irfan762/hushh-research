@@ -116,7 +116,10 @@ final class AppUITests: XCTestCase {
         }
         app.activate()
         let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
-        let webView = app.webViews.firstMatch
+        // WebKit exposes nested AX WebView nodes on physical iOS. Count the
+        // existing identified Capacitor host, not its accessibility descendants.
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let webView = hosts.firstMatch
         if !bar.exists {
             // Resume the existing presentation, not a cold route or fixture.
             // Report only control presence: never dump the protected hierarchy.
@@ -134,7 +137,9 @@ final class AppUITests: XCTestCase {
             tab(name).tap()
         }
         tap("Chat")
-        XCTAssertEqual(app.webViews.count, 1, "Tabs must use one persistent WebView")
+        XCTAssertEqual(hosts.count, 1, "Tabs must use one identified Capacitor WebView")
+        XCTAssertEqual(app.webViews.count, 1 + webView.webViews.count,
+                       "Every WebView accessibility node must belong to the same Capacitor host")
         let history = webView.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Open chat history")).firstMatch
         XCTAssertTrue(history.waitForExistence(timeout: 30), "Chat did not settle without another vault unlock")
         history.tap()
@@ -148,7 +153,9 @@ final class AppUITests: XCTestCase {
         tap("Feed")
         tap("Chat")
         XCTAssertTrue(history.waitForExistence(timeout: 30))
-        XCTAssertEqual(app.webViews.count, 1)
+        XCTAssertEqual(hosts.count, 1)
+        XCTAssertEqual(app.webViews.count, 1 + webView.webViews.count,
+                       "Tab switching introduced another WebView host")
         XCTAssertTrue(tab("Chat").isSelected, "Final selection did not match the settled Chat destination")
         tap("Search")
         // Search is the existing command palette, never a new native route.
@@ -170,7 +177,8 @@ final class AppUITests: XCTestCase {
             throw XCTSkip("One must already be running and unlocked")
         }
         app.activate()
-        let webView = app.webViews.firstMatch
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let webView = hosts.firstMatch
         let openProfile = app.buttons["Open Profile"].firstMatch
         XCTAssertTrue(openProfile.waitForExistence(timeout: 15) && openProfile.isHittable)
         openProfile.tap()
@@ -184,7 +192,9 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(close.exists && close.isHittable, "Photo preview lacks a close control")
         close.tap()
         XCTAssertTrue(photo.waitForExistence(timeout: 10), "Profile did not resume after closing preview")
-        XCTAssertEqual(app.webViews.count, 1, "Preview must retain the existing page")
+        XCTAssertEqual(hosts.count, 1, "Preview must retain the identified Capacitor WebView")
+        XCTAssertEqual(app.webViews.count, 1 + webView.webViews.count,
+                       "Photo preview introduced another WebView host")
         XCTAssertFalse(webView.buttons["Unlock"].exists, "Preview lost the unlocked session")
         app.buttons["Close Profile"].firstMatch.tap()
         print("PROFILE_PHOTO_PREVIEW_CONTINUITY open_close_without_mutation")

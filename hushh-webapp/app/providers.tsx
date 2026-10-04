@@ -696,7 +696,9 @@ function AppShellFrame({ children }: ProvidersProps) {
                       {!hidesPersistentChrome && !isCanonicalChatRoute ? (
                         <AppTopShell model={topShellModel} />
                       ) : null}
-                      {!hidesPersistentChrome && !effectiveHideCommandBar && !isCanonicalChatRoute ? (
+                      {/* Search is requested from bottom navigation even on
+                          Chat; the closed palette adds no idle shell chrome. */}
+                      {!hidesPersistentChrome && !effectiveHideCommandBar ? (
                         <KaiCommandBarGlobal />
                       ) : null}
                       <Suspense
