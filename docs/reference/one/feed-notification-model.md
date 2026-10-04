@@ -269,7 +269,10 @@ current import, without claiming saved portfolio information.
 
 The Feed projection cannot mask provider success or cause a repeated write.
 Projection failures are best effort; relationship transactions retain their
-existing atomic policy. Unconfirmed Drive writes and possibly partial Mail
+existing atomic policy. CRM partial status can mean a successful mutation whose
+readback failed; Drive bulk partial/failed can include uncertain provider writes.
+Both prompt review before retrying instead of asserting the action did not happen.
+Unconfirmed Drive writes and possibly partial Mail
 changes ask people to check the provider before retrying. No query, filename,
 mailbox ID, label ID, account label, credentials, provider errors, holdings,
 HMAC or terminal payload is copied into Feed.

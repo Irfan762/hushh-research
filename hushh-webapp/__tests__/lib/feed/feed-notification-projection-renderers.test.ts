@@ -57,6 +57,15 @@ describe("notification-backed Feed projection renderers", () => {
       expect(view.description).toContain("before trying again");
       expect(view.description).toContain("may have succeeded");
     }
+    // These source outcomes also include successful writes whose readback
+    // failed or could not establish who created the permission.
+    for (const type of ["connected_systems_mutation_partial", "drive_bulk_partial", "drive_bulk_failed"]) {
+      const view = presentFeedItem(feedItem(type, {}, "connected_systems"));
+      expect(view.description).toContain("could not be confirmed");
+      expect(view.description).toContain("before trying again");
+      expect(view.description).not.toContain("Some files could not be shared");
+      expect(view.description).not.toContain("Only part of your approved change finished");
+    }
   });
 
   it("reports mixed-bundle expiry without claiming that nothing was shared", () => {
