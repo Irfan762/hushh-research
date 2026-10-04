@@ -165,6 +165,9 @@ async def test_needs_reply_does_not_fetch_invites_or_full_messages():
     assert result["coverage"]["unit"] == "threads"
     assert result["coverage"]["returned"] == 1
     assert result["coverage"]["assessed"] == 1
+    # A filtered set, not the front of the mailbox: "your newest conversations"
+    # would misdescribe threads chosen because they may need a reply.
+    assert result["coverage"]["scope"] == "needs_reply"
 
 
 async def test_list_recent_reads_newest_inbox_page_without_a_search_expression():
@@ -195,6 +198,8 @@ async def test_list_recent_reads_newest_inbox_page_without_a_search_expression()
     ]
     # The person asked for exactly the newest two; older mail is not an omission.
     assert result["truncated"] is False
+    # Negative control for the needs-reply scope: an unfiltered read stays "newest".
+    assert result["coverage"]["scope"] == "newest"
     serialized = json.dumps(result)
     assert "UNEXPECTED_BODY_MUST_NOT_LEAVE" not in serialized
     assert "message-1" not in serialized
@@ -327,6 +332,36 @@ async def test_late_result_suppressed_on_any_observation_change(mutation):
 
     with pytest.raises(GmailMetadataError, match="connection_changed"):
         await _reader(gmail, respond).read("search_inbox", {"query": "invoice"})
+
+
+@pytest.mark.parametrize("expected", ["other-account", "synthetic-account"])
+async def test_expected_account_fence_refuses_before_any_gmail_request(expected):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        if request.url.path.endswith("/messages/m-1"):
+            return _response(_full_message("m-1", [_part("text/plain", "hello")]))
+        return _response({"messages": []})
+
+    reader = GmailMetadataReader(
+        gmail=_Gmail(),
+        user_id="owner",
+        require_access=_allowed,
+        transport=httpx.MockTransport(respond),
+        expect_account=expected,
+    )
+    arguments = {"message_ids": ["m-1"]}
+    if expected == "other-account":
+        # Ids resolved in another mailbox mean nothing here; no request may go out.
+        with pytest.raises(GmailMetadataError, match="source_changed"):
+            await reader.read("read_message_by_id", arguments)
+        assert calls == []
+        return
+    # Negative control: the account the ids came from proceeds to Gmail.
+    result = await reader.read("read_message_by_id", arguments)
+    assert len(calls) == 1
+    assert result["coverage"]["scope"] == "selected"
 
 
 async def test_read_can_be_revalidated_after_interpretation():

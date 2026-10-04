@@ -65,6 +65,7 @@ def test_rule_two_names_the_pending_status_as_not_success():
         "confirmation_waiting",
         "pending_action_exists",
         "card_not_shown",
+        "draft_open_requested",
     ):
         assert status in not_success
 
@@ -214,3 +215,20 @@ def test_rules_three_six_and_eleven_ground_connections_in_real_records_and_resul
     declared = {item["name"] for item in registry.declarations()}
     assert {"accept_connection_request", "decline_connection_request", "invite_person"} <= declared
     assert "respond_connection_request" not in declared
+
+
+def test_rule_thirteen_keeps_voice_away_from_sending_and_from_duplicate_drafts():
+    rule = _rule(_build(), 13)
+    assert "The action card's button is Confirm, not Send" in rule
+    assert "Only the later draft_opened client-step result proves it appeared" in rule
+    assert "Only the person's Send tap delivers mail: you never send" in rule
+    # An unverified draft may already be on screen: never offer it again unasked.
+    assert "open_mail_draft client-step result with reason_code storage_unavailable" in rule
+    assert "storage_unavailable or draft_not_settled" in rule
+    assert "never prepare the same draft again unless the person asks for it" in rule
+
+
+def test_rule_four_lets_an_independent_follow_up_proceed_while_a_draft_opens():
+    rule = _rule(_build(), 4)
+    assert "A second request that does not need the first one's result" in rule
+    assert "draft_open_requested, for example" in rule

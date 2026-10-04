@@ -303,7 +303,7 @@ class ToolExecutor:
                     parsed=parsed,
                 )
             timings["pending"] = _elapsed_ms(pending_started)
-            existing = self._open_duplicate(spec, parsed, open_rows)
+            existing = self._open_duplicate(ctx, spec, parsed, open_rows)
             if existing is not None:
                 # The same proposal is already waiting. Minting a second row
                 # would cancel the card the person may be answering, so the
@@ -480,22 +480,49 @@ class ToolExecutor:
         return ToolCallOutcome(result=result, spec=spec, parsed=parsed, superseded=superseded)
 
     def _open_duplicate(
-        self, spec: ToolSpec, parsed: Any, open_rows: list[PendingAction]
+        self,
+        ctx: ToolContext,
+        spec: ToolSpec,
+        parsed: Any,
+        open_rows: list[PendingAction],
     ) -> PendingAction | None:
-        """An open voice-tier row for the same tool with identical public args.
+        """An open voice-tier row for the same tool with identical arguments.
 
         Voice tier only: a tap card's receipt is handed out once, at creation.
-        Never for sealed args: two dictations to one recipient stay two proposals.
+        Sealed arguments (a dictated mail) are compared too, by opening the open
+        row's own sealed payload in memory: public args alone cannot tell two
+        dictations to one recipient apart, and a different dictation is a new
+        proposal. Nothing about the draft is stored or logged to make this check.
         """
-        if not self._repeat_guarded(spec):
+        if spec.policy is not ToolPolicy.confirm_voice:
             return None
         wanted = parsed.model_dump(mode="json")
+        public_wanted = {
+            key: value for key, value in wanted.items() if key not in spec.private_args
+        }
         for row in open_rows:
             if (
-                row.tool_name == spec.name
-                and row.tier == "voice"
-                and _person_visible(row.args) == wanted
+                row.tool_name != spec.name
+                or row.tier != "voice"
+                or _person_visible(row.args) != public_wanted
             ):
+                continue
+            if not spec.private_args:
+                return row
+            sealed = row.args.get("_sealed_args")
+            if not isinstance(sealed, str):
+                continue
+            try:
+                private = open_sealed(
+                    sealed,
+                    owner_id=ctx.user_id,
+                    conversation_id=ctx.conversation_id,
+                    tool=spec.name,
+                    public_args=public_wanted,
+                )
+            except Exception:  # noqa: BLE001 - unreadable is "not the same", never an error
+                continue
+            if private == {key: wanted[key] for key in spec.private_args}:
                 return row
         return None
 
@@ -527,7 +554,9 @@ class ToolExecutor:
 
     @staticmethod
     def _repeat_guarded(spec: ToolSpec | None) -> bool:
-        """Voice tier without sealed args: the same scope as the duplicate guard."""
+        """Voice tier without sealed args. Narrower than the duplicate guard: the
+        cancel memory keeps public args only, so it cannot tell two sealed
+        dictations apart and never flags one as repeating another."""
         return (
             spec is not None and spec.policy is ToolPolicy.confirm_voice and not spec.private_args
         )
@@ -578,6 +607,36 @@ class ToolExecutor:
                 cancelled.append(done)
         return cancelled
 
+    async def _resolve_failed(
+        self,
+        ctx: ToolContext,
+        spec: ToolSpec,
+        pending: PendingAction,
+        result: dict[str, Any],
+    ) -> PendingAction:
+        """Record a failed execution and return the row as resolved.
+
+        The caller hands this row back so the relay retires the card; the
+        confirmed row it started from would leave a dead card that still looks
+        answerable. An unwritable ledger row never replaces the answer or ends
+        the session: the card is retired from this answer, not from storage.
+        """
+        try:
+            resolved = await self.pending.resolve(
+                user_id=ctx.user_id,
+                pending_action_id=pending.id,
+                status="failed",
+                result=result,
+            )
+        except PendingActionStorageError:
+            logger.warning("one_voice.pending.storage_failed phase=resolve tool=%s", spec.name)
+            resolved = None
+        return (
+            resolved
+            if resolved is not None
+            else dataclasses.replace(pending, status="failed", result=result)
+        )
+
     async def execute_pending(
         self,
         ctx: ToolContext,
@@ -597,7 +656,6 @@ class ToolExecutor:
         args.pop(ORIGIN_TURN_KEY, None)
         sealed_args = args.pop("_sealed_args", None)
         ctx.prepared = dict(snapshot) if isinstance(snapshot, dict) else None
-        handler_started = time.monotonic()
         try:
             if spec.private_args:
                 private = open_sealed(
@@ -611,20 +669,37 @@ class ToolExecutor:
                     raise ValueError("voice pending draft fields changed")
                 args.update(private)
             parsed = spec.input_model.model_validate(args)
+        except Exception:  # noqa: BLE001 - nothing has run yet, so nothing changed
+            # The stored proposal could not be opened (a sealed draft that fails
+            # authentication, arguments that no longer validate). The handler
+            # never started, so "I can't confirm whether anything changed"
+            # would be wrong in the other direction: nothing did.
+            ctx.prepared = None
+            reason = "private_draft_unavailable" if spec.private_args else "invalid_arguments"
+            failed_row = await self._resolve_failed(
+                ctx, spec, pending, {"status": reason, "outcome": "not_started"}
+            )
+            return ToolCallOutcome(
+                result=Rejected(
+                    reason_code=reason,
+                    spoken_facts=[
+                        "I couldn't open that draft securely, so I didn't open it. "
+                        "Nothing was sent."
+                        if spec.private_args
+                        else "That didn't go through. Nothing was changed."
+                    ],
+                ),
+                spec=spec,
+                pending=failed_row,
+            )
+        handler_started = time.monotonic()
+        try:
             result = await spec.handler(ctx, parsed)
         except Exception as exc:  # noqa: BLE001 - recorded as failed, never as success
             ctx.prepared = None
-            try:
-                await self.pending.resolve(
-                    user_id=ctx.user_id,
-                    pending_action_id=pending.id,
-                    status="failed",
-                    result={"error_class": type(exc).__name__, "outcome": "unknown"},
-                )
-            except PendingActionStorageError:
-                # The handler's own failure is the answer; an unwritable ledger
-                # row must not replace it or end the session.
-                logger.warning("one_voice.pending.storage_failed phase=resolve tool=%s", spec.name)
+            failed_row = await self._resolve_failed(
+                ctx, spec, pending, {"error_class": type(exc).__name__, "outcome": "unknown"}
+            )
             # The handler died somewhere between "not started" and "committed":
             # "nothing changed" would be a claim, not a fact.
             return ToolCallOutcome(
@@ -636,7 +711,7 @@ class ToolExecutor:
                     ],
                 ),
                 spec=spec,
-                pending=pending,
+                pending=failed_row,
             )
         ctx.prepared = None
         if timings is not None:

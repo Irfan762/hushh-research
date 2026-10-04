@@ -220,6 +220,47 @@ def test_mail_analysis_runs_with_every_alias_emptied(emptied_gateway, monkeypatc
     assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
 
 
+def test_mail_access_and_open_run_with_every_alias_emptied(emptied_gateway, monkeypatch):
+    """The capability question and "open the second one" are typed tools: the
+    access answer comes from the connection status and the position resolves
+    against the offer this server minted. Neither needs a phrase table."""
+    from hushh_mcp.one_voice.tools import mail
+    from tests.one_voice.test_tools_mail import AdmissionDouble, _ctx
+
+    assert registry.validate_gateway_binding() == []
+    for name in ("get_mail_access", "open_mail"):
+        tool = next(tool for tool in mail.TOOLS if tool.name == name)
+        entry = action_gateway.get_action_gateway_action(tool.gateway_action_id)
+        assert entry is not None
+        assert dict.__getitem__(entry, "aliases") == []
+        assert dict.__getitem__(entry, "search_keywords") == []
+    emptied_gateway.clear()  # The gateway inspection above is not part of execution.
+
+    class GmailStatus:
+        async def get_status(self, *, user_id: str) -> dict:
+            return {"connected": True, "connection_state": "connected"}
+
+    monkeypatch.setattr(mail, "connector_feature_enabled", lambda *_a, **_k: True)
+    ctx = _ctx(gmail=GmailStatus())
+    ctx.services[mail.MAIL_ADMISSION_SERVICE] = AdmissionDouble(True)
+    executor = ToolExecutor(pending_store=MemoryPendingStore())
+
+    access = asyncio.run(executor.call(ctx, "get_mail_access", {}))
+    assert access.result.status == "mail_access"
+    assert access.result.can_read is True
+
+    revision = ctx.entities.offer_mail(["id-1", "id-2", "id-3"], account="acct", mailbox="inbox")
+    opened = asyncio.run(executor.call(ctx, "open_mail", {"ordinal": 2}))
+    assert opened.result.status == "mail_open_dispatched"
+    assert opened.result.ordinal == 2
+    assert opened.result.offer_revision == revision
+    # The offer guard is not an alias: a position that was never shown is refused.
+    missing = asyncio.run(executor.call(ctx, "open_mail", {"ordinal": 9}))
+    assert missing.result.status == "rejected"
+    assert missing.result.reason_code == "mail_ordinal_not_offered"
+    assert emptied_gateway == [], f"voice path read alias fields: {emptied_gateway}"
+
+
 def test_send_mail_binds_and_opens_review_with_every_alias_emptied(emptied_gateway, monkeypatch):
     from types import SimpleNamespace
 
