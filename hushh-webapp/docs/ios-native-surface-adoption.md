@@ -191,6 +191,30 @@ iPad is not admitted.
 This is not release-readiness proof.
 The subsequent families are deliberately not enabled or described as delivered.
 
+### Reviewer and Attach-Only Unlock
+
+Use the existing canonical `REVIEWER_UID` resolver in
+[reviewer-test-identity](../scripts/testing/reviewer-test-identity.mjs), not a
+second account fixture. The UID can remain in the ignored backend environment
+overlay; the passphrase must remain process-only. For an already-running locked
+app, forward the resolved identity, expected account email and passphrase through
+`TEST_RUNNER_` environment variables. The Chat-drawer test checks the visible
+account before entering anything, targets the authored passphrase field, clears
+any previous entry and submits normal Unlock once. Accessibility mask length is
+diagnostic, not authentication. Acceptance requires the vault gate to disappear
+and the Chat composer to be interactive; rejection does not trigger a retry,
+reset or reviewer bootstrap.
+
+An attach-only `.xctestrun` using `UseDestinationArtifacts` must provide
+`TestBundleDestinationRelativePath` (for the installed runner's test bundle),
+not `TestBundlePath`. Install only the updated test runner after compilation;
+do not reinstall the product app to manufacture continuity. Keep test attachments
+disabled and destroy credential-run diagnostics. On 2026-10-04, the current
+candidate passed the identity-bound normal unlock/Chat-drawer check, followed by
+all three existing warm navigation, Back and photo-preview checks without a
+session reset. This proves those interactions, not the outstanding visual,
+accessibility or release-promotion gates above.
+
 The focused Back device contract in [AppUITests](../ios/App/AppUITests/AppUITests.swift)
 checks the 44-point slot, duplicate-control exclusion, complete accessibility
 retirement beneath Profile, normal background/resume and the existing return-to-One
@@ -224,3 +248,28 @@ The current [ambient chrome mask](../components/app-ui/ambient-chrome-mask.tsx)
 and scroll-edge behavior have existing design contracts. Changing them alongside
 a native top bar requires an explicit, independently verified design change, not
 an automatic material substitution.
+
+## Native Canvas Appearance
+
+The native backing canvas follows the committed CSS `--background` independently
+of Back admission or status-icon contrast. The additive `canvasAppearance`
+capability is optional for older wrappers. Strict colors, monotonic revisions and
+retired-document fencing reject delayed projections; no window-wide appearance,
+WebView opacity or privacy-cover change is made. The cold backing canvas uses
+Apple's system background until the document projects its app preference.
+Physical all-route/theme acceptance is separate from compilation or a single
+Chat-band comparison. Keyboard and privacy-cover theme parity remain separate
+verification items.
+
+### Chat Body Gesture
+
+The existing history drawer owns the right-swipe action. Its transcript supplies
+the gesture surface; no window-wide touch handler or inferred button invokes
+navigation. Only panel transform and scrim opacity track the finger. Resting CSS
+translation is suppressed during the pull so it cannot add a second offset.
+The conversation, document and bottom shell do not move or remount. Preview stays
+inert; committed open uses existing focus/overlay authority. Native chrome is
+isolated while dragging. Vertical scroll, horizontal tables, text selection,
+inputs, overlays, keyboard and the 28px edge-back lane keep their own gestures.
+Cancelled/unmounted gestures remove temporary compositor hints and inline styles.
+Settlement uses the shared sheet tokens and reduced-motion preference.
