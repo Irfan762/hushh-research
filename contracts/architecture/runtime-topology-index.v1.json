@@ -3953,8 +3953,8 @@
       "alias": null,
       "api_dependencies": [],
       "cache": {
-        "policy": "memory-only",
-        "refresh_trigger": "stale-aware background refresh; explicit user refresh may force",
+        "policy": "none",
+        "refresh_trigger": "none",
         "resource_classes": [
           "unknown"
         ]
@@ -5759,7 +5759,7 @@
     "a2a_scope_map": "7379039859448ff3db422aa5ee50124bbcadcecc8c9c49e3c1471791f54208c1",
     "action_gateway": "cdf51c44d6cc2743e4aaf379bebf8cd26f7763595a3f9c0d0f67ce08afad04eb",
     "agent_registry": "b52c72496965b3420b141b1dcf0737594848d3c5b37a834879bf00925b7a35a2",
-    "cache_manifest": "bb1fd935f1fb2ee571f6cafbc49689dea661b71993550797b779784735e57886",
+    "cache_manifest": "32efb8adce1c0678895672859f85ac0a03bd3088ab1836bcb19b7910cbca0437",
     "data_plane": "1df49f95104f4d30fc5ed6de778ff88e0180f690a8d3a736e2df0cb567be8c5a",
     "in_process_dispatch": "11ad2e84c6953e3788b1221d422d60bc105401eb7028e0eb64f9a794b6094dc7",
     "one_specialist_tools": "3dc81d307ef8cf9932ca3f80c2d54915515161968d0303feccea401e8afebce9",
