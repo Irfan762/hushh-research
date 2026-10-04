@@ -128,6 +128,24 @@ const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_reques
 export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
 
 /**
+ * A mail list the person can still act on by position: rows the server
+ * offered under a revision ("open the second one", "reply to it").
+ *
+ * It keeps the answer slot across a new question until that question produces
+ * a result of its own. Clearing it the moment the person spoke took away the
+ * very list their words were about, so a spoken open arrived with nothing left
+ * on screen to open.
+ */
+export function keepsAnswerSlotAcrossInput(result: ToolResultPublic | null): boolean {
+  return (
+    result !== null &&
+    typeof result.offer_revision === "number" &&
+    Array.isArray(result.items) &&
+    result.items.length > 0
+  );
+}
+
+/**
  * A navigation the app was asked to make. It is not a success (it stays in
  * NOT_SUCCESS_STATUSES; the ui_settled outcome decides) and not a failure: it
  * reads as "Opening…". Not pending either -- that would hold the turn open
@@ -641,7 +659,10 @@ function reduceServerFrame(
           : state.fencedTurnIds,
         // A new question owns the visible answer slot. Older tool receipts
         // remain in the timeline and any pending action still settles by ID.
-        lastResult: newInput ? null : state.lastResult,
+        lastResult:
+          newInput && !keepsAnswerSlotAcrossInput(state.lastResult)
+            ? null
+            : state.lastResult,
         toolTimeline: newInput
           ? state.toolTimeline.map((item) => item.tool === "open_screen" ? { ...item, navigationSuperseded: true } : item)
           : state.toolTimeline,
