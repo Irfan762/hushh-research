@@ -41,6 +41,12 @@ const subscribe = (listener: () => void) => {
 };
 function publish() { subscribers.forEach((listener) => listener()); }
 function isNativeIOS() { return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios"; }
+// Shared isolation authority for native shell controls. Do not create another
+// overlay registry in individual plugins or feature components.
+export function nativeShellOverlayBlocked() { return overlays.size > 0; }
+export function useNativeShellOverlayBlocked() {
+  return useSyncExternalStore(subscribe, nativeShellOverlayBlocked, () => false);
+}
 function setInstalled(next: boolean) {
   if (installed === next) return;
   installed = next;
@@ -69,9 +75,10 @@ export function useNativeNavigationBlocked(active: boolean) {
   const token = useRef(Symbol("native-navigation-blocker"));
   useLayoutEffect(() => {
     if (!active || !isNativeIOS()) return;
-    overlays.add(token.current);
+    const blocker = token.current;
+    overlays.add(blocker);
     publish();
-    return () => { if (overlays.delete(token.current)) publish(); };
+    return () => { if (overlays.delete(blocker)) publish(); };
   }, [active]);
 }
 

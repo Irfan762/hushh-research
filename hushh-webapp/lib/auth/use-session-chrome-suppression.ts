@@ -9,8 +9,9 @@ const subscribe = (listener: () => void) => {
   return () => { listeners.delete(listener); };
 };
 
+export function isSessionChromeSuppressed(): boolean { return activeSuppressionTokens.size > 0; }
 export function useSessionChromeSuppressed(): boolean {
-  return useSyncExternalStore(subscribe, () => activeSuppressionTokens.size > 0, () => false);
+  return useSyncExternalStore(subscribe, isSessionChromeSuppressed, () => false);
 }
 
 function syncSessionChromeSuppression(): void {

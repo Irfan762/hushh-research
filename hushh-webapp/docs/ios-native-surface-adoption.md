@@ -1,6 +1,6 @@
 # iOS Native Controls and Liquid Glass
 
-Implementation owner: frontend/native shell. Reviewed against source on 2026-10-03.
+Implementation owner: frontend/native shell. Reviewed against source on 2026-10-04.
 This is a component inventory and bounded adoption reference, not a claim that every
 candidate is implemented or released.
 
@@ -31,13 +31,46 @@ another navigation stack, WebView, session, or information store.
 - [The global Search host](../components/kai/kai-command-bar-global.tsx) is mounted
   on Chat by [Providers](../app/providers.tsx). Native Search opens that existing
   palette; it is not an independent search route or native result engine.
+- [HushhNativeChrome](../ios/App/App/Plugins/HushhNativeChromePlugin.swift) and its
+  [typed bridge](../lib/capacitor/native-chrome.ts) implement a **Debug-only iPhone
+  Back pilot** on iOS 26+. [NativeShellBack](../components/app-ui/native-shell-back.tsx)
+  retains the shared 44px layout slot and invokes the existing Back handler.
+  Release builds, iPad, older wrappers, web and Android keep the web control.
+  Capability admission—not installation of a plugin—is the enablement boundary.
 
 Apple recommends standard system controls and reserves Liquid Glass primarily for
 the interactive layer above content. Native material is not equivalent to adding
-CSS backdrop blur to a web card. Prefer the existing UIKit bridge over introducing
-a second framework solely for appearance. See [Apple's UIKit adoption guidance](https://developer.apple.com/videos/play/wwdc2025/284/).
-SwiftUI is an option for a bounded new native view, not a requirement to rewrite
-React content; see [Apple's SwiftUI adoption guidance](https://developer.apple.com/videos/play/wwdc2025/323/).
+CSS backdrop blur to a web card. Author new eligible controls in SwiftUI, integrate
+through the existing UIKit/Capacitor host, and retain React product content and
+routing. Keep working UIKit controls, including the standalone bottom bar.
+SwiftUI is not a promise of no deprecations or a reason to rewrite the app root.
+See [Apple's UIKit guidance](https://developer.apple.com/videos/play/wwdc2025/284/),
+[SwiftUI guidance](https://developer.apple.com/videos/play/wwdc2025/323/), and
+[UIHostingController containment](https://developer.apple.com/documentation/swiftui/uihostingcontroller).
+
+### Native Chrome Contract
+
+The Back pilot has a bounded `UIHostingController` child, not a full-screen
+transparent touch surface. Preparation acknowledges both SwiftUI geometry and
+UIKit layout while hidden and noninteractive. React then hides/disables its DOM
+control before activation. The original layout reservation remains unchanged.
+Retirement is acknowledged only after touch, accessibility and child containment
+are removed. An uncertain acknowledgement quarantines the control until removal
+is confirmed; it never retries a navigation action.
+
+Each choice binds to the document, opaque owner epoch, presentation revision,
+current route context, privacy generation and sequence. Owner information and
+routes stay in React; neither credentials nor protected content enter the bridge.
+Existing session suppression, registered overlay blockers and authored interaction
+layers bound admission. Keyboard, geometry changes and native privacy transitions
+retire this pilot synchronously. Delayed recovery can retire only its own revision,
+not a replacement. Duplicate choices cannot replay; a new intentional tap remains
+available if the owning navigation operation is cancelled.
+
+This family owns **no popup**. SwiftUI Menu/pickers and UIKit action sheets remain
+unimplemented: removing a hosting view does not prove that a presented popup is
+covered or dismissed. Their popup retirement and interaction-layer ownership must
+be proved before adding them to the capability list.
 
 ## Shared Component Inventory
 
@@ -50,8 +83,8 @@ than acquire separate native implementations.
 | Component family and source owner | Current presentation | Native fit / recommendation |
 | --- | --- | --- |
 | Bottom navigation — [Navbar](../components/navbar.tsx), [native plugin](../ios/App/App/Plugins/HushhNativeNavigationPlugin.swift) | UIKit on supported iOS; DOM fallback | Implemented. Keep standard appearance and React selection authority. |
-| Top bar, back, Profile — [TopAppBar](../components/app-ui/top-app-bar.tsx), [ShellActionSurface](../components/app-ui/shell-action-surface.tsx) | DOM shell controls | Next: bounded toolbar buttons using UIKit system controls. Whole native bar is conditional; retain existing back/Profile actions and replace, not duplicate, clearance. |
-| Shell option menus — [TopShellDropdown](../components/app-ui/top-shell-dropdown.tsx) | DOM anchored menu/popover | Next: short native action menu, retaining trigger, selection and focus return. |
+| Top bar, back, Profile — [TopAppBar](../components/app-ui/top-app-bar.tsx), [ShellActionSurface](../components/app-ui/shell-action-surface.tsx) | SwiftUI Back Debug pilot; otherwise DOM | Back implemented but physically unverified. Close/More/utility buttons follow only after Back acceptance. Retain Profile photos and rich labels. No whole native bar. |
+| Shell option menus — [TopShellDropdown](../components/app-ui/top-shell-dropdown.tsx) | DOM anchored menu/popover | Next: SwiftUI Menu for an admitted stationary native trigger; controlled UIKit action sheet for a DOM trigger. Neither is admitted yet. Preserve selection and focus return. |
 | Section action menus — [ActionMenu](../components/app-ui/action-menu.tsx) | Mobile Sheet; desktop dropdown | Next: native menu/action-sheet adapter for serializable item IDs and labels. Arbitrary React labels stay DOM. Preserve disabled/busy state and separate destructive confirmation. |
 | Agent/voice controls — [AgentBar](../components/agent/agent-bar.tsx), [OneVoiceControl](../components/one-voice/one-voice-control.tsx) | DOM controls over existing runtime providers | Conditional: launcher/cancel chrome only. Keep tap/hold, slide-to-cancel, recording, readiness and task state with existing owners; retain transcript/waveform content. |
 | Search field and close — [KaiCommandPalette](../components/kai/kai-command-palette.tsx), [SearchClearButton](../components/app-ui/search-clear-button.tsx) | DOM controlled palette | Conditional: native search chrome. Existing query, results and action runtime remain authoritative; prove IME, keyboard and dismissal before replacing the field. |
@@ -92,17 +125,17 @@ never convert selecting a row into an unreviewed provider write or information s
 
 ## Graceful Adoption Boundary
 
-1. Start with top-bar action buttons and short section/option menus. Adopt one
-   shared owner with a bounded caller before migrating its feature consumers.
+1. Prove the stationary shared Back pilot first. Then admit stationary Close,
+   More and utility controls by shared owner, not separate feature dispatchers.
 2. Evaluate Profile/detail header controls and local segmented selectors next.
    Search, voice controls and full sheet/pane transport require dedicated proofs;
    they are not bundled into a styling change.
-3. Use standard UIKit controls first. `UINavigationBar`, `UIToolbar`, system menu
-   and presentation APIs have native behavior; custom controls may use
-   `UIButton.Configuration.glass()` or `UIGlassEffect` only when justified.
-   SwiftUI alternatives include system toolbars, menus and presentation APIs;
-   custom `glassEffect`/`GlassEffectContainer` are selective options, not app-wide
-   defaults. These are API candidates, not current app implementations.
+3. Use standard SwiftUI controls for new admitted families, hosted through UIKit.
+   The pilot uses `Button.buttonStyle(.glass)`, not imitation glass. Bounded,
+   stationary, nonsecret segmented/date/duration selections are later candidates;
+   their existing value validators remain authoritative. Scrolling, collapsing,
+   dragged or swipe-coupled chrome stays React. No `TabView`, `NavigationStack`,
+   second WebView or second router is introduced. Minimum iOS remains 17.0.
 4. Each adapter needs capability detection and a DOM fallback. Keep web/Android
    unchanged, preserve unsupported iOS behavior and remove duplicate accessibility
    controls and layout reservation when native presentation is active.
@@ -124,6 +157,15 @@ never convert selecting a row into an unreviewed provider write or information s
    reduced motion and reduced transparency rather than layering custom motion.
 
 ## Verification and Promotion
+
+The 2026-10-04 Back implementation has focused lease/bridge regressions, plugin
+contract checks, frontend typecheck, design/performance checks and a signed native
+compile. Physical Back, VoiceOver/focus transfer, Dynamic Type, reduced motion/
+transparency, rotation, frame pacing and persistent WebView/document identity
+remain acceptance gates. CoreDevice reached the running iPhone over Wi-Fi, but
+attach-only XCUI timed out while enabling automation mode; iPad is not admitted.
+This is not release-readiness proof.
+The subsequent families are deliberately not enabled or described as delivered.
 
 Physical iPhone evidence on 2026-10-03 covers the native Chat/One/Connect/Feed
 journey, return to selected Chat, Chat-drawer isolation, Search opening/isolation/

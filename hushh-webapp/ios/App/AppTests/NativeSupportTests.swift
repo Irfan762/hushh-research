@@ -2,6 +2,30 @@ import XCTest
 @testable import App
 
 final class NativeSupportTests: XCTestCase {
+    func testNativeChromeLeaseRejectsStaleOwnerDocumentAndDuplicateChoices() {
+        var state = HushhNativeChromeState()
+        let first = HushhNativeChromeState.Identity(document: "a", ownerEpoch: "owner-a", revision: 1)
+        XCTAssertTrue(state.prepare(first))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true)) // prepared is not interactive
+        XCTAssertTrue(state.activate(first))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: false)) // privacy/overlay guard
+        XCTAssertTrue(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true))
+        let next = HushhNativeChromeState.Identity(document: "a", ownerEpoch: "owner-b", revision: 2)
+        XCTAssertTrue(state.prepare(next))
+        XCTAssertFalse(state.activate(first))
+        XCTAssertTrue(state.activate(next))
+        XCTAssertFalse(state.retire(.init(document: "a", ownerEpoch: "owner-a", revision: 100), targetRevision: 1))
+        XCTAssertEqual(state.phase, "active") // old failure cannot remove a replacement
+        XCTAssertFalse(state.confirm(first, sequence: 2, latestSequence: 2, allowed: true))
+        XCTAssertTrue(state.retire(.init(document: "a", ownerEpoch: "owner-b", revision: 3)))
+        XCTAssertFalse(state.prepare(next)) // late uncertain preparation cannot resurrect a retired view
+        XCTAssertTrue(state.prepare(.init(document: "b", ownerEpoch: "owner-b", revision: 1)))
+        XCTAssertFalse(state.prepare(.init(document: "a", ownerEpoch: "owner-a", revision: 99)))
+        state.invalidate()
+        XCTAssertFalse(state.activate(next))
+    }
+
     func testNativeNavigationRejectsStaleUnknownAndRetiredDocumentStates() {
         var state = HushhNativeNavigationState()
         XCTAssertTrue(state.apply(document: "first", revision: 1, visible: true, selected: "chat"))

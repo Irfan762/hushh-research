@@ -96,6 +96,7 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         (bridge?.plugin(withName: "HushhNativeNavigation") as? HushhNativeNavigationPlugin)?.layoutTabBar()
+        (bridge?.plugin(withName: "HushhNativeChrome") as? HushhNativeChromePlugin)?.layoutControls()
     }
 
     deinit {
@@ -213,11 +214,12 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
         bridge?.registerPluginInstance(HushhVoiceInvocationPlugin())
         bridge?.registerPluginInstance(HushhSessionPrivacyPlugin())
         bridge?.registerPluginInstance(HushhNativeNavigationPlugin())
+        bridge?.registerPluginInstance(HushhNativeChromePlugin())
         bridge?.registerPluginInstance(HushhStreamPlugin())
         bridge?.registerPluginInstance(HushhOAuthReturnPlugin())
         bridge?.registerPluginInstance(HushhPlaidLinkPlugin())
         
-        print("✅ [MyViewController] All 15 plugins registered successfully:")
+        print("✅ [MyViewController] Native plugins registered:")
         print("   - HushhAuth (Google Sign-In)")
         print("   - HushhVault (Encryption + Cloud DB)")
         print("   - HushhConsent (Token Management)")
@@ -256,7 +258,12 @@ class MyViewController: CAPBridgeViewController, WKScriptMessageHandler {
             "HushhContacts",
             "HushhInvitations",
             "HushhVoiceInvocation",
-            "HushhSessionPrivacy"
+            "HushhSessionPrivacy",
+            "HushhNativeNavigation",
+            "HushhNativeChrome",
+            "HushhStream",
+            "HushhOAuthReturn",
+            "HushhPlaidLink"
         ]
         
         for name in pluginNames {
