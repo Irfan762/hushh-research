@@ -220,6 +220,11 @@ test.describe("One Location compact CTA layout", () => {
               document.querySelector<HTMLElement>("[data-public-controls]")!,
             ).paddingLeft,
           ),
+          publicControlsPaddingRight: parseFloat(
+            getComputedStyle(
+              document.querySelector<HTMLElement>("[data-public-controls]")!,
+            ).paddingRight,
+          ),
           publicDuration: publicDuration.toJSON(),
           publicSelect: publicSelect.toJSON(),
           publicCta: publicCta.toJSON(),
@@ -243,10 +248,7 @@ test.describe("One Location compact CTA layout", () => {
       expect(result.overflow).toBeLessThanOrEqual(1);
 
       expect(result.publicControls.width).toBeCloseTo(
-        Math.min(
-          320,
-          result.publicCard.width - result.publicCardPaddingLeft * 2,
-        ),
+        result.publicCard.width - result.publicCardPaddingLeft * 2,
         0,
       );
       expect(
@@ -258,7 +260,9 @@ test.describe("One Location compact CTA layout", () => {
       expect(result.publicDuration.width).toBeCloseTo(
         Math.min(
           260,
-          result.publicControls.width - result.publicControlsPaddingLeft * 2,
+          result.publicControls.width -
+            result.publicControlsPaddingLeft -
+            result.publicControlsPaddingRight,
         ),
         0,
       );
@@ -273,8 +277,19 @@ test.describe("One Location compact CTA layout", () => {
         result.publicDuration.width,
         0,
       );
-      expect(result.publicCta.width).toBeGreaterThanOrEqual(144);
-      expect(result.publicCta.width).toBeLessThan(result.publicDuration.width);
+      expect(result.publicCta.height).toBeCloseTo(50, 0);
+      expect(result.publicCta.width).toBeCloseTo(
+        Math.min(
+          244,
+          result.publicControls.width -
+            result.publicControlsPaddingLeft -
+            result.publicControlsPaddingRight,
+        ),
+        0,
+      );
+      expect(result.publicCta.width).toBeLessThanOrEqual(
+        result.publicDuration.width + 1,
+      );
       expect(
         Math.abs(
           result.publicCta.left -

@@ -2130,7 +2130,12 @@ describe("OneLocationAgentPage", () => {
     const primary = await screen.findByTestId("one-location-now-primary");
     expect(
       within(primary).getByRole("button", { name: "Share location" }),
-    ).toBeTruthy();
+    ).toHaveClass(
+      "h-[50px]",
+      "min-h-[50px]",
+      "w-full",
+      "max-w-[244px]",
+    );
     expect(within(primary).getByText("You're not sharing")).toBeTruthy();
     expect(
       within(primary).getByText("Choose a Circle or contact."),
@@ -5644,11 +5649,16 @@ describe("OneLocationAgentPage", () => {
     });
     expect(createLinkButton).toHaveClass(
       "self-start",
-      "w-fit",
-      "min-w-[9rem]",
+      "h-[50px]",
+      "min-h-[50px]",
+      "w-full",
+      "max-w-[244px]",
     );
     expect(createLinkButton.className).not.toContain("mx-auto");
-    expect(createLinkButton.className).not.toContain("w-full");
+    expect(createLinkButton.parentElement).toHaveClass(
+      "w-full",
+      "min-[380px]:pl-16",
+    );
     expect(screen.getByText("Temporary link")).toBeTruthy();
     expect(
       screen.getByText(
@@ -9656,7 +9666,16 @@ describe("OneLocationAgentPage", () => {
     expect(screen.queryByRole("button", { name: /^Create link$/i })).toBeNull();
     expect(screen.queryByText("Duration")).toBeNull();
     // Ending it stays reachable -- that is the only exit.
-    expect(screen.getByRole("button", { name: /Revoke link/i })).toBeTruthy();
+    const revoke = screen.getByRole("button", { name: /Revoke link/i });
+    expect(revoke.parentElement).not.toHaveClass("border-t");
+    const liveLinkGroup = screen.getByTestId(
+      "one-location-links-temporary-link",
+    );
+    const liveLinkRows = liveLinkGroup.querySelector(
+      '[data-ui-role="grouped-card"] > div',
+    );
+    expect(liveLinkRows).toHaveClass("divide-y-0");
+    expect(liveLinkRows).not.toHaveAttribute("data-inset-separators");
   });
 
   it("removes revoked link actions even when refreshing the workspace fails", async () => {

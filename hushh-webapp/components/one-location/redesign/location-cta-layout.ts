@@ -9,15 +9,17 @@
 export const PUBLIC_LINK_CONTROLS_CLASSNAME =
   "w-full space-y-3 sm:max-w-[320px]";
 
-/** Keeps the create-link form compact and aligned with the card's content edge. */
+/** Aligns the create-link controls with the title column after the leading
+ *  icon on a phone, while preserving enough width for the canonical CTA on
+ *  narrower devices. */
 export const PUBLIC_LINK_CREATE_FORM_CLASSNAME =
-  "flex w-full max-w-[320px] flex-col items-start space-y-3 px-4 pb-4 pt-2";
+  "flex w-full flex-col items-start space-y-3 px-4 pb-4 pt-2 min-[380px]:pl-16";
 
 export const PUBLIC_LINK_DURATION_GROUP_CLASSNAME =
   "w-full max-w-[260px]";
 
 export const PUBLIC_LINK_PRIMARY_CTA_CLASSNAME =
-  "ui-text-compact-button-label h-11 min-h-11 w-fit min-w-[9rem] self-start rounded-[14px] px-6 bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90";
+  "ui-text-button-label h-[50px] min-h-[50px] w-full max-w-[244px] self-start rounded-full px-6 bg-[color:var(--app-accent)] text-[color:var(--app-accent-fg)] hover:bg-[color:var(--app-accent)]/90";
 
 export const DURATION_EQUAL_BUTTONS_GROUP_CLASSNAME =
   "grid w-full grid-cols-3 gap-2";
