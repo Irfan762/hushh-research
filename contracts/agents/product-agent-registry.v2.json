@@ -2857,7 +2857,7 @@
         "context_allowlist": [],
         "plaintext_telemetry": false
       },
-      "prompt_reference": null,
+      "prompt_reference": "../pkm_memory_kernel.v3.md",
       "required_scopes": [],
       "rollout": {
         "kill_switch": null,
@@ -2885,7 +2885,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "b5cb69eba04ba677aa93ac0f513054f3af355f51c44d7d5b61be82a9975afda2",
+      "system_instruction_sha256": "2faad1f2d87b77c06ae48e7757e01308c75dfadeb78b226622dc406db1e8a42f",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -3016,7 +3016,7 @@
         "context_allowlist": [],
         "plaintext_telemetry": false
       },
-      "prompt_reference": null,
+      "prompt_reference": "../pkm_memory_kernel.v3.md",
       "required_scopes": [],
       "rollout": {
         "kill_switch": null,
@@ -3044,7 +3044,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "69d6a533d25454462c437eed9a13d1b56ced8650fd2b246e336dc7276d68dfbf",
+      "system_instruction_sha256": "6a2cc3bca7057216c7b7adf5b4e53aa9605d97d6386da20f687757e5c3299a39",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -3145,7 +3145,7 @@
         "context_allowlist": [],
         "plaintext_telemetry": false
       },
-      "prompt_reference": null,
+      "prompt_reference": "../pkm_memory_kernel.v3.md",
       "required_scopes": [],
       "rollout": {
         "kill_switch": null,
@@ -3173,7 +3173,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "8e56fdf976d50dbfa1ef755c0a77faf1bea8b65cfc1327654afccdb5289bd6f2",
+      "system_instruction_sha256": "187b1d9386a4e3640c5e95ace73eb25c2ff3dd3a3943aed66d0a134693004b93",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
@@ -4217,7 +4217,7 @@
         "context_allowlist": [],
         "plaintext_telemetry": false
       },
-      "prompt_reference": null,
+      "prompt_reference": "../pkm_memory_kernel.v3.md",
       "required_scopes": [],
       "rollout": {
         "kill_switch": null,
@@ -4245,7 +4245,7 @@
         "voice": false,
         "web": false
       },
-      "system_instruction_sha256": "9151b817e0135693e0d162ab0f2f124fbc3bf738f8c9ba2dad3a2bc6aff4ac56",
+      "system_instruction_sha256": "13f8a174789a23f6f821871b5525b5ee714555d4fab5323e742ee948b0c4cf50",
       "telemetry_namespace": "agent.unclassified",
       "tools": [],
       "ui_type": "chat",
