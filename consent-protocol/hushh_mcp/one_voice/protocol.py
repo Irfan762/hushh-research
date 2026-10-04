@@ -174,6 +174,21 @@ class PingFrame(_Frame):
     type: Literal["ping"]
 
 
+class PerfFrame(_Frame):
+    """Content-free, optional client timing sample for operational logs."""
+
+    type: Literal["perf"]
+    metric: Literal[
+        "endpointing_client",
+        "audio_receive_to_audible",
+        "capture_callback_to_socket_enqueue",
+    ]
+    duration_ms: int = Field(ge=0, le=120_000, strict=True)
+    # Every relay-issued turn id is uuid4 hex[:12]. Restrict this field so an
+    # untrusted client cannot smuggle a transcript or other content into logs.
+    turn_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{12}$")
+
+
 class EndFrame(_Frame):
     type: Literal["end"]
 
@@ -192,6 +207,7 @@ ClientFrame = Annotated[
     | UiSettledFrame
     | InterruptFrame
     | PingFrame
+    | PerfFrame
     | EndFrame,
     Field(discriminator="type"),
 ]
@@ -241,6 +257,9 @@ def session_ready(
         "pending_actions": pending_actions,
         "setup_progress": setup_progress,
         "output_mime_type": OUTPUT_MIME,
+        # Optional extension advertised before the client may send perf
+        # frames. Older relays omit it during rolling deployment.
+        "client_perf": True,
         "features": list(RELAY_FEATURES),
     }
 

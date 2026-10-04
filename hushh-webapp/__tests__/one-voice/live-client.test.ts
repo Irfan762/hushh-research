@@ -153,12 +153,15 @@ async function settleTicket(): Promise<void> {
   await Promise.resolve();
 }
 
-async function connectReady(h: Harness): Promise<FakeSocket> {
+async function connectReady(
+  h: Harness,
+  ready: Record<string, unknown> = READY,
+): Promise<FakeSocket> {
   const pending = h.client.connect();
   await settleTicket();
   const socket = h.socket();
   socket.open();
-  socket.receive(READY);
+  socket.receive(ready);
   await pending;
   return socket;
 }
@@ -446,6 +449,30 @@ describe("audio", () => {
 });
 
 describe("control frames", () => {
+  it("sends bounded content-free perf frames and omits unsafe turn ids", async () => {
+    const h = harness();
+    expect(h.client.sendPerf("endpointing_client", 42, "abcdef012345")).toBe(false);
+    const socket = await connectReady(h, { ...READY, client_perf: true });
+    expect(h.client.sendPerf("endpointing_client", 840, "abcdef012345")).toBe(true);
+    expect(h.client.sendPerf("audio_receive_to_audible", 100, "private transcript")).toBe(true);
+    expect(h.client.sendPerf("endpointing_client", -1)).toBe(false);
+    expect(h.client.sendPerf("endpointing_client", 120_001)).toBe(false);
+    expect(h.client.sendPerf("endpointing_client", Number.NaN)).toBe(false);
+    expect(h.client.sendPerf("endpointing_client", 2.5)).toBe(false);
+    expect(h.client.sendPerf("unapproved" as "endpointing_client", 10)).toBe(false);
+    expect(socket.frames().filter((frame) => frame.type === "perf")).toEqual([
+      { type: "perf", metric: "endpointing_client", duration_ms: 840, turn_id: "abcdef012345" },
+      { type: "perf", metric: "audio_receive_to_audible", duration_ms: 100 },
+    ]);
+  });
+
+  it("never sends perf frames to an older relay without explicit capability", async () => {
+    const h = harness();
+    const socket = await connectReady(h); // Old relay omits client_perf.
+    expect(h.client.sendPerf("endpointing_client", 840, "abcdef012345")).toBe(false);
+    expect(socket.frames().filter((frame) => frame.type === "perf")).toEqual([]);
+  });
+
   it("serialises every control frame per the protocol", async () => {
     const h = harness();
     const socket = await connectReady(h);

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Literal
 
 import pytest
+from google.genai import types as genai_types
 
 from hushh_mcp.one_voice import protocol
 from hushh_mcp.one_voice.config import OneVoiceLiveConfig
@@ -269,20 +271,27 @@ async def test_invalid_token_closes_without_provider(monkeypatch):
     assert not hasattr(fake, "live_config")
 
 
-async def test_ready_then_end_records_close():
+async def test_ready_then_end_records_close(caplog):
     conversations = MemoryConversationStore()
     transport = FakeTransport([AUTH, {"type": "end"}])
     fake = FakeLive([LiveEvent(kind="setup_complete")])
-    await _run(_session(transport, fake, conversations=conversations))
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await _run(_session(transport, fake, conversations=conversations))
     ready = transport.frames("session.ready")[0]
     assert ready["conversation_id"] == CONV and ready["resumed"] is False
     assert ready["output_mime_type"] == "audio/pcm;rate=24000"
+    assert ready["client_perf"] is True
     assert transport.closed == (protocol.CLOSE_ENDED, "ended")
     assert conversations.closes == [(1000, "ended", True)]
     assert (
         "system_instruction" in fake.live_config
         and "resolve_person" in fake.live_config["system_instruction"]
     )
+    perf_logs = [
+        record.message for record in caplog.records if "one_voice.session_perf" in record.message
+    ]
+    assert len(perf_logs) == 1 and "user_input_turns=0" in perf_logs[0]
+    assert "per_user_input=" not in perf_logs[0]
 
 
 # --- audio + transcripts ---------------------------------------------------
@@ -298,6 +307,140 @@ async def test_audio_is_forwarded_and_oversized_frames_dropped():
     await _run(session)
     assert fake.audio_in == ["AAAA"]
     assert session.dropped_audio_frames == 1
+
+
+def test_perf_frame_accepts_only_bounded_content_free_measurements():
+    frame = protocol.parse_client_frame(
+        json.dumps(
+            {
+                "type": "perf",
+                "metric": "audio_receive_to_audible",
+                "duration_ms": 120_000,
+                "turn_id": "abcdef123456",
+            }
+        )
+    )
+    assert isinstance(frame, protocol.PerfFrame)
+    for invalid in (
+        {"metric": "transcript", "duration_ms": 100},
+        {"metric": "endpointing_client", "duration_ms": 120_001},
+        {"metric": "endpointing_client", "duration_ms": True},
+        {"metric": "endpointing_client", "duration_ms": 100, "turn_id": "private words"},
+        {"metric": "endpointing_client", "duration_ms": 100, "route": "/private"},
+    ):
+        with pytest.raises(protocol.FrameError):
+            protocol.parse_client_frame(json.dumps({"type": "perf", **invalid}))
+
+
+async def test_perf_frame_is_logged_without_extending_idle_or_reaching_provider(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    before = session.last_activity
+    frame = protocol.parse_client_frame(
+        '{"type":"perf","metric":"endpointing_client","duration_ms":840,"turn_id":"abcdef123456"}'
+    )
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_client_frame(frame)
+        await session._send(protocol.turn("model_start", turn_id="abcdef123456"))
+        await session._handle_client_frame(frame)
+    assert session.last_activity == before
+    assert fake.audio_in == [] and fake.events_sent == []
+    assert "turn=none metric=endpointing_client ms=840" in caplog.text
+    assert "turn=abcdef123456 metric=endpointing_client ms=840" in caplog.text
+
+
+def test_pinned_sdk_activity_end_markers_translate_without_inferred_fields():
+    activity = genai_types.LiveServerMessage(
+        voice_activity=genai_types.VoiceActivity(
+            voice_activity_type=genai_types.VoiceActivityType.ACTIVITY_END
+        )
+    )
+    signal = genai_types.LiveServerMessage(
+        voice_activity_detection_signal=genai_types.VoiceActivityDetectionSignal(
+            vad_signal_type=genai_types.VadSignalType.VAD_SIGNAL_TYPE_EOS
+        )
+    )
+    assert [(event.kind, event.activity_source) for event in translate_message(activity)] == [
+        ("activity_end", "voice_activity")
+    ]
+    assert [(event.kind, event.activity_source) for event in translate_message(signal)] == [
+        ("activity_end", "vad_signal")
+    ]
+
+
+async def test_eos_and_final_transcript_in_one_provider_message_are_correlated(caplog):
+    message = genai_types.LiveServerMessage(
+        voice_activity_detection_signal=genai_types.VoiceActivityDetectionSignal(
+            vad_signal_type=genai_types.VadSignalType.VAD_SIGNAL_TYPE_EOS
+        ),
+        server_content=genai_types.LiveServerContent(
+            input_transcription=genai_types.Transcription(text="private input", finished=True)
+        ),
+    )
+    events = translate_message(message)
+    assert [event.kind for event in events] == ["activity_end", "input_transcript"]
+    assert events[0].same_message_input_transcript is True
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        for event in events:
+            await session._handle_live_event(event)
+    assert "phase=provider_activity_end_to_transcript source=vad_signal ms=0" in caplog.text
+    assert "private input" not in caplog.text
+
+
+async def test_provider_activity_end_to_transcript_and_turn_counts_have_no_content(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    session.clock = lambda: 100.0
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_live_event(
+            LiveEvent(kind="activity_start", activity_source="voice_activity")
+        )
+        await session._handle_live_event(
+            LiveEvent(kind="activity_end", activity_source="voice_activity")
+        )
+        session.clock = lambda: 100.84
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="private spoken words", finished=True)
+        )
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        session._log_session_perf()
+    assert session._counters["user_input_turns"] == 1
+    assert session._counters["provider_turns"] == 2
+    assert "phase=provider_activity_end_to_transcript source=voice_activity ms=840" in caplog.text
+    assert "provider_turns_per_user_input=2.00" in caplog.text
+    assert "private spoken words" not in caplog.text
+
+
+async def test_late_provider_end_is_not_assigned_to_the_next_transcript(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="first input", finished=True)
+        )
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        await session._handle_live_event(
+            LiveEvent(kind="activity_end", activity_source="vad_signal")
+        )
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="second input", finished=True)
+        )
+    assert "phase=provider_activity_end_to_transcript" not in caplog.text
 
 
 async def test_provider_audio_and_transcripts_reach_the_client():
@@ -1357,6 +1500,13 @@ async def test_repeated_voice_proposal_reuses_the_open_card_on_the_current_turn(
     assert len(transport.frames("pending_action")) == 2
     assert _responses(fake, "ask")[-1]["card_shown"] is True
     assert pending.rows[card].status == "pending"
+    assert session._counters["user_input_turns"] == 2
+    assert session._counters["provider_turns"] == 1
+    assert session._counters["tool_calls"] == 3
+    assert session._counters["pending_created"] == 1
+    assert session._counters["pending_reused"] == 2
+    assert session._counters.get("pending_cancelled", 0) == 0
+    assert session._counters.get("confirmations_completed", 0) == 0
 
 
 async def test_card_shown_after_a_refused_yes_tells_the_model_without_confirming():
@@ -1626,6 +1776,7 @@ async def test_model_confirmed_voice_action_retires_its_card_without_relisting()
     assert transport.frames("pending_action.resolved")[-1]["status"] == "executed"
     assert transport.frames("tool.result")[-1]["result_public"]["status"] == "pending"
     assert pending.rows[card["pending_action_id"]].status == "executed"
+    assert session._counters["confirmations_completed"] == 1
 
 
 async def test_legacy_pending_without_turn_owner_only_settles_exact_card():
