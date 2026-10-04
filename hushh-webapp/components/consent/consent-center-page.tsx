@@ -3718,10 +3718,60 @@ export function ConsentCenterPage() {
                     heightMode="active"
                   >
                     <div>
-                    {!riaOutgoingCompatibilityRoute ? <div role="group" aria-label="Request direction" className="mb-3 flex flex-wrap gap-2 px-3">
-                      <Button size="standard" variant="none" aria-pressed={!sentDocumentRequests} onClick={() => setParam({ requestView: null, page: null, requestId: null, selected: null, bundleId: null })}>Received</Button>
-                      <Button size="standard" variant="none" aria-pressed={sentDocumentRequests} onClick={() => setParam({ requestView: "sent", page: null, requestId: null, selected: null, bundleId: null })}>Sent documents</Button>
-                    </div> : null}
+                    {!riaOutgoingCompatibilityRoute ? (
+                      <div className="mb-3 px-3">
+                        <div
+                          role="group"
+                          aria-label="Request direction"
+                          className="inline-flex items-center rounded-full bg-[color:var(--app-neutral-fill)] p-1 border border-[color:var(--app-separator)]"
+                        >
+                          <Button
+                            size="sm"
+                            variant="none"
+                            aria-pressed={!sentDocumentRequests}
+                            onClick={() =>
+                              setParam({
+                                requestView: null,
+                                page: null,
+                                requestId: null,
+                                selected: null,
+                                bundleId: null,
+                              })
+                            }
+                            className={cn(
+                              "h-8 min-h-0 rounded-full px-4 text-xs font-medium transition-all duration-150",
+                              !sentDocumentRequests
+                                ? "bg-[color:var(--app-card-surface-default-solid)] text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+                                : "bg-transparent text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)] shadow-none"
+                            )}
+                          >
+                            Received
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="none"
+                            aria-pressed={sentDocumentRequests}
+                            onClick={() =>
+                              setParam({
+                                requestView: "sent",
+                                page: null,
+                                requestId: null,
+                                selected: null,
+                                bundleId: null,
+                              })
+                            }
+                            className={cn(
+                              "h-8 min-h-0 rounded-full px-4 text-xs font-medium transition-all duration-150",
+                              sentDocumentRequests
+                                ? "bg-[color:var(--app-card-surface-default-solid)] text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.08)]"
+                                : "bg-transparent text-[color:var(--app-secondary-label)] hover:text-[color:var(--app-label)] shadow-none"
+                            )}
+                          >
+                            Sent documents
+                          </Button>
+                        </div>
+                      </div>
+                    ) : null}
                     <ConsentSurfaceListSection
                       loading={pendingResource.loading}
                       emptyMessage={
