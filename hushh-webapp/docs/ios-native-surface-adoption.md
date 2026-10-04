@@ -111,6 +111,46 @@ than acquire separate native implementations.
 | Accordion, collapsible, carousel, pagination, sidebar and scroll area | [Shared UI primitives](../components/ui/) | Retain content/navigation semantics unless an individually justified native container is adopted. Do not change scroll ownership with a cosmetic primitive swap. |
 | Command, tooltip, keyboard hints, empty/loading/progress/status | [Shared UI primitives](../components/ui/) | Retain existing semantic feedback and keyboard/accessibility behavior; do not add independent native overlays for every state. |
 
+### Stock Apple Pattern Mapping
+
+Compare **interaction contracts**, not just pixels or translucency. A stock app's
+appearance does not establish whether its implementation uses SwiftUI or UIKit.
+Apple's documented patterns inform our adapters; React still owns routes, values
+and operation authority. Reference apps below are comparison targets, not a claim
+that each one has been inspected on the physical device.
+
+| Our shared family | Apple reference and eligible control | Behavior to preserve |
+| --- | --- | --- |
+| Shell Back / Close / Done | Hierarchical navigation and sheet dismissal; SwiftUI `Button` with a standard symbol and accessible name | Back returns one step; Close/Cancel dismisses without saving; Done completes the authored task. Do not map all three to the same handler. Retain the expanded-header slot and focus return. |
+| More and short action lists | Toolbar menus; Calculator's mode menu is a physical comparison target. SwiftUI `Menu`, or controlled UIKit action sheet for a DOM trigger | Anchor to the trigger; show concise, contextual actions and unavailable state. Dismissal performs no action; destructive choices require the owning confirmation. A popup must retire under privacy/owner changes. |
+| Destination tabs | Stock Clock tab bar; retain our standard UIKit `UITabBar` | Selection reflects the settled destination, not a tap promise. Sidebar state does not change the selected tab. Do not introduce `TabView` content containment or assume controller-only Search/minimization behavior exists. |
+| Local bounded choices | Apple's segmented-control pattern; SwiftUI `Picker` with segmented style | Closely related, short choices with a visible selected value and consistent segment widths. Do not mix navigation/actions with selection or bypass the existing swipe-settlement owner. Scrolling/collapsing rails remain React. |
+| Dates and duration | Standard picker pattern; Calendar date selection and Clock duration selection are comparison targets | Date/calendar values and elapsed duration have different semantics. Preserve bounds, units, cancellation and open-ended duration; use an explicit choice ID, not a formatted display string as authority. |
+| Share / photo / bounded sheets | System Share, existing Camera adapter, and Apple's sheet pattern | Keep existing permission/export owners. Do not stack a second competing presentation. Preserve modal isolation, unsaved-change policy and return to the original content; rich content remains React. |
+| Prominent and secondary buttons | Apple's standard button styles, roles and press states | Keep at least a 44×44-point hit region on iPhone without making every visible button large. Distinguish priority with style, not inconsistent dimensions. Project app accent/theme; preserve destructive role and disabled/busy state. No added idle bounce. |
+
+Sources: [buttons](https://developer.apple.com/design/human-interface-guidelines/buttons),
+[menus](https://developer.apple.com/design/human-interface-guidelines/menus),
+[toolbars](https://developer.apple.com/design/human-interface-guidelines/toolbars),
+[tab bars](https://developer.apple.com/design/human-interface-guidelines/tab-bars),
+[segmented controls](https://developer.apple.com/design/human-interface-guidelines/segmented-controls),
+[pickers](https://developer.apple.com/design/human-interface-guidelines/pickers),
+and [sheets](https://developer.apple.com/design/human-interface-guidelines/sheets).
+Apple's [SwiftUI design session](https://developer.apple.com/videos/play/wwdc2025/323/)
+also demonstrates toolbar/menu grouping and Calendar, Mail and Health patterns.
+Those examples are not permission to add another navigation stack to Capacitor.
+
+Use content-free physical observations: whitelisted control names, geometry and
+selection/dismissal only. Do not collect stock-app histories, notes, photos,
+alarms or account details. Keep One running and prove return to its warm session.
+Visual similarity never substitutes for VoiceOver, Dynamic Type, theme,
+privacy, reduced-motion/transparency, rotation or frame-pacing acceptance.
+The 2026-10-04 iPhone reference probe observed Clock's four available tabs and
+their selected state, then returned to interactive, unlocked Chat. It did not
+inspect timers/alarms, establish Apple's implementation framework, or prove
+picker/menu parity. Unobserved reference families remain documentation-backed
+comparison targets.
+
 ### Pickers and OS Presentations
 
 | Existing owner | Current implementation | Recommendation |
@@ -212,7 +252,11 @@ do not reinstall the product app to manufacture continuity. Keep test attachment
 disabled and destroy credential-run diagnostics. On 2026-10-04, the current
 candidate passed the identity-bound normal unlock/Chat-drawer check, followed by
 all three existing warm navigation, Back and photo-preview checks without a
-session reset. This proves those interactions, not the outstanding visual,
+session reset. The latest run also exercised a real transcript body pan: the
+drawer opened without moving the host/composer or losing vault admission.
+A separate in-memory pixel comparison found the Chat status canvas matching its
+header; this is not all-route or dark-theme acceptance. This proves those
+interactions, not the outstanding visual,
 accessibility or release-promotion gates above.
 
 The focused Back device contract in [AppUITests](../ios/App/AppUITests/AppUITests.swift)
