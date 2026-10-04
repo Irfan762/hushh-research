@@ -2346,6 +2346,7 @@
       },
       "voice_action_contract_file": "app/one/page.voice-action-contract.json",
       "voice_action_contract_ids": [
+        "route.location_memory_home",
         "route.one_agents",
         "route.one_feed",
         "route.one_location",
@@ -4640,6 +4641,146 @@
         "initialRoute": "/login?redirect=%2Fone%2Fpkm",
         "expectedMarker": "native-route-pkm",
         "expectedRoute": "/one/pkm",
+        "autoReviewerLogin": true,
+        "expectedAuth": "authenticated",
+        "allowedDataStates": [
+          "loaded",
+          "empty-valid",
+          "unavailable-valid"
+        ]
+      },
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
+      "route": "/one/pkm/location",
+      "page_file": "app/one/pkm/location/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "standard",
+        "exemption_reason": null,
+        "shell_verification_file": "components/profile/pkm-settings-shell.tsx",
+        "shell_verification_includes": [
+          "AppPageShell",
+          "AppPageHeaderRegion",
+          "AppPageContentRegion",
+          "PageHeader",
+          "SurfaceStack"
+        ],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.one.pkm.location",
+          "purpose": "Help the person read saved places and visit details directly in Location memory.",
+          "screen": "pkm_location",
+          "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
+          "proactivity": "on_entry",
+          "primary_action_id": "route.location_memory_home",
+          "happy_path_action_ids": [
+            "route.location_memory_home"
+          ],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Explain the current guard and retain the goal.",
+            "cancelled": "Respect the cancellation and retain a safe next step.",
+            "failed": "Acknowledge the failure without claiming completion.",
+            "timeout": "Retain the goal and offer one safe retry.",
+            "callback_error": "Return to the verified callback recovery path without claiming success.",
+            "route_mismatch": "Use the verified current route and its generated actions only."
+          },
+          "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+          "next_route": "/one/pkm/location",
+          "return_policy": "stay",
+          "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+        }
+      },
+      "native": {
+        "route": "/one/pkm/location",
+        "classification": "native-required-functional",
+        "initialRoute": "/login?redirect=%2Fone%2Fpkm%2Flocation",
+        "expectedMarker": "native-route-pkm-location",
+        "expectedRoute": "/one/pkm/location",
+        "autoReviewerLogin": true,
+        "expectedAuth": "authenticated",
+        "allowedDataStates": [
+          "loaded",
+          "empty-valid",
+          "unavailable-valid"
+        ]
+      },
+      "shell": {
+        "app_page_shell": false,
+        "page_header": false,
+        "settings_ui": false,
+        "shared_loader": false,
+        "back_button_pattern": "shared-shell"
+      },
+      "voice_action_contract_file": null,
+      "voice_action_contract_ids": [],
+      "api_dependencies": [],
+      "native_plugin_dependencies": [],
+      "thread_and_consent_contract": null
+    },
+    {
+      "route": "/one/pkm/location/detail",
+      "page_file": "app/one/pkm/location/detail/page.tsx",
+      "physical_page_exists": true,
+      "route_contract": {
+        "mode": "standard",
+        "exemption_reason": null,
+        "shell_verification_file": "components/profile/pkm-settings-shell.tsx",
+        "shell_verification_includes": [
+          "AppPageShell",
+          "AppPageHeaderRegion",
+          "AppPageContentRegion",
+          "PageHeader",
+          "SurfaceStack"
+        ],
+        "interaction_layer_policy": {
+          "allowed_families": []
+        },
+        "voice_playbook": {
+          "playbook_id": "route.one.pkm.location.detail",
+          "purpose": "Help the person manage a selected Location memory detail through its verified controls.",
+          "screen": "pkm_location_detail",
+          "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
+          "proactivity": "on_entry",
+          "primary_action_id": "route.location_memory_home",
+          "happy_path_action_ids": [
+            "route.location_memory_home"
+          ],
+          "required_inputs": [],
+          "recoveries": {
+            "blocked": "Explain the current guard and retain the goal.",
+            "cancelled": "Respect the cancellation and retain a safe next step.",
+            "failed": "Acknowledge the failure without claiming completion.",
+            "timeout": "Retain the goal and offer one safe retry.",
+            "callback_error": "Return to the verified callback recovery path without claiming success.",
+            "route_mismatch": "Use the verified current route and its generated actions only."
+          },
+          "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+          "next_route": "/one/pkm/location/detail",
+          "return_policy": "stay",
+          "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+        }
+      },
+      "native": {
+        "route": "/one/pkm/location/detail",
+        "classification": "native-required-functional",
+        "initialRoute": "/login?redirect=%2Fone%2Fpkm%2Flocation%2Fdetail",
+        "expectedMarker": "native-route-pkm-location-detail",
+        "expectedRoute": "/one/pkm/location/detail",
         "autoReviewerLogin": true,
         "expectedAuth": "authenticated",
         "allowedDataStates": [
@@ -9546,5 +9687,5 @@
       "thread_and_consent_contract": null
     }
   ],
-  "content_sha256": "acd64281137ae5084aedeb9549d7cb235dd63637aea40cb032a899cbdee0cce6"
+  "content_sha256": "653329e179a943e1af0ffeb002dfe298442ce653177c104485d85d28bdb6eb04"
 }

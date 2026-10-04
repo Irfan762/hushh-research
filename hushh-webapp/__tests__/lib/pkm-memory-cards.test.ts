@@ -11,6 +11,54 @@ import {
   updatePkmDomainValue,
 } from "@/lib/pkm/pkm-memory-cards";
 import type { PersonalKnowledgeModelMetadata } from "@/lib/services/personal-knowledge-model-service";
+import { buildLocationMemoryPresentation, resolveLocationMemoryField } from "@/lib/profile/location-memory-presentation";
+
+describe("Location memory read projection", () => {
+  it("retains legacy nested facts, primitive values and malformed collection entries without changing their paths", () => {
+    const presentation = buildLocationMemoryPresentation({ data: { saved_places: { locations: ["Legacy place", { label: "Label only" }, { category: "home" }] }, legacy: { addresses: [{ note: "Legacy note", enabled: false, floor: 0 }] }, home_city: "Synthetic city" } });
+    const fields = presentation.sections.flatMap((section) => section.fields);
+    expect(fields.map((field) => field.value)).toEqual(["Legacy place", "Label only", "home", "Legacy note", "false", "0", "Synthetic city"]);
+    expect(fields.find((field) => field.value === "Legacy place")?.card.pathSegments).toEqual(["saved_places", "locations", 0]);
+    expect(fields.find((field) => field.value === "Legacy note")?.card.pathSegments).toEqual(["legacy", "addresses", 0, "note"]);
+    expect(buildLocationMemoryPresentation({ data: null }).sections).toEqual([]);
+    expect(buildLocationMemoryPresentation({ data: { saved_places: { locations: [] }, visit_notes: { visits: [] } } }).sections).toEqual([]);
+  });
+
+  it("exposes complete place details without changing the typed record or reserved policy", () => {
+    const address = "Synthetic long address ".repeat(20);
+    const data = { saved_places: { schema_version: 2, locations: [{ id: "place-a", label: "Home", address, addressBase: "Distinct street", latitude: 10, longitude: 20, addressDetails: { houseOrFlat: "12", postalCode: "12345" } }] }, visit_notes: { visits: [{ placeId: "venue-a", label: "Cafe", note: "Synthetic note", rating: 4 }] } };
+    const original = structuredClone(data);
+    const presentation = buildLocationMemoryPresentation({ data });
+    expect(data).toEqual(original);
+    expect(presentation.sections.map((section) => section.title)).toEqual(["Home", "Cafe"]);
+    const fields = presentation.sections[0]!.fields;
+    expect(fields.find((field) => field.label === "Address")?.value).toBe(address);
+    expect(fields.find((field) => field.label === "Street address")?.value).toBe("Distinct street");
+    expect(fields.find((field) => field.label === "House or flat")?.card.pathSegments).toEqual(["saved_places", "locations", 0, "addressDetails", "houseOrFlat"]);
+    expect(fields.every((field) => !field.card.editable && field.card.reservedOwner?.appName === "Location")).toBe(true);
+  });
+
+  it("filters hidden ancestors and fields and keeps secrets out of routing identity", () => {
+    const data = { _private: { note: "hidden ancestor" }, access_token: { note: "hidden token" }, agent_memory: { places: [{ name: "Visible", note: "Visible note", access_token: "secret-one" }] } };
+    const first = buildLocationMemoryPresentation({ data });
+    data.agent_memory.places[0]!.access_token = "secret-two";
+    const next = buildLocationMemoryPresentation({ data });
+    expect(first.sections.flatMap((section) => section.fields.map((field) => field.value))).toEqual(["Visible", "Visible note"]);
+    expect(next.sections.flatMap((section) => section.fields.map((field) => field.selector))).toEqual(first.sections.flatMap((section) => section.fields.map((field) => field.selector)));
+  });
+
+  it("resolves stable record links after reordering and fails closed for deleted or ambiguous records", () => {
+    const a = { id: "a", label: "Home", address: "Same address" };
+    const b = { id: "b", label: "Work", address: "Same address" };
+    const first = buildLocationMemoryPresentation({ data: { saved_places: { locations: [a, b] } } });
+    const selector = first.sections[0]!.fields[0]!.selector;
+    const reordered = buildLocationMemoryPresentation({ data: { saved_places: { locations: [b, a] } } });
+    expect(resolveLocationMemoryField(reordered, selector)?.card.pathSegments).toEqual(["saved_places", "locations", 1, "address"]);
+    expect(resolveLocationMemoryField(buildLocationMemoryPresentation({ data: { saved_places: { locations: [b] } } }), selector)).toBeNull();
+    expect(resolveLocationMemoryField(buildLocationMemoryPresentation({ data: { saved_places: { locations: [a, a] } } }), selector)).toBeNull();
+    expect(resolveLocationMemoryField(reordered, "Home/Same address")).toBeNull();
+  });
+});
 
 const metadata: PersonalKnowledgeModelMetadata = {
   userId: "user-1",
