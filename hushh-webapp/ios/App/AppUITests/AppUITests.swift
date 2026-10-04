@@ -220,22 +220,30 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(stop.waitForExistence(timeout: 10), "LIVE_ADAPTER_UNAVAILABLE")
         let listening = webView.staticTexts["Listening"].firstMatch
         XCTAssertTrue(listening.waitForExistence(timeout: 25), "VOICE_LISTENING_UNAVAILABLE")
+        let inputMatches = webView.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@", "You", "ready for testing"
+        ))
+        let outputMatches = webView.staticTexts.matching(NSPredicate(
+            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@ AND NOT (label CONTAINS[c] %@)",
+            "One", "ready for testing", "still speaking"
+        ))
+        let inputCount = inputMatches.count
+        let outputCount = outputMatches.count
         // The credential-free host harness speaks a fixed synthetic question
         // only after this marker. It records neither microphone nor transcript.
         print("VOICE_SPEECH_READY")
-        let input = webView.staticTexts.matching(NSPredicate(
-            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@", "You", "ready for testing"
-        )).firstMatch
-        XCTAssertTrue(input.waitForExistence(timeout: 25), "VOICE_NO_RECOGNIZED_INPUT")
-        let output = webView.staticTexts.matching(NSPredicate(
-            format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@ AND NOT (label CONTAINS[c] %@)",
-            "One", "ready for testing", "still speaking"
-        )).firstMatch
-        XCTAssertTrue(output.waitForExistence(timeout: 45), "VOICE_RESPONSE_NOT_COMPLETED")
-        let settled = webView.staticTexts["Done"].firstMatch
-        XCTAssertTrue(settled.waitForExistence(timeout: 15), "VOICE_PLAYBACK_NOT_SETTLED")
+        let inputDeadline = Date().addingTimeInterval(25)
+        while inputMatches.count <= inputCount && Date() < inputDeadline { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertGreaterThan(inputMatches.count, inputCount, "VOICE_NO_RECOGNIZED_INPUT")
+        let outputDeadline = Date().addingTimeInterval(45)
+        while outputMatches.count <= outputCount && Date() < outputDeadline { Thread.sleep(forTimeInterval: 0.25) }
+        XCTAssertGreaterThan(outputMatches.count, outputCount, "VOICE_RESPONSE_NOT_COMPLETED")
+        // Ordinary speech returns to Listening, not the tool-outcome Done state.
+        // In iOS speakerphone-safe mode the label stays Speaking while the
+        // playback scheduler is still audible, even after model_end arrives.
+        XCTAssertTrue(listening.waitForExistence(timeout: 15), "VOICE_PLAYBACK_NOT_SETTLED")
         let busy = webView.staticTexts.matching(NSPredicate(
-            format: "label IN %@", ["Speaking", "Understanding", "Working…"]
+            format: "label IN %@", ["Speaking", "One is asking", "Understanding", "Working…"]
         )).firstMatch
         let quietUntil = Date().addingTimeInterval(5)
         while Date() < quietUntil {

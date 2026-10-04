@@ -68,7 +68,7 @@ export function voicePhaseLabel(
   if (
     options?.speaking &&
     options.halfDuplex &&
-    (phase === "asking" || phase === "complete")
+    (phase === "asking" || phase === "complete" || phase === "listening")
   ) {
     return "Speaking";
   }

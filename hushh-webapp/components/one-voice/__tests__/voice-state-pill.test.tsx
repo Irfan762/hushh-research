@@ -73,6 +73,9 @@ describe("VoiceStatePill", () => {
       voicePhaseLabel("asking", { speaking: true, halfDuplex: true }),
     ).toBe("Speaking");
     expect(voicePhaseLabel("asking", { speaking: true })).toBe("One is asking");
+    // A model-end state can arrive before scheduled speaker audio drains.
+    expect(voicePhaseLabel("listening", { speaking: true, halfDuplex: true })).toBe("Speaking");
+    expect(voicePhaseLabel("listening", { speaking: false, halfDuplex: true })).toBe("Listening");
   });
 
   it("keeps the launcher identity on the primary control and wires the three actions", () => {
