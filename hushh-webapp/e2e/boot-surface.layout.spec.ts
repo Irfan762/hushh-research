@@ -392,30 +392,44 @@ test("one surface and zero layout shift across the guard chain; the old sequence
 });
 
 test("a warm chain paints nothing; a slow one shows once and exits once", async ({ page }) => {
+  // The virtual clock makes "inside the show-after window" exact: with real
+  // timers a loaded runner stretches 50 ms waits past 200 ms, and then showing
+  // the surface would be the correct outcome.
+  await page.clock.install();
   await open(page, { width: 393, height: 852, dark: false });
+  await page.clock.runFor(2_000);
   await settleIdle(page);
+  // install() lets time keep flowing; pause it so only runFor moves it.
+  await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1_000));
+  const hold = (stage: string) => page.locator(`span[data-boot-stage="${stage}"]`).waitFor({ state: "attached" });
 
   // Fast path: three guards hand over inside the show-after window.
-  await page.evaluate(async () => {
-    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    window.bootFixture.set("session");
-    await wait(50);
-    window.bootFixture.set("vault");
-    await wait(50);
-    window.bootFixture.set("chat");
-  });
-  await page.waitForTimeout(700);
-  const fast = await page.evaluate(() => [...window.bootFixture.phases]);
-  expect(fast.filter((phase) => /visible|launch|exiting/.test(phase))).toEqual([]);
+  await page.evaluate(() => window.bootFixture.set("session"));
+  await hold("session");
+  await page.clock.runFor(60);
+  await page.evaluate(() => window.bootFixture.set("vault"));
+  await hold("vault");
+  await page.clock.runFor(60);
+  await page.evaluate(() => window.bootFixture.set("chat"));
   await expect(page.getByTestId("first-usable")).toBeVisible();
+  await page.clock.runFor(1_000);
+  const fast = await page.evaluate(() => [...window.bootFixture.phases]);
+  expect(fast).toContain("pending");
+  expect(fast.filter((phase) => /visible|launch|exiting/.test(phase))).toEqual([]);
 
   // Slow path: shown once, no flash back, a single exit.
-  await settleIdle(page);
-  await showStage(page, "vault");
-  await showStage(page, "phone");
+  await page.evaluate(() => { window.bootFixture.phases.length = 0; });
+  await page.evaluate(() => window.bootFixture.set("vault"));
+  await hold("vault");
+  await page.clock.runFor(300);
+  await page.evaluate(() => window.bootFixture.set("phone"));
+  await hold("phone");
+  await page.clock.runFor(300);
   await page.evaluate(() => window.bootFixture.set("chat"));
-  await settleIdle(page).catch(() => undefined);
-  await expect.poll(() => page.evaluate(() => window.bootFixture.state().phase)).toBe("idle");
+  await expect(page.getByTestId("first-usable")).toBeAttached();
+  await page.clock.runFor(1_000);
+  const slow = await page.evaluate(() => [...window.bootFixture.phases]);
+  expect(slow).toEqual(["pending", "visible", "exiting", "idle"]);
 });
 
 test("hands the vault stage to the interactive unlock screen", async ({ page }) => {

@@ -124,10 +124,52 @@ function armDeadline(): void {
   }, delay);
 }
 
+const SERVER_HOLD_RECHECK_MS = 100;
+let serverHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+function isRendered(node: Element | null): boolean {
+  for (let current = node; current && current !== document.documentElement; current = current.parentElement) {
+    if (getComputedStyle(current).display === "none") return false;
+  }
+  return true;
+}
+
+/**
+ * Stages held by guard markup that has not claimed yet.
+ *
+ * On the web a guard can arrive as server HTML and stay un-hydrated until its
+ * JavaScript loads, while the shell beside it has already hydrated: measured
+ * on localhost, `/one` showed "Checking secure session" for ~6.7 s with no
+ * claim registered, and the surface concluded nothing was held. The holder's
+ * own markup (`span[data-boot-stage]`, `components/app-ui/hushh-loader.tsx`)
+ * is the truth until then. Markup inside a hidden subtree (a retained route
+ * behind `display: none`) is not a hold.
+ */
+function serverHeldStages(): BootStage[] {
+  if (typeof document === "undefined") return [];
+  const stages: BootStage[] = [];
+  for (const node of document.querySelectorAll<HTMLElement>("span[data-boot-stage]")) {
+    const stage = node.dataset.bootStage as BootStage | undefined;
+    if (stage && isRendered(node.parentElement)) stages.push(stage);
+  }
+  return stages;
+}
+
 function evaluate(): void {
+  let stage = activeBootStage(claims.values());
+  if (stage === null) {
+    // Hydration can drop an un-claimed holder without any claim or release
+    // to announce it, so re-check while one is on screen.
+    stage = activeBootStage(serverHeldStages());
+    if (stage !== null && serverHoldTimer === null) {
+      serverHoldTimer = setTimeout(() => {
+        serverHoldTimer = null;
+        evaluate();
+      }, SERVER_HOLD_RECHECK_MS);
+    }
+  }
   // Before the first route has committed, "nothing held" only means the
   // guards have not mounted yet; keep the launch surface up.
-  const stage = activeBootStage(claims.values());
   if (stage === null && !routeCommitted) return;
   const at = now();
   recordStage(stage, at);
@@ -282,6 +324,8 @@ export function resetBootSurfaceForTests(
   committedPath = null;
   if (deadlineTimer !== null) clearTimeout(deadlineTimer);
   deadlineTimer = null;
+  if (serverHoldTimer !== null) clearTimeout(serverHoldTimer);
+  serverHoldTimer = null;
   settleQueued = false;
   claimSequence = 0;
   started = false;

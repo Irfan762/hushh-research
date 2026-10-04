@@ -315,6 +315,48 @@ describe("boot surface with real guards", () => {
     expect(screen.getByTestId("boot-surface")).toHaveAttribute("data-boot-phase", "exiting");
   });
 
+  it("counts a guard's server-rendered, not-yet-hydrated holder as held", async () => {
+    // On the web a guard can arrive as server HTML long before its script
+    // hydrates; the shell's commit marker must not read that as "nothing held".
+    function Shell({ serverHolder, hiddenHolder }: { serverHolder: boolean; hiddenHolder?: boolean }) {
+      return (
+        <>
+          <BootSurface />
+          <BootRouteCommitted />
+          {serverHolder ? (
+            <div>
+              <span hidden data-boot-stage="session" />
+            </div>
+          ) : null}
+          {hiddenHolder ? (
+            <div style={{ display: "none" }}>
+              <span hidden data-boot-stage="vault" />
+            </div>
+          ) : null}
+        </>
+      );
+    }
+    resetBootSurfaceForTests();
+    const view = render(<Shell serverHolder />);
+    act(() => startBootSurface("web"));
+    await advance(showAfterMs + 50);
+    const surface = screen.getByTestId("boot-surface");
+    expect(surface).toHaveAttribute("data-boot-phase", "launch");
+    expect(screen.getByRole("status")).toHaveTextContent("Checking it's you");
+    // Hydration drops the holder without a claim or release: the re-check sees it.
+    view.rerender(<Shell serverHolder={false} />);
+    await advance(150);
+    expect(surface).toHaveAttribute("data-boot-phase", "exiting");
+
+    // Markup inside a hidden subtree (a retained route) is not a hold.
+    view.unmount();
+    resetBootSurfaceForTests();
+    render(<Shell serverHolder={false} hiddenHolder />);
+    act(() => startBootSurface("web"));
+    await advance(showAfterMs + 150);
+    expect(screen.getByTestId("boot-surface")).not.toHaveAttribute("data-boot-phase", "launch");
+  });
+
   it("offers Try again when a stage hangs", async () => {
     render(<App stage="phone" />);
     await advance(showAfterMs + stuckAfterMs);
