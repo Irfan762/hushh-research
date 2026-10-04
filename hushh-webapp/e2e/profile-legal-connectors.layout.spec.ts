@@ -274,3 +274,23 @@ for (const width of [320, 393, 1440]) {
     });
   }
 }
+
+// Review renders for the founder, written only when LEGAL_RENDER_DIR is set.
+test.describe("review renders", () => {
+  test.skip(!process.env.LEGAL_RENDER_DIR, "set LEGAL_RENDER_DIR to write review renders");
+  for (const [width, theme] of [[393, "light"], [393, "dark"], [1440, "light"]] as const) {
+    test(`pane renders at ${width}px ${theme}`, async ({ page }) => {
+      const dir = process.env.LEGAL_RENDER_DIR!;
+      for (const [name, at] of [
+        ["pane-legal-terms", "/one?profile_pane=1&profile_panel=legal&profile_detail=terms"],
+        ["pane-legal-section", "/one?profile_pane=1&profile_panel=legal"],
+        ["pane-connectors", "/?profile_pane=1&profile_panel=connectors"],
+      ] as const) {
+        await mount(page, { width, theme, at });
+        await expect(pane(page)).toBeVisible();
+        await page.waitForTimeout(400);
+        await page.screenshot({ path: path.join(dir, `${name}-${width}-${theme}.png`) });
+      }
+    });
+  }
+});
