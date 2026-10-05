@@ -1206,12 +1206,35 @@ final class AppUITests: XCTestCase {
                 XCTFail("Vault secure entry could not be cleared; unlock was not submitted")
                 return false
             }
-            field.typeText(passphrase)
-            // AX masking is advisory, not authentication. Submit once through
-            // the normal cryptographic unlock, then require protected content
-            // and absence of the gate in the caller. Never bootstrap or retry
-            // a rejected credential to make a live-session test pass.
-            print("VAULT_ENTRY_MASK length_matched=\(entryLength() == passphrase.utf16.count)")
+            // WebKit's controlled secure input can lose focus during bulk
+            // typing. Acknowledge each insertion before advancing; never
+            // resend an uncertain character or submit an incomplete entry.
+            // Mask progression checks delivery only, not authentication.
+            var acknowledgedLength = 0
+            for character in passphrase {
+                guard field.isHittable, app.keyboards.firstMatch.exists else {
+                    XCTFail("Vault secure entry lost focus; unlock was not submitted")
+                    return false
+                }
+                let insertion = String(character)
+                field.typeText(insertion)
+                acknowledgedLength += insertion.utf16.count
+                let expectedLength = acknowledgedLength
+                let inserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                    entryLength() == expectedLength
+                }, object: field)
+                guard XCTWaiter.wait(for: [inserted], timeout: 3) == .completed else {
+                    let observed = entryLength()
+                    let reason = observed == nil ? "unknown" : observed == 0 ? "empty" : observed! < expectedLength ? "short" : "long"
+                    print("VAULT_INPUT_DELIVERY_UNACKNOWLEDGED reason=\(reason)")
+                    XCTFail("Vault secure entry insertion was not acknowledged; unlock was not submitted")
+                    return false
+                }
+            }
+            // Submit once through the normal cryptographic unlock, then
+            // require protected content and absence of the gate in the caller.
+            // Never bootstrap or retry a rejected credential to pass a test.
+            print("VAULT_ENTRY_MASK length_matched=true")
             for unlockButton in unlockButtons {
                 if unlockButton.waitForExistence(timeout: 2), unlockButton.isHittable {
                     vaultUnlockSubmitted = true
