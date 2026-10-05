@@ -663,6 +663,40 @@ async def test_ui_settled_tells_the_model_which_screen_it_was_about():
     }
 
 
+async def test_a_draft_open_is_a_directive_that_names_a_row_not_a_draft():
+    """ "Open the second draft" reaches the surface as which row, from which offer,
+    in which conversation -- the surface fetches the draft itself -- and its
+    settle reaches the model as an open_draft outcome."""
+    from hushh_mcp.one_voice.tools.mail_drafts import DraftOpenDispatched
+
+    transport = FakeTransport()
+    fake = FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Open the second"))
+    await session._emit_side_effects(
+        ToolCallOutcome(
+            result=DraftOpenDispatched(
+                ordinal=2, offer_revision=4, conversation_id=CONV, spoken_facts=["Opening it."]
+            )
+        ),
+        origin_turn_id=session.turn.turn_id,
+    )
+    directive = transport.frames("ui_directive")[-1]
+    assert directive["kind"] == "open_draft"
+    assert directive["payload"] == {"ordinal": 2, "offer_revision": 4, "conversation_id": CONV}
+    await session._handle_client_frame(
+        protocol.UiSettledFrame(
+            type="ui.settled", directive_id=directive["directive_id"], status="opened"
+        )
+    )
+    event = json.loads(fake.events_sent[-1].removeprefix("[ONE_EVENT] "))
+    assert (event["status"], event["directive_kind"]) == ("opened", "open_draft")
+
+
 async def test_superseded_confirmation_is_cancelled_before_it_can_be_relisted():
     transport = FakeTransport()
     fake = FakeLive([])

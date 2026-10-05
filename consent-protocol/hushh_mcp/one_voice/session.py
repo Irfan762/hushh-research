@@ -653,6 +653,9 @@ class VoiceSession:
             screen_id=self.ctx.screen.screen_id,
             display_name=self._display_name,
             resumed=self.conversation.session_count > 1,
+            # The owner's zone, so "tomorrow at 9" means their 9. The session
+            # clock is monotonic, so the instruction reads the wall clock itself.
+            timezone=self._client_timezone,
         )
         live_config = {
             "system_instruction": instruction,
@@ -2354,6 +2357,22 @@ class VoiceSession:
                 protocol.ui_directive(
                     directive_id=self._remember_directive(origin_turn_id, kind="open_mail"),
                     kind="open_mail",
+                    turn_id=origin_turn_id,
+                    payload={
+                        "ordinal": public.get("ordinal"),
+                        "offer_revision": public.get("offer_revision"),
+                        "conversation_id": public.get("conversation_id"),
+                    },
+                )
+            )
+        if not client_steps_only and public.get("status") == protocol.DRAFT_OPEN_DISPATCHED:
+            # The same binding for a draft row: which row, from which offer, in
+            # which conversation. The surface fetches the draft through its own
+            # authenticated route; nothing about it passes through here.
+            await self._send(
+                protocol.ui_directive(
+                    directive_id=self._remember_directive(origin_turn_id, kind="open_draft"),
+                    kind="open_draft",
                     turn_id=origin_turn_id,
                     payload={
                         "ordinal": public.get("ordinal"),
