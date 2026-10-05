@@ -405,11 +405,12 @@ function AppShellFrame({ children }: ProvidersProps) {
   const bottomShellModel = useMemo(
     () => ({
       navigationHidden: hideBottomNavigation,
-      // The canonical Chat route already exposes its text composer. Keep the
-      // idle voice launcher out of that route's visual hierarchy while allowing
-      // an active command to remain visible and cancellable.
+      // Routes with an owned message composer do not also show the global One
+      // composer; an active command remains visible and cancellable.
       agentBarHidden:
-        isAuthenticated && !authLoading && pathname === ROUTES.HOME,
+        isAuthenticated &&
+        !authLoading &&
+        (pathname === ROUTES.HOME || pathname === ROUTES.ONE_MESSAGES),
       hidden: bottomChromeHidden,
     }),
     [
