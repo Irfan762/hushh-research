@@ -155,6 +155,26 @@ function clampRenderedSwipeBounds(
   engine.translate.to(clamped);
 }
 
+/** Embla's last interpolation can follow its settled test without emitting
+ * another scroll frame. Normalize only that terminal snap, never a live drag
+ * or in-flight frame, so WebKit cannot leave a neighboring pane's edge visible. */
+function alignSettledSwipePosition(api: EmblaCarouselType, index: number): void {
+  const engine = api.internalEngine?.();
+  const width = engine?.slideRects?.[0]?.width;
+  const rendered = engine?.offsetLocation?.get?.();
+  if (!engine || typeof width !== "number" || width <= 0 ||
+      typeof rendered !== "number" || !Number.isFinite(rendered) ||
+      engine.dragHandler?.pointerDown?.()) return;
+  const snap = index === 0 ? 0 : -(index * width);
+  if (Math.abs(rendered - snap) <= 0.5) return;
+  engine.target.set(snap);
+  engine.location.set(snap);
+  engine.previousLocation.set(snap);
+  engine.offsetLocation.set(snap);
+  engine.scrollBody?.useDuration(0).seek().useBaseDuration();
+  engine.translate.to(snap);
+}
+
 function isNestedHorizontalScrollTarget(target: EventTarget | null): boolean {
   return (
     target instanceof Element &&
@@ -780,6 +800,7 @@ export function SwipeViews({
   const onSettle = useCallback(() => {
     if (!emblaApi) return;
     const currentIdx = resolveVisualIndex(emblaApi, options.length);
+    alignSettledSwipePosition(emblaApi, currentIdx);
     // Embla continues its snap after the finger lifts. Keep the tab indicator
     // bound to the same compositor progress through that settle phase instead
     // of letting it jump back to the route-selected index mid-pane motion.

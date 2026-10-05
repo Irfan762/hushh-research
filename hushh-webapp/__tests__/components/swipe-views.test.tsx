@@ -203,6 +203,37 @@ describe("SwipeViews", () => {
     expect(watchResize(apiStub, [{ target: slideNode }])).toBe(false);
   });
 
+  it("repairs a terminal WebKit snap residual without changing a live in-range drag", () => {
+    const vector = () => {
+      let value = 0;
+      return { get: () => value, set: vi.fn((next: number) => { value = next; }) };
+    };
+    const target = vector(), location = vector(), previousLocation = vector(), offsetLocation = vector();
+    const translate = { to: vi.fn() };
+    const scrollBody = { useDuration: vi.fn(), seek: vi.fn(), useBaseDuration: vi.fn() };
+    scrollBody.useDuration.mockReturnValue(scrollBody);
+    scrollBody.seek.mockReturnValue(scrollBody);
+    embla.engine = {
+      slideRects: [{ width: 400 }, { width: 400 }], scrollSnaps: [0, -400],
+      target, location, previousLocation, offsetLocation, translate, scrollBody,
+    } as unknown as ReturnType<EmblaCarouselType["internalEngine"]>;
+    render(<SwipeViews tabSetId="terminal-snap" activeValue="first" options={OPTIONS}><div>First pane</div><div>Second pane</div></SwipeViews>);
+    offsetLocation.set(-200);
+    embla.listeners.get("pointerDown")?.();
+    embla.listeners.get("scroll")?.();
+    expect(offsetLocation.get()).toBe(-200);
+    expect(translate.to).not.toHaveBeenCalled(); // Negative control: finger owns it.
+    offsetLocation.set(3.36);
+    embla.listeners.get("settle")?.();
+    expect(offsetLocation.get()).toBe(0);
+    expect(location.get()).toBe(0);
+    expect(previousLocation.get()).toBe(0);
+    expect(target.get()).toBe(0);
+    expect(translate.to).toHaveBeenCalledWith(0);
+    expect(scrollBody.useDuration).toHaveBeenCalledWith(0);
+    expect(scrollBody.seek).toHaveBeenCalledOnce();
+  });
+
   it("starts pane motion immediately when the shared top tab is pressed", () => {
     render(
       <SwipeViews tabSetId="instant" activeValue="first" options={OPTIONS}>
