@@ -899,6 +899,12 @@ function reduceServerFrame(
           ? entities.slice(0, MAX_ENTITIES)
           : [],
         receiptToken: receipt_token || null,
+        offeredResult:
+          state.pendingAction?.pending_action_id === row.pending_action_id
+            ? state.pendingAction.offeredResult
+            : keepsAnswerSlotAcrossInput(state.lastResult)
+              ? state.lastResult ?? undefined
+              : undefined,
         resolvedStatus: null,
         resolvedResult: null,
       };
@@ -930,10 +936,10 @@ function reduceServerFrame(
       const awaitingDevice = isPendingStatus(frame.result_public?.status);
       return {
         ...state,
-        // A list kept beside its card gives way to the card's real result. A
-        // card resolved with no result (cancelled, expired) leaves it showing.
+        // Only the list kept beside this exact card yields to its result. A
+        // newer answer or a resolution with no result stays on screen.
         lastResult:
-          frame.result_public && keepsAnswerSlotAcrossInput(state.lastResult)
+          frame.result_public && state.lastResult === current!.offeredResult
             ? null
             : state.lastResult,
         idleDeadlineAt: null,

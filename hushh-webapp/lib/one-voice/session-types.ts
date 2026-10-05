@@ -52,6 +52,8 @@ export type PendingActionView = PendingActionPublic & {
   requiresTap: boolean;
   entities: EntityCardPayload[];
   receiptToken: string | null;
+  /** Transient display association only; never action or send authority. */
+  offeredResult?: ToolResultPublic;
   resolvedStatus: "executed" | "failed" | "cancelled" | "expired" | "not_pending" | null;
   resolvedResult: ToolResultPublic | null;
 };

@@ -31,6 +31,11 @@ flowchart TD
 
 A Live tool response may end one provider turn before the model continues the same user request in another. Client frames retain each provider turn ID for display and fencing; the relay also retains the causal user input ID for stale-action checks. A newer user input supersedes the old action, while a model-only continuation remains eligible to propose its confirmation card. Live events carry no turn ID, so whatever Live says next is attributed to the relay's current turn. A spoken input becomes the current turn at once only when Live has finished a turn, owes no reply and has said nothing since; Live's answer is then delivered under the input's own ID. In every other case the input waits for Live's next boundary and the old turn is fenced: Live is still speaking (a barge-in, so the rest of that reply and anything it proposes never becomes the new answer), a tool result or an `[ONE_EVENT]` is still owed its spoken reply (a narration's acknowledgement included), or a typed or earlier spoken question is waiting. A model-only turn that ends without a new tool call releases an owed reply, so a reply Live never speaks holds back one input at most. Within one provider message the relay reads the input transcript before the model audio. Each placement is logged as `one_voice.turn_input mode=adopt|park_busy|park_owed|park_queued|park_pending`, and Live audio a fence drops as `one_voice.turn_muted chunks=N`. (Before 2026-10-05 every idle turn fenced the next spoken input, which muted the answer to every other follow-up question and left the pill on "Understanding".)
 
+The client keeps a transient association between a confirmation card and the
+offered list displayed beside it. Only that list yields to the card's result;
+an older resolution or card refresh cannot erase a newer answer. This association
+does not enter confirmation frames or grant send authority.
+
 ## Tool contract
 
 - Every tool binds to one generated gateway `action_id`; `tests/one_voice/test_tool_registry_contract.py` fails when the id is missing or a gateway `confirm_required` policy would be weakened.
