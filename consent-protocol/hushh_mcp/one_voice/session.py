@@ -215,6 +215,8 @@ class TurnState:
     # Opened by a provider boundary with no input of its own: whatever Live says
     # next is either a continuation it owes or the answer to the next input.
     model_only: bool = False
+    # Live said something in this turn: forwarded, held for a narration, or fenced.
+    live_spoke: bool = False
     # Live output dropped because this turn was fenced; logged at its boundary.
     muted_chunks: int = 0
 
@@ -228,6 +230,7 @@ class TurnState:
         self.input_seen = False
         self.input_transcript_completed = False
         self.model_only = False
+        self.live_spoke = False
         self.muted_chunks = 0
 
 
@@ -832,6 +835,8 @@ class VoiceSession:
             else:
                 input_id = self.turn.turn_id
                 self.turn.input_seen = True
+                # The typed question owns this turn now; Live owes it an answer.
+                self.turn.model_only = False
             self._latest_input_turn_id = input_id
             self._bind_turn_to_input(input_id, input_id)
             await self._send(
@@ -946,6 +951,8 @@ class VoiceSession:
         await self.live.send_event(
             "[ONE_EVENT] " + json.dumps(event, separators=(",", ":"), sort_keys=True)
         )
+        # The event closes a turn of its own, so Live owes it a reply.
+        self._reply_owed = True
 
     def _origin_is_stale(self, origin_turn_id: str | None) -> bool:
         input_turn_id = self._turn_input_origins.get(origin_turn_id or "", origin_turn_id)
@@ -1735,12 +1742,14 @@ class VoiceSession:
                 self._provider_activity_source = event.activity_source
         elif kind == "audio" and event.audio_b64:
             self._touch()
-            if self._narration_owns_response:
-                return
+            self.turn.live_spoke = True
             if self.turn.turn_id in self._superseded_turn_ids:
                 self.turn.muted_chunks += 1
                 return
+            # Live has answered, even when a narration owns what the person hears.
             self._reply_owed = False
+            if self._narration_owns_response:
+                return
             self.turn.input_seen = True
             if self.turn.audio_chunks == 0:
                 perf = self._perf_for_turn(self.turn.turn_id)
@@ -1795,9 +1804,12 @@ class VoiceSession:
                 self._mark_input_final(input_turn_id, audio=True)
                 await self._send(protocol.voice_state("understanding", turn_id=input_turn_id))
         elif kind == "output_transcript" and event.text:
-            if self._narration_owns_response or self.turn.turn_id in self._superseded_turn_ids:
+            self.turn.live_spoke = True
+            if self.turn.turn_id in self._superseded_turn_ids:
                 return
             self._reply_owed = False
+            if self._narration_owns_response:
+                return
             self.turn.input_seen = True
             self.turn.output_text.append(event.text)
             await self._send(
@@ -1864,27 +1876,33 @@ class VoiceSession:
         """Start a spoken input that cannot reuse the current turn's id.
 
         Live events carry no turn id: the next thing Live says is attributed to
-        ``self.turn``. When Live has finished speaking and owes nothing, that
-        next thing answers this input, so the input becomes the turn now. Held
-        behind a reply still owed (or queued text) it waits for Live's next
-        boundary instead, as it always has. The old turn is fenced either way,
-        so nothing still landing in it is shown as this input's answer.
+        ``self.turn``. When Live has finished, owes nothing and has said nothing
+        since, that next thing answers this input, so the input becomes the turn
+        now. Otherwise -- Live is still speaking (a barge-in), still owes a
+        reply to a tool result or an app event, or other input is waiting -- the
+        input waits for Live's next boundary, as it always has, and whatever
+        still lands in the fenced turn is never shown as this input's answer.
         """
         fenced = self.turn
-        idle = fenced.model_only and not self._pending_voice_turn_id
-        if idle and not self._reply_owed and not self._queued_texts:
+        if self._pending_voice_turn_id:
+            mode = "park_pending"
+        elif self._queued_texts:
+            mode = "park_queued"
+        elif not fenced.model_only or fenced.live_spoke or fenced.tool_calls:
+            mode = "park_busy"
+        elif self._reply_owed:
+            mode = "park_owed"
+        else:
+            mode = "adopt"
+        self._log_input_placement(input_turn_id, mode)
+        if mode == "adopt":
             # Not added to the superseded set: no further Live output can land in
             # it, and _origin_is_stale already treats it as stale because it is
             # bound to an older input than this one.
             self.turn = TurnState(turn_id=input_turn_id, input_seen=True)
-            self._log_input_placement(input_turn_id, "adopt")
             return
         self._superseded_turn_ids.add(fenced.turn_id)
         self._pending_voice_turn_id = input_turn_id
-        if idle:
-            self._log_input_placement(
-                input_turn_id, "park_reply_owed" if self._reply_owed else "park_queued"
-            )
 
     def _log_input_placement(self, input_turn_id: str, mode: str) -> None:
         logger.info(
@@ -2229,9 +2247,9 @@ class VoiceSession:
             # One announce the same turn twice, in two different voices of its own.
             response = {**response, "spoken_facts": []}
         await self.live.send_tool_response(call_id=call_id, name=name, response=response)
-        # A narration was the reply. Otherwise Live still has to speak about
-        # this result, possibly in a fresh provider turn.
-        self._reply_owed = not narrated
+        # Live still speaks about this result, possibly in a fresh provider turn;
+        # after a narration that is the short acknowledgement the narration holds.
+        self._reply_owed = True
 
     async def _narrate(self, result: ToolResult, *, origin_turn_id: str) -> bool:
         """Speak a result's own short digest, if it has one and narration is on.
