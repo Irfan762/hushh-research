@@ -1862,7 +1862,12 @@ describe("ConsentCenterPage requestId deep links", () => {
     expect(mocks.toastSuccess).not.toHaveBeenCalled();
   });
 
-  it("names a request plainly: when it was asked, when to decide, what and how long", async () => {
+  it("names a request plainly: when it was asked, when to decide, what and how long", async ({ onTestFinished }) => {
+    // Keep the deadline distinct from today in every runner timezone/calendar date.
+    // Only Date is mocked; async rendering and event timers remain real.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 9, 1, 12));
+    onTestFinished(() => vi.useRealTimers());
     mocks.search = "tab=requests&requestId=req_food";
     mocks.sharePreviewState = {
       status: "ready",
