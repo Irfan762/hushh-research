@@ -82,3 +82,24 @@ def test_release_contracts_require_the_scheduled_send_columns() -> None:
         contract = json.loads((ROOT / f"db/contracts/{name}.json").read_text())
         assert contract["expected_migration_version"] >= 275, name
         assert set(NEW_COLUMNS) <= set(contract["required_tables"][TABLE]), name
+
+
+def test_runtime_data_plane_declares_the_scheduled_payload_and_display_columns() -> None:
+    """Migration 275 puts a sealed payload and two plaintext display columns in a
+    table the governed contract once described as holding no subject at all. The
+    contract must say so, or an audit reads a false trust boundary."""
+    contract = json.loads(
+        (
+            ROOT.parent / "docs/reference/architecture/runtime-db-data-plane-contract.json"
+        ).read_text()
+    )
+    family = next(
+        item for item in contract["table_families"] if item["id"] == "gmail_owner_approved_delivery"
+    )
+    assert "gmail_owner_send_actions" in family["exact_tables"]
+    boundary = family["trust_boundary"]
+    for column in ("payload_sealed", "subject", "recipient_display"):
+        assert column in boundary, column
+    assert "never sent to the Live model" in boundary
+    assert "send_at + 24 hours" in family["retention_policy"]
+    assert family["plaintext_posture"] != "short_lived_hmac_and_delivery_metadata_only"

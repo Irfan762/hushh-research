@@ -239,7 +239,14 @@ def test_rule_thirteen_keeps_voice_away_from_sending_and_from_duplicate_drafts()
     rule = _rule(_build(), 13)
     assert "The action card's button is Confirm, not Send" in rule
     assert "Only the later draft_opened client-step result proves it appeared" in rule
-    assert "Only the person's Send tap delivers mail: you never send" in rule
+    assert (
+        "Only the person's Send tap delivers a send_mail or reply_mail draft: you never send it"
+    ) in rule
+    # A later time is a scheduled send; the server sends it, so the model may say
+    # "scheduled" after the yes but never "sent".
+    assert "Sending later is schedule_mail, never send_mail" in rule
+    assert "say it is scheduled for that time, never that it was sent" in rule
+    assert "say it was sent only from a draft_sent result" in rule
     # "Sent" is the delivery's own settled report, never a draft result or memory.
     assert "Say mail was sent only from a [ONE_EVENT] mail_delivery whose status is sent" in rule
     assert "failed, outcome_unknown, thread_unconfirmed and unverified are not sent" in rule
