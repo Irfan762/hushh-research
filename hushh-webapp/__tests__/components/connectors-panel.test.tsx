@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -321,6 +325,53 @@ describe("supported connector catalog", () => {
     for (const provider of ["gmail", "drive", "calendar", "plaid"]) {
       expect(container.querySelector(`img[src="/icons/connectors/${provider}.svg"]`)).not.toBeNull();
     }
+  });
+
+  describe("connector brand marks", () => {
+    const row = (connectorId: string, displayName: string) => ({
+      ...catalogItem,
+      connectorId,
+      displayName,
+      available: true,
+      curatedOAuth: true,
+      catalogCard: true,
+    });
+
+    it("shows Attio's own mark, inverted on the dark theme, and keeps the other marks as they were", async () => {
+      state.overview.mockResolvedValue({
+        connectors: [row("attio", "Attio"), catalogItem],
+        features: { connections_panel_v2: true, curated_mcp_connectors: true },
+      });
+      const { container } = render(panel());
+      expect(await screen.findByText("Example Docs")).toBeInTheDocument();
+      const attio = container.querySelector('img[src="/icons/connectors/attio.svg"]');
+      expect(attio).not.toBeNull();
+      expect(attio).toHaveClass("dark:invert");
+      // Colour marks are never inverted; Plaid (also single-colour) still is.
+      expect(container.querySelector('img[src="/icons/connectors/gmail.svg"]')).not.toHaveClass("dark:invert");
+      expect(container.querySelector('img[src="/icons/connectors/plaid.svg"]')).toHaveClass("dark:invert");
+    });
+
+    it("keeps Attio's official logo file exactly as the provider published it", () => {
+      const file = readFileSync(join(process.cwd(), "public/icons/connectors/attio.svg"), "utf8").replaceAll("\r\n", "\n");
+      expect(createHash("sha256").update(file).digest("hex")).toBe(
+        "c4737394bc1e071e8f06fe22466c65279f66b508d26d4a06e95a2deaed2c2927",
+      );
+      expect(readFileSync(join(process.cwd(), "public/icons/connectors/README.md"), "utf8")).toContain(
+        "https://attio.com/brand/v1/attio-logomark.svg",
+      );
+    });
+
+    it("does not invent a logo for a connector that has no official mark here", async () => {
+      state.overview.mockResolvedValue({
+        connectors: [row("notion", "Notion"), row("hubspot", "HubSpot"), catalogItem],
+        features: { connections_panel_v2: true, curated_mcp_connectors: true },
+      });
+      const { container } = render(panel());
+      expect(await screen.findByText("Example Docs")).toBeInTheDocument();
+      expect(container.querySelector('img[src="/icons/connectors/notion.svg"]')).toBeNull();
+      expect(container.querySelector('img[src="/icons/connectors/hubspot.svg"]')).toBeNull();
+    });
   });
 
   describe("curated CRM connector (HubSpot)", () => {

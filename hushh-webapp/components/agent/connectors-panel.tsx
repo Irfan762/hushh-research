@@ -181,7 +181,12 @@ const CONNECTOR_LOGOS: Record<string, string> = {
   google_drive: "drive",
   calendar: "calendar",
   plaid: "plaid",
+  attio: "attio",
 };
+
+// Single-colour black marks disappear on the dark theme, so they invert there.
+// (Official files are used unmodified: see public/icons/connectors/README.md.)
+const MONOCHROME_LOGOS = new Set(["plaid", "attio"]);
 
 /**
  * Profile's leading glyph: the connector's own mark, bare, in the same 28px
@@ -194,7 +199,7 @@ function ProfileConnectorGlyph({ id }: { id: string }) {
     <span className="inline-flex size-7 shrink-0 items-center justify-center" aria-hidden="true">
       {logo ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-[22px] object-contain${id === "plaid" ? " dark:invert" : ""}`} />
+        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-[22px] object-contain${MONOCHROME_LOGOS.has(id) ? " dark:invert" : ""}`} />
       ) : (
         <ConnectedSystemsAgentIcon size={22} />
       )}
@@ -208,7 +213,7 @@ function ConnectorGlyph({ id }: { id: string }) {
     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-background text-foreground shadow-sm" aria-hidden="true">
       {logo ? (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-6 object-contain${id === "plaid" ? " dark:invert" : ""}`} />
+        <img src={`/icons/connectors/${logo}.svg`} alt="" className={`size-6 object-contain${MONOCHROME_LOGOS.has(id) ? " dark:invert" : ""}`} />
       ) : (
         <span className="text-sm font-semibold">•</span>
       )}
