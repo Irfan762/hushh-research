@@ -25,8 +25,8 @@ import {
  *  - text on every card face at 4.5:1 or better, light and dark;
  *  - the same geometry with text widened, because CI's Linux fonts set about
  *    1.5px wider than a Mac;
- *  - no movement at all on open: the first card lands where its placeholder
- *    stood, and nothing shifts;
+ *  - a fixed header and column on open: the introduction and first card share
+ *    their leading edges, and loaded card geometry stays stable;
  *  - card travel that never overshoots and returns along the same path, and
  *    no travel at all under reduced motion;
  *  - the empty Wallet's supplied HD hero, semantic typography, and centered
@@ -161,7 +161,7 @@ window.__sampleWallet = (ms) => {
     window.__walletFrames.push({
       t: performance.now() - start,
       title: rect('[data-slot="wallet-heading-line"]'),
-      placeholder: rect('[data-testid="one-wallet-loading"]'),
+      introduction: rect('[data-testid="one-wallet-loading"]'),
       face: rect('[data-testid="wallet-card-face"]'),
       cards,
     });
@@ -392,7 +392,7 @@ for (const width of WIDTHS) {
 }
 
 for (const width of WIDTHS) {
-  test(`opening the Wallet moves nothing at ${width}px`, async ({ page, browserName }) => {
+  test(`opening the Wallet keeps its column and loaded cards stable at ${width}px`, async ({ page, browserName }) => {
     const errors = await open(page, width, "light", { cards: 3, delayMs: 400 });
     await page.evaluate(() => {
       const root = document.getElementById("root")!;
@@ -408,25 +408,26 @@ for (const width of WIDTHS) {
     await page.waitForTimeout(1300);
     type Box = { x: number; y: number; w: number; h: number } | null;
     const frames = await page.evaluate(
-      () => (window as unknown as { __walletFrames: Array<{ title: Box; placeholder: Box; face: Box }> }).__walletFrames,
+      () => (window as unknown as { __walletFrames: Array<{ title: Box; introduction: Box; face: Box }> }).__walletFrames,
     );
     const titles = frames.map((f) => f.title).filter(Boolean) as NonNullable<Box>[];
-    const placeholders = frames.map((f) => f.placeholder).filter(Boolean) as NonNullable<Box>[];
+    const introductions = frames.map((f) => f.introduction).filter(Boolean) as NonNullable<Box>[];
     const faces = frames.map((f) => f.face).filter(Boolean) as NonNullable<Box>[];
-    expect(placeholders.length, "a card-shaped placeholder holds the place").toBeGreaterThan(0);
+    expect(introductions.length, "the pending introduction was sampled").toBeGreaterThan(0);
     expect(faces.length).toBeGreaterThan(0);
-    // The header never moves, and the first card lands exactly where its
-    // placeholder stood, and stays there.
+    // The introduction is taller than one card. Its leading edges hold the
+    // column; each loaded face must keep its height and independently meet ISO.
     for (const box of titles) {
       expect(Math.abs(box.y - titles[0]!.y)).toBeLessThanOrEqual(0.5);
       expect(Math.abs(box.x - titles[0]!.x)).toBeLessThanOrEqual(0.5);
     }
-    const slot = placeholders[0]!;
+    const slot = introductions[0]!;
     for (const box of faces) {
-      expect(Math.abs(box.y - slot.y), "card lands on its placeholder").toBeLessThanOrEqual(0.5);
+      expect(Math.abs(box.y - slot.y), "card keeps the introduction's start line").toBeLessThanOrEqual(0.5);
       expect(Math.abs(box.x - slot.x)).toBeLessThanOrEqual(0.5);
       expect(Math.abs(box.w - slot.w)).toBeLessThanOrEqual(0.5);
-      expect(Math.abs(box.h - slot.h)).toBeLessThanOrEqual(0.5);
+      expect(Math.abs(box.h - faces[0]!.h), "loaded card height stays stable").toBeLessThanOrEqual(0.5);
+      expect(Math.abs(box.w / box.h - ISO_RATIO) / ISO_RATIO, "every loaded frame keeps the ISO card proportion").toBeLessThanOrEqual(0.005);
     }
     if (browserName === "chromium") {
       expect(await page.evaluate(() => (window as unknown as { __walletCls: number }).__walletCls)).toBe(0);
