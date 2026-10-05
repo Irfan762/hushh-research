@@ -6,8 +6,9 @@
  * Waveform + level, one state label, Mute (aria-pressed; keeps the track and
  * drops frames), Stop (X). A tap on the waveform stops the whole session,
  * including connecting and paused sessions. The label
- * is plain text on purpose: VoiceOver hears the conversation through the
- * transcript log, never twice. Under prefers-reduced-motion the waveform is
+ * is part of the stop control's accessible name because WebKit can flatten
+ * button descendants. It is not a live region: the transcript owns spoken
+ * conversation announcements. Under prefers-reduced-motion the waveform is
  * a static level bar.
  */
 
@@ -166,7 +167,7 @@ export function VoiceStatePill({
         data-testid="one-voice-agent-bar-start-icon"
         data-agent-action="voice"
         data-voice-phase={phase}
-        aria-label="Stop voice"
+        aria-label={`${label}. Stop voice`}
         onPointerDown={(event) => {
           if (event.button === 0 && (event.isPrimary || !event.pointerType)) onStop();
         }}

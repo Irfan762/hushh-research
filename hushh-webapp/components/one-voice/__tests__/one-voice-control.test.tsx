@@ -146,7 +146,7 @@ describe("OneVoiceControl", () => {
     render(<OneVoiceControl layout="slot" />);
     fireEvent.pointerDown(screen.getByRole("button", { name: "Talk to One" }), { button: 0 });
     const dock = screen.getByTestId("one-voice-agent-bar");
-    expect(screen.getByRole("button", { name: "Stop voice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /\. Stop voice$/ })).toBeInTheDocument();
     // The pressed launcher was removed. Browser release/click can target
     // the surviving common ancestor, rather than that retired button.
     fireEvent.pointerUp(dock, { button: 0 });

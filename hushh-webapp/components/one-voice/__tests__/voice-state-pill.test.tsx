@@ -66,6 +66,8 @@ describe("VoiceStatePill", () => {
       expect(screen.getByTestId("one-voice-state-label")).toHaveTextContent(
         label,
       );
+      // WebKit may flatten a button's children out of the accessibility tree.
+      expect(screen.getByTestId("one-voice-agent-bar-start-icon")).toHaveAccessibleName(`${label}. Stop voice`);
       view.unmount();
     }
     expect(voicePhaseLabel("listening", { muted: true })).toBe("Muted");
@@ -86,7 +88,7 @@ describe("VoiceStatePill", () => {
       "one_voice_agent_bar_start",
     );
     expect(primary).toHaveAttribute("data-agent-action", "voice");
-    expect(primary).toHaveAccessibleName("Stop voice");
+    expect(primary).toHaveAccessibleName("One is asking. Stop voice");
     fireEvent.pointerDown(primary, { button: 0 });
     fireEvent.click(primary, { detail: 1 });
     expect(props.onStop).toHaveBeenCalledTimes(1);
@@ -112,7 +114,7 @@ describe("VoiceStatePill", () => {
   it.each(["connecting", "paused", "executing"] as const)("stops a %s session instead of resuming or interrupting", (phase) => {
     const { props } = renderPill({ phase });
     const primary = screen.getByTestId("one-voice-agent-bar-start-icon");
-    expect(primary).toHaveAccessibleName("Stop voice");
+    expect(primary).toHaveAccessibleName(`${voicePhaseLabel(phase)}. Stop voice`);
     fireEvent.click(primary);
     expect(props.onStop).toHaveBeenCalledTimes(1);
     expect(props.onResume).not.toHaveBeenCalled();

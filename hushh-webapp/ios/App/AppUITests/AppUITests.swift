@@ -204,7 +204,7 @@ final class AppUITests: XCTestCase {
         let start = webView.buttons["Start voice mode"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
         let cancel = webView.buttons.matching(NSPredicate(
-            format: "label IN %@", ["Stop voice", "Cancel voice command"]
+            format: "label ENDSWITH %@ OR label == %@", ". Stop voice", "Cancel voice command"
         )).firstMatch
         defer {
             if cancel.exists && cancel.isHittable { cancel.tap() }
@@ -218,7 +218,7 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(cancel.waitForExistence(timeout: 5) && cancel.isHittable,
                       "The primary bar must be cancellable even while connecting")
         XCTAssertEqual(webView.buttons.matching(NSPredicate(
-            format: "label IN %@", ["Stop voice", "Cancel voice command"]
+            format: "label ENDSWITH %@ OR label == %@", ". Stop voice", "Cancel voice command"
         )).count, 1, "Chat exposed duplicate active voice bars")
         cancel.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5)).tap()
         XCTAssertTrue(start.waitForExistence(timeout: 10) && start.isHittable,
@@ -248,10 +248,11 @@ final class AppUITests: XCTestCase {
         let start = webView.buttons["Start voice mode"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
         start.tap()
-        let stop = webView.buttons["Stop voice"].firstMatch
+        let stop = webView.buttons.matching(NSPredicate(format: "label ENDSWITH %@", ". Stop voice")).firstMatch
         defer { if stop.exists && stop.isHittable { stop.tap() } }
         XCTAssertTrue(stop.waitForExistence(timeout: 10), "LIVE_ADAPTER_UNAVAILABLE")
-        let listening = webView.staticTexts["Listening"].firstMatch
+        // Button descendants are not consistently separate AX nodes in WebKit.
+        let listening = webView.buttons["Listening. Stop voice"].firstMatch
         XCTAssertTrue(listening.waitForExistence(timeout: 25), "VOICE_LISTENING_UNAVAILABLE")
         let inputMatches = webView.staticTexts.matching(NSPredicate(
             format: "label BEGINSWITH[c] %@ AND label CONTAINS[c] %@", "You", "ready for testing"
@@ -275,8 +276,8 @@ final class AppUITests: XCTestCase {
         // In iOS speakerphone-safe mode the label stays Speaking while the
         // playback scheduler is still audible, even after model_end arrives.
         XCTAssertTrue(listening.waitForExistence(timeout: 15), "VOICE_PLAYBACK_NOT_SETTLED")
-        let busy = webView.staticTexts.matching(NSPredicate(
-            format: "label IN %@", ["Speaking", "One is asking", "Understanding", "Working…"]
+        let busy = webView.buttons.matching(NSPredicate(
+            format: "label IN %@", ["Speaking. Stop voice", "One is asking. Stop voice", "Understanding. Stop voice", "Working…. Stop voice"]
         )).firstMatch
         let quietUntil = Date().addingTimeInterval(5)
         while Date() < quietUntil {
