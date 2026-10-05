@@ -362,15 +362,38 @@ describe("supported connector catalog", () => {
       );
     });
 
-    it("does not invent a logo for a connector that has no official mark here", async () => {
+    it("shows HubSpot's sprocket in its own colour, never inverted", async () => {
       state.overview.mockResolvedValue({
-        connectors: [row("notion", "Notion"), row("hubspot", "HubSpot"), catalogItem],
+        connectors: [row("hubspot", "HubSpot"), catalogItem],
+        features: { connections_panel_v2: true, curated_mcp_connectors: true },
+      });
+      const { container } = render(panel());
+      expect(await screen.findByText("Example Docs")).toBeInTheDocument();
+      const hubspot = container.querySelector('img[src="/icons/connectors/hubspot.svg"]');
+      expect(hubspot).not.toBeNull();
+      expect(hubspot).not.toHaveClass("dark:invert");
+    });
+
+    it("keeps the HubSpot glyph exactly as recorded, and says where it came from", () => {
+      const dir = join(process.cwd(), "public/icons/connectors");
+      const svg = readFileSync(join(dir, "hubspot.svg"), "utf8").replaceAll("\r\n", "\n");
+      expect(createHash("sha256").update(svg).digest("hex")).toBe(
+        "037689701fe2e70c7b5240547662e580a292cd43e7c0e0e8ea28b81c036d5260",
+      );
+      // The README must not present it as an official HubSpot file.
+      const readme = readFileSync(join(dir, "README.md"), "utf8");
+      expect(readme).toContain("NOT an official HubSpot file");
+      expect(readme).toContain("simple-icons@16.34.0");
+    });
+
+    it("does not invent a logo for a connector that has no mark here", async () => {
+      state.overview.mockResolvedValue({
+        connectors: [row("notion", "Notion"), catalogItem],
         features: { connections_panel_v2: true, curated_mcp_connectors: true },
       });
       const { container } = render(panel());
       expect(await screen.findByText("Example Docs")).toBeInTheDocument();
       expect(container.querySelector('img[src="/icons/connectors/notion.svg"]')).toBeNull();
-      expect(container.querySelector('img[src="/icons/connectors/hubspot.svg"]')).toBeNull();
     });
   });
 

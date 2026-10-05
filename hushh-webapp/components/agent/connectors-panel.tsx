@@ -182,6 +182,7 @@ const CONNECTOR_LOGOS: Record<string, string> = {
   calendar: "calendar",
   plaid: "plaid",
   attio: "attio",
+  hubspot: "hubspot",
 };
 
 // Single-colour black marks disappear on the dark theme, so they invert there.
