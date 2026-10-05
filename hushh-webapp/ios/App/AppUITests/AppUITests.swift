@@ -327,6 +327,39 @@ final class AppUITests: XCTestCase {
             cancel.tap()
             print("VOICE_OWNED_RECOVERY capture_cancel_requested")
         }
+        // A completed command result still owns the shared dock. Dismiss only
+        // the existing result/error UI; never approve, retry or send a task.
+        let results = app.webViews.buttons.matching(NSPredicate(format: "label == %@", "Dismiss result"))
+        if results.count == 1 && results.firstMatch.isHittable {
+            results.firstMatch.tap()
+            print("VOICE_OWNED_RECOVERY result_dismissed")
+        }
+        let conversations = app.webViews.descendants(matching: .any)
+            .matching(NSPredicate(format: "label == %@", "One conversation"))
+        if conversations.count == 1 {
+            let errors = conversations.firstMatch.buttons.matching(NSPredicate(format: "label == %@", "Dismiss"))
+            if errors.count == 1 && errors.firstMatch.isHittable {
+                errors.firstMatch.tap()
+                print("VOICE_OWNED_RECOVERY error_dismissed")
+            }
+        }
+    }
+
+    private func dismissRehearsalChatKeyboard(_ app: XCUIApplication) {
+        guard app.keyboards.firstMatch.exists else { return }
+        let web = app.webViews.matching(identifier: "native-webview").firstMatch
+        guard web.exists else { return }
+        // The public header title has no action owner. Do not tap transcript
+        // coordinates, send/return keys or an inferred arbitrary control.
+        let titles = web.staticTexts.matching(NSPredicate(format: "label == %@", "One"))
+            .allElementsBoundByIndex.filter {
+                $0.isHittable && $0.frame.minY >= web.frame.minY && $0.frame.maxY <= web.frame.minY + 160
+            }
+        guard titles.count == 1 else { return }
+        titles[0].tap()
+        let hidden = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [hidden], timeout: 10), .completed,
+                       "REHEARSAL_KEYBOARD_NOT_SETTLED")
     }
 
     func testLocalSessionNativeTabsKeepTheSessionAndRespectOverlays() throws {
@@ -338,6 +371,7 @@ final class AppUITests: XCTestCase {
             throw XCTSkip("One must already be running and unlocked; no cold launch or credential typing")
         }
         app.activate()
+        dismissRehearsalChatKeyboard(app)
         let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
         // WebKit exposes nested AX WebView nodes on physical iOS. Count the
         // existing identified Capacitor host, not its accessibility descendants.
@@ -400,6 +434,7 @@ final class AppUITests: XCTestCase {
             throw XCTSkip("One must already be running and unlocked; no cold launch or credential typing")
         }
         app.activate()
+        dismissRehearsalChatKeyboard(app)
         let hosts = app.webViews.matching(identifier: "native-webview")
         let webView = hosts.firstMatch
         XCTAssertTrue(webView.waitForExistence(timeout: 15), "The existing Capacitor host is unavailable")
@@ -492,6 +527,7 @@ final class AppUITests: XCTestCase {
             if close.exists && close.isHittable { close.tap() }
         }
         perfTapNav(app, label: "Chat")
+        dismissRehearsalChatKeyboard(app)
         let composer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable,
                       "Begin on idle Cloud Chat with the existing unlocked session")
@@ -515,6 +551,11 @@ final class AppUITests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, message)
         }
         print("NATIVE_CHAT_ENTRY keyboard=\(app.keyboards.firstMatch.exists) history_dom=\(web.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", "Open chat history", "chat-history-toggle")).firstMatch.exists) picker_native=\(selector.exists)")
+        let selectorRoots = app.descendants(matching: .any).matching(identifier: "chat-agent-surface")
+        let fallbackNames = web.descendants(matching: .any).matching(NSPredicate(format: "label IN %@", [
+            "One, your cloud agent", "Puppy One, on your machine, with its own conversation"
+        ]))
+        print("NATIVE_CHAT_SELECTOR_PROBE roots=\(selectorRoots.count) role=\(selectorRoots.firstMatch.exists ? selectorRoots.firstMatch.elementType.rawValue : 0) fallback_names=\(fallbackNames.count)")
         XCTAssertTrue(history.waitForExistence(timeout: 15) && history.isHittable,
                       "NATIVE_CHAT_HISTORY_UNAVAILABLE: badge must be zero and Debug family explicitly admitted")
         XCTAssertTrue(selector.waitForExistence(timeout: 15) && selector.isHittable, "NATIVE_CHAT_PICKER_UNAVAILABLE")

@@ -1,6 +1,6 @@
 # iOS Native Controls and Liquid Glass
 
-Implementation owner: frontend/native shell. Reviewed against source on 2026-10-04.
+Implementation owner: frontend/native shell. Reviewed against source on 2026-10-05.
 This is a component inventory and bounded adoption reference, not a claim that every
 candidate is implemented or released.
 
@@ -411,3 +411,27 @@ and WebKit checks cover finger-position samples and stationary body/bottom-bar
 geometry at 390px and 1440px. The latest signed iPhone build also passed a real
 opening and closing pan in one unlocked Chat session on 2026-10-04. This is
 interaction evidence, not measured frame-pacing or accessibility acceptance.
+
+### Shared Dock, Profile and Connect
+
+The canonical Chat composer is projected into the retained Agent Dock on web,
+iOS and Android. Its inner field stays square; the outer material owns rounding.
+Growth is bounded, excess lines scroll inside the field, and action targets retain
+their own 44px tracks. Profile uses one outer reading-width gutter through its
+stack. Connect tab taps and swipes share the existing pager; Circles owns the
+Circle discovery card.
+
+The 2026-10-05 production-targeted Debug candidates passed warm iPhone tabs,
+Back, photo preview, bidirectional drawer and voice-body cancellation checks.
+S24 checks covered root/Account alignment, Circles placement and tab selection,
+background/resume, and a 30-line unsent composer probe with an unbroken string:
+44px to the 160px ceiling and back, internal scroll, no horizontal clipping or
+action overlap, and the original draft restored. Android roster-body Profile
+swipe now admits normalized static-export routes (`/one/` and `/one/index.html`)
+without admitting Finance's own gestures. Trusted WebView touch verified this
+on S24; OS-injected touch-coordinate equivalence is still unverified.
+
+Native Chat History admission was observed after keyboard dismissal; the
+SwiftUI agent selector remains unaccepted pending its accessible-control proof.
+Voice cancellation is not Live speech-completion or echo-loop acceptance.
+Keep those separate from the working shared dock and retained DOM fallback.
