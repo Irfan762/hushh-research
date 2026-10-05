@@ -408,10 +408,12 @@ function AppShellFrame({ children }: ProvidersProps) {
   const bottomShellModel = useMemo(
     () => ({
       navigationHidden: hideBottomNavigation,
-      // Chat projects its text composer into the retained Agent Bar. The
-      // shell reserves navigation separately from the measured composer.
+      // Chat uses the retained Agent Dock; Messages owns its composer. Neither
+      // also shows the idle global voice launcher. Active commands remain cancellable.
       agentBarHidden:
-        isAuthenticated && !authLoading && pathname === ROUTES.HOME,
+        isAuthenticated &&
+        !authLoading &&
+        (pathname === ROUTES.HOME || pathname === ROUTES.ONE_MESSAGES),
       hidden: bottomChromeHidden,
     }),
     [

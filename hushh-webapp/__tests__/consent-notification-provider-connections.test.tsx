@@ -738,4 +738,20 @@ describe("connection-request Feed-first foreground policy", () => {
     expect(mocks.dispatchFeedStateChanged).not.toHaveBeenCalled();
     expect(screen.getByTestId("pending-count")).toHaveTextContent("0");
   });
+
+  it("refreshes Feed when a direct-message notification arrives", async () => {
+    await renderProvider();
+    const notification = {
+      data: {
+        type: "direct_message",
+        conversation_id: "conversation-1",
+        message_id: "message-1",
+      },
+      accepted: false,
+    };
+
+    act(() => window.dispatchEvent(new CustomEvent("fcm-message", { detail: notification })));
+
+    expect(mocks.dispatchFeedStateChanged).toHaveBeenCalledWith("arrived");
+  });
 });
