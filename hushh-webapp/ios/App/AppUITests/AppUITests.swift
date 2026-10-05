@@ -192,6 +192,7 @@ final class AppUITests: XCTestCase {
         let hosts = app.webViews.matching(identifier: "native-webview")
         let webView = hosts.firstMatch
         XCTAssertFalse(webView.buttons["Unlock"].exists, "Normal vault unlock is required before voice proof")
+        cancelRehearsalVoiceCapture(app)
         for label in ["Close Profile", "Close chat history", "Close search"] {
             let dismiss = app.buttons[label].firstMatch
             if dismiss.exists && dismiss.isHittable { dismiss.tap() }
@@ -252,15 +253,19 @@ final class AppUITests: XCTestCase {
         app.activate()
         let webView = app.webViews.matching(identifier: "native-webview").firstMatch
         XCTAssertFalse(webView.buttons["Unlock"].exists, "Normal vault unlock is required before speech proof")
+        // Cleanup is registered before any fail-fast admission assertion. Live
+        // may be unavailable and the command adapter may own the microphone;
+        // neither may leave capture active after this rehearsal stops.
+        addTeardownBlock {
+            self.cancelRehearsalVoiceCapture(app)
+            XCTAssertTrue(webView.buttons["Start voice mode"].firstMatch.waitForExistence(timeout: 10),
+                          "VOICE_STOP_NOT_SETTLED")
+        }
+        cancelRehearsalVoiceCapture(app)
         perfTapNav(app, label: "Chat")
         let start = webView.buttons["Start voice mode"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
         let stop = webView.buttons.matching(NSPredicate(format: "label ENDSWITH %@", ". Stop voice")).firstMatch
-        // XCTest runs this even when a fail-fast assertion aborts the test body.
-        addTeardownBlock {
-            if stop.exists && stop.isHittable { stop.tap() }
-            XCTAssertTrue(start.waitForExistence(timeout: 10), "VOICE_STOP_NOT_SETTLED")
-        }
         start.tap()
         XCTAssertTrue(stop.waitForExistence(timeout: 10), "LIVE_ADAPTER_UNAVAILABLE")
         // Button descendants are not consistently separate AX nodes in WebKit.
@@ -299,6 +304,29 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(stop.exists, "Voice session ended instead of settling")
         XCTAssertFalse(webView.buttons["Unlock"].exists, "Speech lost the unlocked vault")
         print("VOICE_SPEECH_COMPLETED settled_without_echo_restart")
+    }
+
+    private func cancelRehearsalVoiceCapture(_ app: XCUIApplication) {
+        // Only the public microphone prompt initiated by the authorized voice
+        // rehearsal is admitted. Never approve unrelated alerts or settings.
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        let microphonePrompt = springboard.alerts.firstMatch
+        let microphoneText = microphonePrompt.staticTexts.matching(NSPredicate(
+            format: "label CONTAINS[c] %@", "microphone"
+        )).firstMatch
+        if microphonePrompt.exists && microphoneText.exists {
+            let allow = microphonePrompt.buttons["Allow"].firstMatch
+            if allow.exists && allow.isHittable { allow.tap() }
+        }
+        let cancellations = app.webViews.buttons.matching(NSPredicate(
+            format: "label ENDSWITH %@ OR label IN %@", ". Stop voice",
+            ["Cancel voice command", "Cancel recording", "Cancel task"]
+        ))
+        let cancel = cancellations.firstMatch
+        if cancellations.count == 1 && cancel.isHittable {
+            cancel.tap()
+            print("VOICE_OWNED_RECOVERY capture_cancel_requested")
+        }
     }
 
     func testLocalSessionNativeTabsKeepTheSessionAndRespectOverlays() throws {
