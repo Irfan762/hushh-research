@@ -63,7 +63,11 @@ import {
   decideHalfDuplex,
 } from "@/lib/one-voice/audio/half-duplex";
 import { bytesFromBase64 } from "@/lib/one-voice/audio/pcm";
-import { MailOpenError, openOfferedMail } from "@/lib/one-voice/mail-open";
+import {
+  MailOpenError,
+  openOfferedDraft,
+  openOfferedMail,
+} from "@/lib/one-voice/mail-open";
 import { LivePlaybackScheduler } from "@/lib/one-voice/audio/playback";
 import { performanceNow, SpeechEndProbe } from "@/lib/one-voice/performance";
 import { isFirebasePlaneTool } from "@/lib/one-voice/confirmation";
@@ -1999,6 +2003,26 @@ export function VoiceSessionProvider({
     [],
   );
 
+  const openDraft = useCallback(
+    async (input: {
+      ordinal: number;
+      offerRevision: number;
+      conversationId: string;
+    }) => {
+      // Same reasons as openMail: the token is read at tap time, and the
+      // conversation comes from the result that drew the row.
+      const token = latest.current.vaultOwnerToken;
+      if (!token) throw new MailOpenError("auth_missing");
+      return openOfferedDraft({
+        vaultOwnerToken: token,
+        conversationId: input.conversationId,
+        ordinal: input.ordinal,
+        offerRevision: input.offerRevision,
+      });
+    },
+    [],
+  );
+
   const setActiveMail = useCallback(
     (hint: { ordinal: number; offerRevision: number; conversationId: string } | null) => {
       const current = activeMailRef.current;
@@ -2080,6 +2104,7 @@ export function VoiceSessionProvider({
       sendText,
       confirmPending,
       openMail,
+      openDraft,
       cancelPending,
       chooseCandidate,
       clearView,
@@ -2097,6 +2122,7 @@ export function VoiceSessionProvider({
       sendText,
       confirmPending,
       openMail,
+      openDraft,
       cancelPending,
       chooseCandidate,
       clearView,

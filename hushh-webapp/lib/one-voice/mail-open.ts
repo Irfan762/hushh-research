@@ -11,7 +11,9 @@
  * cannot be answered with a different message than the one on screen.
  *
  * Both the tap and a spoken "open the second one" come through here, so the two
- * cannot drift apart.
+ * cannot drift apart. A drafts list opens the same way through
+ * `/api/one/voice/draft/open`: a position and its offer in, the owner's draft
+ * text out, and never a Gmail id in either direction.
  */
 
 import { ApiService } from "@/lib/services/api-service";
@@ -28,6 +30,8 @@ export type MailOpenReason =
   | "offer_unresolved"
   /** The message is no longer there, or the mailbox changed under the read. */
   | "source_changed"
+  /** The draft was sent or deleted in Gmail since the list was shown. */
+  | "draft_gone"
   | "rate_limited"
   | "network"
   | "unknown";
@@ -91,8 +95,11 @@ export function mailOpenReason(
 ): MailOpenReason {
   switch (code) {
     case "VOICE_MAIL_READS_DISABLED":
+    case "VOICE_MAIL_DRAFTS_DISABLED":
     case "MAIL_READS_UNAVAILABLE":
       return "disabled";
+    case "DRAFT_GONE":
+      return "draft_gone";
     case "MAIL_OFFER_SUPERSEDED":
       return "offer_superseded";
     case "MAIL_OFFER_UNRESOLVED":
@@ -143,12 +150,58 @@ export function parseOpenedMail(body: unknown): OpenedMailMessage | null {
   return parsed;
 }
 
-export async function openOfferedMail(input: {
+/** One draft, as the server read it for the owner's screen. */
+export type OpenedDraft = {
+  toLabel: string | null;
+  to: string[];
+  cc: string[];
+  subject: string | null;
+  body: string | null;
+  /** The text was shortened to fit; the draft in Gmail is longer. */
+  bodyTruncated: boolean;
+  updatedAt: string | null;
+};
+
+function textList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => text(item))
+    .filter((item): item is string => Boolean(item))
+    .slice(0, 50);
+}
+
+/** Read the draft the server returned. Absent fields stay absent. */
+export function parseOpenedDraft(body: unknown): OpenedDraft | null {
+  if (!body || typeof body !== "object") return null;
+  const draft = (body as { draft?: unknown }).draft;
+  if (!draft || typeof draft !== "object") return null;
+  const row = draft as Record<string, unknown>;
+  const parsed: OpenedDraft = {
+    toLabel: text(row.to_label),
+    to: textList(row.to),
+    cc: textList(row.cc),
+    subject: text(row.subject),
+    body: text(row.body),
+    bodyTruncated: row.body_truncated === true,
+    updatedAt: text(row.updated_at),
+  };
+  // A draft with nothing readable is not an opened draft.
+  if (!parsed.subject && !parsed.body && parsed.to.length === 0) return null;
+  return parsed;
+}
+
+type OfferedOpenInput = {
   vaultOwnerToken: string;
   conversationId: string;
   ordinal: number;
   offerRevision: number;
-}): Promise<OpenedMailMessage> {
+};
+
+/** POST a position and its offer; the JSON body of a 2xx, or a typed error. */
+async function postOfferedOpen(
+  path: string,
+  input: OfferedOpenInput,
+): Promise<{ body: unknown; status: number }> {
   const vaultOwnerToken = String(input.vaultOwnerToken || "").trim();
   const conversationId = String(input.conversationId || "").trim();
   if (!vaultOwnerToken) throw new MailOpenError("auth_missing");
@@ -166,7 +219,7 @@ export async function openOfferedMail(input: {
 
   let response: Response;
   try {
-    response = await ApiService.apiFetch("/api/one/voice/mail/open", {
+    response = await ApiService.apiFetch(path, {
       method: "POST",
       headers: ApiService.getAuthHeaders(vaultOwnerToken),
       body: JSON.stringify({
@@ -197,11 +250,27 @@ export async function openOfferedMail(input: {
         typeof currentRevision === "number" ? currentRevision : undefined,
     });
   }
+  return { body, status: response.status };
+}
 
+export async function openOfferedMail(
+  input: OfferedOpenInput,
+): Promise<OpenedMailMessage> {
+  const { body, status } = await postOfferedOpen("/api/one/voice/mail/open", input);
   const parsed = parseOpenedMail(body);
   // A 200 whose body does not describe a message is a failure, not an empty
   // message. Rendering it as an opened message with no content would tell the
   // person their mail is blank.
-  if (!parsed) throw new MailOpenError("unknown", { status: response.status });
+  if (!parsed) throw new MailOpenError("unknown", { status });
+  return parsed;
+}
+
+/** Open the draft at a position One offered in a drafts list. */
+export async function openOfferedDraft(
+  input: OfferedOpenInput,
+): Promise<OpenedDraft> {
+  const { body, status } = await postOfferedOpen("/api/one/voice/draft/open", input);
+  const parsed = parseOpenedDraft(body);
+  if (!parsed) throw new MailOpenError("unknown", { status });
   return parsed;
 }

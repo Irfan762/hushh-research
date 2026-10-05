@@ -381,6 +381,105 @@ describe("OneVoicePanel", () => {
     expect(screen.getByText("Invoice 4471 is overdue.")).toBeInTheDocument();
   });
 
+  it("a spoken draft open finds the drafts list it names and opens the draft through openDraft", async () => {
+    const binding = { ordinal: 2, offerRevision: 8, conversationId: "conv_1" };
+    const openDraft = vi.fn(async () => ({
+      toLabel: "Arjun",
+      to: ["arjun@example.com"],
+      cc: [],
+      subject: "Rent",
+      body: "Sending October's share today.",
+      bodyTruncated: false,
+      updatedAt: null,
+    }));
+    const openMail = vi.fn();
+    const setActiveMail = vi.fn();
+    const control = controller({ openMail, openDraft, setActiveMail });
+    const directivePayload = {
+      ordinal: 2,
+      offer_revision: 8,
+      conversation_id: "conv_1",
+    };
+    const step = (state: VoiceSessionState, frames: ServerFrame[]) =>
+      frames.reduce(
+        (next, frame) =>
+          reduceVoiceSession(next, { type: "server", frame, now: NOW }),
+        state,
+      );
+
+    const shown = replay([
+      ready,
+      { type: "transcript.input", text: "Show my drafts", final: true, turn_id: "t1" },
+      { type: "tool.started", call_id: "d1", tool: "list_drafts", args_public: {}, turn_id: "t1" },
+      {
+        type: "tool.result",
+        call_id: "d1",
+        tool: "list_drafts",
+        status: "ok",
+        ok: true,
+        turn_id: "t1",
+        result_public: {
+          status: "ok",
+          spoken_facts: ["You have 2 drafts."],
+          items: [
+            { source_ref: "draft:1", to: "Priya", subject: "Diwali plans" },
+            { source_ref: "draft:2", to: "Arjun", subject: "Rent" },
+          ],
+          coverage: { returned: 2, has_more: false },
+          offer_revision: 8,
+          conversation_id: "conv_1",
+        },
+      },
+      { type: "turn", state: "model_end", turn_id: "t1" },
+      { type: "transcript.input", text: "Open the second one", final: true, turn_id: "t2" },
+      {
+        type: "ui_directive",
+        directive_id: "dir-draft",
+        kind: "open_draft",
+        turn_id: "t2",
+        payload: directivePayload,
+      },
+    ]);
+    const { rerender } = render(
+      <OneVoicePanel state={shown} controller={control} />,
+    );
+    expect(screen.getByLabelText("Drafts").children).toHaveLength(2);
+
+    let outcome: DirectiveOutcome | undefined;
+    await act(async () => {
+      outcome = await executeDirective("open_draft", directivePayload, {
+        pathname: null,
+      });
+    });
+    expect(outcome).toEqual({ handled: true, status: "opened" });
+    expect(openDraft.mock.calls).toEqual([[binding]]);
+    expect(openMail).not.toHaveBeenCalled();
+    expect(screen.getByText("Sending October's share today.")).toBeInTheDocument();
+    // A draft is never "this email" for a reply.
+    expect(
+      setActiveMail.mock.calls.filter(([hint]) => hint !== null),
+    ).toEqual([]);
+
+    const settled = step(shown, [
+      {
+        type: "tool.result",
+        call_id: "d2",
+        tool: "open_draft",
+        status: "draft_open_dispatched",
+        ok: false,
+        turn_id: "t2",
+        result_public: {
+          status: "draft_open_dispatched",
+          spoken_facts: ["Opening it."],
+          ...directivePayload,
+        },
+      },
+    ]);
+    rerender(<OneVoicePanel state={settled} controller={control} />);
+    expect(screen.getByLabelText("Drafts").children).toHaveLength(2);
+    expect(screen.getByText("Sending October's share today.")).toBeInTheDocument();
+  });
+
   it("hides a confirmation_required result behind the pending card and confirms through the controller", async () => {
     const control = controller();
     const state = replay([

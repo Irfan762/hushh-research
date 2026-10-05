@@ -531,6 +531,76 @@ describe("reduceVoiceSession: answer ownership", () => {
     expect(answered.lastResult?.display_name).toBe("Ankit");
   });
 
+  it("keeps a drafts list or a scheduled list on screen while a position in it is acted on", () => {
+    const conversation = "11111111-2222-4333-8444-555555555555";
+    const drafts: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 2 drafts."],
+      items: [
+        { source_ref: "draft:1", to: "Priya", subject: "Diwali plans" },
+        { source_ref: "draft:2", to: "Arjun", subject: "Rent" },
+      ],
+      coverage: { returned: 2, has_more: false },
+      offer_revision: 8,
+      conversation_id: conversation,
+    };
+    const scheduled: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 1 scheduled email."],
+      items: [
+        {
+          source_ref: "scheduled:1",
+          to: "Priya",
+          subject: "Diwali plans",
+          send_at: "2026-10-06T03:30:00+00:00",
+          send_at_label: "Tomorrow, 9:00 AM IST",
+        },
+      ],
+      coverage: { returned: 1, next_send_at: "2026-10-06T03:30:00+00:00" },
+      offer_revision: 9,
+      conversation_id: conversation,
+    };
+    for (const [tool, result] of [
+      ["list_drafts", drafts],
+      ["list_scheduled_mail", scheduled],
+    ] as const) {
+      const shown = run(
+        [
+          server({ type: "transcript.input", text: "Show them", final: true, turn_id: "a" }),
+          server(toolResult({ call_id: "a-call", tool, turn_id: "a", status: "ok", result_public: result })),
+          server({ type: "transcript.input", text: "The second one", final: true, turn_id: "b" }),
+        ],
+        connected(),
+      );
+      expect(shown.lastResult, tool).toBe(result);
+    }
+
+    // Opening a draft dispatches; like a mail open it never takes the slot.
+    const dispatched = run(
+      [
+        server({ type: "transcript.input", text: "Show my drafts", final: true, turn_id: "d" }),
+        server(toolResult({ call_id: "d-call", tool: "list_drafts", turn_id: "d", status: "ok", result_public: drafts })),
+        server({ type: "transcript.input", text: "Open the second one", final: true, turn_id: "o" }),
+        server(toolResult({
+          call_id: "o-call",
+          tool: "open_draft",
+          turn_id: "o",
+          status: "draft_open_dispatched",
+          result_public: {
+            status: "draft_open_dispatched",
+            spoken_facts: ["Opening it."],
+            ordinal: 2,
+            offer_revision: 8,
+            conversation_id: conversation,
+          },
+        })),
+      ],
+      connected(),
+    );
+    expect(dispatched.toolTimeline.at(-1)?.result?.status).toBe("draft_open_dispatched");
+    expect(dispatched.lastResult).toBe(drafts);
+  });
+
   it("still gives the slot to a new question when the result has no offered rows to act on", () => {
     const { offer_revision: _revision, ...unbound } = OFFERED_MAIL;
     void _revision;

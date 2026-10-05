@@ -164,6 +164,19 @@ MAIL_OPEN_DISPATCHED = "mail_open_dispatched"
 # never renders it as an empty mail list.
 MAIL_ACCESS_STATUS = "mail_access"
 
+# The mailbox a drafts list is offered under (``mail_drafts``). The drafts list
+# and the inbox share one offer slot, so a position resolved by a mail path must
+# never land on a draft: a draft id is not a message id, and "reply to the
+# second one" must not answer the owner's own unsent words.
+DRAFTS_MAILBOX = "drafts"
+
+
+def _drafts_offer_refused() -> Rejected:
+    return Rejected(
+        reason_code="mail_offer_is_drafts",
+        spoken_facts=["That list is your drafts, not your mail. Ask me to show your mail first."],
+    )
+
 
 class ReadMailInput(ToolInput):
     """The person's own question, forwarded to the planner unchanged.
@@ -375,6 +388,8 @@ async def _read_mail(ctx: ToolContext, args: ReadMailInput) -> ToolResult:
                 reason_code="mail_offer_expired",
                 spoken_facts=["That list is a while old. Ask me again and I'll take a fresh look."],
             )
+        if offer.mailbox == DRAFTS_MAILBOX:
+            return _drafts_offer_refused()
         message_id = ctx.entities.offered_mail_message_id(args.ordinal)
         if message_id is None:
             shown = len(offer.message_ids)
@@ -571,6 +586,8 @@ async def _open_mail(ctx: ToolContext, args: OpenMailInput) -> ToolResult:
             reason_code="mail_offer_expired",
             spoken_facts=["That list is a while old. Ask me again and I'll take a fresh look."],
         )
+    if offer.mailbox == DRAFTS_MAILBOX:
+        return _drafts_offer_refused()
     # Presence only. The message itself is fetched by the surface through the
     # resolver, so this handler performs no provider read and cannot duplicate one.
     position = ctx.entities.offered_mail_position(args.ordinal)
@@ -1043,6 +1060,11 @@ def _resolve_reply_target(
         return Rejected(
             reason_code="mail_offer_expired",
             spoken_facts=["That Mail list is a while old. Ask me to show your mail again."],
+        )
+    if offer.mailbox == DRAFTS_MAILBOX:
+        return Rejected(
+            reason_code="reply_target_is_draft",
+            spoken_facts=["That's a draft, not an email. Ask me to show your mail first."],
         )
     message_id = ctx.entities.offered_mail_message_id(ordinal)
     if message_id is None:

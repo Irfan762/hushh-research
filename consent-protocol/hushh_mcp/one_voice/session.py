@@ -2365,6 +2365,22 @@ class VoiceSession:
                     },
                 )
             )
+        if not client_steps_only and public.get("status") == protocol.DRAFT_OPEN_DISPATCHED:
+            # The same binding for a draft row: which row, from which offer, in
+            # which conversation. The surface fetches the draft through its own
+            # authenticated route; nothing about it passes through here.
+            await self._send(
+                protocol.ui_directive(
+                    directive_id=self._remember_directive(origin_turn_id, kind="open_draft"),
+                    kind="open_draft",
+                    turn_id=origin_turn_id,
+                    payload={
+                        "ordinal": public.get("ordinal"),
+                        "offer_revision": public.get("offer_revision"),
+                        "conversation_id": public.get("conversation_id"),
+                    },
+                )
+            )
         step = public.get("client_step")
         if isinstance(step, dict) and step.get("kind"):
             step_id = uuid.uuid4().hex[:12]

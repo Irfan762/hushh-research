@@ -125,7 +125,10 @@ const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_reques
  * They carry nothing of their own to show, and the surface they act on is the
  * result already displayed.
  */
-export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
+export const DISPATCH_ONLY_STATUSES = new Set<string>([
+  "mail_open_dispatched",
+  "draft_open_dispatched",
+]);
 
 /**
  * A mail list the person can still act on by position: rows the server
@@ -170,7 +173,8 @@ export function toolResultTone(
   if (isPendingStatus(value)) return "pending";
   // The review card may already be visible after a lost acknowledgement.
   // This says nothing about a send, so avoid both success and failure claims.
-  if (value === "draft_open_unconfirmed") return "neutral";
+  if (value === "draft_open_unconfirmed" || value === "draft_send_unconfirmed")
+    return "neutral";
   if (NAVIGATION_DISPATCH_STATUSES.has(value)) {
     return ok === false ? "failure" : "neutral";
   }
