@@ -121,6 +121,19 @@ also reads committed CSS, closing the interval before React publishes a changed
 projection. Theme-only tab updates do not invalidate intentional tab selections.
 Wrappers lacking version 2 retain DOM controls rather than ignore appearance.
 
+Color roles are projected from the existing CSS authority, not chosen per feature:
+
+| Eligible control | Glass/accent treatment | Enablement |
+| --- | --- | --- |
+| Stationary Back | Standard glass, app accent tint and readable accent-deep glyph | Existing Debug iPhone pilot; release acceptance remains incomplete. |
+| History utility trigger | Standard glass with the shared secondary-label glyph, preserving light OKLCH and dark RGBA opacity | Projection implemented; Chat admission remains off until the Close handoff is verified. |
+| Cloud/Puppy selector and destination tabs | Standard segmented Picker / UIKit tab bar, app accent tint and system labels | Existing selector rehearsal / admitted tab bar; no invented foreground palette. |
+| Future primary toolbar action | Standard prominent glass with app accent; retain authored disabled/busy behavior | Not implemented or admitted. Ordinary form, Connect and Send controls remain React. |
+| Destructive or moving/keyboard-coupled actions | Retain semantic role and existing owner; never recolor destructive actions as brand accents | No global native replacement. |
+
+Unresolved utility colors retain DOM presentation. A changed color invalidates an
+old native choice before observer publication, as do existing theme/owner checks.
+
 These families own **no popup**. SwiftUI menus, presented pickers and UIKit action sheets remain
 unimplemented: removing a hosting view does not prove that a presented popup is
 covered or dismissed. Their popup retirement and interaction-layer ownership must

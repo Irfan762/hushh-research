@@ -6,6 +6,7 @@ import { NativeShellBack } from "@/components/app-ui/native-shell-back";
 import { NativeChatChrome, type NativeChatChromeHandle } from "@/components/app-ui/native-chat-chrome";
 import { useSessionChromeSuppression } from "@/lib/auth/use-session-chrome-suppression";
 import { writeAccent } from "@/lib/theme/accent";
+import { isCurrentNativeControlAppearance } from "@/lib/capacitor/native-control-appearance";
 
 vi.mock("next-themes", () => ({ useTheme: () => ({ resolvedTheme: "light" }) }));
 
@@ -39,6 +40,7 @@ describe("native chrome presentation lease", () => {
     document.documentElement.removeAttribute("data-accent");
     document.documentElement.style.removeProperty("--app-accent");
     document.documentElement.style.removeProperty("--app-accent-deep");
+    document.documentElement.style.setProperty("--muted-foreground", "#8e8e93");
     document.documentElement.style.removeProperty("--background");
     bridge.platform = "ios";
     bridge.callbacks.clear();
@@ -209,6 +211,32 @@ describe("native chrome presentation lease", () => {
   function admitChat() {
     bridge.getCapabilities.mockResolvedValue({ contractVersion: 2, families: ["back", "history", "agent-surface"], independentControls: true });
   }
+  it("preserves CSS secondary-label color and alpha, fencing unresolved or changed utility colors", async () => {
+    admitChat();
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      x: 2, y: 60, width: 44, height: 44, top: 60, left: 2, right: 46, bottom: 104, toJSON: () => ({}),
+    });
+    document.documentElement.style.setProperty("--muted-foreground", "oklch(0.6 0.005 264)");
+    const view = render(<ChatHarness />);
+    await waitFor(() => expect(bridge.activate).toHaveBeenCalledOnce());
+    const light = bridge.prepare.mock.calls.at(-1)![0];
+    expect(light.foregroundHex).toMatch(/^#[0-9a-f]{6}$/);
+    expect(light.foregroundHex).not.toBe(light.accentHex);
+    expect(isCurrentNativeControlAppearance(light, "secondary")).toBe(true);
+    // The action check reads committed CSS before observer publication.
+    document.documentElement.style.setProperty("--muted-foreground", "rgba(235, 235, 245, 0.72)");
+    expect(isCurrentNativeControlAppearance(light, "secondary")).toBe(false);
+    act(() => document.documentElement.classList.add("dark"));
+    await waitFor(() => expect(bridge.prepare.mock.calls.at(-1)![0]).toMatchObject({
+      appearance: "dark", foregroundHex: "#ebebf5b8",
+    }));
+    const dark = bridge.prepare.mock.calls.at(-1)![0];
+    document.documentElement.style.setProperty("--muted-foreground", "var(--unresolved-utility)");
+    expect(isCurrentNativeControlAppearance(dark, "secondary")).toBe(false);
+    act(() => document.documentElement.setAttribute("data-accent", "gold"));
+    await waitFor(() => expect(view.getByRole("button", { name: "Authored history" })).toBeVisible());
+    expect(hasOutstandingNativeChrome("chat-history-toggle")).toBe(false);
+  });
   it("isolates simultaneous authored controls and retires native history when attention appears", async () => {
     admitChat();
     vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
@@ -227,6 +255,8 @@ describe("native chrome presentation lease", () => {
       return { ...identity, phase: "active" };
     });
     await waitFor(() => expect(bridge.activate).toHaveBeenCalledTimes(2));
+    expect(bridge.prepare.mock.calls.find(([item]) => item.kind === "history")![0].foregroundHex).toBe("#8e8e93");
+    expect(bridge.prepare.mock.calls.find(([item]) => item.kind === "agent-surface")![0].foregroundHex).not.toBe("#8e8e93");
     const old = bridge.activate.mock.calls.find(([identity]) => identity.controlId === "chat-history-toggle")![0];
     const confirmation = deferred<{ valid: boolean }>();
     bridge.confirmChoice.mockReturnValueOnce(confirmation.promise);

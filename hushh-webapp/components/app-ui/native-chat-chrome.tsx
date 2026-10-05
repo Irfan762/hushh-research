@@ -39,7 +39,8 @@ export function NativeChatChrome(props: Props) {
   const overlay = useNativeShellOverlayBlocked();
   const suppressed = useSessionChromeSuppressed();
   const surface = useVoiceSurfaceMetadata();
-  const theme = useNativeControlAppearance();
+  const foreground = kind === "history" ? "secondary" : "accent";
+  const theme = useNativeControlAppearance(foreground);
   const badgeAdmitted = props.kind !== "history" || props.pendingAttention === 0;
   const allowed = badgeAdmitted && props.eligible && !!props.owner && !!theme && !overlay && !suppressed &&
     surface?.interactionLayer?.blocksUnderlyingActions !== true;
@@ -115,7 +116,7 @@ export function NativeChatChrome(props: Props) {
         await retain(nativeChrome.addListener("choiceRequested", (event: ChromeChoice) => {
           const active = lease.current;
           void active?.choose(event, () => lease.current === active && current.current.epoch === active.projection.ownerEpoch &&
-            current.current.context === active.context && isCurrentNativeControlAppearance(active.projection) && canAct(), () => {
+            current.current.context === active.context && isCurrentNativeControlAppearance(active.projection, foreground) && canAct(), () => {
             const callback = current.current.props;
             if (callback.kind === "history") callback.onActivate();
             else if (event.value === "one" || event.value === "puppy") callback.onValueChange(event.value);
@@ -148,7 +149,7 @@ export function NativeChatChrome(props: Props) {
       window.removeEventListener("resize", invalidate);
       setSupported(false);
     };
-  }, [kind, canAct]);
+  }, [kind, foreground, canAct]);
 
   useLayoutEffect(() => {
     if (!supported) return;
