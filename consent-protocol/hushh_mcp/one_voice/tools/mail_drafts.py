@@ -579,7 +579,9 @@ TOOLS: tuple[ToolSpec, ...] = (
             "Send one of the owner's Gmail drafts after spoken confirmation. Use when "
             "they ask to send a draft they picked from the list of drafts you showed. "
             "It sends that draft as-is; only their confirmation delivers it. Use "
-            "send_mail instead for a new email they dictate now."
+            "send_mail instead for a new email they dictate now. It only sends: "
+            "deleting or discarding a draft is not possible here, so when they ask "
+            "for that, say so and prepare nothing."
         ),
         handler=_send_draft,
         prepare=_prepare_send_draft,

@@ -1912,9 +1912,9 @@ TOOLS: tuple[ToolSpec, ...] = (
         input_model=SendMailInput,
         output_model=SendMailResult,
         description=(
-            "Prepare an email the owner dictates to a confirmed person. "
-            "Use send_mail only when no future time is named; when they give a "
-            "future time, use schedule_mail. "
+            "Prepare an email the owner dictates to a confirmed person, to send now. "
+            "It has no time: when they name any later time (tomorrow, at nine, "
+            "tonight, on Friday), use schedule_mail instead, even when they say send. "
             "Use when they ask to send, write, or draft mail to a person by name. "
             "First resolve_person and confirm_person; pass only that canonical "
             "PersonRef as recipient. Preserve their dictated message in message "

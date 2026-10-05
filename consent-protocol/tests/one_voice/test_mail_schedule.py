@@ -437,9 +437,12 @@ def test_schedule_tools_bind_to_the_gateway_with_spoken_confirmation():
     # Routing lives in the descriptions the model selects on.
     assert "never send_mail" in schedule.description
     assert "a bare 'tomorrow' or 'kal' means 9:00 AM tomorrow" in schedule.description
+    # Live eval: "send her the notes tomorrow at nine" chose send_mail with a
+    # send_at it does not have in 2 of 6 samples; send_mail now says it has no time.
     assert (
-        "Use send_mail only when no future time is named; when they give a future time, "
-        "use schedule_mail." in registry.get_tool("send_mail").description
+        "It has no time: when they name any later time (tomorrow, at nine, tonight, on Friday), "
+        "use schedule_mail instead, even when they say send."
+        in registry.get_tool("send_mail").description
     )
     listing = registry.get_tool("list_scheduled_mail")
     assert listing.policy is ToolPolicy.read

@@ -2565,7 +2565,7 @@
     },
     {
       "circle_args": [],
-      "description": "Send one of the owner's Gmail drafts after spoken confirmation. Use when they ask to send a draft they picked from the list of drafts you showed. It sends that draft as-is; only their confirmation delivers it. Use send_mail instead for a new email they dictate now.",
+      "description": "Send one of the owner's Gmail drafts after spoken confirmation. Use when they ask to send a draft they picked from the list of drafts you showed. It sends that draft as-is; only their confirmation delivers it. Use send_mail instead for a new email they dictate now. It only sends: deleting or discarding a draft is not possible here, so when they ask for that, say so and prepare nothing.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "send_draft",
@@ -2598,7 +2598,7 @@
     },
     {
       "circle_args": [],
-      "description": "Prepare an email the owner dictates to a confirmed person. Use send_mail only when no future time is named; when they give a future time, use schedule_mail. Use when they ask to send, write, or draft mail to a person by name. First resolve_person and confirm_person; pass only that canonical PersonRef as recipient. Preserve their dictated message in message and never invent an address, subject, or body. This tool opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send in that card can deliver the email.",
+      "description": "Prepare an email the owner dictates to a confirmed person, to send now. It has no time: when they name any later time (tomorrow, at nine, tonight, on Friday), use schedule_mail instead, even when they say send. Use when they ask to send, write, or draft mail to a person by name. First resolve_person and confirm_person; pass only that canonical PersonRef as recipient. Preserve their dictated message in message and never invent an address, subject, or body. This tool opens an editable review card after spoken confirmation; it never sends. Only the owner's tap on Send in that card can deliver the email.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "send_mail",
