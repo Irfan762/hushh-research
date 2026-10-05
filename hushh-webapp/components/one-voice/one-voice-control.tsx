@@ -265,8 +265,10 @@ export function OneVoiceControl({
         role="group"
         aria-label="One private agent"
         className="transition-opacity motion-reduce:transition-none"
-        onClick={(event) => {
-          if (active && event.target === event.currentTarget) session.stop("tap");
+        onPointerDown={(event) => {
+          // A launch replaces the idle button during the press. Its release
+          // click may target this ancestor; only a fresh press cancels.
+          if (active && event.target === event.currentTarget && event.button === 0 && (event.isPrimary || !event.pointerType)) session.stop("tap");
         }}
       >
         {active ? (

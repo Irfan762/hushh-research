@@ -139,6 +139,23 @@ describe("OneVoiceControl", () => {
     expect(screen.queryByTestId("one-agent-chat-open")).toBeNull();
   });
 
+  it("does not cancel a new session when the launch release click retargets its surface", () => {
+    vi.mocked(harness.session!.start).mockImplementation(async () => {
+      useVoiceSessionStore.getState().dispatch({ type: "connecting", conversationId: "conv_1" });
+    });
+    render(<OneVoiceControl layout="slot" />);
+    fireEvent.pointerDown(screen.getByRole("button", { name: "Talk to One" }), { button: 0 });
+    const dock = screen.getByTestId("one-voice-agent-bar");
+    expect(screen.getByRole("button", { name: "Stop voice" })).toBeInTheDocument();
+    // The pressed launcher was removed. Browser release/click can target
+    // the surviving common ancestor, rather than that retired button.
+    fireEvent.pointerUp(dock, { button: 0 });
+    fireEvent.click(dock, { detail: 1 });
+    expect(harness.session!.stop).not.toHaveBeenCalled();
+    fireEvent.pointerDown(dock, { button: 0 });
+    expect(harness.session!.stop).toHaveBeenCalledExactlyOnceWith("tap");
+  });
+
   it("seats layout=fixed above the nav with the shared bottom variable", () => {
     render(<OneVoiceControl layout="fixed" />);
     const shell = document.querySelector<HTMLElement>("[data-agent-bar-shell]");
