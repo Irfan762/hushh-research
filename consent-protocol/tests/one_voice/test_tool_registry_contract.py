@@ -286,11 +286,13 @@ def test_voice_mail_is_exactly_read_open_access_and_a_reviewed_draft():
     assert schedule.person_args == ("recipient",)
     assert set(schedule.private_args) == {"subject", "message"}
     assert schedule.prepare is not None
+    # A clock time is send_at; a duration is send_in_minutes, counted by the server.
     assert set(schedule.declaration()["parameters_json_schema"]["properties"]) == {
         "recipient",
         "subject",
         "message",
         "send_at",
+        "send_in_minutes",
     }
     listed = registry.get_tool("list_scheduled_mail")
     assert listed is not None and listed.policy.value == "read"

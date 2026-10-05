@@ -2497,13 +2497,13 @@
     },
     {
       "circle_args": [],
-      "description": "Schedule an email the owner dictates to a confirmed person for a future time they name. Use this \u2014 never send_mail \u2014 whenever they give any future time: 'tomorrow', 'in the morning', 'at 9', 'next Monday', 'kal subah'. First resolve_person and confirm_person; pass only that canonical PersonRef as recipient. Preserve their dictated message in message and never invent an address, subject, or body. Pass send_at as an absolute ISO-8601 time computed from the current time named in this instruction; never pass a relative phrase. A bare 'morning' or 'subah' means 9:00 AM owner-local today, or tomorrow if 9:00 AM has passed; a bare 'tomorrow' or 'kal' means 9:00 AM tomorrow; a bare date means 9:00 AM that day. After spoken confirmation the mail is stored to be delivered at that time; it is never sent immediately.",
+      "description": "Schedule an email the owner dictates to a confirmed person for a future time they name. Use this \u2014 never send_mail \u2014 whenever they give any future time: 'tomorrow', 'in the morning', 'at 9', 'next Monday', 'kal subah'. First resolve_person and confirm_person; pass only that canonical PersonRef as recipient. Preserve their dictated message in message and never invent an address, subject, or body. For a clock time or day, pass send_at as owner-local wall-clock ISO-8601 without a UTC offset; never a relative phrase. For a duration ('in 30 minutes'), pass send_in_minutes instead. A bare 'morning' or 'subah' means 9:00 AM owner-local today, or tomorrow if 9:00 AM has passed; a bare 'tomorrow' or 'kal' means 9:00 AM tomorrow; a bare date means 9:00 AM that day. After spoken confirmation the mail is stored to be delivered at that time; it is never sent immediately. It never sends a Gmail draft.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "schedule_mail",
       "parameters": {
         "additionalProperties": false,
-        "description": "``send_mail``'s fields, plus the absolute time to send.\n\nThe time is never a phrase. The model resolves \"kal subah\" against the\nowner-local clock the instruction names, and the server only validates the\nresult, so a phrase it cannot read is refused rather than guessed at.",
+        "description": "``send_mail``'s fields, plus when to send: a clock time or a duration.\n\nThe time is never a phrase. The model resolves \"kal subah\" against the\nowner-local clock the instruction names and passes the owner's wall-clock\ntime, which the server places in the owner's zone (daylight saving\nincluded); a duration is minutes the server counts from its own clock,\nbecause the instruction's clock is stale by the time it is said. Exactly\none of the two is given; the server only validates, so a phrase it cannot\nread is refused rather than guessed at.",
         "properties": {
           "message": {
             "description": "The owner's dictated email message, preserved exactly; never invent it.",
@@ -2530,11 +2530,34 @@
             "type": "object"
           },
           "send_at": {
-            "description": "Absolute ISO-8601 send time with an explicit offset, e.g. 2026-10-06T09:00:00+05:30. Never a relative phrase. The server rejects unparseable, past, or >30-days-out times.",
-            "maxLength": 64,
-            "minLength": 1,
-            "title": "Send At",
-            "type": "string"
+            "anyOf": [
+              {
+                "maxLength": 64,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A clock time or day: the owner's local wall-clock time as ISO-8601 without a UTC offset, e.g. 2026-10-06T09:00:00. The server applies their zone (daylight saving included) and rejects unparseable, past, or >30-days-out times. Never a relative phrase; omit for a duration.",
+            "title": "Send At"
+          },
+          "send_in_minutes": {
+            "anyOf": [
+              {
+                "maximum": 43200,
+                "minimum": 2,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "A duration from now ('in 30 minutes'): that many minutes, counted by the server. Leave send_at out then.",
+            "title": "Send In Minutes"
           },
           "subject": {
             "default": "",
@@ -2546,8 +2569,7 @@
         },
         "required": [
           "recipient",
-          "message",
-          "send_at"
+          "message"
         ],
         "type": "object"
       },
@@ -2565,7 +2587,7 @@
     },
     {
       "circle_args": [],
-      "description": "Send one of the owner's Gmail drafts after spoken confirmation. Use when they ask to send a draft they picked from the list of drafts you showed. It sends that draft as-is; only their confirmation delivers it. Use send_mail instead for a new email they dictate now. It only sends: deleting or discarding a draft is not possible here, so when they ask for that, say so and prepare nothing.",
+      "description": "Send \u2014 never delete \u2014 one of the owner's Gmail drafts, now, after spoken confirmation. Deleting or discarding a draft is not possible here: say so and prepare nothing. A draft cannot be scheduled here: when they name any later time (tomorrow, at nine, tonight), say so, ask whether to send it now, and prepare nothing. Use it for a draft they picked from the list of drafts you showed; it goes as-is. Use send_mail for a new email they dictate now.",
       "firebase_plane": false,
       "gateway_action_id": "email.chat.turn",
       "name": "send_draft",
