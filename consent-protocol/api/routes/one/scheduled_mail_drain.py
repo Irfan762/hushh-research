@@ -21,6 +21,7 @@ from google.auth.exceptions import TransportError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token as google_id_token
 
+from hushh_mcp.one_voice.config import voice_mail_scheduled_drain_enabled
 from hushh_mcp.services.gmail_scheduled_drain import (
     MAX_DRAIN_LIMIT,
     drain_scheduled_mail,
@@ -52,10 +53,14 @@ def _environment() -> str:
 
 
 def _drain_enabled() -> bool:
-    """Keep the operational route unavailable unless this worker enables it."""
+    """Keep the operational route unavailable unless this worker enables it.
+
+    The switch is read by the same predicate the voice tools use, so "on" can
+    never mean scheduling is accepted while this route refuses to deliver.
+    """
     return (
         _environment() in {"production", "uat", "test", "local", "development"}
-        and str(os.getenv(MAIL_SCHEDULED_DRAIN_ENABLED_ENV) or "").strip().lower() == "true"
+        and voice_mail_scheduled_drain_enabled()
     )
 
 
@@ -184,4 +189,5 @@ async def drain_scheduled_mail_route(
         raise _unavailable(retry=True) from None
     # A scheduler attempt is a bounded work attempt, not delivery evidence:
     # the per-row ledger and the owner's notification carry the outcome.
-    return safe_scheduled_drain_result(result)
+    safe: dict[str, Any] = safe_scheduled_drain_result(result)
+    return safe

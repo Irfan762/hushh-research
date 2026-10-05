@@ -61,7 +61,7 @@ def _drain(monkeypatch, **result):
     return run
 
 
-@pytest.mark.parametrize("value", [None, "false", "1"])
+@pytest.mark.parametrize("value", [None, "false", "0"])
 def test_route_is_default_off_and_never_attempts_oidc_when_disabled(client, monkeypatch, value):
     if value is None:
         monkeypatch.delenv("MAIL_SCHEDULED_DRAIN_ENABLED")
