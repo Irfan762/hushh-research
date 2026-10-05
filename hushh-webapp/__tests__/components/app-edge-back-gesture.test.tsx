@@ -52,8 +52,13 @@ describe("AppEdgeBackGesture", () => {
     const registrations = vi.spyOn(window, "addEventListener");
     const view = render(<AppEdgeBackGesture />);
     for (const name of ["pointerdown", "pointermove", "pointerup", "touchstart", "touchmove", "touchend"]) {
-      expect(registrations).toHaveBeenCalledWith(name, expect.any(Function),
-        expect.objectContaining({ capture: true, passive: true }));
+      const listeners = registrations.mock.calls.filter(([type]) => type === name);
+      expect(listeners).toHaveLength(1);
+      expect(listeners[0]).toEqual([name, expect.any(Function),
+        expect.objectContaining({ capture: true, passive: true })]);
+    }
+    for (const [name, , options] of registrations.mock.calls) {
+      if (/^(pointer|touch)/.test(name)) expect(options).not.toEqual(expect.objectContaining({ passive: false }));
     }
     registrations.mockRestore();
 
@@ -70,7 +75,9 @@ describe("AppEdgeBackGesture", () => {
       cancelable: true,
       touches: [touch(1, 60, 304)],
     });
+    const cancellation = vi.spyOn(move, "preventDefault");
     document.dispatchEvent(move);
+    expect(cancellation).not.toHaveBeenCalled();
     expect(move.defaultPrevented).toBe(false);
     expect(document.documentElement.dataset.appEdgeBackActive).toBe("true");
 

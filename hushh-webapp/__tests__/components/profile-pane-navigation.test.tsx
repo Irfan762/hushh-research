@@ -57,8 +57,13 @@ describe("Profile pane touch navigation", () => {
     const registrations = vi.spyOn(window, "addEventListener");
     const view = render(<AppProfileEdgeGesture enabled />);
     for (const name of ["pointerdown", "pointermove", "pointerup", "touchstart", "touchmove", "touchend"]) {
-      expect(registrations).toHaveBeenCalledWith(name, expect.any(Function),
-        expect.objectContaining({ capture: true, passive: true }));
+      const listeners = registrations.mock.calls.filter(([type]) => type === name);
+      expect(listeners).toHaveLength(1);
+      expect(listeners[0]).toEqual([name, expect.any(Function),
+        expect.objectContaining({ capture: true, passive: true })]);
+    }
+    for (const [name, , options] of registrations.mock.calls) {
+      if (/^(pointer|touch)/.test(name)) expect(options).not.toEqual(expect.objectContaining({ passive: false }));
     }
     registrations.mockRestore();
 
@@ -73,7 +78,9 @@ describe("Profile pane touch navigation", () => {
         { identifier: 7, clientX: 200, clientY: 162 } as unknown as Touch,
       ],
     });
+    const cancellation = vi.spyOn(move, "preventDefault");
     document.dispatchEvent(move);
+    expect(cancellation).not.toHaveBeenCalled();
     expect(move.defaultPrevented).toBe(false);
     expect(
       document.documentElement.getAttribute("data-app-profile-edge-active"),
