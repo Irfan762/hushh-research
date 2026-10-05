@@ -1,5 +1,4 @@
 import Foundation
-import UIKit
 import XCTest
 
 final class AppUITests: XCTestCase {
@@ -1158,34 +1157,6 @@ final class AppUITests: XCTestCase {
         field.typeText(value)
     }
 
-    private func pasteSecureEntry(app: XCUIApplication, field: XCUIElement, value: String) -> Bool {
-        let pasteboard = UIPasteboard.general
-        // Short-lived device-local paste; credentials never enter test output.
-        pasteboard.setObjects([value as NSString], localOnly: true, expirationDate: Date().addingTimeInterval(30))
-        let generation = pasteboard.changeCount
-        defer {
-            // Do not clear a later user copy; only retire this owned entry.
-            if pasteboard.changeCount == generation { pasteboard.items = [] }
-        }
-        let ready = pasteboard.string == value
-        print("VAULT_PASTE_STAGE clipboard_ready=\(ready)")
-        guard ready else { return false }
-        field.press(forDuration: 1)
-        let choices = [app.menuItems["Paste"], app.buttons["Paste"]]
-        guard let paste = choices.first(where: { $0.waitForExistence(timeout: 2) && $0.isHittable }) else {
-            print("VAULT_PASTE_STAGE menu_ready=false")
-            return false
-        }
-        print("VAULT_PASTE_STAGE menu_ready=true")
-        paste.tap()
-        let permissions = [app.alerts.buttons["Allow Paste"], XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow Paste"]]
-        if let allow = permissions.first(where: { $0.waitForExistence(timeout: 0.5) && $0.isHittable }) { allow.tap() }
-        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-            (field.value as? String)?.utf16.count == value.utf16.count
-        }, object: field)
-        return XCTWaiter.wait(for: [inserted], timeout: 3) == .completed
-    }
-
     @discardableResult
     private func attemptVaultPassphraseUnlock(app: XCUIApplication) -> Bool {
         guard !vaultUnlockSubmitted else {
@@ -1260,9 +1231,14 @@ final class AppUITests: XCTestCase {
                 XCTFail("Vault secure entry could not be cleared; unlock was not submitted")
                 return false
             }
-            // One atomic native Paste, not paced keyboard injection. The
-            // iPhone keyboard injector dropped a symbol in a synthetic probe.
-            guard pasteSecureEntry(app: app, field: field, value: passphrase) else {
+            // One standard whole-value entry, after verified empty state.
+            // The runner's background pasteboard is not available on-device.
+            // Never submit or replay a partially delivered credential.
+            field.typeText(passphrase)
+            let inserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                entryLength() == passphrase.utf16.count
+            }, object: field)
+            guard XCTWaiter.wait(for: [inserted], timeout: 3) == .completed else {
                 XCTFail("Vault secure entry insertion was not acknowledged; unlock was not submitted")
                 return false
             }
