@@ -123,12 +123,13 @@ function StateMessage({ title, body }: { title: string; body: string }) {
   );
 }
 
-function WalletEmptyState({ onConnect }: { onConnect: () => void }) {
+function WalletIntroduction({ onConnect, loading }: { onConnect: () => void; loading: boolean }) {
   return (
     <section
       className="flex w-full flex-col items-center pt-12 text-center lg:pt-6"
       aria-labelledby="one-wallet-empty-title"
-      data-testid="one-wallet-empty"
+      data-testid={loading ? "one-wallet-loading" : "one-wallet-empty"}
+      aria-busy={loading}
     >
       <div
         className="relative aspect-[698/894] w-[min(70vw,19rem)] lg:h-[clamp(10rem,calc(100svh-33rem),19rem)] lg:w-auto"
@@ -170,10 +171,12 @@ function WalletEmptyState({ onConnect }: { onConnect: () => void }) {
           size="prominent"
           className="w-full"
           onClick={onConnect}
+          disabled={loading}
           data-testid="one-wallet-empty-action"
         >
-          Add a Card
+          {loading ? "Opening your wallet…" : "Add a Card"}
         </Button>
+        {loading ? <span className="sr-only" role="status">Opening your wallet…</span> : null}
       </div>
     </section>
   );
@@ -449,7 +452,7 @@ export function WalletWorkspace() {
     <AppPageShell
       as="div"
       width="reading"
-      fitContent={view.kind === "list" && cards.length === 0}
+      fitContent={view.kind === "loading" || (view.kind === "list" && cards.length === 0)}
     >
       <AppPageHeaderRegion>
         <div className={WALLET_COLUMN}>
@@ -503,13 +506,11 @@ export function WalletWorkspace() {
             <p className={TYPOGRAPHY_CLASSNAMES.helperText}>Wallet is not available here yet.</p>
           ) : null}
 
-          {view.kind === "loading" ? (
-            <div aria-busy="true" data-testid="one-wallet-loading">
-              <CardSlot variant="placeholder" />
-              <span className="sr-only" role="status">
-                Opening your wallet…
-              </span>
-            </div>
+          {view.kind === "loading" || (view.kind === "list" && cards.length === 0) ? (
+            <WalletIntroduction
+              loading={view.kind === "loading"}
+              onConnect={() => dispatch({ type: "open_add" })}
+            />
           ) : null}
 
           {view.kind === "locked" ? (
@@ -539,10 +540,6 @@ export function WalletWorkspace() {
                 Try again
               </Button>
             </div>
-          ) : null}
-
-          {view.kind === "list" && cards.length === 0 ? (
-            <WalletEmptyState onConnect={() => dispatch({ type: "open_add" })} />
           ) : null}
 
           {showSearch ? (
