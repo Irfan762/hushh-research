@@ -48,6 +48,7 @@ import {
 } from "@/lib/one-voice/protocol";
 import {
   NAVIGATION_DISPATCH_STATUSES,
+  NEUTRAL_OUTCOME_STATUSES,
   isPendingStatus,
   toolResultTone,
   type ToolResultTone,
@@ -217,8 +218,7 @@ export function toneForResult(
   ok: boolean | undefined,
 ): ToolResultTone {
   const status = String(result.status || "").trim();
-  if (status === "draft_open_unconfirmed" || status === "draft_send_unconfirmed")
-    return "neutral";
+  if (NEUTRAL_OUTCOME_STATUSES.has(status)) return "neutral";
   if (isPendingStatus(status)) return "pending";
   // A navigation request is neither done nor failed; ui_settled decides.
   if (NAVIGATION_DISPATCH_STATUSES.has(status)) {
@@ -854,6 +854,7 @@ const OPEN_FAILURES: Record<string, string> = {
     "That one isn't on offer anymore. Ask again for a fresh list.",
   source_changed: "That message isn't there anymore.",
   draft_gone: "That draft isn't in Gmail anymore.",
+  reconnect_required: "Mail needs reconnecting. Reconnect Gmail, then try again.",
   rate_limited: "Too many requests just now. Try again in a moment.",
   network: "Couldn't reach your mail. Check your connection.",
   invalid_request: "I couldn't open that one.",
@@ -1389,6 +1390,12 @@ function MailDetail({
                         {draft.cc.length > 0 ? (
                           <p className="text-[12px] text-[color:var(--app-secondary-label)]">
                             {`Cc ${draft.cc.join(", ")}`}
+                          </p>
+                        ) : null}
+                        {draft.bcc.length > 0 ? (
+                          // The screen only: Bcc never reaches the model.
+                          <p className="text-[12px] text-[color:var(--app-secondary-label)]">
+                            {`Bcc ${draft.bcc.join(", ")}`}
                           </p>
                         ) : null}
                         {draft.body ? (

@@ -439,7 +439,7 @@ async def _prepare_send_draft(ctx: ToolContext, args: SendDraftInput) -> Prepare
         # The card and the model read this sentence, and the pending row keeps
         # it. A position is safe to say; the draft's To and Subject can be a
         # third party's words, so they stay on the screen.
-        summary=f"send draft {position} in your list",
+        summary=f"send draft {position} in your list now",
         snapshot={
             "offer_revision": offer.revision,
             "draft_version": _draft_version(ctx, draft),
@@ -576,12 +576,13 @@ TOOLS: tuple[ToolSpec, ...] = (
         input_model=SendDraftInput,
         output_model=DraftSendResult,
         description=(
-            "Send one of the owner's Gmail drafts after spoken confirmation. Use when "
-            "they ask to send a draft they picked from the list of drafts you showed. "
-            "It sends that draft as-is; only their confirmation delivers it. Use "
-            "send_mail instead for a new email they dictate now. It only sends: "
-            "deleting or discarding a draft is not possible here, so when they ask "
-            "for that, say so and prepare nothing."
+            "Send — never delete — one of the owner's Gmail drafts, now, after spoken "
+            "confirmation. Deleting or discarding a draft is not possible here: say so "
+            "and prepare nothing. A draft cannot be scheduled here: when they name any "
+            "later time (tomorrow, at nine, tonight), say so, ask whether to send it "
+            "now, and prepare nothing. Use it for a draft they picked from the list of "
+            "drafts you showed; it goes as-is. Use send_mail for a new email they "
+            "dictate now."
         ),
         handler=_send_draft,
         prepare=_prepare_send_draft,

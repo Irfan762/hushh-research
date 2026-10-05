@@ -118,6 +118,22 @@ export type ToolResultTone = "success" | "neutral" | "failure" | "pending";
  */
 const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_requested"]);
 
+/**
+ * Outcomes that are neither done nor failed, whatever the frame's `ok` says.
+ * Nothing went wrong, and what the person asked for either did not happen (a
+ * cancel that found the email already sent, being sent, or never sent) or
+ * cannot be confirmed (Gmail may or may not have sent it). Never "Done".
+ */
+export const NEUTRAL_OUTCOME_STATUSES = new Set<string>([
+  "draft_open_unconfirmed",
+  "draft_send_unconfirmed",
+  "send_unconfirmed",
+  "schedule_unconfirmed",
+  "already_sent",
+  "already_sending",
+  "not_sent",
+]);
+
 /** An armed-but-unsent outcome: neither success nor failure yet. */
 /**
  * Statuses that ask the surface to do something rather than report an outcome.
@@ -149,6 +165,18 @@ export function keepsAnswerSlotAcrossInput(result: ToolResultPublic | null): boo
 }
 
 /**
+ * A proposal whose UI is the pending card. It answers nothing yet, so it does
+ * not take the answer slot from an offered list: "send the second draft" and
+ * "cancel the first one" are approved while the list they name stays on screen.
+ */
+function isConfirmationHandoff(result: ToolResultPublic): boolean {
+  return (
+    String(result.status || "").trim() === "confirmation_required" ||
+    result.needs === "confirmation"
+  );
+}
+
+/**
  * A navigation the app was asked to make. It is not a success (it stays in
  * NOT_SUCCESS_STATUSES; the ui_settled outcome decides) and not a failure: it
  * reads as "Opening…". Not pending either -- that would hold the turn open
@@ -171,10 +199,10 @@ export function toolResultTone(
   // An armed Save My Soul is "sending your position", whatever `ok` says: the
   // relay sends it with ok:false because nothing has been delivered yet.
   if (isPendingStatus(value)) return "pending";
-  // The review card may already be visible after a lost acknowledgement.
-  // This says nothing about a send, so avoid both success and failure claims.
-  if (value === "draft_open_unconfirmed" || value === "draft_send_unconfirmed")
-    return "neutral";
+  // The review card may already be visible after a lost acknowledgement, a
+  // send may or may not have gone out, a cancel may have found nothing left to
+  // cancel: avoid both success and failure claims.
+  if (NEUTRAL_OUTCOME_STATUSES.has(value)) return "neutral";
   if (NAVIGATION_DISPATCH_STATUSES.has(value)) {
     return ok === false ? "failure" : "neutral";
   }
@@ -833,7 +861,8 @@ function reduceServerFrame(
         // list that made "second" mean anything. It still joins the timeline, so
         // it is observable; it just does not become the thing on screen.
         lastResult: DISPATCH_ONLY_STATUSES.has(String(result.status || "").trim()) ||
-          !belongsToCurrentInput
+          !belongsToCurrentInput ||
+          (isConfirmationHandoff(result) && keepsAnswerSlotAcrossInput(state.lastResult))
           ? state.lastResult
           : result,
         pendingAction:
@@ -901,6 +930,12 @@ function reduceServerFrame(
       const awaitingDevice = isPendingStatus(frame.result_public?.status);
       return {
         ...state,
+        // A list kept beside its card gives way to the card's real result. A
+        // card resolved with no result (cancelled, expired) leaves it showing.
+        lastResult:
+          frame.result_public && keepsAnswerSlotAcrossInput(state.lastResult)
+            ? null
+            : state.lastResult,
         idleDeadlineAt: null,
         phase:
           state.activeInputTurnId

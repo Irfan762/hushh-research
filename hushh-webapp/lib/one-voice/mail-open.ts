@@ -32,6 +32,8 @@ export type MailOpenReason =
   | "source_changed"
   /** The draft was sent or deleted in Gmail since the list was shown. */
   | "draft_gone"
+  /** Gmail is not connected, or its connection lacks the read permission. */
+  | "reconnect_required"
   | "rate_limited"
   | "network"
   | "unknown";
@@ -106,7 +108,14 @@ export function mailOpenReason(
       return "offer_unresolved";
     case "SOURCE_CHANGED":
     case "CONNECTION_CHANGED":
+    case "GMAIL_ACCOUNT_CHANGED":
       return "source_changed";
+    // Connection state, not a stale list: asking for a fresh list would loop.
+    case "CONNECT_REQUIRED":
+    case "RECONNECT_REQUIRED":
+    case "GMAIL_NOT_CONNECTED":
+    case "GMAIL_READ_PERMISSION_REQUIRED":
+      return "reconnect_required";
     case "PERMISSION_DENIED":
       return "unauthorized";
     default:
@@ -155,6 +164,8 @@ export type OpenedDraft = {
   toLabel: string | null;
   to: string[];
   cc: string[];
+  /** The owner's own Bcc, for their screen only; a send reaches these too. */
+  bcc: string[];
   subject: string | null;
   body: string | null;
   /** The text was shortened to fit; the draft in Gmail is longer. */
@@ -180,6 +191,7 @@ export function parseOpenedDraft(body: unknown): OpenedDraft | null {
     toLabel: text(row.to_label),
     to: textList(row.to),
     cc: textList(row.cc),
+    bcc: textList(row.bcc),
     subject: text(row.subject),
     body: text(row.body),
     bodyTruncated: row.body_truncated === true,

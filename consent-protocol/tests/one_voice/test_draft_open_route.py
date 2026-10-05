@@ -44,7 +44,8 @@ class DraftReads:
             "to_label": "Priya Sharma",
             "to_list": ["priya@example.com"],
             "cc_list": [],
-            "recipient_count": 1,
+            "bcc_list": ["hidden@example.com"],
+            "recipient_count": 2,
             "subject": "Diwali plans",
             "body_text": BODY,
             "body_truncated": False,
@@ -108,6 +109,12 @@ def test_a_tap_opens_the_offered_draft_fenced_to_its_account(app):
     draft = response.json()["draft"]
     assert draft["body"] == BODY
     assert (draft["to_label"], draft["subject"]) == ("Priya Sharma", "Diwali plans")
+    # Every recipient the send would reach is on screen, Bcc included.
+    assert (draft["to"], draft["cc"], draft["bcc"]) == (
+        ["priya@example.com"],
+        [],
+        ["hidden@example.com"],
+    )
     # The id came from the offer, and the read is fenced to the listing account.
     assert reads.calls == [{"user_id": USER, "draft_id": DRAFT_IDS[1], "account": ACCOUNT}]
     # No provider id reaches the surface.

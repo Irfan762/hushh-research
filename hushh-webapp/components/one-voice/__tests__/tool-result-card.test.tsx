@@ -277,6 +277,44 @@ describe("ToolResultCard", () => {
     expect(container.textContent).not.toContain("inv_SECRET");
   });
 
+  it("never shows Done for a scheduled-mail cancel that cancelled nothing", () => {
+    // The panel passes ok = (resolved executed) for a confirmed card, and the
+    // cancel did execute: it answered that nothing was left to cancel.
+    for (const status of [
+      "send_unconfirmed",
+      "schedule_unconfirmed",
+      "already_sent",
+      "already_sending",
+      "not_sent",
+    ]) {
+      for (const ok of [true, false, undefined]) {
+        expect(toneForResult({ status }, ok), `${status} ${ok}`).toBe("neutral");
+      }
+      const { unmount } = render(
+        <ToolResultCard
+          result={{ status, spoken_facts: ["Nothing to cancel."] }}
+          tool="cancel_scheduled_mail"
+          ok
+        />,
+      );
+      expect(screen.getByTestId("one-voice-tool-result")).toHaveAttribute(
+        "data-tone",
+        "neutral",
+      );
+      expect(screen.queryByText("Done")).toBeNull();
+      unmount();
+    }
+    // Negative control: a real cancel is done.
+    render(
+      <ToolResultCard
+        result={{ status: "cancelled", spoken_facts: ["Cancelled."] }}
+        tool="cancel_scheduled_mail"
+        ok
+      />,
+    );
+    expect(screen.getByText("Done")).toBeInTheDocument();
+  });
+
   it("classifies tools into families and tones", () => {
     expect(toolResultFamily("list_people")).toBe("people");
     expect(toolResultFamily("rename_circle")).toBe("circles");
@@ -1324,6 +1362,7 @@ describe("ToolResultCard: drafts and scheduled mail", () => {
     toLabel: "Arjun",
     to: ["arjun@example.com"],
     cc: ["meera@example.com"],
+    bcc: ["hidden@example.com"],
     subject: "Rent",
     body: "Sending October's share today.",
     bodyTruncated: false,
@@ -1368,6 +1407,8 @@ describe("ToolResultCard: drafts and scheduled mail", () => {
     );
     expect(screen.getByText("To arjun@example.com")).toBeInTheDocument();
     expect(screen.getByText("Cc meera@example.com")).toBeInTheDocument();
+    // A send reaches Bcc too, so the owner sees it before saying yes.
+    expect(screen.getByText("Bcc hidden@example.com")).toBeInTheDocument();
     expect(draftCalls).toEqual([
       { ordinal: 2, offerRevision: 8, conversationId: CONV },
     ]);
@@ -1439,6 +1480,34 @@ describe("ToolResultCard: drafts and scheduled mail", () => {
       expect(
         screen.getByTestId("one-voice-mail-open-error"),
       ).toHaveTextContent("That draft isn't in Gmail anymore."),
+    );
+  });
+
+  it("tells the person to reconnect Gmail when the connection is the problem", async () => {
+    const { MailOpenError } = await import("@/lib/one-voice/mail-open");
+    render(
+      <ToolResultCard
+        result={draftsResult()}
+        tool="list_drafts"
+        ok
+        onOpenDraft={async () => {
+          throw new MailOpenError("reconnect_required", {
+            status: 409,
+            code: "GMAIL_READ_PERMISSION_REQUIRED",
+          });
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getAllByTestId("one-voice-mail-open")[0]);
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("one-voice-mail-open-error"),
+      ).toHaveTextContent("Reconnect Gmail, then try again."),
+    );
+    expect(screen.getByTestId("one-voice-mail-open-error")).not.toHaveTextContent(
+      "isn't on offer anymore",
     );
   });
 

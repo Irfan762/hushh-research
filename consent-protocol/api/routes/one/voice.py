@@ -620,6 +620,7 @@ async def open_offered_draft(
             "to_label": draft.get("to_label"),
             "to": list(draft.get("to_list") or []),
             "cc": list(draft.get("cc_list") or []),
+            "bcc": list(draft.get("bcc_list") or []),
             "subject": draft.get("subject"),
             "body": draft.get("body_text"),
             "body_truncated": bool(draft.get("body_truncated")),

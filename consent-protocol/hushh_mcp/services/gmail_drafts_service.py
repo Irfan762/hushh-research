@@ -334,7 +334,8 @@ async def get_gmail_draft(
     to_header = headers.get("to", "")
     to_list = _addresses(to_header)
     cc_list = _addresses(headers.get("cc", ""))
-    bcc_count = len(_addresses(headers.get("bcc", "")))
+    # The owner's own Bcc, for their screen: a send reaches these people too.
+    bcc_list = _addresses(headers.get("bcc", ""))
     thread_id = message.get("threadId")
     return {
         "draft_id": draft_id,
@@ -343,7 +344,8 @@ async def get_gmail_draft(
         "to_label": _recipient_label(to_header) if to_header.strip() else "Unknown recipient",
         "to_list": to_list,
         "cc_list": cc_list,
-        "recipient_count": len(to_list) + len(cc_list) + bcc_count,
+        "bcc_list": bcc_list,
+        "recipient_count": len(to_list) + len(cc_list) + len(bcc_list),
         "subject": _one_line(headers.get("subject"), _SUBJECT_MAX_CHARS),
         "body_text": body_text,
         "body_truncated": truncated,

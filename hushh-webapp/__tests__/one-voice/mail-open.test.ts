@@ -232,6 +232,7 @@ describe("draft open: the same binding, against the drafts route", () => {
             to_label: "Priya",
             to: ["priya@example.com"],
             cc: [],
+            bcc: ["hidden@example.com"],
             subject: " Diwali plans ",
             body: "Shall we meet at 7?",
             body_truncated: false,
@@ -252,6 +253,7 @@ describe("draft open: the same binding, against the drafts route", () => {
         toLabel: "Priya",
         to: ["priya@example.com"],
         cc: [],
+        bcc: ["hidden@example.com"],
         subject: "Diwali plans",
         body: "Shall we meet at 7?",
         bodyTruncated: false,
@@ -272,6 +274,23 @@ describe("draft open: the same binding, against the drafts route", () => {
   it("names a draft gone from Gmail, and the drafts switch, as reasons", () => {
     expect(mailOpenReason(410, "DRAFT_GONE")).toBe("draft_gone");
     expect(mailOpenReason(403, "VOICE_MAIL_DRAFTS_DISABLED")).toBe("disabled");
+  });
+
+  it("names a changed or missing Gmail connection, not a stale list", () => {
+    // These arrive as 409, which on its own means an unresolved offer. Telling
+    // the person to ask for a fresh list would loop them: the list is fine and
+    // the connection is what needs fixing.
+    expect(mailOpenReason(409, "GMAIL_ACCOUNT_CHANGED")).toBe("source_changed");
+    for (const code of [
+      "GMAIL_NOT_CONNECTED",
+      "GMAIL_READ_PERMISSION_REQUIRED",
+      "CONNECT_REQUIRED",
+      "RECONNECT_REQUIRED",
+    ]) {
+      expect(mailOpenReason(409, code)).toBe("reconnect_required");
+    }
+    // Negative control: a plain unresolved offer is still that.
+    expect(mailOpenReason(409, "MAIL_OFFER_UNRESOLVED")).toBe("offer_unresolved");
   });
 
   it("refuses a body that describes no draft", () => {

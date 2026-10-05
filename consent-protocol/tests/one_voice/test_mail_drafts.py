@@ -279,8 +279,9 @@ async def test_the_send_card_names_what_gmail_holds_and_keeps_the_draft_server_s
 
     assert outcome.result.status == "confirmation_required"
     assert outcome.result.tier == "voice"
-    # A position, like a reply card: the screen shows who and what.
-    assert outcome.result.summary == "send draft 2 in your list"
+    # A position, like a reply card: the screen shows who and what. "now",
+    # because a draft send has no time and the yes delivers it at once.
+    assert outcome.result.summary == "send draft 2 in your list now"
     assert h.drafts.named("get") == [(DRAFT_IDS[1], ACCOUNT)]
     assert h.drafts.named("send") == []
     row = outcome.pending
@@ -464,3 +465,20 @@ def test_drafts_tools_bind_to_the_mail_gateway_action_with_reviewed_policies():
             "ordinal",
             "limit",
         }
+
+
+def test_send_draft_says_first_that_it_never_deletes_and_has_no_later_time():
+    """Routing the model reads: send_draft is not a delete and not a schedule.
+
+    Live eval: "delete the third draft for me" still chose send_draft in 3 of 6
+    samples with the delete limit only at the end of the description, and a
+    draft send has no send time, so "send the second draft tomorrow" must not
+    become a card that sends now.
+    """
+    description = registry.get_tool("send_draft").description
+    assert description.startswith("Send — never delete — one of the owner's Gmail drafts")
+    assert (
+        "A draft cannot be scheduled here: when they name any later time "
+        "(tomorrow, at nine, tonight), say so, ask whether to send it now, "
+        "and prepare nothing." in description
+    )

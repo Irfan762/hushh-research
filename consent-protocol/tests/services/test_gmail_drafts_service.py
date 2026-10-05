@@ -80,7 +80,10 @@ def _metadata_draft(draft_id: str, index: int) -> dict[str, Any]:
     }
 
 
-def _full_draft(body: str = "Let's meet at 7.", *, to: str = "Priya <priya@example.com>"):
+def _full_draft(
+    body: str = "Let's meet at 7.", *, to: str = "Priya <priya@example.com>", bcc: str = ""
+):
+    bcc_headers = [{"name": "Bcc", "value": bcc}] if bcc else []
     return {
         "id": DRAFT_ID,
         "message": {
@@ -92,6 +95,7 @@ def _full_draft(body: str = "Let's meet at 7.", *, to: str = "Priya <priya@examp
                 "headers": [
                     {"name": "To", "value": to},
                     {"name": "Cc", "value": "a@example.com, b@example.com"},
+                    *bcc_headers,
                     {"name": "Subject", "value": "Diwali plans"},
                 ],
                 "body": {"data": _b64(body)},
@@ -194,7 +198,9 @@ async def test_one_unreadable_draft_fails_the_list_rather_than_hiding_a_row():
 
 
 async def test_open_returns_the_body_for_the_screen_read_with_the_readonly_grant():
-    gmail = Gmail({("GET", _path(f"/drafts/{DRAFT_ID}")): _full_draft()})
+    gmail = Gmail(
+        {("GET", _path(f"/drafts/{DRAFT_ID}")): _full_draft(bcc="Hidden <hidden@example.com>")}
+    )
     connection = GmailDouble()
 
     draft = await drafts.get_gmail_draft(
@@ -211,7 +217,10 @@ async def test_open_returns_the_body_for_the_screen_read_with_the_readonly_grant
     assert draft["body_truncated"] is False
     assert draft["message_id"] == MESSAGE_ID
     assert draft["to_list"] == ["priya@example.com"]
-    assert draft["recipient_count"] == 3
+    # Bcc goes to the owner's screen too: a send must never surprise them with a
+    # recipient the draft view did not show.
+    assert draft["bcc_list"] == ["hidden@example.com"]
+    assert draft["recipient_count"] == 4
 
 
 async def test_a_long_draft_is_shortened_and_says_so():
