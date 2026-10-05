@@ -1822,7 +1822,7 @@ export function VaultFlow({
                       aria-label={showPassphrase ? "Hide passphrase" : "Show passphrase"}
                       title={showPassphrase ? "Hide passphrase" : "Show passphrase"}
                     >
-                      <Icon icon={showPassphrase ? EyeOff : Eye} size={18} />
+                      <Icon icon={showPassphrase ? Eye : EyeOff} size={18} />
                     </button>
                   </div>
               </div>
@@ -1855,7 +1855,7 @@ export function VaultFlow({
                       aria-label={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
                       title={showConfirmPassphrase ? "Hide passphrase" : "Show passphrase"}
                     >
-                      <Icon icon={showConfirmPassphrase ? EyeOff : Eye} size={18} />
+                      <Icon icon={showConfirmPassphrase ? Eye : EyeOff} size={18} />
                     </button>
                   </div>
                 {createPassphraseHelperText && (
@@ -1985,7 +1985,7 @@ export function VaultFlow({
                       aria-label={showPassphrase ? "Hide passphrase" : "Show passphrase"}
                       title={showPassphrase ? "Hide passphrase" : "Show passphrase"}
                     >
-                      <Icon icon={showPassphrase ? EyeOff : Eye} size={18} />
+                      <Icon icon={showPassphrase ? Eye : EyeOff} size={18} />
                     </button>
                   </div>
                 </div>
