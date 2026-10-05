@@ -405,24 +405,32 @@ would sit on the drift list above. It is declared, and scoped, as catalog search
 ### Declared: One Voice scheduled send time
 
 - Owning agent: the One Voice Live head. It selects `schedule_mail` over
-  `send_mail` when the owner names a later time, and it resolves the owner's
-  words ("kal subah", "tomorrow at 9", "next Friday") into one absolute
-  ISO-8601 `send_at`, using the current time and the owner's zone that
-  `build_instruction` states in the system instruction. Host code never parses
-  natural language and never picks a time.
+  `send_mail` when the owner names a later time. It resolves a clock time or a
+  day ("kal subah", "tomorrow at 9", "next Friday") into an owner-local
+  wall-clock `send_at`, using the current time and the owner's zone that
+  `build_instruction` states in the system instruction, and a duration ("in 30
+  minutes") into `send_in_minutes`, which the server counts from its own clock.
+  Host code never parses natural language and never picks a time.
 - Manifest path: the tool declarations in
   `consent-protocol/hushh_mcp/one_voice/tools/mail.py` (`schedule_mail`,
   `list_scheduled_mail`, `cancel_scheduled_mail`; the 9:00 AM defaults live in
   the `schedule_mail` description) and narration rule 13 in
   `consent-protocol/hushh_mcp/one_voice/instruction.py`.
-- Structured output: `ScheduleMailInput.send_at` (string, absolute ISO-8601 with
-  an offset; a naive time is read as owner-local wall time).
-- Validator: `owner_time.resolve_send_at` only accepts or rejects. It refuses an
-  unparseable or worded time, a time already past, one less than 60 seconds out,
-  or one more than 30 days out, each with a typed reason and a spoken question.
-  It never rounds, rolls or rewrites a time. The confirmation card repeats the
-  stored instant in owner-local words ("tomorrow at 9:00 AM IST") as the human
-  check, and the yes is re-validated against the server clock.
+- Structured output: exactly one of `ScheduleMailInput.send_at` (string,
+  owner-local wall-clock ISO-8601 without a UTC offset, e.g.
+  `2026-10-06T09:00:00`; the server applies the owner's zone, daylight saving
+  included, and still accepts an explicit offset) and
+  `ScheduleMailInput.send_in_minutes` (integer, 2 to 43200). Neither or both is
+  refused with a spoken question (`schedule_time_missing`,
+  `schedule_time_ambiguous`), never resolved by host code.
+- Validator: `owner_time.resolve_send_at`, `send_at_after_minutes` and
+  `check_send_at` only accept or reject. They refuse an unparseable or worded
+  time, a time already past, one less than 60 seconds out, or one more than 30
+  days out, each with a typed reason and a spoken question. They never round,
+  roll or rewrite a time. The confirmation card repeats the stored instant in
+  owner-local words ("tomorrow at 9:00 AM IST") as the human check. The yes
+  re-validates that instant against the server clock; a duration's instant is
+  pinned at the card and never counted again.
 - Live eval before production promotion: the mail tool-selection eval's
   `schedule` family (later time is `schedule_mail`, never `send_mail`; no time
   is `send_mail`) sampled several times per case on the UAT Live model, plus a
