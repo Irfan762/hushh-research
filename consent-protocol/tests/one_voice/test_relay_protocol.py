@@ -773,6 +773,153 @@ async def test_new_spoken_input_does_not_reuse_a_model_continuation_turn():
     assert session._origin_is_stale(continuation_turn) is True
 
 
+async def _relay_on_live():
+    transport = FakeTransport()
+    fake = FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    return session, transport, fake
+
+
+async def _say(session, *pieces: str) -> None:
+    """One spoken input as Live transcribes it: pieces, the last one final."""
+    for index, piece in enumerate(pieces):
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text=piece, finished=index == len(pieces) - 1)
+        )
+
+
+async def _speak_and_end(session, *chunks: str) -> None:
+    for chunk in chunks:
+        await session._handle_live_event(LiveEvent(kind="audio", audio_b64=chunk))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+
+
+def _echo_call(call_id: str) -> LiveEvent:
+    return LiveEvent(
+        kind="tool_call",
+        function_calls=[{"id": call_id, "name": "echo", "args": {"text": "hi"}}],
+    )
+
+
+async def test_every_question_in_a_spoken_conversation_is_answered():
+    """UAT 2026-10-05 (session 8ad16cff): after One finished speaking an answer,
+    the reply to the next spoken question was dropped, every other question.
+    The question fenced the idle turn opened by turn_complete, Live's reply
+    landed in that fenced turn, and model_end carried the idle turn's id, so
+    the pill stayed on "Understanding" with nothing left to end it."""
+    session, transport, _fake = await _relay_on_live()
+    questions = []
+    for chunk in ("QUFB", "QkJC", "Q0ND", "RERE"):
+        await _say(session, "And what", " about this?")
+        questions.append(transport.frames("transcript.input")[-1]["turn_id"])
+        await _speak_and_end(session, chunk)
+
+    assert len(set(questions)) == 4
+    assert [frame["turn_id"] for frame in transport.frames("audio")] == questions
+    ends = [frame["turn_id"] for frame in transport.frames("turn") if frame["state"] == "model_end"]
+    assert ends == questions
+    understood = [
+        frame["turn_id"] for frame in transport.frames("state") if frame["state"] == "understanding"
+    ]
+    assert understood == questions
+
+
+async def test_a_question_live_reports_after_its_interruption_is_answered():
+    """Barge-in: Live can report `interrupted` before the new transcript."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Tell me about the weekend")
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QUFB"))
+    await session._handle_live_event(LiveEvent(kind="interrupted"))
+    await _say(session, "Actually, just Saturday")
+    barge_in = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+
+    assert transport.frames("audio")[-1]["turn_id"] == barge_in
+    assert transport.frames("turn")[-1] == {
+        "type": "turn",
+        "state": "model_end",
+        "turn_id": barge_in,
+    }
+
+
+async def test_a_question_waits_behind_the_reply_a_tool_result_still_owes():
+    """Live may close a tool-call turn and speak about the result in a fresh
+    one. A question asked before that reply starts must not take the turn the
+    reply will use (ed068703f): the reply is fenced, then the question is
+    answered under its own id."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await _say(session, "And one more thing")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QUFB")
+    await _speak_and_end(session, "QkJC")
+
+    assert fake.tool_responses[0]["response"].get("status") != "superseded"
+    assert [frame["turn_id"] for frame in transport.frames("audio")] == [question]
+    assert transport.frames("turn")[-1]["turn_id"] == question
+
+
+async def test_an_answer_that_starts_before_its_transcript_is_heard_in_full():
+    """Live can order the first answer chunk ahead of the input transcript it
+    answers, within one server message."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QkJC"))
+    await _say(session, "Second question")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "Q0ND", "RERE")
+
+    assert [frame["data"] for frame in transport.frames("audio")] == [
+        "QUFB",
+        "QkJC",
+        "Q0ND",
+        "RERE",
+    ]
+    assert transport.frames("turn")[-1] == {
+        "type": "turn",
+        "state": "model_end",
+        "turn_id": question,
+    }
+
+
+async def test_a_question_asked_after_an_answer_can_use_a_tool():
+    """The muted turn also refused the next question's tool call as stale."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    await _say(session, "Now look something up")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await session._handle_live_event(_echo_call("c2"))
+
+    assert fake.tool_responses[-1]["response"].get("status") != "superseded"
+    assert transport.frames("tool.result")[-1]["turn_id"] == question
+
+
+async def test_a_reply_live_never_speaks_holds_back_one_question_at_most():
+    """If Live answers the next question instead of speaking about a tool
+    result, that one question is held and muted; the question after it must
+    not be."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await _say(session, "Second question")
+    await _speak_and_end(session, "QUFB")
+    await _say(session, "Third question")
+    latest = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+
+    assert transport.frames("audio")[-1]["turn_id"] == latest
+    assert transport.frames("turn")[-1] == {"type": "turn", "state": "model_end", "turn_id": latest}
+
+
 async def test_new_input_still_supersedes_a_delayed_continuation_card():
     transport = FakeTransport()
     fake = FakeLive([])
