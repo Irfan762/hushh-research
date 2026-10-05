@@ -606,3 +606,10 @@ tests/test_scheduled_mail_scheduler_contract.py
 tests/services/test_gmail_drafts_service.py
 tests/one_voice/test_mail_drafts.py
 tests/one_voice/test_draft_open_route.py
+
+# Scheduled mail and draft sends on real PostgreSQL (serial lane): 275 over 173
+# with its CHECKs and refused rollback, one row per schedule under concurrent
+# confirmations, cancel frees the key, the drain fires a due row once under
+# concurrent drains and never touches an immediate send (send_at IS NULL), and
+# one draft send (one retry after a refusal) per draft.
+tests/services/test_scheduled_mail_postgres.py
