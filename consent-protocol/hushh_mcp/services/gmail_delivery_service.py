@@ -73,7 +73,8 @@ _SCHEDULE_PAYLOAD_INFO = b"gmail-owner-schedule-payload-v1"
 _SCHEDULE_PAYLOAD_PREFIX = "sp1."
 _SCHEDULE_PAYLOAD_KEYS = frozenset({"to", "subject", "body", "recipient_user_id", "sender_sub"})
 _SCHEDULE_SEALED_MAX_CHARS = 256 * 1024
-_SCHEDULE_IDEMPOTENCY_PREFIX = "one-voice-schedule-mail-v1"
+# v2 adds the sending account to the key material.
+_SCHEDULE_IDEMPOTENCY_PREFIX = "one-voice-schedule-mail-v2"
 _SCHEDULE_DISPLAY_MAX_CHARS = 120
 _SCHEDULED_LIST_MAX = 25
 # A cancel renames its row's idempotency key, so the same email to the same
@@ -714,11 +715,15 @@ class GmailDeliveryService:
         pool = await get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction():
+                # Only this path's own immediate confirmations: an armed
+                # scheduled send (send_at set) is expired by the drain alone,
+                # which judges it against its send window.
                 await conn.execute(
                     """
                     UPDATE gmail_owner_send_actions
                     SET state = 'expired', updated_at = NOW()
                     WHERE user_id = $1 AND state = 'prepared' AND expires_at <= NOW()
+                      AND send_at IS NULL
                     """,
                     user_id,
                 )
@@ -864,17 +869,23 @@ class GmailDeliveryService:
                     status_code=409,
                 )
         async with pool.acquire() as conn:
+            # An expired action can never be sent, so a scheduled one's sealed
+            # mail and display subject leave with it (an immediate send never
+            # stores either). Committed on its own, before the claim: the claim
+            # refuses an expired row by raising inside its transaction, which
+            # would roll this write back with it.
+            await conn.execute(
+                """
+                UPDATE gmail_owner_send_actions
+                SET state = 'expired', updated_at = NOW(),
+                    payload_sealed = NULL, subject = NULL
+                WHERE action_id = $1 AND user_id = $2
+                  AND state = 'prepared' AND expires_at <= NOW()
+                """,
+                action_id,
+                user_id,
+            )
             async with conn.transaction():
-                await conn.execute(
-                    """
-                    UPDATE gmail_owner_send_actions
-                    SET state = 'expired', updated_at = NOW()
-                    WHERE action_id = $1 AND user_id = $2
-                      AND state = 'prepared' AND expires_at <= NOW()
-                    """,
-                    action_id,
-                    user_id,
-                )
                 action = await conn.fetchrow(
                     """
                     SELECT action_id, state, expires_at, sent_at, envelope_hmac
@@ -1210,9 +1221,11 @@ class GmailDeliveryService:
         recipient_user_id, sender_sub). The row stores only ciphertext, HMACs
         and two display labels; the envelope HMAC is the one ``prepare``
         computes for an immediate send of the same draft, so ``execute``
-        verifies it unchanged. The time and the recipient live in the
-        idempotency key instead: the same draft to the same person at the same
-        time is one row, whichever conversation confirmed it.
+        verifies it unchanged. The time, the recipient and the sending account
+        live in the idempotency key instead (HMAC'd, so the account id is never
+        stored in the clear): the same draft to the same person at the same
+        time from the same account is one row, whichever conversation confirmed
+        it, and a re-approval after reconnecting another account is a new one.
 
         Returns ``{"action_id", "state", "send_at", "created"}``. A second
         call for the same send returns the existing row with ``created`` False.
@@ -1262,6 +1275,7 @@ class GmailDeliveryService:
                     envelope_hmac,
                     send_at.isoformat(),
                     recipient_user_id,
+                    fields["sender_sub"],
                 )
             )
         )
@@ -1388,7 +1402,8 @@ class GmailDeliveryService:
 
         A compare-and-set on ``state = 'scheduled'``: the drain arms a due row
         under the same row lock, so exactly one of a cancel and a send wins.
-        The sealed envelope leaves with the cancel; nothing can fire it now.
+        The sealed envelope and the display subject leave with the cancel;
+        nothing can fire it now, and nothing lists it.
         The same write renames the row's idempotency key (still unique: it ends
         in the action id), so scheduling the same email for the same time again
         stores a new send instead of answering with this cancelled one.
@@ -1405,6 +1420,7 @@ class GmailDeliveryService:
                 UPDATE gmail_owner_send_actions
                 SET state = 'cancelled',
                     payload_sealed = NULL,
+                    subject = NULL,
                     idempotency_hmac = idempotency_hmac || $3 || action_id,
                     updated_at = NOW()
                 WHERE action_id = $1 AND user_id = $2 AND state = 'scheduled'

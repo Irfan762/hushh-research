@@ -131,17 +131,16 @@ async def _confirm_ayesha(h) -> None:
     assert confirmed.result.status == "confirmed"
 
 
-async def _propose(h, *, send_at: str = SEND_AT, message: str = MESSAGE):
-    return await h.executor.call(
-        h.ctx,
-        "schedule_mail",
-        {
-            "recipient": {"user_id": AYESHA},
-            "subject": SUBJECT,
-            "message": message,
-            "send_at": send_at,
-        },
-    )
+async def _propose(h, *, send_at: str | None = SEND_AT, message: str = MESSAGE, **when: Any):
+    args: dict[str, Any] = {
+        "recipient": {"user_id": AYESHA},
+        "subject": SUBJECT,
+        "message": message,
+        **when,
+    }
+    if send_at is not None:
+        args["send_at"] = send_at
+    return await h.executor.call(h.ctx, "schedule_mail", args)
 
 
 async def _confirm(h, pending_id: str):
@@ -253,6 +252,68 @@ async def test_a_naive_time_is_the_owner_wall_clock_not_utc(h):
     ]
     [stored] = h.ledger.rows.values()
     assert stored["send_at"] == SEND_AT_UTC
+
+
+async def test_a_duration_is_counted_from_the_server_clock_and_pinned_at_the_card(h):
+    """ "In 30 minutes", said 25 minutes into a session whose instruction clock
+    was built at its start: a send_at computed from that clock would fire 25
+    minutes early. send_in_minutes is counted from the server clock at the card,
+    and the yes re-checks that pinned instant instead of counting again."""
+    await _confirm_ayesha(h)
+    h.clock.now = NOW + timedelta(minutes=25)
+
+    proposed = await _propose(h, send_at=None, send_in_minutes=30)
+
+    pinned = NOW + timedelta(minutes=55)
+    assert proposed.result.summary == "send this to Ayesha Sharma today at 8:31 PM IST"
+    assert proposed.pending.args[PREPARED_KEY]["send_at_iso"] == pinned.isoformat()
+    h.clock.now = NOW + timedelta(minutes=35)  # the card waited ten minutes
+    confirmed = await _confirm(h, proposed.pending.id)
+    assert confirmed.result.status == "scheduled"
+    assert confirmed.result.send_at == pinned.isoformat()
+    [stored] = h.ledger.rows.values()
+    assert stored["send_at"] == pinned
+
+    # A card answered after its pinned instant came within the lead is refused.
+    soon = await _propose(h, send_at=None, send_in_minutes=2, message="A second note.")
+    h.clock.now += timedelta(seconds=90)
+    late = await _confirm(h, soon.pending.id)
+    assert late.result.reason_code == "schedule_time_passed"
+    assert len(h.ledger.rows) == 1
+
+
+@pytest.mark.parametrize(
+    ("send_at", "when", "code"),
+    [
+        (None, {}, "schedule_time_missing"),
+        (SEND_AT, {"send_in_minutes": 30}, "schedule_time_ambiguous"),
+    ],
+)
+async def test_a_send_needs_exactly_one_of_a_time_or_a_duration(h, send_at, when, code):
+    await _confirm_ayesha(h)
+
+    outcome = await _propose(h, send_at=send_at, **when)
+
+    assert (outcome.result.status, outcome.result.reason_code) == ("rejected", code)
+    assert outcome.result.spoken_facts[0].endswith("?")
+    assert outcome.pending is None
+    assert h.ledger.calls == []
+
+
+async def test_reapproving_after_reconnecting_another_gmail_account_stores_a_new_send(h):
+    """The sending account is part of what makes a send the same send: the old
+    row would fail closed at the drain, so "already scheduled" would be false."""
+    await _confirm_ayesha(h)
+    first = await _scheduled(h)
+    h.gmail.sender_sub = "google-sub-reconnected"
+
+    again = await _scheduled(h)
+
+    assert again.result.spoken_facts == [
+        "Scheduled to send to Ayesha Sharma tomorrow at 9:00 AM IST."
+    ]
+    assert again.result.action_id != first.result.action_id
+    assert len(h.ledger.rows) == 2
 
 
 @pytest.mark.parametrize("change", ["address", "removed"])
@@ -374,10 +435,22 @@ async def test_the_kill_switch_refuses_honestly_at_the_card_and_on_the_yes(h):
     assert confirmed.result.reason_code == "voice_mail_schedule_disabled"
     assert h.ledger.rows == {}
 
-    h.admission.schedule = True
+
+async def test_turning_mail_reads_off_never_strands_a_scheduled_send(h):
+    """Listing and cancelling touch only the ledger, never the mailbox."""
+    first, _second = await _listed(h)
     h.admission.reads = False
-    withdrawn = await h.executor.call(h.ctx, "list_scheduled_mail", {})
-    assert withdrawn.result.reason_code == "voice_mail_reads_disabled"
+
+    listed = await h.executor.call(h.ctx, "list_scheduled_mail", {})
+    proposed = await _cancel(h, 1)
+
+    assert listed.result.status == "ok"
+    confirmed = await _confirm(h, proposed.pending.id)
+    assert confirmed.result.status == "cancelled"
+    assert h.ledger.rows[first]["state"] == "cancelled"
+    # A new scheduled send still needs mail reads.
+    refused = await _propose(h)
+    assert (refused.result.reason_code, refused.pending) == ("voice_mail_reads_disabled", None)
 
 
 async def test_with_the_drain_off_nothing_new_is_scheduled_at_the_card_or_on_the_yes(h):
@@ -433,9 +506,18 @@ def test_schedule_tools_bind_to_the_gateway_with_spoken_confirmation():
     assert schedule.device_step is False
     assert schedule.prepare is not None
     properties = schedule.declaration()["parameters_json_schema"]["properties"]
-    assert set(properties) == {"recipient", "subject", "message", "send_at"}
+    assert set(properties) == {"recipient", "subject", "message", "send_at", "send_in_minutes"}
     # Routing lives in the descriptions the model selects on.
     assert "never send_mail" in schedule.description
+    assert "It never sends a Gmail draft." in schedule.description
+    # A clock time is the owner's wall clock with no offset (an offset for a
+    # date across a daylight-saving change can only be today's); a duration is
+    # minutes the server counts.
+    assert "without a UTC offset" in schedule.description
+    assert "pass send_in_minutes instead" in schedule.description
+    assert "e.g. 2026-10-06T09:00:00." in properties["send_at"]["description"]
+    assert "+05:30" not in properties["send_at"]["description"]
+    assert "Leave send_at out" in properties["send_in_minutes"]["description"]
     assert "a bare 'tomorrow' or 'kal' means 9:00 AM tomorrow" in schedule.description
     # Live eval: "send her the notes tomorrow at nine" chose send_mail with a
     # send_at it does not have in 2 of 6 samples; send_mail now says it has no time.
@@ -534,6 +616,24 @@ async def test_a_short_page_never_speaks_its_length_as_the_total(h, limit):
             "Here are your next 25 scheduled emails; there are more. "
             "The next one goes out tomorrow at 9:00 AM IST."
         ]
+
+
+async def test_a_send_already_due_is_said_to_be_late_not_upcoming(h):
+    """The drain is paused or behind: "goes out" a time already past is false."""
+    _first, second = await _two_scheduled(h)
+    h.clock.now = SEND_AT_UTC + timedelta(minutes=5)
+
+    listed = await h.executor.call(h.ctx, "list_scheduled_mail", {})
+
+    assert listed.result.spoken_facts == [
+        "You have 2 scheduled emails. The next one was due today at 9:00 AM IST "
+        "and hasn't gone out yet."
+    ]
+    h.ledger.rows[second]["state"] = "cancelled"
+    alone = await h.executor.call(h.ctx, "list_scheduled_mail", {})
+    assert alone.result.spoken_facts == [
+        "You have 1 scheduled email. It was due today at 9:00 AM IST and hasn't gone out yet."
+    ]
 
 
 # -- cancel_scheduled_mail -----------------------------------------------------------------

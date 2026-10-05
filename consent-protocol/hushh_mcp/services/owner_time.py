@@ -6,10 +6,15 @@ that fires at 09:00 UTC has gone out five and a half hours late while every log
 line reads correct.
 
 The model resolves relative phrases ("kal subah", "next Friday") against the
-owner-local time the instruction gives it, and passes an absolute ISO-8601
-timestamp. This module only validates that timestamp: it never parses words,
-never guesses, and never uses a fuzzy date parser, because a fuzzy parser that
-reads "9" as today 09:00 UTC is a confident wrong answer.
+owner-local time the instruction gives it, and passes the owner's wall-clock
+time as ISO-8601 without an offset; the server applies the owner's zone,
+daylight saving included, because an offset the model attaches to a date past
+a daylight-saving change can only be today's. A duration ("in 30 minutes") is
+passed as minutes and counted from the server clock, because the instruction's
+clock is built once per session and is stale by the time it is said. This
+module only validates: it never parses words, never guesses, and never uses a
+fuzzy date parser, because a fuzzy parser that reads "9" as today 09:00 UTC is
+a confident wrong answer.
 
 The zone is the client's hint (``AuthFrame.timezone``), already bounded by the
 auth frame. It is a hint, not authority: an unknown zone degrades to UTC, which
@@ -74,15 +79,38 @@ def _aware_utc(now: datetime) -> datetime:
     return now.astimezone(timezone.utc)
 
 
+def check_send_at(send_at: datetime, *, now: datetime) -> datetime:
+    """An instant already resolved, held against the server clock.
+
+    The three refusals after parsing, in order: already past, too soon to fire
+    reliably, beyond the horizon. ``send_at == now + 30 days`` is accepted.
+    """
+    current = _aware_utc(now)
+    send_at = _aware_utc(send_at)
+    if send_at <= current:
+        raise ScheduleTimeError("schedule_time_in_past", _IN_PAST)
+    if send_at <= current + timedelta(seconds=SCHEDULE_MIN_LEAD_SECONDS):
+        raise ScheduleTimeError("schedule_time_too_soon", _TOO_SOON)
+    if send_at > current + timedelta(days=SCHEDULE_HORIZON_DAYS):
+        raise ScheduleTimeError("schedule_time_too_far", _TOO_FAR)
+    return send_at
+
+
+def send_at_after_minutes(minutes: int, *, now: datetime) -> datetime:
+    """A duration the person named, counted from the server clock and checked."""
+    return check_send_at(_aware_utc(now) + timedelta(minutes=int(minutes)), now=now)
+
+
 def resolve_send_at(raw: str, *, owner_zone: ZoneInfo | str | None, now: datetime) -> datetime:
     """An absolute send time as aware UTC, or :class:`ScheduleTimeError`.
 
     Only ISO-8601 with a time of day is accepted. A timestamp without an offset
-    is the owner's wall-clock time, because that is what they said. The four
-    refusals are checked in order: unparseable, already past, too soon to fire
-    reliably, beyond the horizon. ``send_at == now + 30 days`` is accepted.
+    is the owner's wall-clock time, because that is what they said, and the
+    zone's own rules (daylight saving included) place it; an explicit offset is
+    still honoured. Unparseable is refused first, including a year that leaves
+    the representable range once converted; then :func:`check_send_at`.
     """
-    current = _aware_utc(now)
+    _aware_utc(now)
     value = str(raw or "").strip()
     # A date alone is not a send time; the model resolves bare dates to 9:00
     # first, so a date-only value is a missing time, not midnight.
@@ -94,14 +122,12 @@ def resolve_send_at(raw: str, *, owner_zone: ZoneInfo | str | None, now: datetim
         raise ScheduleTimeError("schedule_time_unparseable", _UNPARSEABLE) from None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=_zone(owner_zone))
-    send_at = parsed.astimezone(timezone.utc)
-    if send_at <= current:
-        raise ScheduleTimeError("schedule_time_in_past", _IN_PAST)
-    if send_at <= current + timedelta(seconds=SCHEDULE_MIN_LEAD_SECONDS):
-        raise ScheduleTimeError("schedule_time_too_soon", _TOO_SOON)
-    if send_at > current + timedelta(days=SCHEDULE_HORIZON_DAYS):
-        raise ScheduleTimeError("schedule_time_too_far", _TOO_FAR)
-    return send_at
+    try:
+        # Year 1 east of UTC or year 9999 west of it has no UTC instant.
+        send_at = parsed.astimezone(timezone.utc)
+    except (OverflowError, ValueError):
+        raise ScheduleTimeError("schedule_time_unparseable", _UNPARSEABLE) from None
+    return check_send_at(send_at, now=now)
 
 
 def zone_abbreviation(local: datetime) -> str:
@@ -166,16 +192,20 @@ def render_time_block(*, timezone_name: str | None, now: datetime | None = None)
     current = _aware_utc(now or datetime.now(timezone.utc)).replace(microsecond=0)
     tz = owner_zone(timezone_name)
     local = current.astimezone(tz)
-    example = (local + timedelta(days=1)).replace(hour=9, minute=0, second=0)
+    # The owner's wall clock, no offset: tomorrow's offset may not be today's.
+    example = (local + timedelta(days=1)).replace(hour=9, minute=0, second=0, tzinfo=None)
     return (
         f"Current time: {current.isoformat()} (UTC). The owner's local time is "
         f"{local.strftime('%Y-%m-%d %H:%M:%S')} {tz.key} — "
         f"{_WEEKDAYS[local.weekday()]}, {local.date().isoformat()}.\n"
         'Resolve relative times ("tomorrow", "kal subah", "next Friday") against '
-        "the owner's local time, never against UTC. When you call schedule_mail, "
-        "pass send_at as an absolute ISO-8601 timestamp with its UTC offset, e.g. "
-        f'{example.isoformat()}. Never pass words like "tomorrow" as send_at. '
-        "If you omit the offset, the server reads the time as the owner's local time."
+        "the owner's local time, never against UTC. When you call schedule_mail "
+        "for a clock time or a day, pass send_at as the owner's local wall-clock "
+        "time in ISO-8601 without a UTC offset, e.g. "
+        f"{example.isoformat()}; the server applies the owner's time zone, "
+        "including daylight-saving changes. For a duration from now "
+        '("in 30 minutes"), pass send_in_minutes instead and leave send_at out. '
+        'Never pass words like "tomorrow" as send_at.'
     )
 
 
@@ -183,10 +213,12 @@ __all__ = [
     "SCHEDULE_HORIZON_DAYS",
     "SCHEDULE_MIN_LEAD_SECONDS",
     "ScheduleTimeError",
+    "check_send_at",
     "format_schedule_echo",
     "owner_zone",
     "render_time_block",
     "resolve_send_at",
+    "send_at_after_minutes",
     "spoken_schedule_time",
     "zone_abbreviation",
 ]

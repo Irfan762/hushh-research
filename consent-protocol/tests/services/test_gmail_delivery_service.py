@@ -1165,6 +1165,30 @@ _SCHEDULE_NOW = datetime(2026, 10, 5, 14, 6, 55, tzinfo=timezone.utc)
 _SEND_AT = datetime(2026, 10, 6, 3, 30, tzinfo=timezone.utc)
 
 
+class _LedgerTransaction:
+    """Rolls the ledger back when the block raises, as PostgreSQL does: a write
+    made inside a transaction that then refuses is not durable. Restored in
+    place, so a test holding a row dict sees the rolled-back values."""
+
+    def __init__(self, conn):
+        self.conn = conn
+        self.saved: dict[str, dict[str, object]] = {}
+
+    async def __aenter__(self):
+        self.saved = {key: dict(row) for key, row in self.conn.rows.items()}
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            for key in list(self.conn.rows):
+                if key not in self.saved:
+                    del self.conn.rows[key]
+            for key, row in self.saved.items():
+                self.conn.rows.setdefault(key, {}).clear()
+                self.conn.rows[key].update(row)
+        return False
+
+
 class ScheduleLedgerConn(_PrepareConn):
     """Just enough of gmail_owner_send_actions for the schedule SQL, keyed by
     (user, idempotency HMAC) like the table's UNIQUE constraint. Shared with the
@@ -1174,6 +1198,29 @@ class ScheduleLedgerConn(_PrepareConn):
         super().__init__()
         self.rows: dict[str, dict[str, object]] = {}
         self.fail_with: Exception | None = None
+        self.now = _SCHEDULE_NOW
+
+    def transaction(self):
+        return _LedgerTransaction(self)
+
+    async def execute(self, query, *args):
+        """The two expiry sweeps, predicate by predicate as the SQL states them."""
+        self.calls.append((query, args))
+        if "SET state = 'expired'" not in query:
+            return
+        by_action = "WHERE action_id = $1 AND user_id = $2" in query
+        user_id = args[1] if by_action else args[0]
+        for row in self.rows.values():
+            if row["user_id"] != user_id or (by_action and row["action_id"] != args[0]):
+                continue
+            if row["state"] != "prepared" or row["expires_at"] > self.now:
+                continue
+            if "send_at IS NULL" in query and row["send_at"] is not None:
+                continue
+            row["state"] = "expired"
+            for column in ("payload_sealed", "subject"):
+                if f"{column} = NULL" in query:
+                    row[column] = None
 
     def _by_key(self, user_id, idempotency_hmac):
         return next(
@@ -1217,6 +1264,8 @@ class ScheduleLedgerConn(_PrepareConn):
             return self._owned(*args)
         if "FOR UPDATE" in query and "idempotency_hmac = $2" in query:
             return self._by_key(*args)
+        if "FOR UPDATE" in query and "WHERE action_id = $1 AND user_id = $2" in query:
+            return self._owned(*args)
         if "INSERT INTO gmail_owner_send_actions" in query:
             (action_id, user_id, envelope, idem, expires_at, send_at, sealed, display, subject) = (
                 args
@@ -1242,6 +1291,8 @@ class ScheduleLedgerConn(_PrepareConn):
             if row is None or row["state"] != "scheduled":
                 return None
             row.update(state="cancelled", payload_sealed=None)
+            if "subject = NULL" in query:
+                row["subject"] = None
             # Renamed only when the SQL renames it, so a cancel that keeps its
             # key keeps blocking the same schedule here exactly as in Postgres.
             if "idempotency_hmac = idempotency_hmac || $3 || action_id" in query:
@@ -1469,7 +1520,11 @@ async def test_cancel_is_a_compare_and_set_that_reports_the_state_it_lost_to(mon
 
     first = await service.cancel_scheduled_send(user_id="owner", action_id=action_id)
     assert first == {"cancelled": True, "state": "cancelled", "sent_at": None}
+    # The sealed mail and the plaintext subject (display-only, for the waiting
+    # list) leave with the cancel; the name stays for the honest replies.
     assert conn.rows[action_id]["payload_sealed"] is None
+    assert conn.rows[action_id]["subject"] is None
+    assert conn.rows[action_id]["recipient_display"] == "Priya Sharma"
     again = await service.cancel_scheduled_send(user_id="owner", action_id=action_id)
     assert (again["cancelled"], again["state"]) == (False, "cancelled")
 
@@ -1488,3 +1543,59 @@ async def test_cancel_is_a_compare_and_set_that_reports_the_state_it_lost_to(mon
     conn.rows[raced["action_id"]]["state"] = "sent"
     lost = await service.cancel_scheduled_send(user_id="owner", action_id=raced["action_id"])
     assert (lost["cancelled"], lost["state"]) == (False, "sent")
+
+
+@pytest.mark.asyncio
+async def test_an_immediate_prepare_never_expires_a_scheduled_send(monkeypatch):
+    """prepare()'s per-owner sweep is for its own ten-minute confirmations. An
+    armed scheduled row (drained, not yet executed) belongs to the drain, which
+    alone decides when it is past its window."""
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+    scheduled = await _schedule(service)
+    armed = conn.rows[scheduled["action_id"]]
+    armed.update(state="prepared")
+    # Negative control: an abandoned immediate send of the same owner is swept.
+    conn.rows["immediate"] = {
+        **armed,
+        "action_id": "immediate",
+        "idempotency_hmac": "other",
+        "send_at": None,
+        "payload_sealed": None,
+        "subject": None,
+    }
+    conn.now = armed["expires_at"] + timedelta(minutes=1)
+    for row in (armed, conn.rows["immediate"]):
+        assert row["expires_at"] <= conn.now
+
+    await service.prepare(
+        user_id="owner", draft_payload=_envelope(), idempotency_key="immediate-send-key"
+    )
+
+    assert conn.rows["immediate"]["state"] == "expired"
+    assert armed["state"] == "prepared"
+    assert armed["payload_sealed"] is not None
+
+
+@pytest.mark.asyncio
+async def test_execute_expiring_a_scheduled_send_drops_its_sealed_mail_and_subject(monkeypatch):
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+    scheduled = await _schedule(service)
+    row = conn.rows[scheduled["action_id"]]
+    draft_payload = GmailDeliveryService.scheduled_draft_payload(
+        service.open_schedule_payload(
+            user_id="owner", action_id=scheduled["action_id"], sealed=row["payload_sealed"]
+        )
+    )
+    row.update(state="prepared")
+    conn.now = row["expires_at"]
+
+    with pytest.raises(GmailDeliveryError) as refused:
+        await service.execute(
+            user_id="owner", action_id=scheduled["action_id"], draft_payload=draft_payload
+        )
+
+    assert refused.value.code == "ACTION_NOT_SENDABLE"
+    assert (row["state"], row["payload_sealed"], row["subject"]) == ("expired", None, None)
+    assert row["recipient_display"] == "Priya Sharma"

@@ -79,9 +79,11 @@ from hushh_mcp.services.gmail_metadata_reader import GmailMetadataReader
 from hushh_mcp.services.gmail_receipts_service import GmailApiError, get_gmail_receipts_service
 from hushh_mcp.services.owner_time import (
     ScheduleTimeError,
+    check_send_at,
     format_schedule_echo,
     owner_zone,
     resolve_send_at,
+    send_at_after_minutes,
     spoken_schedule_time,
 )
 
@@ -1269,11 +1271,11 @@ def _scheduled_list_gates(admission: OneVoiceMailAdmission) -> Rejected | None:
 
     Either switch is enough: with scheduling off the drain may still send what
     was stored earlier, and the owner must always be able to see and stop it.
+    Mail reads are not required: both touch only the send ledger, never the
+    mailbox, so switching voice mail reads off must not strand a waiting send.
     """
     if not (admission.mail_schedule_send_enabled() or admission.mail_scheduled_drain_enabled()):
         return _schedule_off()
-    if not admission.mail_reads_enabled():
-        return _unavailable("voice_mail_reads_disabled")
     return None
 
 
@@ -1318,20 +1320,35 @@ def _when(send_at: datetime, zone: str, now: datetime) -> str:
 
 
 class ScheduleMailInput(SendMailInput):
-    """``send_mail``'s fields, plus the absolute time to send.
+    """``send_mail``'s fields, plus when to send: a clock time or a duration.
 
     The time is never a phrase. The model resolves "kal subah" against the
-    owner-local clock the instruction names, and the server only validates the
-    result, so a phrase it cannot read is refused rather than guessed at.
+    owner-local clock the instruction names and passes the owner's wall-clock
+    time, which the server places in the owner's zone (daylight saving
+    included); a duration is minutes the server counts from its own clock,
+    because the instruction's clock is stale by the time it is said. Exactly
+    one of the two is given; the server only validates, so a phrase it cannot
+    read is refused rather than guessed at.
     """
 
-    send_at: str = Field(
+    send_at: str | None = Field(
+        default=None,
         min_length=1,
         max_length=64,
         description=(
-            "Absolute ISO-8601 send time with an explicit offset, e.g. "
-            "2026-10-06T09:00:00+05:30. Never a relative phrase. The server "
-            "rejects unparseable, past, or >30-days-out times."
+            "A clock time or day: the owner's local wall-clock time as ISO-8601 "
+            "without a UTC offset, e.g. 2026-10-06T09:00:00. The server applies "
+            "their zone (daylight saving included) and rejects unparseable, past, "
+            "or >30-days-out times. Never a relative phrase; omit for a duration."
+        ),
+    )
+    send_in_minutes: int | None = Field(
+        default=None,
+        ge=2,
+        le=43200,
+        description=(
+            "A duration from now ('in 30 minutes'): that many minutes, counted by "
+            "the server. Leave send_at out then."
         ),
     )
 
@@ -1363,11 +1380,61 @@ def _schedule_no_email(name: str) -> Rejected:
     )
 
 
+def _schedule_time_choice(args: ScheduleMailInput) -> Rejected | None:
+    """Exactly one of a clock time and a duration: asked about, never picked."""
+    if args.send_at is not None and args.send_in_minutes is not None:
+        return Rejected(
+            reason_code="schedule_time_ambiguous",
+            spoken_facts=["Should I send it at a set time, or in a number of minutes from now?"],
+        )
+    if args.send_at is None and args.send_in_minutes is None:
+        return Rejected(
+            reason_code="schedule_time_missing",
+            spoken_facts=[
+                "When should I send it — for example, tomorrow at 9 AM, or in 30 minutes?"
+            ],
+        )
+    return None
+
+
+def _requested_send_at(args: ScheduleMailInput, *, zone: str, now: datetime) -> datetime:
+    """The instant the card will show, or :class:`ScheduleTimeError`."""
+    send_at: datetime = (
+        send_at_after_minutes(args.send_in_minutes, now=now)
+        if args.send_in_minutes is not None
+        else resolve_send_at(args.send_at or "", owner_zone=zone, now=now)
+    )
+    return send_at
+
+
+def _approved_send_at(
+    args: ScheduleMailInput, prepared: dict[str, Any], *, zone: str, now: datetime
+) -> datetime | None:
+    """The instant the card showed, checked again against the server clock.
+
+    A clock time is read again and must still name that instant. A duration is
+    never counted again: the instant pinned at the card is what the yes
+    approved. None when the card's pinned time is missing or no longer matches.
+    """
+    if args.send_in_minutes is None:
+        return _requested_send_at(args, zone=zone, now=now)
+    if prepared.get("send_in_minutes") != args.send_in_minutes:
+        return None
+    try:
+        pinned = datetime.fromisoformat(str(prepared.get("send_at_iso") or ""))
+    except ValueError:
+        return None
+    if pinned.tzinfo is None:
+        return None
+    checked: datetime = check_send_at(pinned, now=now)
+    return checked
+
+
 async def _prepare_schedule_mail(
     ctx: ToolContext, args: ScheduleMailInput
 ) -> Prepared | ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
-    refused = _schedule_gates(admission)
+    refused = _schedule_gates(admission) or _schedule_time_choice(args)
     if refused is not None:
         return refused
     # The same fail-closed recipient gates as ``send_mail``.
@@ -1396,7 +1463,7 @@ async def _prepare_schedule_mail(
     # surface without the owner's zone (a tap over HTTP) approves the same time.
     zone = str(owner_zone(ctx.timezone).key)
     try:
-        send_at = resolve_send_at(args.send_at, owner_zone=zone, now=now)
+        send_at = _requested_send_at(args, zone=zone, now=now)
     except ScheduleTimeError as exc:
         return Rejected(reason_code=exc.code, spoken_facts=[exc.spoken])
     not_ready = await _schedule_send_refusal(ctx)
@@ -1419,13 +1486,15 @@ async def _prepare_schedule_mail(
             "send_at_iso": send_at.isoformat(),
             "send_at_label": format_schedule_echo(send_at, zone, now=now),
             "owner_zone": zone,
+            # A duration is pinned as the instant above, never counted again.
+            "send_in_minutes": args.send_in_minutes,
         },
     )
 
 
 async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
-    refused = _schedule_gates(admission)
+    refused = _schedule_gates(admission) or _schedule_time_choice(args)
     if refused is not None:
         return refused
     person = ctx.entities.person(args.recipient.user_id)
@@ -1453,7 +1522,7 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
     now = _now(ctx)
     zone = str(prepared.get("owner_zone") or ctx.timezone)
     try:
-        send_at = resolve_send_at(args.send_at, owner_zone=zone, now=now)
+        approved = _approved_send_at(args, prepared, zone=zone, now=now)
     except ScheduleTimeError as exc:
         if exc.code in {"schedule_time_in_past", "schedule_time_too_soon"}:
             return Rejected(
@@ -1463,7 +1532,7 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
                 ],
             )
         return Rejected(reason_code=exc.code, spoken_facts=[exc.spoken])
-    if send_at.isoformat() != prepared.get("send_at_iso"):
+    if approved is None or approved.isoformat() != prepared.get("send_at_iso"):
         return Rejected(
             reason_code="schedule_time_changed",
             spoken_facts=[
@@ -1471,6 +1540,7 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
                 "Tell me the time again."
             ],
         )
+    send_at = approved
     not_ready = await _schedule_send_refusal(ctx)
     if not_ready is not None:
         return not_ready
@@ -1645,21 +1715,26 @@ async def _list_scheduled_mail(ctx: ToolContext, args: ListScheduledMailInput) -
     # the page it is "the next n", never "you have n".
     if count == 0:
         facts = ["You have no scheduled emails."]
-    elif more:
-        when = _when(times[0], ctx.timezone, now)
-        facts = [
-            f"Here's your next scheduled email; there are more. It goes out {when}."
-            if count == 1
-            else f"Here are your next {count} scheduled emails; there are more. "
-            f"The next one goes out {when}."
-        ]
     else:
         when = _when(times[0], ctx.timezone, now)
-        facts = [
-            f"You have 1 scheduled email. It goes out {when}."
-            if count == 1
-            else f"You have {count} scheduled emails. The next one goes out {when}."
-        ]
+        # Still waiting after its time (the drain is paused or behind): it has
+        # not gone out, and "goes out" a time already past would be false.
+        timing = (
+            f"was due {when} and hasn't gone out yet." if times[0] <= now else f"goes out {when}."
+        )
+        if more:
+            lead = (
+                "Here's your next scheduled email; there are more. It"
+                if count == 1
+                else f"Here are your next {count} scheduled emails; there are more. The next one"
+            )
+        else:
+            lead = (
+                "You have 1 scheduled email. It"
+                if count == 1
+                else f"You have {count} scheduled emails. The next one"
+            )
+        facts = [f"{lead} {timing}"]
     return ListScheduledMailResult(
         status="empty" if count == 0 else "ok",
         items=items,
@@ -1975,13 +2050,15 @@ TOOLS: tuple[ToolSpec, ...] = (
             "future time: 'tomorrow', 'in the morning', 'at 9', 'next Monday', "
             "'kal subah'. First resolve_person and confirm_person; pass only that "
             "canonical PersonRef as recipient. Preserve their dictated message in "
-            "message and never invent an address, subject, or body. Pass send_at as "
-            "an absolute ISO-8601 time computed from the current time named in this "
-            "instruction; never pass a relative phrase. A bare 'morning' or 'subah' "
+            "message and never invent an address, subject, or body. For a clock "
+            "time or day, pass send_at as owner-local wall-clock ISO-8601 without "
+            "a UTC offset; never a relative phrase. For a duration ('in 30 "
+            "minutes'), pass send_in_minutes instead. A bare 'morning' or 'subah' "
             "means 9:00 AM owner-local today, or tomorrow if 9:00 AM has passed; a "
             "bare 'tomorrow' or 'kal' means 9:00 AM tomorrow; a bare date means "
             "9:00 AM that day. After spoken confirmation the mail is stored to be "
-            "delivered at that time; it is never sent immediately."
+            "delivered at that time; it is never sent immediately. It never sends "
+            "a Gmail draft."
         ),
         handler=_schedule_mail,
         person_args=("recipient",),

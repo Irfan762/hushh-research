@@ -156,7 +156,8 @@ def test_owner_clock_sits_between_the_context_line_and_the_tool_list():
     clock = text.index("Current time: 2026-10-05T14:06:55+00:00 (UTC).")
     assert context < clock < text.index("Tools you can call:")
     assert "The owner's local time is 2026-10-05 19:36:55 Asia/Calcutta — Monday" in text
-    assert "e.g. 2026-10-06T09:00:00+05:30." in text
+    # The owner's wall clock with no offset: the server applies the zone.
+    assert "e.g. 2026-10-06T09:00:00;" in text
 
     fallback = _build(now=now)
     assert "The owner's local time is 2026-10-05 14:06:55 UTC — Monday" in fallback

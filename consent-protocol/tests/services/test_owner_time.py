@@ -13,10 +13,12 @@ import pytest
 from hushh_mcp.services import owner_time
 from hushh_mcp.services.owner_time import (
     ScheduleTimeError,
+    check_send_at,
     format_schedule_echo,
     owner_zone,
     render_time_block,
     resolve_send_at,
+    send_at_after_minutes,
     spoken_schedule_time,
 )
 
@@ -116,21 +118,70 @@ def test_winter_new_york_is_est_not_edt():
     assert format_schedule_echo(send_at, "America/New_York", now=january) == "Tomorrow, 7:00 AM EST"
 
 
-def test_instruction_clock_names_server_time_owner_time_and_the_offset_rule():
+def test_a_naive_time_across_a_dst_change_keeps_the_owners_wall_clock():
+    """New York leaves daylight saving on 2026-11-01. Today's offset (-04:00)
+    pinned onto a date past the change sends an hour off; the owner's zone,
+    applied by the server to a naive time, does not."""
+    after_change = resolve_send_at("2026-11-02T09:00:00", owner_zone="America/New_York", now=NOW)
+    assert after_change == _utc(2026, 11, 2, 14, 0)  # 9:00 AM EST
+    assert format_schedule_echo(after_change, "America/New_York", now=NOW) == ("2 Nov, 9:00 AM EST")
+    # Negative control: what the old rule asked for (today's offset) is 8:00 AM EST.
+    stale_offset = resolve_send_at(
+        "2026-11-02T09:00:00-04:00", owner_zone="America/New_York", now=NOW
+    )
+    assert stale_offset == _utc(2026, 11, 2, 13, 0)
+
+
+@pytest.mark.parametrize(
+    ("raw", "zone"),
+    [
+        ("0001-01-01T00:00:00", "Asia/Kolkata"),  # naive, east of UTC: year 0
+        ("0001-01-01T00:00:00+05:30", "UTC"),
+        ("9999-12-31T23:00:00-05:00", "UTC"),  # west of UTC: year 10000
+        ("9999-12-31T23:59:59", "America/New_York"),
+    ],
+)
+def test_a_year_that_overflows_in_conversion_is_unparseable_not_a_crash(raw, zone):
+    with pytest.raises(ScheduleTimeError) as refused:
+        resolve_send_at(raw, owner_zone=zone, now=NOW)
+    assert refused.value.code == "schedule_time_unparseable"
+
+
+def test_a_duration_is_counted_from_the_server_clock_and_checked_like_a_time():
+    assert send_at_after_minutes(30, now=NOW) == NOW + timedelta(minutes=30)
+    assert send_at_after_minutes(43200, now=NOW) == NOW + timedelta(days=30)
+    for minutes, code in ((1, "schedule_time_too_soon"), (43201, "schedule_time_too_far")):
+        with pytest.raises(ScheduleTimeError) as refused:
+            send_at_after_minutes(minutes, now=NOW)
+        assert refused.value.code == code
+    # A pinned instant is re-checked against a later clock, never recomputed.
+    pinned = NOW + timedelta(minutes=30)
+    assert check_send_at(pinned, now=NOW + timedelta(minutes=10)) == pinned
+    with pytest.raises(ScheduleTimeError) as late:
+        check_send_at(pinned, now=NOW + timedelta(minutes=29, seconds=30))
+    assert late.value.code == "schedule_time_too_soon"
+
+
+def test_instruction_clock_names_server_time_owner_time_and_the_wall_clock_rule():
     block = render_time_block(timezone_name="Asia/Calcutta", now=NOW)
     assert block.startswith(
         "Current time: 2026-10-05T14:06:55+00:00 (UTC). The owner's local time is "
         "2026-10-05 19:36:55 Asia/Calcutta — Monday, 2026-10-05."
     )
     assert "never against UTC" in block
-    # The example is the owner's own tomorrow at 9, with their offset.
-    assert "e.g. 2026-10-06T09:00:00+05:30." in block
-    assert "If you omit the offset, the server reads the time as the owner's local time." in block
+    # The example is the owner's own tomorrow at 9 on their wall clock, with no
+    # offset: the server applies the zone, daylight saving included.
+    assert "e.g. 2026-10-06T09:00:00;" in block
+    assert "2026-10-06T09:00:00+" not in block
+    assert "without a UTC offset" in block
+    assert "including daylight-saving changes" in block
+    # A duration is counted by the server, not from this (possibly stale) clock.
+    assert "pass send_in_minutes instead and leave send_at out" in block
 
 
 @pytest.mark.parametrize("zone", [None, "", "Not/AZone"])
 def test_instruction_clock_falls_back_to_utc_when_the_zone_is_missing(zone):
     block = render_time_block(timezone_name=zone, now=NOW)
     assert "The owner's local time is 2026-10-05 14:06:55 UTC — Monday, 2026-10-05." in block
-    assert "e.g. 2026-10-06T09:00:00+00:00." in block
+    assert "e.g. 2026-10-06T09:00:00;" in block
     assert owner_zone(zone).key == "UTC"
