@@ -206,7 +206,7 @@ final class AppUITests: XCTestCase {
         let cancel = webView.buttons.matching(NSPredicate(
             format: "label ENDSWITH %@ OR label == %@", ". Stop voice", "Cancel voice command"
         )).firstMatch
-        defer {
+        addTeardownBlock {
             if cancel.exists && cancel.isHittable { cancel.tap() }
             if insertedDraft && composer.exists && composer.isHittable {
                 composer.tap()
@@ -247,9 +247,13 @@ final class AppUITests: XCTestCase {
         perfTapNav(app, label: "Chat")
         let start = webView.buttons["Start voice mode"].firstMatch
         XCTAssertTrue(start.waitForExistence(timeout: 15) && start.isHittable)
-        start.tap()
         let stop = webView.buttons.matching(NSPredicate(format: "label ENDSWITH %@", ". Stop voice")).firstMatch
-        defer { if stop.exists && stop.isHittable { stop.tap() } }
+        // XCTest runs this even when a fail-fast assertion aborts the test body.
+        addTeardownBlock {
+            if stop.exists && stop.isHittable { stop.tap() }
+            XCTAssertTrue(start.waitForExistence(timeout: 10), "VOICE_STOP_NOT_SETTLED")
+        }
+        start.tap()
         XCTAssertTrue(stop.waitForExistence(timeout: 10), "LIVE_ADAPTER_UNAVAILABLE")
         // Button descendants are not consistently separate AX nodes in WebKit.
         let listening = webView.buttons["Listening. Stop voice"].firstMatch
