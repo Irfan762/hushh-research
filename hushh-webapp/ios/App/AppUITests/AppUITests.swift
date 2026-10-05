@@ -788,6 +788,10 @@ final class AppUITests: XCTestCase {
         let hosts = app.webViews.matching(identifier: "native-webview")
         let web = hosts.firstMatch
         XCTAssertFalse(web.buttons["Unlock"].exists, "Normal vault unlock is required")
+        defer {
+            self.dismissRehearsalChatKeyboard(app)
+            self.perfTapNav(app, label: "Chat")
+        }
         for label in ["Close Profile", "Close chat history", "Close search"] {
             let close = app.buttons[label].firstMatch
             if close.exists && close.isHittable { close.tap() }
@@ -800,6 +804,11 @@ final class AppUITests: XCTestCase {
         composer.tap()
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "SOFTWARE_KEYBOARD_NOT_PRESENT")
+        let clearOfKeyboard = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            composer.frame.maxY <= keyboard.frame.minY + 2
+        }, object: composer)
+        XCTAssertEqual(XCTWaiter.wait(for: [clearOfKeyboard], timeout: 10), .completed,
+                       "COMPOSER_DID_NOT_SETTLE_ABOVE_KEYBOARD")
         XCTAssertLessThanOrEqual(composer.frame.maxY, keyboard.frame.minY + 2,
                                  "COMPOSER_OBSCURED_BY_SOFTWARE_KEYBOARD")
         XCTAssertGreaterThanOrEqual(composer.frame.minX, web.frame.minX)
