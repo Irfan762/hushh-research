@@ -100,6 +100,24 @@ def test_runtime_data_plane_declares_the_scheduled_payload_and_display_columns()
     boundary = family["trust_boundary"]
     for column in ("payload_sealed", "subject", "recipient_display"):
         assert column in boundary, column
-    assert "never sent to the Live model" in boundary
-    assert "send_at + 24 hours" in family["retention_policy"]
+    # The schedule and cancel confirmations speak the confirmed connection's
+    # name back to the owner, so "never sent to the Live model" was false for
+    # recipient_display. Only subject and the sealed payload stay off the model.
+    assert "never sent to the Live model" not in boundary
+    assert "recipient_display may be spoken back to the owner" in boundary
+    assert "subject and payload_sealed never reach the Live model" in boundary
+    assert "terminal scheduled row has payload_sealed and subject cleared" in boundary
+    retention = family["retention_policy"]
+    assert "send_at + 24 hours" in retention
+    assert "failed (schedule_window_passed)" in retention
+    assert "clears payload_sealed and subject on every terminal state" in retention
     assert family["plaintext_posture"] != "short_lived_hmac_and_delivery_metadata_only"
+
+
+def test_migration_header_states_the_model_boundary_truthfully() -> None:
+    comment = MIGRATION.read_text().split("BEGIN;", 1)[0]
+    header = " ".join(line.removeprefix("--").strip() for line in comment.splitlines())
+
+    assert "neither reaches a model" not in header
+    assert "subject and payload_sealed never reach the Live model" in header
+    assert "payload_sealed and subject are cleared" in header

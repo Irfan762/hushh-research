@@ -237,10 +237,11 @@ def test_uat_activates_the_job_only_after_release_classification():
 
     assert ids.index("classify-uat-release") < ids.index("activate-scheduled-mail-drain")
     assert ids.index("activate-account-deletion") < ids.index("activate-scheduled-mail-drain")
-    assert step["if"] == (
-        "steps.classify-uat-release.outputs.release_failed == 'false' "
-        "&& steps.scope.outputs.deploy_backend == 'true'"
-    )
+    # Every healthy release applies the kill switch, a frontend-only one too:
+    # setting the variable to false must pause the job on the next deploy of
+    # any kind, not only the next backend deploy.
+    assert step["if"] == "steps.classify-uat-release.outputs.release_failed == 'false'"
+    assert "deploy_backend" not in step["if"]
     assert step["env"]["SCHEDULER_SERVICE_ACCOUNT_NAME"] == "mail-scheduled-send"
     assert step["env"]["JOB_NAME"] == "mail-scheduled-send-uat"
     assert step["env"]["BATCH_LIMIT"] == "50"

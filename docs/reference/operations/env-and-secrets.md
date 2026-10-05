@@ -517,16 +517,25 @@ One mailbox production caveats:
   exactly `true` pauses an existing job (the step fails unless it reads back
   `PAUSED`) and never creates one; `true` creates or updates the job, resumes
   it if paused and fails unless it reads back `ENABLED`. To stop delivery, set
-  the variable to `false` and redeploy. A manual `gcloud scheduler jobs pause`
-  works immediately but is undone by the next UAT backend deploy while the
-  variable is `true`.
+  the variable to `false` and redeploy (any healthy UAT release applies it,
+  frontend-only included). A manual `gcloud scheduler jobs pause` works
+  immediately but is undone by the next UAT deploy while the variable is
+  `true`.
 - The drain's owner notifications (`mail_scheduled_sent`, `_failed`,
-  `_unknown`, `_cancelled`, `_expired`) carry `deep_link=/one/feed`. No web or
-  native tap handler trusts `deep_link`; every one of them sends these types to
-  the Feed, which is where the send outcome itself is projected. A row whose
-  connected Gmail account changed since it was scheduled fails with
-  `sender_changed` and is never sent. Every terminal scheduled row has its
-  sealed payload cleared.
+  `_unknown`) carry `deep_link=/one/feed`. No web or native tap handler trusts
+  `deep_link`; every one of them sends these types to the Feed, which is where
+  the send outcome itself is projected. Every scheduled email the drain does
+  not send is recorded `failed` with a reason, so migration 252's trigger adds a
+  `mail_message_failed` Feed item even when notifications are off:
+  `schedule_window_passed` (due more than 24 hours ago, or the window closed
+  while it was armed), `recipient_disconnected`, `gmail_unavailable` (Gmail is
+  disconnected or needs re-auth; the notification asks the owner to reconnect
+  Gmail), `sender_changed` (a different Google account is connected now) and
+  `recipient_changed`. None is ever sent, and no notification offers a resend:
+  the owner can ask One to schedule it again. Every terminal scheduled row has
+  its sealed payload and subject cleared, and each drain run clears a bounded
+  batch of finished scheduled rows that still hold either. Account reset
+  deletes the owner's scheduled sends.
 - Account-deletion cleanup uses a dedicated Google OIDC scheduler identity and
   exact backend-origin audience. Never copy a reusable token into Cloud
   Scheduler headers or job metadata; the Scheduler service agent may mint only

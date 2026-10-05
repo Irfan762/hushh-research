@@ -2328,9 +2328,11 @@ jobs:
       # The same repository variable is the job's kill switch: anything but
       # 'true' pauses the job (never creates it); 'true' creates or updates it
       # and resumes a paused job, so a manual pause lasts until the next deploy.
+      # Runs on every healthy release, frontend-only included, so flipping the
+      # variable takes effect on the next deploy of any kind.
       - name: Activate scheduled mail drain
         id: activate-scheduled-mail-drain
-        if: steps.classify-uat-release.outputs.release_failed == 'false' && steps.scope.outputs.deploy_backend == 'true'
+        if: steps.classify-uat-release.outputs.release_failed == 'false'
         shell: bash
         env:
           BACKEND_URL: ${{ env.CONSENT_API_PUBLIC_ORIGIN }}

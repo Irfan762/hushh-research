@@ -73,6 +73,8 @@ class _Ledger:
     def __init__(self) -> None:
         self.rows: dict[str, dict[str, Any]] = {}
         self.statements: list[str] = []
+        # A statement that raises when run, to model a database blip.
+        self.fail_statement: str | None = None
 
     def pool(self) -> _Pool:
         return _Pool(self)
@@ -117,10 +119,15 @@ class _Transaction:
 
 
 def _update(row: dict[str, Any], query: str, **changes: Any) -> None:
-    """Apply an UPDATE's SET list, including the sealed-payload clear it states."""
+    """Apply an UPDATE's SET list, including the sealed-payload and subject clears."""
     row.update(changes)
     if "payload_sealed = NULL" in query:
         row["payload_sealed"] = None
+    if "subject = NULL" in query:
+        row["subject"] = None
+
+
+_TERMINAL = ("sent", "failed", "outcome_unknown", "expired", "cancelled")
 
 
 def _orphaned(row: dict[str, Any]) -> bool:
@@ -156,6 +163,19 @@ class _Conn:
     def _run(self, query: str, args: tuple[Any, ...]) -> Any:  # noqa: C901 - one SQL table
         self.ledger.statements.append(query)
         rows = self.ledger.rows
+        if query == drain._SCRUB_TERMINAL_ROWS_SQL:
+            if self.ledger.fail_statement == query:
+                raise RuntimeError("scrub unavailable")
+            held = [
+                row
+                for row in rows.values()
+                if row["send_at"] is not None
+                and row["state"] in _TERMINAL
+                and (row["payload_sealed"] is not None or row["subject"] is not None)
+            ][: args[0]]
+            for row in held:
+                _update(row, query)
+            return [{"action_id": row["action_id"]} for row in held]
         if query == drain._STALE_SENDING_SQL:
             stale = sorted(
                 (
@@ -212,16 +232,23 @@ class _Conn:
                 _update(row, query, state=args[2], safe_error_code=args[3], updated_at=NOW)
             return {"action_id": row["action_id"]}
         if query == drain._FAIL_ARMED_SQL:
+            if self.ledger.fail_statement == query:
+                raise RuntimeError("settle unavailable")
             row = self._owned(args[0], args[1])
             if row is not None and row["state"] == "prepared" and row["sending_at"] is None:
-                _update(row, query, state="failed", safe_error_code=args[2], updated_at=NOW)
+                # Labelled by the window only when the statement says so.
+                window = "WHEN expires_at <= NOW() THEN 'schedule_window_passed'" in query
+                code = "schedule_window_passed" if window and row["expires_at"] <= NOW else args[2]
+                _update(row, query, state="failed", safe_error_code=code, updated_at=NOW)
             return None
         if query == drain._SCRUB_TERMINAL_PAYLOAD_SQL:
             row = self._owned(args[0], args[1])
-            if row is not None and row["state"] in drain.DRAIN_RESULT_KEYS:
+            if row is not None and row["state"] in _TERMINAL:
                 _update(row, query)
             return None
         if query == drain._READ_STATE_SQL:
+            if self.ledger.fail_statement == query:
+                raise RuntimeError("read-back unavailable")
             row = self._owned(args[0], args[1])
             return None if row is None else {k: row[k] for k in ("state", "safe_error_code")}
         if query == drain._CLAIM_NOTIFICATION_SQL:
@@ -363,6 +390,7 @@ def _schedule(
         "attempt_count": 0,
         "payload_sealed": f"sealed:{OWNER}:{action_id}:{json.dumps(payload)}",
         "recipient_display": NAME,
+        "subject": SUBJECT,
         "safe_error_code": None,
         "notified_at": None,
         **fields,
@@ -438,7 +466,11 @@ async def test_tampered_envelope_fails_closed_before_any_provider_call(harness):
     assert result["failed"] == ["tampered"] and result["sent"] == []
     row = h.ledger.row("tampered")
     assert (row["state"], row["safe_error_code"]) == ("failed", "draft_changed")
-    assert "couldn't be sent (it changed after it was scheduled)" in _push_bodies(h)[0]
+    # Nothing is left to review: the copy offers a new schedule, never a resend.
+    assert _push_bodies(h) == [
+        f"Your scheduled email to {NAME} wasn't sent (it changed after it was scheduled). "
+        "Nothing was delivered. You can ask One to schedule it again."
+    ]
 
 
 @pytest.mark.asyncio
@@ -475,7 +507,9 @@ async def test_outcome_unknown_is_final_and_never_resent(harness):
 
 
 @pytest.mark.asyncio
-async def test_disconnected_recipient_is_cancelled_and_never_reaches_execute(harness):
+async def test_disconnected_recipient_fails_and_never_reaches_execute(harness):
+    """Recorded as ``failed`` so migration 252 projects a Feed item: the owner
+    keeps a lasting record of an unsent email even with notifications off."""
     h = harness
     _schedule(h, "disconnected")
     h.connections = []
@@ -483,13 +517,15 @@ async def test_disconnected_recipient_is_cancelled_and_never_reaches_execute(har
     result = await _drain(h)
 
     assert h.executed == [] and h.gmail.posts == []
-    assert result["cancelled"] == ["disconnected"] and result["fired"] == 0
+    assert result["failed"] == ["disconnected"] and result["fired"] == 0
+    assert result["cancelled"] == []
     row = h.ledger.row("disconnected")
-    assert (row["state"], row["safe_error_code"]) == ("cancelled", "recipient_disconnected")
+    assert (row["state"], row["safe_error_code"]) == ("failed", "recipient_disconnected")
     assert _push_bodies(h) == [
         f"Your scheduled email to {NAME} wasn't sent because you're no longer connected "
         "with them. Nothing was delivered."
     ]
+    assert h.pushes[0][1]["notification_type"] == "mail_scheduled_failed"
 
 
 @pytest.mark.asyncio
@@ -505,18 +541,31 @@ async def test_changed_recipient_address_fails_closed(harness):
     assert h.ledger.row("moved")["safe_error_code"] == "recipient_changed"
 
 
+_SENDER_CHANGED_BODY = (
+    f"Your scheduled email to {NAME} wasn't sent (your connected Gmail account changed). "
+    "Nothing was delivered. You can ask One to schedule it again."
+)
+_RECONNECT_BODY = (
+    f"Your scheduled email to {NAME} wasn't sent because your Gmail is disconnected or "
+    "needs to be reconnected. Nothing was delivered. Reconnect Gmail, then ask One to "
+    "schedule it again."
+)
+
+
 @pytest.mark.parametrize(
-    ("sealed_sender", "current_sender"),
+    ("sealed_sender", "current_sender", "code", "body"),
     [
-        (SENDER, "google-sub-someone-else"),
-        (None, SENDER),
-        (SENDER, None),
+        (SENDER, "google-sub-someone-else", "sender_changed", _SENDER_CHANGED_BODY),
+        (None, SENDER, "sender_changed", _SENDER_CHANGED_BODY),
+        # No usable connection (disconnected or needing re-auth) is not "another
+        # account": the owner is told to reconnect, and it still fails closed.
+        (SENDER, None, "gmail_unavailable", _RECONNECT_BODY),
     ],
     ids=["reconnected-to-another-account", "sealed-without-sender", "gmail-disconnected"],
 )
 @pytest.mark.asyncio
 async def test_changed_sending_account_fails_closed_without_reaching_execute(
-    harness, sealed_sender, current_sender
+    harness, sealed_sender, current_sender, code, body
 ):
     h = harness
     payload = _payload()
@@ -530,11 +579,8 @@ async def test_changed_sending_account_fails_closed_without_reaching_execute(
     assert h.executed == [] and h.gmail.posts == []
     assert result["failed"] == ["other-account"] and result["fired"] == 0
     row = h.ledger.row("other-account")
-    assert (row["state"], row["safe_error_code"]) == ("failed", "sender_changed")
-    assert _push_bodies(h) == [
-        f"Your scheduled email to {NAME} couldn't be sent (your connected Gmail account "
-        "changed). Nothing was delivered — you can review and resend it."
-    ]
+    assert (row["state"], row["safe_error_code"]) == ("failed", code)
+    assert _push_bodies(h) == [body]
 
 
 @pytest.mark.asyncio
@@ -554,13 +600,15 @@ async def test_every_terminal_state_clears_the_sealed_payload(harness):
     h.connections = []
     later = await _drain(h)
 
-    assert result["sent"] == ["sent"] and result["expired"] == ["expired"]
-    assert result["failed"] == ["tampered", "other-account"]
-    assert result["outcome_unknown"] == ["crashed"] and later["cancelled"] == ["disconnected"]
+    assert result["sent"] == ["sent"] and result["expired"] == []
+    assert result["failed"] == ["expired", "tampered", "other-account"]
+    assert result["outcome_unknown"] == ["crashed"] and later["failed"] == ["disconnected"]
     for action_id in ("sent", "tampered", "expired", "other-account", "crashed", "disconnected"):
-        assert h.ledger.row(action_id)["payload_sealed"] is None, action_id
-    # A row still waiting to be sent keeps the payload it will need.
+        row = h.ledger.row(action_id)
+        assert (row["payload_sealed"], row["subject"]) == (None, None), action_id
+    # A row still waiting to be sent keeps the payload and the subject it lists.
     assert h.ledger.row("waiting")["payload_sealed"] is not None
+    assert h.ledger.row("waiting")["subject"] == SUBJECT
 
 
 @pytest.mark.asyncio
@@ -573,6 +621,128 @@ async def test_outcome_unknown_from_execute_clears_the_sealed_payload(harness):
 
     assert result["outcome_unknown"] == ["ambiguous"]
     assert h.ledger.row("ambiguous")["payload_sealed"] is None
+    assert h.ledger.row("ambiguous")["subject"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_start_scrub_clears_terminal_scheduled_rows_left_holding_mail(harness):
+    """A crash, or execute()'s own terminal writes, can leave a finished row
+    holding its sealed mail and subject. Each run clears a bounded batch."""
+    h = harness
+    for state in _TERMINAL:
+        _schedule(h, f"left-{state}", state=state, send_at=NOW + timedelta(hours=1))
+    _schedule(h, "waiting", send_at=NOW + timedelta(hours=1))
+    _schedule(h, "in-flight", state="sending", sending_at=NOW - timedelta(minutes=2))
+    # An immediate send is not this drain's row, whatever it holds.
+    _schedule(h, "immediate", state="sent", send_at=NOW, expires_at=NOW)["send_at"] = None
+
+    result = await _drain(h, limit=3)
+
+    assert result["fired"] == 0 and h.pushes == []
+    assert sum(h.ledger.row(f"left-{state}")["subject"] is None for state in _TERMINAL) == 3
+    await _drain(h)
+    for state in _TERMINAL:
+        row = h.ledger.row(f"left-{state}")
+        assert (row["state"], row["payload_sealed"], row["subject"]) == (state, None, None)
+        assert row["notified_at"] is None  # a scrub is not an outcome
+    for kept in ("waiting", "in-flight", "immediate"):
+        assert h.ledger.row(kept)["payload_sealed"] is not None, kept
+        assert h.ledger.row(kept)["subject"] == SUBJECT, kept
+
+
+@pytest.mark.asyncio
+async def test_failed_run_start_scrub_does_not_stop_delivery(harness):
+    h = harness
+    _schedule(h, "due")
+    h.ledger.fail_statement = drain._SCRUB_TERMINAL_ROWS_SQL
+
+    result = await _drain(h)
+
+    assert result["sent"] == ["due"]
+
+
+@pytest.mark.asyncio
+async def test_read_back_failure_after_execute_is_deferred_not_raised(harness):
+    """The send already happened or was refused; a failed read-back must not
+    abort the run or the batch. The row is left for the next run's scrub."""
+    h = harness
+    _schedule(h, "first", send_at=NOW - timedelta(minutes=5))
+    _schedule(h, "second", send_at=NOW - timedelta(minutes=1))
+    h.ledger.fail_statement = drain._READ_STATE_SQL
+
+    result = await _drain(h)
+
+    assert h.executed == ["first", "second"] and len(h.gmail.posts) == 2
+    assert result["fired"] == 2 and result["sent"] == [] and h.pushes == []
+    assert h.ledger.row("first")["state"] == "sent"
+    assert h.ledger.row("first")["subject"] == SUBJECT
+
+    h.ledger.fail_statement = None
+    again = await _drain(h)
+
+    assert again["fired"] == 0 and len(h.gmail.posts) == 2
+    assert (h.ledger.row("first")["payload_sealed"], h.ledger.row("first")["subject"]) == (
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_refusal_after_the_window_passed_is_labelled_window_passed(harness):
+    """execute() refuses an armed row whose window passed while it was armed
+    (its own 'expired' write rolls back with the refusal). The drain records
+    that as the window, not as an unexplained refusal."""
+    h = harness
+    _schedule(h, "late-arm")
+    real_execute = h.service.execute
+
+    async def window_closes_then_execute(**kwargs: Any) -> dict[str, Any]:
+        h.ledger.row(kwargs["action_id"])["expires_at"] = NOW - timedelta(seconds=1)
+        return await real_execute(**kwargs)
+
+    h.service.execute = window_closes_then_execute  # type: ignore[method-assign]
+
+    result = await _drain(h)
+
+    assert h.gmail.posts == [] and result["failed"] == ["late-arm"]
+    row = h.ledger.row("late-arm")
+    assert (row["state"], row["safe_error_code"]) == ("failed", "schedule_window_passed")
+    assert (row["payload_sealed"], row["subject"]) == (None, None)
+    assert _push_bodies(h) == [
+        f"Your scheduled email to {NAME} wasn't sent because the send window passed. "
+        "Nothing was delivered. You can ask One to schedule it again."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failed_settle_after_a_refusal_is_deferred_not_raised(harness):
+    h = harness
+    _schedule(h, "tampered", send_at=NOW - timedelta(minutes=5), envelope_hmac="f" * 64)
+    _schedule(h, "fine", send_at=NOW - timedelta(minutes=1))
+    h.ledger.fail_statement = drain._FAIL_ARMED_SQL
+
+    result = await _drain(h)
+
+    # The refused row stays armed (execute() re-verifies it on any re-arm) and
+    # the batch goes on.
+    assert result["sent"] == ["fine"] and h.gmail.recipients() == [ADDRESS]
+    assert h.ledger.row("tampered")["state"] == "prepared"
+
+
+@pytest.mark.asyncio
+async def test_refusal_inside_the_window_stays_send_refused(harness):
+    h = harness
+    _schedule(h, "refused")
+
+    async def refuse(**kwargs: Any) -> dict[str, Any]:
+        raise drain.GmailDeliveryError("ACTION_NOT_SENDABLE", "no")
+
+    h.service.execute = refuse  # type: ignore[method-assign]
+
+    result = await _drain(h)
+
+    assert result["failed"] == ["refused"]
+    assert h.ledger.row("refused")["safe_error_code"] == "send_refused"
 
 
 @pytest.mark.asyncio
@@ -587,19 +757,23 @@ async def test_cancelled_row_is_never_sent_or_notified(harness):
 
 
 @pytest.mark.asyncio
-async def test_row_past_its_send_window_expires_instead_of_sending_late(harness):
+async def test_row_past_its_send_window_fails_instead_of_sending_late(harness):
+    """Recorded as ``failed`` (not ``expired``) so migration 252 projects a Feed
+    item: an unsent email leaves a record even with notifications off."""
     h = harness
     _schedule(h, "overdue", send_at=NOW - timedelta(hours=25))
     _schedule(h, "catch-up", send_at=NOW - timedelta(hours=23))
 
     result = await _drain(h)
 
-    assert result["expired"] == ["overdue"] and result["sent"] == ["catch-up"]
+    assert result["failed"] == ["overdue"] and result["sent"] == ["catch-up"]
+    assert result["expired"] == []
     assert h.executed == ["catch-up"]
-    assert h.ledger.row("overdue")["safe_error_code"] == "schedule_window_passed"
+    row = h.ledger.row("overdue")
+    assert (row["state"], row["safe_error_code"]) == ("failed", "schedule_window_passed")
     assert (
         f"Your scheduled email to {NAME} wasn't sent because the send window passed. "
-        "Nothing was delivered."
+        "Nothing was delivered. You can ask One to schedule it again."
     ) in _push_bodies(h)
 
 

@@ -5,13 +5,19 @@
 -- and the existing execute() path sends it. The row never holds a plaintext
 -- body or address: payload_sealed is AES-GCM ciphertext bound to the owner and
 -- the action. recipient_display and subject are display-only columns for the
--- owner's scheduled list; neither is an HMAC input and neither reaches a model.
+-- owner's scheduled list and neither is an HMAC input. recipient_display (the
+-- confirmed connection's name, which the owner already said) may be spoken back
+-- in the schedule and cancel confirmations; subject and payload_sealed never
+-- reach the Live model.
 --
 -- Transitions: scheduled -> prepared -> sending -> {sent, failed,
--- outcome_unknown} (drain only); scheduled -> cancelled (owner). The existing
--- expiry sweep (state = 'prepared' AND expires_at <= NOW()) and the
--- mail_send_feed_projection trigger (sent/failed/outcome_unknown only) never
--- act on a scheduled or cancelled row.
+-- outcome_unknown} (drain only); scheduled/prepared -> failed when the drain
+-- refuses a row (window passed, recipient disconnected, ...), so the
+-- mail_send_feed_projection trigger (sent/failed/outcome_unknown only) records
+-- every unsent email; scheduled -> cancelled (owner). The existing expiry sweep
+-- (state = 'prepared' AND expires_at <= NOW()) and that trigger never act on a
+-- scheduled or cancelled row. On every terminal row payload_sealed and subject
+-- are cleared by the drain.
 --
 -- Additive and replay-safe: every new column is nullable or defaulted, so the
 -- existing explicit-column INSERT in prepare() is unaffected.

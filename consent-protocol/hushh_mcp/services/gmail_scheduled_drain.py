@@ -9,12 +9,12 @@ send pipeline of its own:
 1. Claim one due row at a time with ``FOR UPDATE SKIP LOCKED`` in a short
    transaction, so concurrent drains (and a voice cancel, which updates the
    same row under the same lock) elect exactly one winner.
-2. While holding the lock: refuse a row past its send window (``expired``),
-   open the sealed payload (``failed`` on any error), re-verify that the
-   owner's connected Gmail account is still the one the email was scheduled
-   from (``failed`` when it changed or either side is unknown), and that the
-   recipient is still a connection at the sealed address (``cancelled`` when
-   disconnected, ``failed`` when the address changed). Then arm it
+2. While holding the lock: refuse a row past its send window, open the sealed
+   payload, re-verify that the owner's Gmail is still connected
+   (``gmail_unavailable``) as the account the email was scheduled from
+   (``sender_changed``), and that the recipient is still a connection
+   (``recipient_disconnected``) at the sealed address (``recipient_changed``).
+   Each refusal is ``failed`` with its reason. Then arm it
    ``scheduled -> prepared`` and commit.
 3. Hand the unsealed draft to the EXISTING ``GmailDeliveryService.execute()``,
    which re-locks the row, re-verifies the envelope HMAC, owns
@@ -22,10 +22,17 @@ send pipeline of its own:
 4. Read the row back -- the ledger, never the return value, says what happened
    -- and notify the owner once (``notified_at`` claims the notification).
 
-Data minimization: every terminal state the drain settles or observes
-(``sent``, ``failed``, ``outcome_unknown``, ``expired``, ``cancelled``) clears
-``payload_sealed`` -- nothing ever re-sends such a row, so the sealed mail has
-no further use. A voice cancel clears it in the same statement.
+An unsent email always leaves a lasting record: every refusal, including a
+passed send window and a disconnected recipient, is settled ``failed``, which
+migration 252's trigger projects into the Feed as ``mail_message_failed`` even
+when the owner has notifications off. The drain never settles a row
+``expired`` or ``cancelled``; those response keys stay for the documented shape.
+
+Data minimization: every terminal transition the drain makes or observes clears
+``payload_sealed`` and ``subject`` -- nothing ever re-sends such a row, so the
+sealed mail and its subject have no further use. Each run first clears a
+bounded batch of terminal scheduled rows still holding either (a crash between
+execute() and the read-back, or a voice cancel, can leave them).
 
 Never re-sent: ``sending`` and ``outcome_unknown`` rows are never claimed. A
 row orphaned in ``prepared`` (armed, but ``execute()`` never reached
@@ -66,6 +73,24 @@ MAX_ATTEMPTS = 3
 
 DRAIN_RESULT_KEYS = ("sent", "failed", "outcome_unknown", "cancelled", "expired")
 
+_SCRUB_TERMINAL_ROWS_SQL = """
+WITH held AS (
+    SELECT action_id
+    FROM gmail_owner_send_actions
+    WHERE send_at IS NOT NULL
+      AND state IN ('sent', 'failed', 'outcome_unknown', 'expired', 'cancelled')
+      AND (payload_sealed IS NOT NULL OR subject IS NOT NULL)
+    LIMIT $1
+    FOR UPDATE SKIP LOCKED
+)
+UPDATE gmail_owner_send_actions AS action
+SET payload_sealed = NULL, subject = NULL
+FROM held
+WHERE action.action_id = held.action_id
+  AND action.state IN ('sent', 'failed', 'outcome_unknown', 'expired', 'cancelled')
+RETURNING action.action_id
+"""
+
 _STALE_SENDING_SQL = """
 WITH stale AS (
     SELECT action_id
@@ -79,7 +104,7 @@ WITH stale AS (
 )
 UPDATE gmail_owner_send_actions AS action
 SET state = 'outcome_unknown', safe_error_code = 'drain_interrupted',
-    payload_sealed = NULL, updated_at = NOW()
+    payload_sealed = NULL, subject = NULL, updated_at = NOW()
 FROM stale
 WHERE action.action_id = stale.action_id AND action.state = 'sending'
 RETURNING action.action_id, action.user_id
@@ -100,7 +125,8 @@ FOR UPDATE SKIP LOCKED
 
 _SETTLE_UNSENT_SQL = """
 UPDATE gmail_owner_send_actions
-SET state = $3, safe_error_code = $4, payload_sealed = NULL, updated_at = NOW()
+SET state = $3, safe_error_code = $4, payload_sealed = NULL, subject = NULL,
+    updated_at = NOW()
 WHERE action_id = $1 AND user_id = $2
   AND state IN ('scheduled', 'prepared') AND sending_at IS NULL
 """
@@ -113,18 +139,25 @@ WHERE action_id = $1 AND user_id = $2
 RETURNING action_id
 """
 
+# execute() refuses an armed row whose window closed while it was armed (its own
+# 'expired' write rolls back with that refusal), so the window names the reason.
 _FAIL_ARMED_SQL = """
 UPDATE gmail_owner_send_actions
-SET state = 'failed', safe_error_code = $3, payload_sealed = NULL, updated_at = NOW()
+SET state = 'failed',
+    safe_error_code = CASE
+        WHEN expires_at <= NOW() THEN 'schedule_window_passed' ELSE $3::text
+    END,
+    payload_sealed = NULL, subject = NULL, updated_at = NOW()
 WHERE action_id = $1 AND user_id = $2 AND state = 'prepared' AND sending_at IS NULL
 """
 
 # execute() records sent / failed / outcome_unknown / expired with its own SQL;
-# the drain clears the sealed payload once it reads such a terminal state back.
+# the drain clears the sealed payload and subject once it reads such a state back.
 _SCRUB_TERMINAL_PAYLOAD_SQL = """
 UPDATE gmail_owner_send_actions
-SET payload_sealed = NULL
-WHERE action_id = $1 AND user_id = $2 AND payload_sealed IS NOT NULL
+SET payload_sealed = NULL, subject = NULL
+WHERE action_id = $1 AND user_id = $2
+  AND (payload_sealed IS NOT NULL OR subject IS NOT NULL)
   AND state IN ('sent', 'failed', 'outcome_unknown', 'expired', 'cancelled')
 """
 
@@ -150,11 +183,28 @@ _FAILURE_REASONS = {
     "payload_unseal_failed": "it couldn't be opened securely",
     "draft_changed": "it changed after it was scheduled",
     "invalid_draft": "it couldn't be prepared for Gmail",
-    "retry_exhausted": "it couldn't be sent after several tries",
+    "retry_exhausted": "several attempts didn't go through",
     "gmail_send_failed": "Gmail declined it",
-    "gmail_unavailable": "your Gmail connection needs attention",
 }
 _DEFAULT_FAILURE_REASON = "something went wrong"
+# Nothing is kept to review once a scheduled send fails (its sealed mail is
+# cleared), so no copy offers a resend; asking One to schedule it again is real.
+_SCHEDULE_AGAIN = "Nothing was delivered. You can ask One to schedule it again."
+_FAILURE_BODIES = {
+    "gmail_unavailable": (
+        "Your scheduled email to {name} wasn't sent because your Gmail is disconnected "
+        "or needs to be reconnected. Nothing was delivered. Reconnect Gmail, then ask "
+        "One to schedule it again."
+    ),
+    "recipient_disconnected": (
+        "Your scheduled email to {name} wasn't sent because you're no longer connected "
+        "with them. Nothing was delivered."
+    ),
+    "schedule_window_passed": (
+        "Your scheduled email to {name} wasn't sent because the send window passed. "
+        + _SCHEDULE_AGAIN
+    ),
+}
 _FALLBACK_RECIPIENT = "your recipient"
 # Every tap decider in the webapp (buildNotificationTapTarget,
 # resolveNotificationClickTarget and the web worker's notificationTapTarget)
@@ -228,29 +278,20 @@ def scheduled_mail_push(
         kind, title = "sent", "Scheduled email sent"
         body = f"Your scheduled email to {name} was sent."
     elif state == "failed":
-        reason = _FAILURE_REASONS.get(str(safe_error_code or ""), _DEFAULT_FAILURE_REASON)
+        code = str(safe_error_code or "")
+        reason = _FAILURE_REASONS.get(code, _DEFAULT_FAILURE_REASON)
         kind, title = "failed", "Scheduled email not sent"
+        template = _FAILURE_BODIES.get(code)
         body = (
-            f"Your scheduled email to {name} couldn't be sent ({reason}). "
-            "Nothing was delivered — you can review and resend it."
+            template.format(name=name)
+            if template is not None
+            else f"Your scheduled email to {name} wasn't sent ({reason}). {_SCHEDULE_AGAIN}"
         )
     elif state == "outcome_unknown":
         kind, title = "unknown", "Scheduled email status unclear"
         body = (
             f"We couldn't confirm whether your scheduled email to {name} was sent. "
             "Please check your Gmail Sent folder before resending."
-        )
-    elif state == "cancelled":
-        kind, title = "cancelled", "Scheduled email cancelled"
-        body = (
-            f"Your scheduled email to {name} wasn't sent because you're no longer "
-            "connected with them. Nothing was delivered."
-        )
-    elif state == "expired":
-        kind, title = "expired", "Scheduled email not sent"
-        body = (
-            f"Your scheduled email to {name} wasn't sent because the send window "
-            "passed. Nothing was delivered."
         )
     else:
         return None
@@ -300,6 +341,7 @@ class _ScheduledMailDrain:
     ) -> dict[str, Any]:
         started = clock()
         pool = await self._pool_provider()
+        await self._scrub_terminal_rows(pool, limit=limit)
         for settled in await self._settle_stale_sending(pool, limit=limit):
             await self._record(pool, settled)
         seen: list[str] = []
@@ -315,6 +357,14 @@ class _ScheduledMailDrain:
             if isinstance(claimed, _Armed):
                 await self._record(pool, await self._fire(pool, claimed))
         return {"success": True, "fired": self._fired, **self._outcomes, "limit": limit}
+
+    async def _scrub_terminal_rows(self, pool: Any, *, limit: int) -> None:
+        """Clear mail a finished scheduled row still holds. Hygiene, never fatal."""
+        try:
+            async with pool.acquire() as conn:
+                await conn.fetch(_SCRUB_TERMINAL_ROWS_SQL, limit)
+        except Exception as exc:
+            logger.warning("gmail.scheduled_drain.scrub_failed error=%s", type(exc).__name__)
 
     async def _settle_stale_sending(self, pool: Any, *, limit: int) -> list[_Settled]:
         async with pool.acquire() as conn:
@@ -361,7 +411,7 @@ class _ScheduledMailDrain:
             return _Settled(action_id=action_id, user_id=user_id, state=state, safe_error_code=code)
 
         if row.get("window_passed") is True:
-            return await settle("expired", "schedule_window_passed")
+            return await settle("failed", "schedule_window_passed")
         if str(row.get("state")) == "prepared" and int(row.get("attempt_count") or 0) >= (
             MAX_ATTEMPTS
         ):
@@ -381,14 +431,15 @@ class _ScheduledMailDrain:
             return await settle("failed", "payload_unseal_failed")
 
         # The owner confirmed sending from one Gmail account. A reconnect to a
-        # different account must not send it from that one. A lookup error
-        # propagates: the row rolls back untouched and a later run retries.
+        # different account must not send it from that one, and no usable
+        # connection (disconnected or needing re-auth) sends nothing. A lookup
+        # error propagates: the row rolls back untouched and a later run retries.
+        if not sealed_sender:
+            return await settle("failed", "sender_changed")
         current_sender = str(await self._delivery.current_sender_sub(user_id=user_id) or "").strip()
-        if (
-            not sealed_sender
-            or not current_sender
-            or not hmac.compare_digest(sealed_sender.encode(), current_sender.encode())
-        ):
+        if not current_sender:
+            return await settle("failed", "gmail_unavailable")
+        if not hmac.compare_digest(sealed_sender.encode(), current_sender.encode()):
             return await settle("failed", "sender_changed")
 
         connections = await asyncio.to_thread(self._directory.list_connections, user_id)
@@ -401,7 +452,7 @@ class _ScheduledMailDrain:
             None,
         )
         if connection is None:
-            return await settle("cancelled", "recipient_disconnected")
+            return await settle("failed", "recipient_disconnected")
         current = _single_address(connection.get("email"))
         if current is None or not hmac.compare_digest(current, sealed_to):
             return await settle("failed", "recipient_changed")
@@ -423,29 +474,44 @@ class _ScheduledMailDrain:
             # Refused before ``sending`` leaves the row armed: settle it, so the
             # orphan reaper does not re-arm a send execute() already refused.
             # After ``sending`` execute() has recorded the terminal state and
-            # this update matches nothing.
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    _FAIL_ARMED_SQL,
-                    armed.action_id,
-                    armed.user_id,
-                    _PRE_SEND_CODES.get(exc.code, "send_refused"),
+            # this update matches nothing. If the update itself fails the row
+            # stays armed; any re-arm goes back through execute()'s checks.
+            try:
+                async with pool.acquire() as conn:
+                    await conn.execute(
+                        _FAIL_ARMED_SQL,
+                        armed.action_id,
+                        armed.user_id,
+                        _PRE_SEND_CODES.get(exc.code, "send_refused"),
+                    )
+            except Exception as settle_exc:
+                logger.warning(
+                    "gmail.scheduled_drain.settle_failed error=%s", type(settle_exc).__name__
                 )
         except Exception as exc:
             # Pre-``sending`` (still prepared: re-armed later, Gmail never
             # called) or post-``sending`` (stale-sending sweep makes it
             # outcome_unknown). Either way, never retried here.
             logger.warning("gmail.scheduled_drain.execute_error error=%s", type(exc).__name__)
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(_READ_STATE_SQL, armed.action_id, armed.user_id)
-            if row is not None and str(row["state"]) in DRAIN_RESULT_KEYS:
-                try:
-                    await conn.execute(_SCRUB_TERMINAL_PAYLOAD_SQL, armed.action_id, armed.user_id)
-                except Exception as exc:
-                    # The row is terminal either way; still report and notify.
-                    logger.warning(
-                        "gmail.scheduled_drain.scrub_failed error=%s", type(exc).__name__
-                    )
+        try:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(_READ_STATE_SQL, armed.action_id, armed.user_id)
+                if row is not None and str(row["state"]) in DRAIN_RESULT_KEYS:
+                    try:
+                        await conn.execute(
+                            _SCRUB_TERMINAL_PAYLOAD_SQL, armed.action_id, armed.user_id
+                        )
+                    except Exception as exc:
+                        # The row is terminal either way; still report and notify.
+                        logger.warning(
+                            "gmail.scheduled_drain.scrub_failed error=%s", type(exc).__name__
+                        )
+        except Exception as exc:
+            # execute() already ran: the ledger holds the outcome and nothing
+            # re-sends a row past ``prepared``. Leave it for the next run's scrub
+            # and sweeps rather than abort the batch.
+            logger.warning("gmail.scheduled_drain.read_back_failed error=%s", type(exc).__name__)
+            return armed.action_id
         if row is None or str(row["state"]) not in DRAIN_RESULT_KEYS:
             # Still prepared or sending: a later run settles it, never re-sends.
             return armed.action_id

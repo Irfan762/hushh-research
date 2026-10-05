@@ -13,8 +13,13 @@ test_gmail_delivery_service.py cannot:
   terminal row is never claimed, and an immediate send (``send_at IS NULL``,
   including a draft send) is never touched by the orphan reaper or the
   stale-sending sweep, however old it is;
+* a row past its window, a disconnected recipient and a refusal after the
+  window closed are recorded ``failed`` with their reason, so migration 252's
+  trigger projects a Feed item; every terminal transition, and each run's
+  bounded scrub, clears ``payload_sealed`` and ``subject``;
 * the draft-send ledger claim admits one attempt per draft, and one retry
-  after a definite refusal.
+  after a definite refusal;
+* account reset's delete predicate removes the owner's scheduled rows only.
 
 Only Gmail's HTTP endpoint, the connection-row lookup and the recipient
 directory are faked; every SQL statement is the shipped one. Each test gets a
@@ -40,7 +45,8 @@ import httpx
 import pytest
 
 from hushh_mcp.services import gmail_delivery_service, gmail_drafts_service
-from hushh_mcp.services.gmail_delivery_service import GmailDeliveryService
+from hushh_mcp.services.account_service import AccountService
+from hushh_mcp.services.gmail_delivery_service import GmailDeliveryError, GmailDeliveryService
 from hushh_mcp.services.gmail_receipts_service import GmailApiError
 from hushh_mcp.services.gmail_scheduled_drain import drain_scheduled_mail
 
@@ -48,6 +54,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MIGRATIONS = ROOT / "db" / "migrations"
 M173 = (MIGRATIONS / "173_gmail_owner_approved_delivery.sql").read_text()
 M275 = (MIGRATIONS / "275_scheduled_mail_send.sql").read_text()
+M252 = (MIGRATIONS / "252_calendar_mail_feed_projection.sql").read_text()
 R275 = (MIGRATIONS / "rollback" / "275_scheduled_mail_send.rollback.sql").read_text()
 
 OWNER = "sched-owner"
@@ -144,8 +151,11 @@ class _Gmail:
 
 
 class _Directory:
+    def __init__(self, *, connected: bool = True) -> None:
+        self.connected = connected
+
     def list_connections(self, user_id: str) -> list[dict[str, Any]]:
-        return [{"userId": RECIPIENT, "email": ADDRESS}]
+        return [{"userId": RECIPIENT, "email": ADDRESS}] if self.connected else []
 
 
 class _GmailHttp:
@@ -266,21 +276,24 @@ async def _insert(
     expires_at: str = "NOW() + INTERVAL '1 hour'",
     payload_sealed: str | None = None,
     attempt_count: int = 0,
+    subject: str | None = None,
+    user_id: str = OWNER,
 ) -> str:
     """A row as another writer left it. Times are SQL expressions (constants here)."""
     action_id = str(uuid4())
     await pool.execute(
         "INSERT INTO gmail_owner_send_actions (action_id, user_id, envelope_hmac,"
         " idempotency_hmac, recipient_count, state, expires_at, send_at, sending_at,"
-        " payload_sealed, attempt_count, created_at, updated_at)"
+        " payload_sealed, attempt_count, subject, created_at, updated_at)"
         f" VALUES ($1, $2, 'envelope', $3, 1, $4, {expires_at},"
-        f" {send_at or 'NULL'}, {sending_at or 'NULL'}, $5, $6, {updated_at}, {updated_at})",
+        f" {send_at or 'NULL'}, {sending_at or 'NULL'}, $5, $6, $7, {updated_at}, {updated_at})",
         action_id,
-        OWNER,
+        user_id,
         "idem-" + action_id,
         state,
         payload_sealed,
         attempt_count,
+        subject,
     )
     return action_id
 
@@ -294,14 +307,19 @@ class _Push:
         return 1
 
 
-async def _drain(pool: Any, service: GmailDeliveryService, push: _Push | None = None) -> dict:
+async def _drain(
+    pool: Any,
+    service: GmailDeliveryService,
+    push: _Push | None = None,
+    directory: _Directory | None = None,
+) -> dict:
     async def _pool() -> Any:
         return pool
 
     return await drain_scheduled_mail(
         limit=20,
         delivery=service,
-        directory=_Directory(),
+        directory=directory or _Directory(),
         push=push or _Push(),
         pool_provider=_pool,
     )
@@ -578,6 +596,7 @@ async def test_drain_never_claims_terminal_or_in_flight_scheduled_rows(ledger, g
                 sending_at=sending_at,
                 updated_at=long_ago,
                 payload_sealed=sealed,
+                subject=SUBJECT,
             )
         )
     before = [await _row(ledger, action_id) for action_id in rows]
@@ -586,7 +605,14 @@ async def test_drain_never_claims_terminal_or_in_flight_scheduled_rows(ledger, g
 
     assert result["fired"] == 0
     assert all(not result[key] for key in ("sent", "failed", "outcome_unknown", "cancelled"))
-    assert [await _row(ledger, action_id) for action_id in rows] == before
+    after = [await _row(ledger, action_id) for action_id in rows]
+    # The finished rows lose only the mail they no longer need (the run-start
+    # scrub); state, codes, times and notification are as they were.
+    for old, new in zip(before[:-1], after[:-1], strict=True):
+        assert (new["payload_sealed"], new["subject"]) == (None, None), old["state"]
+        assert {**old, "payload_sealed": None, "subject": None} == new
+    # The row still in flight keeps everything.
+    assert after[-1] == before[-1]
     assert gmail_http.posts == []
 
 
@@ -616,7 +642,7 @@ async def test_drain_settles_stale_sends_rearms_orphans_and_expires_late_rows(le
         " WHERE action_id = $1",
         fresh["action_id"],
     )
-    # Due a day and more ago: past its window, so it is expired, never sent late.
+    # Due a day and more ago: past its window, so it fails, never sent late.
     late = await _schedule(service, _send_at(hours=7))
     await _make_due(ledger, late["action_id"], minutes_ago=25 * 60)
 
@@ -624,20 +650,176 @@ async def test_drain_settles_stale_sends_rearms_orphans_and_expires_late_rows(le
 
     assert result["outcome_unknown"] == [stale["action_id"]]
     assert result["sent"] == [orphan["action_id"]]
-    assert result["expired"] == [late["action_id"]]
+    assert result["failed"] == [late["action_id"]] and result["expired"] == []
     assert len(gmail_http.posts) == 1
     settled = await _row(ledger, stale["action_id"])
     assert (settled["state"], settled["safe_error_code"]) == (
         "outcome_unknown",
         "drain_interrupted",
     )
-    assert settled["payload_sealed"] is None
+    assert (settled["payload_sealed"], settled["subject"]) == (None, None)
     rearmed = await _row(ledger, orphan["action_id"])
     assert (rearmed["state"], rearmed["attempt_count"]) == ("sent", 2)
     waiting = await _row(ledger, fresh["action_id"])
     assert (waiting["state"], waiting["attempt_count"]) == ("prepared", 1)
-    expired = await _row(ledger, late["action_id"])
-    assert (expired["state"], expired["payload_sealed"]) == ("expired", None)
+    overdue = await _row(ledger, late["action_id"])
+    assert (overdue["state"], overdue["safe_error_code"]) == ("failed", "schedule_window_passed")
+    assert (overdue["payload_sealed"], overdue["subject"]) == (None, None)
+
+
+def _m252_function(name: str) -> str:
+    """One function body exactly as migration 252 ships it."""
+    start = M252.index(f"CREATE OR REPLACE FUNCTION {name}(")
+    return M252[start : M252.index("\n$$;\n", start) + len("\n$$;\n")]
+
+
+async def _install_mail_send_feed_projection(pool: Any) -> None:
+    """252's mail-send projection, unchanged, over a minimal feed_events table.
+
+    The full 252 file also wires Calendar and other Mail tables this database
+    does not have; only the gmail_owner_send_actions trigger is installed.
+    """
+    await pool.execute(
+        "CREATE TABLE feed_events (id BIGSERIAL PRIMARY KEY, user_id TEXT NOT NULL,"
+        " source_domain TEXT NOT NULL, event_type TEXT NOT NULL, metadata JSONB NOT NULL,"
+        " source_row_id TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL,"
+        " UNIQUE (user_id, event_type, source_row_id))"
+    )
+    await pool.execute(_m252_function("project_calendar_mail_feed"))
+    await pool.execute(_m252_function("feed_from_mail_send"))
+    await pool.execute(
+        "CREATE TRIGGER mail_send_feed_projection AFTER INSERT OR UPDATE"
+        " ON gmail_owner_send_actions FOR EACH ROW EXECUTE FUNCTION feed_from_mail_send()"
+    )
+
+
+async def test_unsent_scheduled_mail_leaves_a_feed_record_through_migration_252(ledger, gmail_http):
+    """Pushes can be off. A scheduled email that was never sent -- its window
+    passed, or the recipient disconnected -- must still leave a lasting record,
+    so it is settled ``failed`` and 252's existing trigger projects it."""
+    await _install_mail_send_feed_projection(ledger)
+    service = _service()
+    overdue = await _schedule(service, _send_at())
+    await _make_due(ledger, overdue["action_id"], minutes_ago=25 * 60)
+    disconnected = await _schedule(service, _send_at(hours=4))
+    await _make_due(ledger, disconnected["action_id"])
+
+    result = await _drain(ledger, service, directory=_Directory(connected=False))
+
+    assert result["fired"] == 0 and gmail_http.posts == []
+    assert sorted(result["failed"]) == sorted([overdue["action_id"], disconnected["action_id"]])
+    for action_id, code in (
+        (overdue["action_id"], "schedule_window_passed"),
+        (disconnected["action_id"], "recipient_disconnected"),
+    ):
+        row = await _row(ledger, action_id)
+        assert (row["state"], row["safe_error_code"]) == ("failed", code)
+        assert (row["payload_sealed"], row["subject"]) == (None, None)
+    feed = await ledger.fetch(
+        "SELECT user_id, source_domain, event_type, source_row_id FROM feed_events"
+        " ORDER BY source_row_id"
+    )
+    assert [dict(item) for item in feed] == [
+        {
+            "user_id": OWNER,
+            "source_domain": "connected_systems",
+            "event_type": "mail_message_failed",
+            "source_row_id": action_id,
+        }
+        for action_id in sorted([overdue["action_id"], disconnected["action_id"]])
+    ]
+
+
+async def test_a_refusal_after_the_window_closed_is_recorded_as_the_window(ledger, gmail_http):
+    """execute() refuses an armed row whose window closed while it was armed; its
+    own 'expired' write rolls back with that refusal. The drain's settle labels it
+    by the window, and an ordinary refusal inside the window stays send_refused."""
+    service = _service()
+    late = await _schedule(service, _send_at())
+    await _make_due(ledger, late["action_id"])
+    refused = await _schedule(service, _send_at(hours=4))
+    await _make_due(ledger, refused["action_id"], minutes_ago=2)
+    real_execute = service.execute
+
+    async def execute(**kwargs: Any) -> dict[str, Any]:
+        if kwargs["action_id"] == refused["action_id"]:
+            raise GmailDeliveryError("ACTION_NOT_SENDABLE", "refused")
+        await ledger.execute(
+            "UPDATE gmail_owner_send_actions SET expires_at = NOW() - INTERVAL '1 second'"
+            " WHERE action_id = $1",
+            kwargs["action_id"],
+        )
+        return await real_execute(**kwargs)
+
+    service.execute = execute  # type: ignore[method-assign]
+    push = _Push()
+
+    result = await _drain(ledger, service, push)
+
+    assert gmail_http.posts == []
+    assert sorted(result["failed"]) == sorted([late["action_id"], refused["action_id"]])
+    window = await _row(ledger, late["action_id"])
+    assert (window["state"], window["safe_error_code"]) == ("failed", "schedule_window_passed")
+    assert (window["payload_sealed"], window["subject"]) == (None, None)
+    other = await _row(ledger, refused["action_id"])
+    assert (other["state"], other["safe_error_code"]) == ("failed", "send_refused")
+    assert (other["payload_sealed"], other["subject"]) == (None, None)
+    assert [kwargs["notification_type"] for _, kwargs in push.sent] == ["mail_scheduled_failed"] * 2
+
+
+async def test_each_run_scrubs_finished_scheduled_rows_and_nothing_else(ledger, gmail_http):
+    service = _service()
+    hour_ago = "NOW() - INTERVAL '1 hour'"
+    finished = [
+        await _insert(
+            ledger,
+            state=state,
+            send_at=hour_ago,
+            updated_at=hour_ago,
+            payload_sealed="sp1.left-behind",
+            subject=SUBJECT,
+        )
+        for state in ("sent", "failed", "outcome_unknown", "expired", "cancelled")
+    ]
+    # An immediate send (send_at IS NULL) is not the drain's row to scrub.
+    immediate = await _insert(
+        ledger, state="sent", send_at=None, updated_at=hour_ago, subject=SUBJECT
+    )
+    waiting = await _schedule(service, _send_at())
+    kept = [immediate, waiting["action_id"]]
+    before = [await _row(ledger, action_id) for action_id in finished + kept]
+
+    result = await _drain(ledger, service)
+    replay = await _drain(ledger, service)
+
+    assert result["fired"] == replay["fired"] == 0
+    for old in before[: len(finished)]:
+        new = await _row(ledger, old["action_id"])
+        assert {**old, "payload_sealed": None, "subject": None} == new
+    assert [await _row(ledger, action_id) for action_id in kept] == before[len(finished) :]
+
+
+async def test_account_reset_predicate_removes_only_the_owners_scheduled_rows(ledger):
+    service = _service()
+    mine = await _schedule(service, _send_at())
+    theirs = await _insert(
+        ledger,
+        state="scheduled",
+        send_at="NOW() + INTERVAL '1 hour'",
+        user_id=OTHER,
+        subject=SUBJECT,
+    )
+    reset_delete = str(AccountService()._delete_by_user_queries["gmail_owner_send_actions"])
+
+    await ledger.execute(reset_delete.replace(":user_id", "$1"), OWNER)
+
+    assert (
+        await ledger.fetchval(
+            "SELECT COUNT(*) FROM gmail_owner_send_actions WHERE action_id = $1", mine["action_id"]
+        )
+        == 0
+    )
+    assert (await _row(ledger, theirs))["state"] == "scheduled"
 
 
 # --- (d) the draft-send ledger claim ------------------------------------------
