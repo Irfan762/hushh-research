@@ -49,7 +49,13 @@ describe("AppEdgeBackGesture", () => {
   });
 
   it("commits a rightward edge swipe without cancelling the touch default", () => {
-    render(<AppEdgeBackGesture />);
+    const registrations = vi.spyOn(window, "addEventListener");
+    const view = render(<AppEdgeBackGesture />);
+    for (const name of ["pointerdown", "pointermove", "pointerup", "touchstart", "touchmove", "touchend"]) {
+      expect(registrations).toHaveBeenCalledWith(name, expect.any(Function),
+        expect.objectContaining({ capture: true, passive: true }));
+    }
+    registrations.mockRestore();
 
     fireEvent.touchStart(document, {
       touches: [touch(1, 12, 300)],
@@ -74,6 +80,7 @@ describe("AppEdgeBackGesture", () => {
     });
 
     expect(backAction.navigate).toHaveBeenCalledTimes(1);
+    view.unmount();
   });
 
   it("ignores a touch that starts outside the 28px edge lane", () => {

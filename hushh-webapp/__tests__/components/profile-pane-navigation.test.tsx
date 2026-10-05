@@ -54,7 +54,13 @@ describe("Profile pane touch navigation", () => {
     // pane, but it must not cancel the browser's own touch handling.
     const opened = vi.fn();
     window.addEventListener(PROFILE_PANE_OPEN_EVENT, opened);
-    render(<AppProfileEdgeGesture enabled />);
+    const registrations = vi.spyOn(window, "addEventListener");
+    const view = render(<AppProfileEdgeGesture enabled />);
+    for (const name of ["pointerdown", "pointermove", "pointerup", "touchstart", "touchmove", "touchend"]) {
+      expect(registrations).toHaveBeenCalledWith(name, expect.any(Function),
+        expect.objectContaining({ capture: true, passive: true }));
+    }
+    registrations.mockRestore();
 
     fireEvent.touchStart(document, {
       touches: [{ identifier: 7, clientX: 320, clientY: 160 }],
@@ -78,6 +84,7 @@ describe("Profile pane touch navigation", () => {
       timeStamp: 140,
     });
     expect(opened).toHaveBeenCalled();
+    view.unmount();
     window.removeEventListener(PROFILE_PANE_OPEN_EVENT, opened);
   });
 
