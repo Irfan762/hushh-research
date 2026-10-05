@@ -240,6 +240,45 @@ class AccountService:
             "marketplace_recipient_keys": text(
                 "DELETE FROM marketplace_recipient_keys WHERE user_id = :user_id"
             ),
+            "pkm_packets": text("DELETE FROM pkm_packets WHERE owner_user_id = :user_id"),
+            # A paid, undelivered packet is money owed back to the buyer: move it
+            # to refund_pending (the reconcile refunds it, then removes the row)
+            # and delete everything that carries no unsettled payment.
+            "pkm_packet_orders": text(
+                """
+                WITH settle AS (
+                  UPDATE pkm_packet_orders SET status = 'refund_pending', updated_at = NOW()
+                  WHERE (buyer_user_id = :user_id OR owner_user_id = :user_id)
+                    AND status = 'paid' AND owner_earning_status = 'none'
+                  RETURNING id
+                )
+                DELETE FROM pkm_packet_orders
+                WHERE (buyer_user_id = :user_id OR owner_user_id = :user_id)
+                  AND status <> 'refund_pending'
+                  AND NOT (status = 'paid' AND owner_earning_status = 'none')
+                """
+            ),
+            "directory_listing_claims": text(
+                "DELETE FROM directory_listing_claims WHERE user_id = :user_id"
+            ),
+            "pkm_credit_ledger": text("DELETE FROM pkm_credit_ledger WHERE user_id = :user_id"),
+            "pkm_owner_payout_accounts": text(
+                "DELETE FROM pkm_owner_payout_accounts WHERE user_id = :user_id"
+            ),
+            # The Stripe subscription id moves to an identity-free table so the
+            # work drain cancels it at Stripe: a deleted person is never billed.
+            "pkm_credit_subscriptions": text(
+                """
+                WITH moved AS (
+                  DELETE FROM pkm_credit_subscriptions WHERE user_id = :user_id
+                  RETURNING stripe_subscription_id, status
+                )
+                INSERT INTO pkm_credit_subscription_cancellations (stripe_subscription_id)
+                SELECT stripe_subscription_id FROM moved
+                WHERE stripe_subscription_id IS NOT NULL AND status <> 'canceled'
+                ON CONFLICT DO NOTHING
+                """
+            ),
             "marketplace_opportunity_signals": text(
                 "DELETE FROM marketplace_opportunity_signals WHERE user_id = :user_id"
             ),
@@ -1409,6 +1448,12 @@ class AccountService:
                 "marketplace_delivery_envelopes",
                 "marketplace_access_requests",
                 "marketplace_recipient_keys",
+                "pkm_packets",
+                "pkm_packet_orders",
+                "directory_listing_claims",
+                "pkm_credit_ledger",
+                "pkm_credit_subscriptions",
+                "pkm_owner_payout_accounts",
                 "marketplace_opportunity_signals",
                 "trusted_device_challenges",
                 "trusted_device_authorizations",
@@ -1779,6 +1824,12 @@ class AccountService:
             "marketplace_delivery_envelopes": False,
             "marketplace_access_requests": False,
             "marketplace_recipient_keys": False,
+            "pkm_packets": False,
+            "pkm_packet_orders": False,
+            "directory_listing_claims": False,
+            "pkm_credit_ledger": False,
+            "pkm_credit_subscriptions": False,
+            "pkm_owner_payout_accounts": False,
             "marketplace_opportunity_signals": False,
             "one_referral_risk_reviews": False,
             "one_referral_events": False,
@@ -1915,6 +1966,12 @@ class AccountService:
                         "marketplace_delivery_envelopes",
                         "marketplace_access_requests",
                         "marketplace_recipient_keys",
+                        "pkm_packets",
+                        "pkm_packet_orders",
+                        "directory_listing_claims",
+                        "pkm_credit_ledger",
+                        "pkm_credit_subscriptions",
+                        "pkm_owner_payout_accounts",
                         "marketplace_opportunity_signals",
                         "trusted_device_challenges",
                         "trusted_device_authorizations",

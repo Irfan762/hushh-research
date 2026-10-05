@@ -674,6 +674,97 @@
       "expected_row_growth": "medium_per_user_request"
     },
     {
+      "id": "pkm_packets",
+      "owner": "vault-pkm-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_packets"
+      ],
+      "primary_access_path": "One marketplace Owner tab: the owner creates, prices and lists packets (named bundles of their own PKM scope references) for sale; hussh.ai White Pages reads only the titles and prices of a verified owner's for-sale packets through the public listing lookup.",
+      "retention_policy": "Retained while the owner keeps the packet; deleting a packet removes its row.",
+      "deletion_behavior": "Delete every row for the owner on account reset and account deletion.",
+      "trust_boundary": "Stores packet titles, prices and PKM scope references ({domain, scopeHandle, label}) only. It never stores a PKM value; a sale moves data only through an owner-approved marketplace request sealed to the buyer's key.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
+    },
+    {
+      "id": "directory_listing_claims",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "directory_listing_claims"
+      ],
+      "primary_access_path": "hussh.ai White Pages 'Is this you?' claim: a signed-in, phone-verified One user claims a public-record listing id; an operator verifies it; the public listing lookup then shows the verified owner's for-sale packets.",
+      "retention_policy": "Active claims are retained while pending or verified; withdrawn and rejected claims are retained only for bounded operational review.",
+      "deletion_behavior": "Delete every row for the user on account reset and account deletion, returning the listing to unclaimed.",
+      "trust_boundary": "Stores the user reference, the public listing id and name, status and timestamps. The public lookup never returns a user id.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
+    },
+    {
+      "id": "pkm_packet_orders",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_packet_orders"
+      ],
+      "primary_access_path": "hussh.ai White Pages buy flow: a signed-in buyer pays hussh for one packet through Stripe Checkout; the signed Stripe webhook marks the order paid and files an owner-approved marketplace access request; denied, expired or orphaned requests are refunded by the packet-order reconcile.",
+      "retention_policy": "Retained while payment or refund is unsettled and for bounded financial and consent-audit review afterwards; snapshots the packet title and price paid.",
+      "deletion_behavior": "On account deletion, paid but undelivered orders move to refund_pending, are refunded in full by the reconcile, and the row is then deleted; all other rows (unpaid, settled, or delivered) are deleted, and an owner earning not yet transferred is forfeited.",
+      "trust_boundary": "Stores buyer and owner references, the public listing id, packet id and title, amounts, status and Stripe object ids. No card data (Stripe-hosted Checkout) and no PKM values.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "medium_per_user_request"
+    },
+    {
+      "id": "pkm_credits",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_credit_subscriptions",
+        "pkm_credit_ledger"
+      ],
+      "primary_access_path": "hussh.ai credits plans: a buyer subscribes monthly through Stripe Checkout; the signed webhook grants the plan's credits once per paid invoice (pkm_grant_credits, expiring the unused balance) and records plan status; buying a packet with credits spends from the ledger (pkm_spend_credits under a per-user advisory lock); refunds of credit-paid orders return credits.",
+      "retention_policy": "Subscription row retained while the plan exists; ledger rows are append-only and retained for the life of the account for balance and audit.",
+      "deletion_behavior": "On account deletion the ledger is deleted and the subscription row is deleted after its Stripe subscription id is moved to pkm_credit_subscription_cancellations for cancellation.",
+      "trust_boundary": "Stores user references, plan, Stripe customer and subscription ids, status, period end, and integer credit deltas with idempotency refs. No card data and no PKM values.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "medium_per_user_request"
+    },
+    {
+      "id": "pkm_credit_subscription_cancellations",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_credit_subscription_cancellations"
+      ],
+      "primary_access_path": "Account deletion moves a deleted subscriber's Stripe subscription id here; the scheduled work drain cancels it at Stripe and deletes the row.",
+      "retention_policy": "Transient: deleted as soon as the Stripe cancellation succeeds.",
+      "deletion_behavior": "Holds no user identity; rows are removed by the drain after cancellation.",
+      "trust_boundary": "Stripe subscription id and timestamp only; no user id.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_ttl_workflow"
+    },
+    {
+      "id": "pkm_owner_payout_accounts",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_owner_payout_accounts"
+      ],
+      "primary_access_path": "One marketplace Owner tab payouts: a packet owner onboards to a Stripe Connect Express account; the work drain marks delivered orders' earnings due and transfers them (amount minus platform fee) once Stripe enables payouts.",
+      "retention_policy": "Retained while the owner keeps their account.",
+      "deletion_behavior": "Delete the row on account reset and deletion; the Stripe Express account itself is held by Stripe.",
+      "trust_boundary": "Stores the user reference, Stripe Connect account id and readiness flags only. Bank and identity details stay with Stripe.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
+    },
+    {
       "id": "information_marketplace_delivery",
       "owner": "iam-consent-governance",
       "data_class": "workflow_state",

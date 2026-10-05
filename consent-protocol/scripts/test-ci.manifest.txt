@@ -613,3 +613,9 @@ tests/one_voice/test_draft_open_route.py
 # concurrent drains and never touches an immediate send (send_at IS NULL), and
 # one draft send (one retry after a refusal) per draft.
 tests/services/test_scheduled_mail_postgres.py
+
+tests/test_pkm_packets_and_directory_claims.py
+tests/test_pkm_packet_orders.py
+tests/test_pkm_credits.py
+tests/test_pkm_payouts.py
+tests/test_one_career_routes.py
