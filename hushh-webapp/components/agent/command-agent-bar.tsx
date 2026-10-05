@@ -133,7 +133,8 @@ export function CommandAgentBar({
         aria-label="One private agent"
         className={cn("transition-opacity motion-reduce:transition-none", cancelArmed && "text-destructive")}
         onPointerDown={(event) => {
-          if (event.target === event.currentTarget && active && event.button === 0 && (event.isPrimary || !event.pointerType)) cancelTask();
+          const control = event.target instanceof Element && event.target.closest("button, input, textarea, a");
+          if (!control && active && event.button === 0 && (event.isPrimary || !event.pointerType)) cancelTask();
         }}
       >
         <button

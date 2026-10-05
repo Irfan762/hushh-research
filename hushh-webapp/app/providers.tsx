@@ -58,6 +58,7 @@ import { FoundationPublicAmbient } from "@/components/app-ui/foundation-public-a
 import { AgentOwnerGate } from "@/components/agent/agent-owner-gate";
 import { OneVoiceReadinessProvider } from "@/lib/one-voice/readiness";
 import { AppBottomShell } from "@/components/app-ui/app-bottom-shell";
+import { AgentDockProvider } from "@/components/agent/agent-dock";
 import { AmbientChromeController } from "@/components/app-ui/ambient-chrome-mask";
 import { resolveRiaRouteTabSet } from "@/lib/navigation/top-shell-tabs";
 import { Toaster } from "@/components/ui/sonner";
@@ -407,9 +408,8 @@ function AppShellFrame({ children }: ProvidersProps) {
   const bottomShellModel = useMemo(
     () => ({
       navigationHidden: hideBottomNavigation,
-      // The canonical Chat route already exposes its text composer. Keep the
-      // shell launcher out of that route's visual hierarchy; Chat presents
-      // active voice in the same composer seat with the shared bar component.
+      // Chat projects its text composer into the retained Agent Bar. The
+      // shell reserves navigation separately from the measured composer.
       agentBarHidden:
         isAuthenticated && !authLoading && pathname === ROUTES.HOME,
       hidden: bottomChromeHidden,
@@ -635,6 +635,7 @@ function AppShellFrame({ children }: ProvidersProps) {
             <AgentRuntimeStateProvider>
               <OneVoiceReadinessProvider>
                 <AgentOwnerGate>
+                  <AgentDockProvider>
                   <SiriOneVoiceHandoff />
                   <SiriOneRequestHandoff />
                   <SiriOneActionHandoff />
@@ -809,6 +810,7 @@ function AppShellFrame({ children }: ProvidersProps) {
                       </Suspense>
                     </div>
                   </ContactInvitationSessionProvider>
+                  </AgentDockProvider>
                 </AgentOwnerGate>
               </OneVoiceReadinessProvider>
               {/*

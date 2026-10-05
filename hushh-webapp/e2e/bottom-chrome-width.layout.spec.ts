@@ -189,6 +189,53 @@ async function open(page: Page, width: number, dark: boolean, variant: Variant, 
     await page.locator("[data-testid='one-voice-panel']").waitFor();
 }
 
+test("shared dock retains material and input identity with aligned edges and keyboard clearance", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", error => errors.push(error.message));
+  for (const width of [320, 393, 768]) {
+    await open(page, width, false, { name: "shared text dock", html: { composer: "true" } }, errors);
+    const dock = page.locator("[data-agent-dock-surface]");
+    const input = page.getByRole("textbox", { name: "Message One" });
+    await expect(input).toBeVisible();
+    const retainedBar = await dock.elementHandle();
+    const retainedInput = await input.elementHandle();
+    await input.fill("Unsent synthetic draft");
+    const barFrame = await dock.boundingBox();
+    const navFrame = await page.locator(".kai-bottom-nav-pill").boundingBox();
+    expect(Math.abs(barFrame!.x - navFrame!.x)).toBeLessThanOrEqual(EDGE_TOLERANCE_PX);
+    expect(Math.abs(barFrame!.width - navFrame!.width)).toBeLessThanOrEqual(EDGE_TOLERANCE_PX);
+    await page.getByTestId("fixture-mode").click();
+    await expect(input).toBeHidden();
+    await page.getByTestId("fixture-mode").click();
+    await expect(input).toHaveValue("Unsent synthetic draft");
+    expect(await input.evaluate((node, original) => node === original, retainedInput)).toBe(true);
+    expect(await dock.evaluate((node, original) => node === original, retainedBar)).toBe(true);
+    await page.evaluate(() => {
+      document.documentElement.classList.add("native-keyboard-inset", "kb-open");
+      document.documentElement.style.setProperty("--kb-height", "280px");
+    });
+    await expect(page.locator("[data-bottom-shell-navigation-slot]")).toBeHidden();
+    await expect.poll(async () => {
+      const frame = await input.boundingBox();
+      return frame ? Math.round(844 - 280 - frame.y - frame.height) : -1;
+    }).toBeGreaterThanOrEqual(7);
+    await expect.poll(async () => {
+      const frame = await dock.boundingBox();
+      return frame ? Math.round(844 - 280 - frame.y - frame.height) : -1;
+    }).toBeLessThanOrEqual(9);
+    await page.evaluate(() => {
+      document.documentElement.classList.remove("native-keyboard-inset", "kb-open");
+      document.documentElement.style.removeProperty("--kb-height");
+    });
+    await page.getByTestId("fixture-route").click();
+    await expect(input).toHaveCount(0);
+    expect(await dock.evaluate((node, original) => node === original, retainedBar)).toBe(true);
+    expect(errors).toEqual([]);
+    await retainedInput?.dispose();
+    await retainedBar?.dispose();
+  }
+});
+
 type Edges = { left: number; right: number; width: number };
 type Measure = {
   voice: Edges;

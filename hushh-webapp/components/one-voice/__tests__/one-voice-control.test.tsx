@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { useLayoutEffect, useState } from "react";
 
 import {
   act,
@@ -11,6 +12,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { OneVoiceControl } from "@/components/one-voice/one-voice-control";
+import { AgentDockPortal, AgentDockProvider, AgentDockVoiceBoundary, useAgentDockFrame } from "@/components/agent/agent-dock";
+import { AgentBarSurface } from "@/components/agent/agent-bar-surface";
 import { useAgentVoiceState } from "@/lib/agent/agent-voice-state";
 import { navigateToAgentChat } from "@/lib/navigation/agent-navigation";
 import type { ServerFrame } from "@/lib/one-voice/protocol";
@@ -108,6 +111,50 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("OneVoiceControl", () => {
+  it("retains one Agent Bar and the same draft input across text/voice presentation, then retires the route projection", () => {
+    let measuredFrame: HTMLDivElement | null = null;
+    function FrameProbe() {
+      const frame = useAgentDockFrame();
+      useLayoutEffect(() => { measuredFrame = frame; }, [frame]);
+      return null;
+    }
+    function Composer() {
+      const [draft, setDraft] = useState("");
+      return <AgentBarSurface embedded><textarea aria-label="Message One" value={draft} onChange={event => setDraft(event.target.value)} /></AgentBarSurface>;
+    }
+    function Dock({ chat, voice = false }: { chat: boolean; voice?: boolean }) {
+      return <AgentDockProvider>
+        <AgentDockVoiceBoundary><OneVoiceControl layout="slot" /></AgentDockVoiceBoundary>
+        <FrameProbe />
+        {chat ? <AgentDockPortal enabled visible={!voice}><Composer /></AgentDockPortal> : null}
+      </AgentDockProvider>;
+    }
+    const view = render(<Dock chat={false} />);
+    const bar = screen.getByTestId("one-voice-agent-bar");
+    const frame = view.container.querySelector("[data-agent-bar-shell]");
+    expect(measuredFrame).toBe(frame);
+    fireEvent.click(screen.getByRole("button", { name: "Type instead" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Type to One" }), { target: { value: "Voice-owned synthetic draft" } });
+    view.rerender(<Dock chat />);
+    expect(screen.queryByRole("textbox", { name: "Type to One" })).toBeNull();
+    const input = screen.getByRole("textbox", { name: "Message One" });
+    fireEvent.change(input, { target: { value: "Unsent synthetic draft" } });
+    expect(screen.queryByRole("button", { name: "Talk to One" })).toBeNull();
+    expect(view.container.querySelectorAll(".bottom-chrome-surface")).toHaveLength(1);
+    view.rerender(<Dock chat voice />);
+    expect(measuredFrame).toBe(frame); // The hidden form is never the occlusion frame.
+    expect(screen.getByRole("textbox", { name: "Type to One" })).toHaveValue("Voice-owned synthetic draft");
+    expect(screen.queryByRole("textbox", { name: "Message One" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Talk to One" })).toBeVisible();
+    view.rerender(<Dock chat />);
+    expect(screen.getByRole("textbox", { name: "Message One" })).toBe(input);
+    expect(input).toHaveValue("Unsent synthetic draft");
+    expect(screen.getByTestId("one-voice-agent-bar")).toBe(bar);
+    view.rerender(<Dock chat={false} />);
+    expect(screen.queryByRole("textbox", { name: "Message One", hidden: true })).toBeNull();
+    expect(screen.getByRole("button", { name: "Talk to One" })).toBeVisible();
+    expect(screen.getByTestId("one-voice-agent-bar")).toBe(bar);
+  });
   it("idles as the Talk to One pill with the launcher identity and starts a session on tap", () => {
     render(<OneVoiceControl layout="slot" />);
     const dock = screen.getByTestId("one-voice-agent-bar");

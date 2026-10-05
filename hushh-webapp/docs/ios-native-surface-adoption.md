@@ -43,6 +43,25 @@ another navigation stack, WebView, session, or information store.
   retains the shared 44px layout slot and invokes the existing Back handler.
   Release builds, iPad, older wrappers, web and Android keep the web control.
   Capability admission—not installation of a plugin—is the enablement boundary.
+- [NativeChatChrome](../components/app-ui/native-chat-chrome.tsx) adds independent
+  History and Cloud/Puppy presentation leases. The History button uses SwiftUI's
+  standard glass button; the two-value selector uses a standard segmented
+  `Picker`, not a custom imitation. They require the explicit
+  `--hushh-native-chat-chrome` Debug iPhone rehearsal argument. Release and iPad
+  remain on the accepted DOM controls until physical acceptance is complete.
+  Pending History review badges retain DOM presentation. Choices invoke the
+  existing drawer and agent-surface handlers, never a native router.
+- [AgentDock](../components/agent/agent-dock.tsx) retains one material Agent Bar
+  across route changes. Canonical Chat projects its existing form into that bar;
+  microphone providers and the voice control remain mounted. Drafts and sends
+  stay in Chat, with no duplicate shell draft store. Switching to active voice
+  hides, rather than remounts, the same text field. Keyboard clearance separates
+  navigation from the shared composer. Embedded workspaces retain their local
+  form. Transcript reservation and reveal use the full retained dock, including
+  the visible voice panel, never the hidden form's zero rectangle. The voice
+  adapter's alternate text field is not presented alongside canonical Chat;
+  its own unsent draft remains with that adapter. Reduced motion removes the
+  short content transition.
 
 Apple recommends standard system controls and reserves Liquid Glass primarily for
 the interactive layer above content. Native material is not equivalent to adding
@@ -83,7 +102,7 @@ also reads committed CSS, closing the interval before React publishes a changed
 projection. Theme-only tab updates do not invalidate intentional tab selections.
 Wrappers lacking version 2 retain DOM controls rather than ignore appearance.
 
-This family owns **no popup**. SwiftUI Menu/pickers and UIKit action sheets remain
+These families own **no popup**. SwiftUI menus, presented pickers and UIKit action sheets remain
 unimplemented: removing a hosting view does not prove that a presented popup is
 covered or dismissed. Their popup retirement and interaction-layer ownership must
 be proved before adding them to the capability list.
@@ -132,14 +151,29 @@ The source audit identifies two concrete consumers, not a global button rewrite:
   not discard the warm vault before native admission. Do not bundle Locate:
   that callback can update an already-consented location share.
 
-These controls are **not implemented or enabled natively**. The current bridge
-has one lease, a fixed `top-shell-back` identity and 44-point geometry. Close
-requires explicit control identity, scoped retirement, owning-overlay admission,
+These controls are **not implemented or enabled natively**. The bridge now has
+independent, allowlisted control identities and scoped retirement. Close still
+requires its own explicit control identity and owning-overlay admission,
 and settlement-aware geometry. A ResizeObserver alone cannot detect translation
 of a sliding Profile pane. Retire before motion or a newer interaction layer;
 restore DOM interaction only after confirmed native removal. The drawer's
 moving Close stays React. Back's outstanding physical accessibility acceptance
 still precedes admission of this family.
+
+### Density And Selection Boundaries
+
+Compact Settings rows reserve at least 48px, with 16px heading spacing and 8px
+toolbar spacing; comfortable and person rows retain their existing measures.
+Inset icon separators derive their start from the actual row inset and icon
+track. Starter suggestions keep equal tracks and 44px targets, with a 4px phone
+row gap and 16px desktop column gap, rather than artificial 72/128px heights.
+Multi-select option rails remain React: a native toolbar control does not justify
+moving a searchable list, protected form or scrolling selection into SwiftUI.
+Retain 44px checkbox-label targets and keep search/confirmation outside the
+scrolling rail. Refer to Apple's
+[Liquid Glass adoption guidance](https://developer.apple.com/documentation/technologyoverviews/adopting-liquid-glass)
+and [segmented controls guidance](https://developer.apple.com/design/human-interface-guidelines/segmented-controls)
+for the interactive/content distinction and bounded selection pattern.
 
 ### Stock Apple Pattern Mapping
 

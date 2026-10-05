@@ -445,6 +445,204 @@ final class AppUITests: XCTestCase {
         print("NATIVE_BACK_CONTINUITY layout_overlay_resume_existing_handler_single_host")
     }
 
+    func testLocalSessionNativeChatControlsRespectOverlayKeyboardAndSingleHost() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_NATIVE_CHROME_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in native chat-family proof; running Debug candidate must already admit the family")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("Attach only: no cold launch, reviewer bootstrap or credential entry")
+        }
+        app.activate()
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let web = hosts.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 15), "NATIVE_CHAT_HOST_UNAVAILABLE")
+        XCTAssertFalse(web.buttons["Unlock"].exists, "Normal vault unlock is required before chat-family proof")
+        XCTAssertFalse(app.buttons["Continue with Google"].exists, "Chat-family proof must not manufacture sign-in")
+        for label in ["Close Profile", "Close chat history", "Close search"] {
+            let close = app.buttons[label].firstMatch
+            if close.exists && close.isHittable { close.tap() }
+        }
+        perfTapNav(app, label: "Chat")
+        let composer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable,
+                      "Begin on idle Cloud Chat with the existing unlocked session")
+        XCTAssertFalse(web.buttons["Stop One"].exists, "Do not change surfaces while an existing turn is active")
+        let hostFrame = web.frame
+        let history = app.buttons["chat-history-toggle"].firstMatch
+        let selector = app.segmentedControls["chat-agent-surface"].firstMatch
+        func segment(_ value: String) -> XCUIElement {
+            let names = value == "one" ? ["Cloud", "One, your cloud agent"] :
+                ["Puppy", "Puppy One, on your machine, with its own conversation"]
+            return selector.buttons.matching(NSPredicate(format: "label IN %@", names)).firstMatch
+        }
+        func assertSameHost() {
+            XCTAssertEqual(hosts.count, 1, "Chat controls must retain the identified Capacitor host")
+            XCTAssertEqual(app.webViews.count, 1 + web.webViews.count, "Chat controls introduced another WebView host")
+            XCTAssertEqual(web.frame, hostFrame, "The overlay or surface change replaced/moved the host")
+            XCTAssertFalse(web.buttons["Unlock"].exists, "Chat controls lost the unlocked session")
+        }
+        func awaitAbsent(_ element: XCUIElement, _ message: String) {
+            let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
+            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, message)
+        }
+        XCTAssertTrue(history.waitForExistence(timeout: 15) && history.isHittable,
+                      "NATIVE_CHAT_HISTORY_UNAVAILABLE: badge must be zero and Debug family explicitly admitted")
+        XCTAssertTrue(selector.waitForExistence(timeout: 15) && selector.isHittable, "NATIVE_CHAT_PICKER_UNAVAILABLE")
+        let headerTop = min(history.frame.minY, selector.frame.minY)
+        let headerBottom = max(history.frame.maxY, selector.frame.maxY)
+        func blurThroughAuthoredTitle() {
+            // This public static title has no action owner. Do not tap arbitrary
+            // transcript coordinates or the keyboard's destructive Send key.
+            let title = web.staticTexts.matching(NSPredicate(format: "label == %@", "One"))
+                .allElementsBoundByIndex.first { $0.isHittable && $0.frame.minY >= headerTop - 1 && $0.frame.maxY <= headerBottom + 1 }
+            guard let title else { XCTFail("NATIVE_CHAT_HEADER_TITLE_UNAVAILABLE"); return }
+            title.tap()
+        }
+        func assertNativeTargets() {
+            XCTAssertEqual(app.buttons.matching(identifier: "chat-history-toggle").count, 1)
+            XCTAssertEqual(app.segmentedControls.matching(identifier: "chat-agent-surface").count, 1)
+            XCTAssertGreaterThanOrEqual(history.frame.width, 44)
+            XCTAssertGreaterThanOrEqual(history.frame.height, 44)
+            XCTAssertFalse(history.frame.intersects(selector.frame), "Independent controls overlap")
+            let cloud = segment("one"), puppy = segment("puppy")
+            XCTAssertTrue(cloud.exists && cloud.isHittable && puppy.exists && puppy.isHittable,
+                          "The system Picker must expose exactly the two authored selectable segments")
+            XCTAssertEqual(selector.buttons.count, 2)
+            // This measures accessible system segments, not the 44pt SwiftUI
+            // hosting rectangle. A smaller large Picker is not admitted by fiat.
+            for option in [cloud, puppy] {
+                print("NATIVE_CHAT_PICKER_GEOMETRY width=\(Int(option.frame.width)) height=\(Int(option.frame.height))")
+                XCTAssertGreaterThanOrEqual(option.frame.width, 44, "NATIVE_CHAT_PICKER_SEGMENT_WIDTH_UNADMITTED")
+                XCTAssertGreaterThanOrEqual(option.frame.height, 44, "NATIVE_CHAT_PICKER_SEGMENT_HEIGHT_UNADMITTED")
+            }
+            let duplicateHistory = web.buttons.matching(NSPredicate(
+                format: "label BEGINSWITH %@ AND identifier != %@", "Open chat history", "chat-history-toggle"))
+            XCTAssertEqual(duplicateHistory.count, 0, "Authored DOM and native history both remained accessible")
+            // Exclude the known native segments explicitly. AX membership under
+            // WebKit alone is not proof that an element is DOM-owned.
+            let publicNames = NSPredicate(format: "label IN %@", [
+                "One, your cloud agent", "Puppy One, on your machine, with its own conversation"
+            ])
+            let nestedNative = web.segmentedControls["chat-agent-surface"].firstMatch
+            let permitted = nestedNative.exists ? nestedNative.descendants(matching: .any).matching(publicNames).count : 0
+            XCTAssertEqual(web.descendants(matching: .any).matching(publicNames).count, permitted,
+                           "Authored DOM and native selector both remained accessible")
+            assertSameHost()
+        }
+        assertNativeTargets()
+        let close = app.buttons["Close chat history"].firstMatch
+        addTeardownBlock {
+            if close.exists && close.isHittable { close.tap() }
+            if app.keyboards.firstMatch.exists { blurThroughAuthoredTitle() }
+            // Restore only the permitted Cloud surface, never select/delete a
+            // conversation, send a draft, alter an account, or dump its AX tree.
+            let cloud = segment("one")
+            if cloud.exists && cloud.isHittable && !cloud.isSelected { cloud.tap() }
+        }
+        history.tap()
+        XCTAssertTrue(close.waitForExistence(timeout: 10) && close.isHittable, "Native history did not call the existing drawer owner")
+        awaitAbsent(history, "Native history remained accessible under its overlay")
+        awaitAbsent(selector, "Native selector remained accessible under history")
+        assertSameHost()
+        close.tap()
+        awaitAbsent(close, "History did not dismiss")
+        // Parent restores authored DOM focus after dismissal. Release it through
+        // the inert public title before requiring native history to re-admit.
+        blurThroughAuthoredTitle()
+        XCTAssertTrue(history.waitForExistence(timeout: 10) && history.isHittable)
+        XCTAssertTrue(selector.waitForExistence(timeout: 10) && selector.isHittable)
+        assertNativeTargets()
+        segment("puppy").tap()
+        let puppyComposer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message Puppy One")).firstMatch
+        XCTAssertTrue(puppyComposer.waitForExistence(timeout: 15), "Native selector did not enter the authored Puppy surface")
+        let puppySelected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: segment("puppy"))
+        XCTAssertEqual(XCTWaiter.wait(for: [puppySelected], timeout: 10), .completed, "React selection was not projected back to Picker")
+        assertSameHost()
+        segment("one").tap()
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable, "Cloud did not return without sending or resetting")
+        let cloudSelected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: segment("one"))
+        XCTAssertEqual(XCTWaiter.wait(for: [cloudSelected], timeout: 10), .completed)
+        composer.tap() // No typeText: preserve the complete existing draft.
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 10), "Keyboard did not open")
+        awaitAbsent(history, "Native history remained accessible over the keyboard")
+        awaitAbsent(selector, "Native selector remained accessible over the keyboard")
+        blurThroughAuthoredTitle()
+        awaitAbsent(app.keyboards.firstMatch, "Keyboard did not dismiss through the public header")
+        XCTAssertTrue(history.waitForExistence(timeout: 10) && history.isHittable)
+        XCTAssertTrue(selector.waitForExistence(timeout: 10) && selector.isHittable)
+        assertNativeTargets()
+        print("NATIVE_CHAT_CHROME_CONTINUITY history_picker_overlay_keyboard_cloud_return_single_host")
+    }
+
+    func testStockControlReference() throws {
+        // Public interaction reference only; neither its look nor this test
+        // establishes Apple's implementation framework or admits our controls.
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_NATIVE_CHROME_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in bounded Clock/Calculator observation with return to existing Cloud Chat")
+        }
+        let one = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(one.state) else {
+            throw XCTSkip("One must already be running; no launch, reset or credential entry")
+        }
+        one.activate()
+        let hosts = one.webViews.matching(identifier: "native-webview")
+        let host = hosts.firstMatch
+        XCTAssertTrue(host.waitForExistence(timeout: 15))
+        XCTAssertFalse(host.buttons["Unlock"].exists, "Normal vault unlock is required before stock comparison")
+        let composer = host.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 10) && composer.isHittable,
+                      "Begin stock reference on interactive Cloud Chat")
+        XCTAssertFalse(host.buttons["Stop One"].exists, "Do not interrupt an existing active turn")
+        defer {
+            // Return even on a fail-fast assertion; never inspect a result,
+            // history, note, alarm or timer, nor attach protected screenshots.
+            one.activate()
+            XCTAssertTrue(host.waitForExistence(timeout: 15))
+            XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable,
+                          "STOCK_REFERENCE_WARM_CHAT_NOT_RESTORED")
+            XCTAssertFalse(host.buttons["Unlock"].exists, "Stock reference lost the unlocked session")
+            XCTAssertEqual(hosts.count, 1)
+            XCTAssertEqual(one.webViews.count, 1 + host.webViews.count)
+        }
+
+        let calculator = XCUIApplication(bundleIdentifier: "com.apple.calculator")
+        calculator.activate()
+        XCTAssertTrue(calculator.wait(for: .runningForeground, timeout: 10), "STOCK_CALCULATOR_UNAVAILABLE")
+        // No onboarding dismissal, number entry, mode selection or menu action.
+        // Only inspect the public toolbar affordance in an already-admitted app.
+        let modeNames = ["Calculator Mode", "Calculator mode", "Calculator Modes", "Calculator modes", "Choose Calculator"]
+        let mode = calculator.buttons.matching(NSPredicate(format: "label IN %@", modeNames)).firstMatch
+        XCTAssertTrue(mode.waitForExistence(timeout: 10) && mode.isHittable,
+                      "STOCK_CALCULATOR_MODE_UNAVAILABLE: public locator requires characterization, not a silent pass")
+        print("STOCK_CALCULATOR_MODE available=\(mode.exists && mode.isHittable)")
+        if mode.exists {
+            print("STOCK_CALCULATOR_CONTROL name=Calculator Mode width=\(Int(mode.frame.width)) height=\(Int(mode.frame.height)) hittable=\(mode.isHittable)")
+        }
+
+        let clock = XCUIApplication(bundleIdentifier: "com.apple.mobiletimer")
+        clock.activate()
+        XCTAssertTrue(clock.wait(for: .runningForeground, timeout: 10), "STOCK_CLOCK_UNAVAILABLE")
+        let tabs = clock.tabBars.firstMatch
+        XCTAssertTrue(tabs.waitForExistence(timeout: 10), "STOCK_CLOCK_TABS_UNAVAILABLE")
+        let publicTabNames = ["World Clock", "Alarm", "Alarms", "Stopwatch", "Timer", "Timers"]
+        let observed = publicTabNames.compactMap { name -> XCUIElement? in
+            let tab = tabs.buttons[name].firstMatch
+            guard tab.exists else { return nil }
+            print("STOCK_CLOCK_TAB name=\(name) width=\(Int(tab.frame.width)) height=\(Int(tab.frame.height)) selected=\(tab.isSelected) hittable=\(tab.isHittable)")
+            return tab
+        }
+        XCTAssertEqual(observed.count, 4, "STOCK_CLOCK_PUBLIC_TAB_SET_INCOMPLETE")
+        XCTAssertEqual(observed.filter { $0.isSelected }.count, 1, "STOCK_CLOCK_SELECTION_UNAVAILABLE")
+        XCTAssertTrue(observed.allSatisfy { $0.isHittable && $0.frame.width > 0 && $0.frame.height > 0 })
+        // Observation only: no selecting/start/stop/add/delete in Clock.
+        one.activate()
+        XCTAssertTrue(host.waitForExistence(timeout: 15))
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable)
+        XCTAssertFalse(host.buttons["Unlock"].exists)
+        print("STOCK_REFERENCE_RETURN warm_chat=true")
+    }
+
     func testLocalSessionProfilePhotoPreviewDoesNotChangePhoto() throws {
         guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
             throw XCTSkip("Opt-in profile preview proof; no credentials or photo mutation")

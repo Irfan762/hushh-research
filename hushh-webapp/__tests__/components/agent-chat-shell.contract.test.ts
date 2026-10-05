@@ -295,14 +295,16 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('data-agent-chat-route={isCanonicalChatRoute ? "root" : "embedded"}');
     expect(workspace).toContain("onKaiBottomChromeScroll(scrollTop)");
     expect(shell).toContain("agentBarHidden?: boolean");
-    expect(shell).toContain("const agentBarVisible = !model.agentBarHidden");
+    expect(shell).not.toContain("const agentBarVisible = !model.agentBarHidden");
+    expect(shell).toContain("<AgentDockVoiceBoundary>");
+    expect(workspace).toContain("<AgentDockPortal enabled={isCanonicalChatRoute}");
     expect(workspace).toContain('<AgentBar layout="slot" />');
     expect(workspace).toContain("<AgentBarSurface");
     expect(workspace).not.toContain("<AgentVoiceWaveInput");
     // A command result can outlive capture. Never measure the hidden editor;
     // its visibility change must trigger sizing when that result is dismissed.
     expect(workspace).toContain("if (!textarea || showVoiceBar) return;");
-    expect(workspace).toContain("[composerExpanded, input, setComposerExpanded, showVoiceBar]");
+    expect(workspace).toContain("[agentDockHost, composerExpanded, input, setComposerExpanded, showVoiceBar]");
     expect(providers).toContain("pathname === ROUTES.HOME");
     expect(providers).toContain("agentBarHidden:");
   });
