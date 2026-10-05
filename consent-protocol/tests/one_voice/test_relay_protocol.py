@@ -865,23 +865,34 @@ async def test_a_question_waits_behind_the_reply_a_tool_result_still_owes():
     assert transport.frames("turn")[-1]["turn_id"] == question
 
 
-async def test_an_answer_that_starts_before_its_transcript_is_heard_in_full():
-    """Live can order the first answer chunk ahead of the input transcript it
-    answers, within one server message."""
+async def test_an_answer_carried_with_its_transcript_is_heard_under_its_question():
+    """Live can carry the end of the input transcript and the first answer
+    chunk in one server message. The relay must see the person's words first,
+    or that chunk is attributed to the turn before they spoke."""
+    message = genai_types.LiveServerMessage(
+        server_content=genai_types.LiveServerContent(
+            input_transcription=genai_types.Transcription(text="Second question", finished=True),
+            model_turn=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        inline_data=genai_types.Blob(data=b"BBB", mime_type="audio/pcm")
+                    )
+                ]
+            ),
+        )
+    )
+    events = translate_message(message)
+    assert [event.kind for event in events] == ["input_transcript", "audio"]
+
     session, transport, _fake = await _relay_on_live()
     await _say(session, "First question")
     await _speak_and_end(session, "QUFB")
-    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QkJC"))
-    await _say(session, "Second question")
+    for event in events:
+        await session._handle_live_event(event)
     question = transport.frames("transcript.input")[-1]["turn_id"]
-    await _speak_and_end(session, "Q0ND", "RERE")
+    await _speak_and_end(session, "Q0ND")
 
-    assert [frame["data"] for frame in transport.frames("audio")] == [
-        "QUFB",
-        "QkJC",
-        "Q0ND",
-        "RERE",
-    ]
+    assert [frame["turn_id"] for frame in transport.frames("audio")][1:] == [question, question]
     assert transport.frames("turn")[-1] == {
         "type": "turn",
         "state": "model_end",
@@ -918,6 +929,64 @@ async def test_a_reply_live_never_speaks_holds_back_one_question_at_most():
 
     assert transport.frames("audio")[-1]["turn_id"] == latest
     assert transport.frames("turn")[-1] == {"type": "turn", "state": "model_end", "turn_id": latest}
+
+
+def _heard(transport) -> list[tuple[str, str]]:
+    return [(frame["data"], frame["turn_id"]) for frame in transport.frames("audio")]
+
+
+async def test_speaking_over_a_reply_keeps_the_rest_of_it_out_of_the_new_answer():
+    """Barge-in while Live speaks about a tool result: the rest of that reply,
+    and anything it proposes, must not be presented as the new question's
+    answer (an abandoned request would come back as its card)."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QUFB"))
+    await _say(session, "Wait, never mind")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QkJC"))
+    await session._handle_live_event(LiveEvent(kind="interrupted"))
+    await _speak_and_end(session, "Q0ND")
+
+    heard = _heard(transport)
+    assert heard[0][0] == "QUFB" and heard[0][1] != question
+    assert "QkJC" not in [data for data, _turn in heard]
+    assert heard[-1] == ("Q0ND", question)
+
+
+async def test_a_spoken_question_does_not_take_a_typed_question_s_answer():
+    """A typed question that took the idle turn owns it: a spoken question
+    right after it waits, and the typed question's answer is not its answer."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Ask for a location"))
+    await _say(session, "What time is it")
+    spoken = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+    await _speak_and_end(session, "Q0ND")
+
+    assert [data for data, _turn in _heard(transport)] == ["QUFB", "Q0ND"]
+    assert _heard(transport)[-1] == ("Q0ND", spoken)
+
+
+async def test_a_question_right_after_an_app_event_waits_for_its_reply():
+    """An [ONE_EVENT] closes a turn of its own, so Live owes it a reply; a
+    question asked before that reply must not receive it as its answer."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "Open my settings")
+    await _speak_and_end(session, "QUFB")
+    await session._inject_event({"kind": "ui_settled", "status": "opened"})
+    await _say(session, "And my profile?")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+    await _speak_and_end(session, "Q0ND")
+
+    assert fake.events_sent
+    assert [data for data, _turn in _heard(transport)] == ["QUFB", "Q0ND"]
+    assert _heard(transport)[-1] == ("Q0ND", question)
 
 
 async def test_new_input_still_supersedes_a_delayed_continuation_card():
