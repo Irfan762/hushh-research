@@ -6,24 +6,27 @@ import {
   FormEvent,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
 } from "react";
 
 import { AppPageShell } from "@/components/app-ui/app-page-shell";
-import {
-  OneChatBubble,
-  OneChatTimeSeparator,
-} from "@/components/agent/chat-message-styles";
+import { OneChatBubble } from "@/components/agent/chat-message-styles";
 import { ConnectionPersonAvatar } from "@/components/connections/connection-person-avatar";
 import { Button } from "@/lib/morphy-ux/button";
 import {
   ArrowLeft,
+  CameraIcon,
+  CheckCheck,
   Loader2,
   MessageCircle,
-  RefreshCw,
+  Mic,
+  MoreVertical,
+  Pencil,
+  Phone,
+  Quote,
   Send,
+  Trash2,
 } from "@/components/icons";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -40,6 +43,7 @@ import {
   buildDirectMessageRoute,
   ROUTES,
 } from "@/lib/navigation/routes";
+import { morphyToast } from "@/lib/morphy-ux/morphy";
 import { cn } from "@/lib/utils";
 
 import styles from "./direct-messages-page.module.css";
@@ -64,15 +68,13 @@ const EMPTY_THREAD: ThreadState = {
   nextBefore: null,
 };
 
-function formatConversationTime(value: string | null | undefined): string {
+/** Per-message metadata always uses a clock time. Repeating a calendar date
+ * below every historical bubble makes a thread much harder to scan. */
+function formatMessageTime(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  const now = new Date();
-  const sameDay = date.toDateString() === now.toDateString();
-  return sameDay
-    ? date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-    : date.toLocaleDateString([], { month: "short", day: "numeric" });
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 function formatMessageFeedMarker(value: string | null | undefined): string {
@@ -88,7 +90,7 @@ function formatMessageFeedMarker(value: string | null | undefined): string {
     hour: "numeric",
     minute: "2-digit",
   });
-  return `${day}, ${time}`;
+  return `${day} ${time}`;
 }
 
 function isNewMessageDay(
@@ -171,47 +173,40 @@ export function DirectMessagesPage() {
   const requestedConversationId = String(
     searchParams?.get("conversation") || "",
   ).trim();
-  const [inbox, setInbox] = useState<DirectMessageConversation[]>([]);
-  const [inboxUnreadCount, setInboxUnreadCount] = useState(0);
   const [thread, setThread] = useState<ThreadState>(EMPTY_THREAD);
   const [messages, setMessages] = useState<DirectMessage[]>([]);
-  const [loadingInbox, setLoadingInbox] = useState(false);
   const [loadingThread, setLoadingThread] = useState(false);
-  const [inboxError, setInboxError] = useState<string | null>(null);
   const [threadError, setThreadError] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
-  const [failedDraft, setFailedDraft] = useState<string | null>(null);
-  const [sendError, setSendError] = useState<string | null>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
+  const [openMessageMenu, setOpenMessageMenu] = useState<string | null>(null);
+  const [openReactionPicker, setOpenReactionPicker] = useState<string | null>(null);
   const loadGeneration = useRef(0);
+  const loadedRouteKey = useRef<string | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
 
   const activeConversationId = thread.conversation?.id ?? null;
   const hasRouteSelection = Boolean(requestedPersonRef || requestedConversationId);
 
-  const loadInbox = useCallback(async () => {
-    if (!user) return;
-    setLoadingInbox(true);
-    try {
-      const idToken = await user.getIdToken();
-      const result = await DirectMessagesService.listConversations({ idToken });
-      setInbox(result.items);
-      setInboxUnreadCount(result.unreadCount);
-      setInboxError(null);
-    } catch (error) {
-      setInboxError(
-        error instanceof Error ? error.message : "Your conversations could not be loaded.",
-      );
-    } finally {
-      setLoadingInbox(false);
-    }
-  }, [user]);
-
   const loadThread = useCallback(
     async (options?: { preserveMessages?: boolean }) => {
       if (!user) return;
       const generation = ++loadGeneration.current;
+      const requestKey = requestedPersonRef
+        ? `person:${requestedPersonRef}`
+        : requestedConversationId
+          ? `conversation:${requestedConversationId}`
+          : null;
+
+      // A route change must never leave the previous connection's messages
+      // visible beneath a new header while the next history request is in flight.
+      // Background refreshes of the same route keep the readable transcript.
+      if (!options?.preserveMessages && loadedRouteKey.current !== requestKey) {
+        loadedRouteKey.current = requestKey;
+        setMessages([]);
+        setThread(EMPTY_THREAD);
+      }
       if (!options?.preserveMessages) setLoadingThread(true);
       setThreadError(null);
       try {
@@ -270,6 +265,7 @@ export function DirectMessagesPage() {
         }
 
         if (!requestedConversationId) {
+          loadedRouteKey.current = null;
           setThread(EMPTY_THREAD);
           setMessages([]);
           return;
@@ -303,6 +299,13 @@ export function DirectMessagesPage() {
         }
       } catch (error) {
         if (generation !== loadGeneration.current) return;
+        // A short-lived refresh failure must not replace an already readable
+        // conversation with a large error panel. The next focus, SSE update,
+        // or explicit refresh will retry while the cached thread stays usable.
+        if (options?.preserveMessages) {
+          setThreadError(null);
+          return;
+        }
         if (requestedPersonRef) {
           setThread({
             ...EMPTY_THREAD,
@@ -316,7 +319,7 @@ export function DirectMessagesPage() {
         setThreadError(
           /not found/i.test(message)
             ? "This connection is not available for messaging right now."
-            : message || "This conversation could not be loaded.",
+            : "Messages could not be loaded. Check your connection and try again.",
         );
       } finally {
         if (generation === loadGeneration.current) setLoadingThread(false);
@@ -327,14 +330,12 @@ export function DirectMessagesPage() {
 
   useEffect(() => {
     if (!user) {
-      setInbox([]);
-      setInboxUnreadCount(0);
+      loadedRouteKey.current = null;
       setThread(EMPTY_THREAD);
       setMessages([]);
       return;
     }
-    void loadInbox();
-  }, [loadInbox, user]);
+  }, [user]);
 
   useEffect(() => {
     if (!user) return;
@@ -342,9 +343,8 @@ export function DirectMessagesPage() {
   }, [loadThread, user]);
 
   const refresh = useCallback(() => {
-    void loadInbox();
     if (hasRouteSelection) void loadThread({ preserveMessages: true });
-  }, [hasRouteSelection, loadInbox, loadThread]);
+  }, [hasRouteSelection, loadThread]);
 
   useEffect(() => {
     if (!user?.uid) return;
@@ -443,29 +443,22 @@ export function DirectMessagesPage() {
 
   const selectedLabel =
     thread.peerDisplayName || thread.conversation?.peerDisplayName || "Conversation";
+  const visibleMessages = messages;
 
-  const openConversation = (conversation: DirectMessageConversation) => {
-    router.push(
-      buildDirectMessageRoute({ conversationId: conversation.id }),
-      { scroll: false },
-    );
+  const backToConnections = () => {
+    router.replace(ROUTES.CONNECT, { scroll: false });
   };
 
-  const backToInbox = () => {
-    router.push(ROUTES.ONE_MESSAGES, { scroll: false });
-  };
-
-  const sendDraft = async (event?: FormEvent<HTMLFormElement>, retry?: string) => {
+  const sendDraft = async (event?: FormEvent<HTMLFormElement>) => {
     event?.preventDefault();
     if (!user || sending || !thread.canSend) return;
-    const content = retry ?? draft;
+    const content = draft;
     const recipientPersonRef = thread.peerPersonRef || requestedPersonRef;
     if (!recipientPersonRef) {
-      setSendError("This recipient is no longer available for messaging.");
+      morphyToast.error("This recipient is no longer available for messaging.");
       return;
     }
     setSending(true);
-    setSendError(null);
     try {
       const idToken = await user.getIdToken();
       const result = await DirectMessagesService.sendMessage({
@@ -474,7 +467,6 @@ export function DirectMessagesPage() {
         recipientPersonRef,
       });
       setDraft("");
-      setFailedDraft(null);
       setMessages((current) => mergeMessages(current, [result.message]));
       setThread((current) =>
         threadFromConversation(result.conversation, {
@@ -491,16 +483,17 @@ export function DirectMessagesPage() {
         messageId: result.message.id,
         source: "send",
       });
+      // The route becomes conversation-addressed after the first send. Keep
+      // the optimistically rendered, server-returned record visible while the
+      // matching history refresh resolves.
+      loadedRouteKey.current = `conversation:${result.conversation.id}`;
       router.replace(
         buildDirectMessageRoute({ conversationId: result.conversation.id }),
         { scroll: false },
       );
-      void loadInbox();
-    } catch (error) {
-      setFailedDraft(content);
-      setSendError(
-        error instanceof Error ? error.message : "Message could not be sent. Try again.",
-      );
+    } catch {
+      setDraft(content);
+      morphyToast.error("Message could not be sent. Check your connection and try again.");
       // A 403/409 is authoritative: redraw the thread as read-only instead of
       // leaving a stale connected composer visible.
       void loadThread({ preserveMessages: true });
@@ -530,24 +523,18 @@ export function DirectMessagesPage() {
           nextBefore: history.nextBefore,
         }),
       );
-    } catch (error) {
-      setThreadError(
-        error instanceof Error ? error.message : "Older messages could not be loaded.",
-      );
+    } catch {
+      morphyToast.error("Older messages could not be loaded. Try again.");
     } finally {
       setLoadingOlder(false);
     }
   };
 
-  const visibleInbox = useMemo(
-    () =>
-      [...inbox].sort((left, right) => {
-        const leftTime = Date.parse(left.lastMessageAt || left.createdAt || "");
-        const rightTime = Date.parse(right.lastMessageAt || right.createdAt || "");
-        return rightTime - leftTime;
-      }),
-    [inbox],
-  );
+  const showUnavailableMessageAction = (action: string) => {
+    setOpenMessageMenu(null);
+    setOpenReactionPicker(null);
+    morphyToast.info(`${action} is not available in Messages yet.`);
+  };
 
   if (!user && !authLoading) {
     return (
@@ -565,149 +552,90 @@ export function DirectMessagesPage() {
   }
 
   return (
-    <AppPageShell
-      width={hasRouteSelection ? "expanded" : "agent"}
-      fitContent={!hasRouteSelection}
-    >
+    <AppPageShell width="agent" fitContent={false}>
       <section
         className={styles.page}
         data-one-chat-surface
-        data-chat-open={hasRouteSelection ? "true" : undefined}
+        data-chat-open="true"
         data-native-route="native-route-direct-messages"
       >
-        <aside className={styles.inbox} aria-label="Conversations">
-          <div className={styles.inboxHeader}>
-            <div>
-              <h1>Messages</h1>
-              <p>
-                {inboxUnreadCount > 0
-                  ? `${inboxUnreadCount} unread ${inboxUnreadCount === 1 ? "message" : "messages"}`
-                  : "Your connections"}
-              </p>
-            </div>
-            <Button
-              type="button"
-              variant="none"
-              effect="fade"
-              aria-label="Refresh conversations"
-              className={styles.refreshButton}
-              disabled={loadingInbox}
-              onClick={() => refresh()}
-            >
-              {loadingInbox ? (
-                <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" />
-              ) : (
-                <RefreshCw className="h-5 w-5" />
-              )}
-            </Button>
-          </div>
-
-          {inboxError ? (
-            <div className={styles.errorState} role="alert">
-              <p>{inboxError}</p>
-              <Button type="button" variant="none" effect="fade" onClick={() => void loadInbox()}>
-                Try again
-              </Button>
-            </div>
-          ) : null}
-
-          {loadingInbox && visibleInbox.length === 0 ? (
-            <p className={styles.loading}>Loading conversations…</p>
-          ) : visibleInbox.length ? (
-            <ul className={styles.conversationList}>
-              {visibleInbox.map((conversation) => {
-                const active = activeConversationId === conversation.id;
-                const preview = conversation.latestMessage?.content || "No messages yet";
-                return (
-                  <li key={conversation.id}>
+        <main className={styles.thread} aria-live="polite">
+              <header className={styles.threadHeader}>
+                <div className={styles.threadHeaderContent}>
+                  <button
+                    type="button"
+                    className={styles.backButton}
+                    aria-label="Back to connections"
+                    onClick={backToConnections}
+                  >
+                    <ArrowLeft className="h-6 w-6" aria-hidden="true" />
+                  </button>
+                  <div className={styles.threadIdentity}>
+                    <span className={styles.threadAvatarPresence}>
+                      <ConnectionPersonAvatar
+                        label={selectedLabel}
+                        photoUrl={thread.peerPhotoUrl}
+                        size="list"
+                        className={styles.threadAvatar}
+                      />
+                      {thread.canSend ? (
+                        <span
+                          className={styles.connectionStatus}
+                          aria-label="Connected"
+                        />
+                      ) : null}
+                    </span>
+                    <div className={styles.threadTitle}>
+                      <h2 title={selectedLabel}>{selectedLabel}</h2>
+                      <p>{thread.canSend ? "Connected on One" : "Conversation"}</p>
+                    </div>
+                  </div>
+                  <div className={styles.threadHeaderActions}>
                     <button
                       type="button"
-                      className={styles.conversationRow}
-                      data-active={active ? "true" : undefined}
-                      onClick={() => openConversation(conversation)}
+                      className={styles.headerAction}
+                      aria-label="Audio calls are not available in Messages yet"
+                      onClick={() =>
+                        morphyToast.info("Calls are not available in Messages yet.")
+                      }
                     >
-                      <ConnectionPersonAvatar
-                        label={conversation.peerDisplayName || "Connection"}
-                        photoUrl={conversation.peerPhotoUrl}
-                        size="list"
-                        className={styles.conversationAvatar}
-                      />
-                      <span className={styles.conversationCopy}>
-                        <span className={styles.conversationName}>
-                          {conversation.peerDisplayName || "Connection"}
-                        </span>
-                        <span className={styles.conversationPreview}>{preview}</span>
-                      </span>
-                      <span className={styles.conversationMeta}>
-                        <time dateTime={conversation.lastMessageAt || conversation.createdAt || undefined}>
-                          {formatConversationTime(conversation.lastMessageAt || conversation.createdAt)}
-                        </time>
-                        {conversation.unreadCount > 0 ? (
-                          <span className={styles.unreadCount} aria-label={`${conversation.unreadCount} unread`}>
-                            {conversation.unreadCount > 99 ? "99+" : conversation.unreadCount}
-                          </span>
-                        ) : null}
-                      </span>
+                      <Phone className="h-4 w-4" aria-hidden="true" />
                     </button>
-                  </li>
-                );
-              })}
-            </ul>
-          ) : (
-            <div className={styles.emptyInbox}>
-              <MessageCircle className="h-7 w-7" aria-hidden="true" />
-              <h2>No conversations yet</h2>
-              <p>Open a connected person’s profile to start a message.</p>
-            </div>
-          )}
-        </aside>
-
-        <main className={styles.thread} aria-live="polite">
-          {hasRouteSelection ? (
-            <>
-              <header className={styles.threadHeader}>
-                <Button
-                  type="button"
-                  variant="none"
-                  effect="fade"
-                  className={styles.backButton}
-                  aria-label="Back to messages"
-                  onClick={backToInbox}
-                >
-                  <ArrowLeft className="h-5 w-5" aria-hidden="true" />
-                </Button>
-                <ConnectionPersonAvatar
-                  label={selectedLabel}
-                  photoUrl={thread.peerPhotoUrl}
-                  size="list"
-                  className={styles.threadAvatar}
-                />
-                <div className={styles.threadTitle}>
-                  <h2>{selectedLabel}</h2>
-                  <p>{thread.canSend ? "Connected on One" : "Conversation"}</p>
+                    <button
+                      type="button"
+                      className={styles.headerAction}
+                      aria-label="Video calls are not available in Messages yet"
+                      onClick={() =>
+                        morphyToast.info("Calls are not available in Messages yet.")
+                      }
+                    >
+                      <CameraIcon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
                 </div>
               </header>
 
-              {threadError && !thread.disconnectedNotice ? (
-                <div className={styles.threadError} role="alert">
-                  <p>{threadError}</p>
-                  <Button type="button" variant="none" effect="fade" onClick={() => void loadThread()}>
-                    Try again
-                  </Button>
-                </div>
-              ) : null}
-
               <div
-                className={cn(
-                  styles.messageList,
-                  "mx-auto w-full max-w-3xl px-4 pt-5 sm:px-6 lg:px-8",
-                )}
+                className={styles.messageList}
                 ref={messageListRef}
                 data-testid="direct-message-list"
                 aria-label={`${selectedLabel} message feed`}
               >
                 {loadingThread && messages.length === 0 ? (
                   <p className={styles.loading}>Loading messages…</p>
+                ) : null}
+                {threadError && messages.length === 0 && !thread.disconnectedNotice ? (
+                  <div className={styles.threadError} role="alert">
+                    <p>{threadError}</p>
+                    <Button
+                      type="button"
+                      variant="none"
+                      effect="fade"
+                      onClick={() => void loadThread()}
+                    >
+                      Try again
+                    </Button>
+                  </div>
                 ) : null}
                 {thread.nextBefore ? (
                   <Button
@@ -733,36 +661,185 @@ export function DirectMessagesPage() {
                     <p>Start the conversation with {selectedLabel}.</p>
                   </div>
                 ) : null}
-                {messages.map((message, index) => (
-                  <div key={message.id} className={styles.messageFeedItem}>
-                    {isNewMessageDay(message, messages[index - 1]) ? (
-                      <OneChatTimeSeparator
-                        accessibleLabel={formatMessageFeedMarker(message.createdAt)}
-                        dateTime={message.createdAt}
-                        label={formatMessageFeedMarker(message.createdAt)}
-                      />
-                    ) : null}
-                    <article
-                      className={cn(
-                        "motion-step-enter flex w-full items-start gap-2",
-                        message.senderIsViewer ? "justify-end" : "justify-start",
-                      )}
-                      data-message-role={message.senderIsViewer ? "user" : "peer"}
-                      data-message-sent-at={message.createdAt}
-                    >
-                      <div
+                {visibleMessages.map((message, index) => {
+                  const nextMessage = visibleMessages[index + 1];
+                  const showPeerAvatar =
+                    !message.senderIsViewer &&
+                    (!nextMessage ||
+                      nextMessage.senderIsViewer ||
+                      isNewMessageDay(nextMessage, message));
+
+                  return (
+                    <div key={message.id} className={styles.messageFeedItem}>
+                      {isNewMessageDay(message, visibleMessages[index - 1]) ? (
+                        <div className={styles.messageDateMarker}>
+                          <time dateTime={message.createdAt}>
+                            {formatMessageFeedMarker(message.createdAt)}
+                          </time>
+                        </div>
+                      ) : null}
+                      <article
                         className={cn(
-                          "min-w-0 max-w-[90%] sm:max-w-[min(82%,48rem)]",
-                          message.senderIsViewer && "sm:max-w-[min(76%,42rem)]",
+                          "flex w-full items-end gap-2",
+                          message.senderIsViewer ? "justify-end" : "justify-start",
                         )}
+                        data-message-role={message.senderIsViewer ? "user" : "peer"}
+                        data-message-sent-at={message.createdAt}
                       >
-                        <OneChatBubble tone={message.senderIsViewer ? "user" : "assistant"}>
-                          <p className="whitespace-pre-wrap break-words">{message.content}</p>
-                        </OneChatBubble>
-                      </div>
-                    </article>
-                  </div>
-                ))}
+                        <div
+                          className={cn(
+                            styles.messageCluster,
+                            "group relative flex min-w-0 items-end gap-1",
+                            message.senderIsViewer && "flex-row-reverse",
+                          )}
+                        >
+                          {showPeerAvatar ? (
+                            <ConnectionPersonAvatar
+                              label={selectedLabel}
+                              photoUrl={thread.peerPhotoUrl}
+                              size="list"
+                              className={styles.messageAvatar}
+                            />
+                          ) : !message.senderIsViewer ? (
+                            <span className={styles.messageAvatarSpacer} aria-hidden="true" />
+                          ) : null}
+                          <div className={styles.messageContent}>
+                            <div className={styles.messageBubbleWrap}>
+                              <OneChatBubble
+                                tone={message.senderIsViewer ? "user" : "assistant"}
+                                className={cn(
+                                  styles.messageBubble,
+                                  !message.senderIsViewer && styles.peerMessageBubble,
+                                )}
+                              >
+                                <p className="whitespace-pre-wrap break-words">
+                                  {message.content}
+                                </p>
+                              </OneChatBubble>
+                              <div className={styles.messageActions}>
+                                <button
+                                  type="button"
+                                  className={styles.messageActionButton}
+                                  aria-label="Choose a reaction"
+                                  aria-expanded={
+                                    openReactionPicker === message.id
+                                  }
+                                  onClick={() => {
+                                    setOpenReactionPicker((current) =>
+                                      current === message.id ? null : message.id,
+                                    );
+                                    setOpenMessageMenu(null);
+                                  }}
+                                >
+                                  <span aria-hidden="true">☺</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.messageActionButton}
+                                  aria-label="Message options"
+                                  aria-expanded={openMessageMenu === message.id}
+                                  onClick={() => {
+                                    setOpenMessageMenu((current) =>
+                                      current === message.id ? null : message.id,
+                                    );
+                                    setOpenReactionPicker(null);
+                                  }}
+                                >
+                                  <MoreVertical className="h-4 w-4" aria-hidden="true" />
+                                </button>
+                              </div>
+                              {openReactionPicker === message.id ? (
+                                <div
+                                  className={styles.reactionPicker}
+                                  aria-label="Choose a reaction"
+                                >
+                                  {["❤️", "👍", "😂", "😮"].map((reaction) => (
+                                    <button
+                                      key={reaction}
+                                      type="button"
+                                      aria-label={`React ${reaction}`}
+                                      onClick={() =>
+                                        showUnavailableMessageAction("Reactions")
+                                      }
+                                    >
+                                      {reaction}
+                                    </button>
+                                  ))}
+                                </div>
+                              ) : null}
+                              {openMessageMenu === message.id ? (
+                                <div className={styles.messageMenu} role="menu">
+                                  <button
+                                    type="button"
+                                    role="menuitem"
+                                    onClick={() =>
+                                      showUnavailableMessageAction("Replies")
+                                    }
+                                  >
+                                    <Quote className="h-3.5 w-3.5" aria-hidden="true" />
+                                    Reply
+                                  </button>
+                                  {message.senderIsViewer ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() =>
+                                          showUnavailableMessageAction("Editing")
+                                        }
+                                      >
+                                        <Pencil className="h-3.5 w-3.5" aria-hidden="true" />
+                                        Edit
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        onClick={() =>
+                                          showUnavailableMessageAction("Deleting messages")
+                                        }
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                        Delete for me
+                                      </button>
+                                      <button
+                                        type="button"
+                                        role="menuitem"
+                                        className={styles.destructiveMessageAction}
+                                        onClick={() =>
+                                          showUnavailableMessageAction("Deleting messages")
+                                        }
+                                      >
+                                        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                                        Delete for everyone
+                                      </button>
+                                    </>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+                            <time
+                              className={cn(
+                                styles.messageMeta,
+                                message.senderIsViewer && styles.messageMetaOwn,
+                              )}
+                              dateTime={message.readAt || message.createdAt}
+                            >
+                              {message.senderIsViewer && message.readAt
+                                ? `Read ${formatMessageTime(message.readAt)}`
+                                : formatMessageTime(message.createdAt)}
+                              {message.senderIsViewer && message.readAt ? (
+                                <CheckCheck
+                                  className="h-3 w-3"
+                                  aria-label="Read"
+                                />
+                              ) : null}
+                            </time>
+                          </div>
+                        </div>
+                      </article>
+                    </div>
+                  );
+                })}
               </div>
 
               {!thread.canSend ? (
@@ -773,10 +850,7 @@ export function DirectMessagesPage() {
                 ) : null
               ) : (
                 <form
-                  className={cn(
-                    styles.composer,
-                    "agent-chat-composer-surface flex min-h-[3.75rem] items-center gap-2 overflow-hidden rounded-[var(--app-input-radius)] px-2.5 pl-3.5",
-                  )}
+                  className={cn(styles.composer, "agent-chat-composer-surface")}
                   onSubmit={(event) => void sendDraft(event)}
                 >
                   <label className="sr-only" htmlFor="direct-message-draft">
@@ -790,7 +864,7 @@ export function DirectMessagesPage() {
                     maxLength={DIRECT_MESSAGE_MAX_LENGTH}
                     disabled={sending}
                     rows={1}
-                    className="h-auto max-h-40 min-h-0 min-w-0 flex-1 resize-none overscroll-contain overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-0 bg-transparent px-0 py-3 text-[15px] leading-snug text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60 sm:max-h-44 sm:text-sm break-words [overflow-wrap:anywhere] [word-break:break-word]"
+                    className={styles.composerInput}
                     onKeyDown={(event) => {
                       if (
                         event.key !== "Enter" ||
@@ -804,46 +878,47 @@ export function DirectMessagesPage() {
                     }}
                   />
                   <button
-                    type="submit"
-                    className={styles.sendButton}
-                    disabled={sending || !draft.trim()}
-                    aria-label="Send message"
+                    type="button"
+                    className={styles.composerEmojiButton}
+                    aria-label="Add emoji"
+                    onClick={() =>
+                      setDraft((current) => `${current}${current ? " " : ""}😊`)
+                    }
+                    disabled={sending}
                   >
-                    {sending ? (
-                      <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" />
-                    ) : (
-                      <Send className="h-5 w-5" aria-hidden="true" />
-                    )}
+                    <span aria-hidden="true">☺</span>
                   </button>
+                  <div className={styles.composerActions}>
+                    <button
+                      type="button"
+                      className={styles.voiceButton}
+                      aria-label="Voice messages are not available in Messages yet"
+                      onClick={() =>
+                        morphyToast.info(
+                          "Voice messages are not available in Messages yet.",
+                        )
+                      }
+                    >
+                      <Mic className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="submit"
+                      className={styles.sendButton}
+                      disabled={sending || !draft.trim()}
+                      aria-label="Send message"
+                    >
+                      {sending ? (
+                        <Loader2 className="h-5 w-5 animate-spin motion-reduce:animate-none" />
+                      ) : (
+                        <Send className="h-5 w-5" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
                   <span className="sr-only" aria-live="polite">
                     {draft.length}/{DIRECT_MESSAGE_MAX_LENGTH}
                   </span>
                 </form>
               )}
-              {sendError ? (
-                <div className={styles.sendError} role="alert">
-                  <span>{sendError}</span>
-                  {failedDraft ? (
-                    <Button
-                      type="button"
-                      variant="none"
-                      effect="fade"
-                      disabled={sending}
-                      onClick={() => void sendDraft(undefined, failedDraft)}
-                    >
-                      Retry
-                    </Button>
-                  ) : null}
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <div className={styles.selectThread}>
-              <MessageCircle className="h-8 w-8" aria-hidden="true" />
-              <h2>Choose a conversation</h2>
-              <p>Select a connection to read messages or start a new one.</p>
-            </div>
-          )}
         </main>
       </section>
     </AppPageShell>

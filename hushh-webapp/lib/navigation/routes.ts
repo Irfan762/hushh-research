@@ -10,7 +10,7 @@ export const INVITE_TO_ONE_PATH = "/?invite=one";
 
 /** The Finance workspace is a One-owned query-tabbed route, not a nested market page. */
 export const KAI_MARKET_PATH = "/one/kai";
-/** Canonical inbox for private, connection-gated 1:1 messages. */
+/** Canonical thread route for private, connection-gated 1:1 messages. */
 export const DIRECT_MESSAGES_PATH = "/one/messages";
 /** Browser-only Firebase handoff; never part of signed-in app navigation. */
 export const HUSHH_TECH_LAUNCH_PATH = "/products/hushh-tech/launch";
@@ -74,7 +74,7 @@ export function buildPersonProfileRoute(
 /**
  * Opens a private 1:1 conversation without exposing an internal user id in
  * the URL. A person reference starts a draft conversation; a conversation id
- * reopens an existing thread from the authenticated inbox.
+ * reopens an existing thread for the authenticated person.
  */
 export function buildDirectMessageRoute(entries?: {
   personRef?: string | null;
@@ -192,7 +192,7 @@ export const ROUTES = {
   LEGACY_CONSENTS: "/consents",
   /** Compatibility-only inbound path; the active chat surface is `/`. */
   LEGACY_AGENT: "/agent",
-  /** Private 1:1 inbox. Direct messaging remains separate from One agent chat. */
+  /** Private 1:1 message route. Direct messaging remains separate from One agent chat. */
   ONE_MESSAGES: DIRECT_MESSAGES_PATH,
   CONNECT: "/one/connect",
   CONNECT_SETTINGS: "/one/connect/settings",

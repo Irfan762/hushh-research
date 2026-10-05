@@ -204,6 +204,27 @@ def _default_push_notifier(
         logger.warning("direct_messages.push_notify_failed error=%s", type(exc).__name__)
 
 
+def _default_feed_notifier(
+    recipient_user_id: str,
+    *,
+    actor_label: str,
+    conversation_id: str,
+    message_id: str,
+) -> None:
+    """Append a metadata-only recipient Feed item after a message commits."""
+
+    from hushh_mcp.services.feed_service import FeedService
+
+    FeedService().record_event(
+        user_id=recipient_user_id,
+        source_domain="connections",
+        event_type="direct_message_received",
+        actor_label=actor_label,
+        metadata={"conversation_id": conversation_id},
+        source_row_id=message_id,
+    )
+
+
 class DirectMessagesService:
     """Persistence and authorization boundary for one-to-one messaging."""
 
@@ -214,11 +235,13 @@ class DirectMessagesService:
         cipher: DirectMessageCipher | None = None,
         event_notifier: Callable[[str, dict[str, str]], None] | None = None,
         push_notifier: Callable[..., None] | None = None,
+        feed_notifier: Callable[..., None] | None = None,
     ) -> None:
         self._db = db
         self._cipher = cipher or DirectMessageCipher()
         self._event_notifier = event_notifier or _default_event_notifier
         self._push_notifier = push_notifier or _default_push_notifier
+        self._feed_notifier = feed_notifier or _default_feed_notifier
         self._transaction_connection: Any | None = None
 
     @property
@@ -471,6 +494,7 @@ class DirectMessagesService:
               peer_profile.public_person_ref AS peer_person_ref,
               peer_identity.display_name AS peer_display_name,
               COALESCE(peer_identity.custom_photo_url, peer_identity.photo_url) AS peer_photo_url,
+              sender_identity.display_name AS viewer_display_name,
               EXISTS (
                 SELECT 1 FROM connections connection
                 WHERE connection.status = 'active'
@@ -493,6 +517,8 @@ class DirectMessagesService:
               END
             LEFT JOIN actor_identity_cache peer_identity
               ON peer_identity.user_id = peer_profile.user_id
+                        LEFT JOIN actor_identity_cache sender_identity
+                            ON sender_identity.user_id = :viewer_user_id
             WHERE conversation.participant_a_user_id = LEAST(:viewer_user_id, :peer_user_id)
               AND conversation.participant_b_user_id = GREATEST(:viewer_user_id, :peer_user_id)
             LIMIT 1
@@ -898,6 +924,17 @@ class DirectMessagesService:
             self._conversation_projection(conversation_row, sender)
         )
         message = self._message_projection(message_row, sender)
+        try:
+            self._feed_notifier(
+                recipient,
+                actor_label=(
+                    str(conversation_row.get("viewer_display_name") or "").strip() or "A connection"
+                ),
+                conversation_id=conversation_id,
+                message_id=message["id"],
+            )
+        except Exception as exc:  # noqa: BLE001 - Feed is a best-effort projection
+            logger.warning("direct_messages.feed_event_failed error=%s", type(exc).__name__)
         # The message INSERT trigger emits the recipient's transactional,
         # metadata-only Postgres doorbell.  Wake the sender's other tabs here
         # after commit; the recipient alone receives an OS push.
