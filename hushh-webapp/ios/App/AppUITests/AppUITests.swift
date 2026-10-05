@@ -775,6 +775,71 @@ final class AppUITests: XCTestCase {
         print("PROFILE_PHOTO_PREVIEW_CONTINUITY open_close_without_mutation")
     }
 
+    func testLocalSessionMailPagerAndSoftwareKeyboardKeepTheSession() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in warm Mail pager and software-keyboard regression")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("One must already be running; no cold launch or reset")
+        }
+        app.activate()
+        cancelRehearsalVoiceCapture(app)
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let web = hosts.firstMatch
+        XCTAssertFalse(web.buttons["Unlock"].exists, "Normal vault unlock is required")
+        for label in ["Close Profile", "Close chat history", "Close search"] {
+            let close = app.buttons[label].firstMatch
+            if close.exists && close.isHittable { close.tap() }
+        }
+        perfTapNav(app, label: "Chat")
+        let composer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable)
+        let draft = composer.value as? String
+        // Open the actual software keyboard; do not overwrite or submit a draft.
+        composer.tap()
+        let keyboard = app.keyboards.firstMatch
+        XCTAssertTrue(keyboard.waitForExistence(timeout: 10), "SOFTWARE_KEYBOARD_NOT_PRESENT")
+        XCTAssertLessThanOrEqual(composer.frame.maxY, keyboard.frame.minY + 2,
+                                 "COMPOSER_OBSCURED_BY_SOFTWARE_KEYBOARD")
+        XCTAssertGreaterThanOrEqual(composer.frame.minX, web.frame.minX)
+        XCTAssertLessThanOrEqual(composer.frame.maxX, web.frame.maxX)
+        dismissRehearsalChatKeyboard(app)
+        XCTAssertFalse(keyboard.exists, "SOFTWARE_KEYBOARD_NOT_DISMISSED")
+        XCTAssertTrue((composer.value as? String) == draft, "KEYBOARD_CHANGED_UNSENT_DRAFT")
+        perfTapNav(app, label: "One")
+        let mail = web.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", "Mail", "Mail,")).firstMatch
+        XCTAssertTrue(mail.waitForExistence(timeout: 15) && mail.isHittable, "MAIL_ENTRY_UNAVAILABLE")
+        mail.tap()
+        func tab(_ name: String) -> XCUIElement {
+            web.buttons.matching(NSPredicate(format: "label == %@", name)).firstMatch
+        }
+        func settled(_ name: String) {
+            let selected = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: tab(name))
+            XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 10), .completed, "MAIL_TAB_NOT_SETTLED")
+        }
+        XCTAssertTrue(tab("Overview").waitForExistence(timeout: 15), "MAIL_WORKSPACE_NOT_PRESENT")
+        tab("Overview").tap()
+        settled("Overview")
+        func drag(_ left: Bool) {
+            let start = web.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.82 : 0.18, dy: 0.60))
+            let end = web.coordinate(withNormalizedOffset: CGVector(dx: left ? 0.18 : 0.82, dy: 0.60))
+            start.press(forDuration: 0.06, thenDragTo: end, withVelocity: XCUIGestureVelocity(rawValue: 400), thenHoldForDuration: 0)
+        }
+        drag(true); settled("KYC")
+        drag(true); settled("Receipts")
+        drag(false); settled("KYC")
+        tab("Overview").tap(); settled("Overview")
+        XCTAssertFalse(web.staticTexts["Connect Mail to set up receipts and KYC requests."].exists)
+        perfTapNav(app, label: "Chat")
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable)
+        XCTAssertTrue((composer.value as? String) == draft, "MAIL_RETURN_CHANGED_UNSENT_DRAFT")
+        XCTAssertFalse(web.buttons["Unlock"].exists, "MAIL_RETURN_LOST_VAULT")
+        XCTAssertEqual(hosts.count, 1)
+        XCTAssertEqual(app.webViews.count, 1 + web.webViews.count)
+        print("MAIL_KEYBOARD_CONTINUITY real_keyboard_bidirectional_pager_warm_chat")
+    }
+
     func testLocalSessionStatusBarCanvasMatchesHeader() throws {
         guard ProcessInfo.processInfo.environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true" else {
             throw XCTSkip("Opt-in status canvas proof; requires the running Chat session")
