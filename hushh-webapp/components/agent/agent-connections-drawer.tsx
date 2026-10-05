@@ -202,7 +202,8 @@ export function AgentConnectionsDrawer({
         enabled={presentationReady && gestureEnabled && mode === "chats" && !externalModalOpen}
         open={historyOpen}
         surfaceRef={gestureSurfaceRef} drawerRef={drawer} scrimRef={scrim}
-        onOpen={onGestureOpen ?? (() => onOpenChange(true))} /> : null}
+        onOpen={onGestureOpen ?? (() => onOpenChange(true))}
+        onClose={() => onOpenChange(false)} /> : null}
       {connectorHost && createPortal(connections, connectorHost)}
       {presentationReady && (isMobile ? (
         <Sheet open={connectorsOpen} onOpenChange={onOpenChange} modal={!externalModalOpen}>
@@ -265,7 +266,7 @@ export function AgentConnectionsDrawer({
               // get a nearly full-width panel that leaves a strip of scrim to tap
               // closed; from md up it keeps the drawer's 336px. Closed, it also
               // clears its own shadow. Motion uses the shared sheet tier.
-              "pointer-events-none fixed inset-y-0 left-0 z-(--z-sheet) transform transition-transform motion-reduce:transition-none",
+              "pointer-events-none fixed inset-y-0 left-0 z-(--z-sheet) touch-pan-y transform transition-transform motion-reduce:transition-none",
               "w-[min(88vw,360px)] md:w-[336px]",
               historyOpen
                 ? "translate-x-0 duration-(--motion-sheet-enter-duration) ease-(--motion-sheet-enter-ease)"

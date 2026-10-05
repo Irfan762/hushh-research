@@ -94,8 +94,8 @@ than acquire separate native implementations.
 | --- | --- | --- |
 | Bottom navigation — [Navbar](../components/navbar.tsx), [native plugin](../ios/App/App/Plugins/HushhNativeNavigationPlugin.swift) | UIKit on supported iOS; DOM fallback | Implemented. Keep standard appearance and React selection authority. |
 | Top bar, back, Profile — [TopAppBar](../components/app-ui/top-app-bar.tsx), [ShellActionSurface](../components/app-ui/shell-action-surface.tsx) | SwiftUI Back Debug pilot; otherwise DOM | Back interaction verified on iPhone; visual/accessibility promotion remains incomplete. Close/More/utility buttons follow only after full Back acceptance. Retain Profile photos and rich labels. No whole native bar. |
-| Shell option menus — [TopShellDropdown](../components/app-ui/top-shell-dropdown.tsx) | DOM anchored menu/popover | Next: SwiftUI Menu for an admitted stationary native trigger; controlled UIKit action sheet for a DOM trigger. Neither is admitted yet. Preserve selection and focus return. |
-| Section action menus — [ActionMenu](../components/app-ui/action-menu.tsx) | Mobile Sheet; desktop dropdown | Next: native menu/action-sheet adapter for serializable item IDs and labels. Arbitrary React labels stay DOM. Preserve disabled/busy state and separate destructive confirmation. |
+| Shell option menus — [TopShellDropdown](../components/app-ui/top-shell-dropdown.tsx) | DOM anchored menu/popover | Unused candidate, not shipped reuse: the dropdown has no production caller, and the popover's AgentSectionDropdown caller is itself unreferenced. Do not add a native family solely for this abstraction. |
+| Section action menus — [ActionMenu](../components/app-ui/action-menu.tsx) | Mobile Sheet; desktop dropdown | Next menu candidate: the reachable People actions in LocationRedesignHub. Use serializable item IDs and labels; arbitrary React labels stay DOM. Preserve disabled/busy state and separate destructive confirmation. The named-circle-flows instance is not current adoption evidence because its enclosing CirclesSection has no production caller. |
 | Agent/voice controls — [AgentBar](../components/agent/agent-bar.tsx), [OneVoiceControl](../components/one-voice/one-voice-control.tsx) | DOM controls over existing runtime providers | Conditional: launcher/cancel chrome only. Keep tap/hold, slide-to-cancel, recording, readiness and task state with existing owners; retain transcript/waveform content. |
 | Search field and close — [KaiCommandPalette](../components/kai/kai-command-palette.tsx), [SearchClearButton](../components/app-ui/search-clear-button.tsx) | DOM controlled palette | Conditional: native search chrome. Existing query, results and action runtime remain authoritative; prove IME, keyboard and dismissal before replacing the field. |
 | Chat history and connectors — [AgentHistorySidebar](../components/agent/agent-history-sidebar.tsx), [AgentConnectionsDrawer](../components/agent/agent-connections-drawer.tsx) | DOM panels and shared overlays | Conditional: header/close/action controls first. Keep chat list, connector forms, tools and credential handling in existing owners. Do not remount the conversation. |
@@ -110,6 +110,30 @@ than acquire separate native implementations.
 | Cards, tables, charts, avatars, badges, breadcrumbs, separators and typography | [Shared UI primitives](../components/ui/) and feature bodies | Retain content-first surfaces. Chat responses, holdings, Memory and consent records are not glass panels. |
 | Accordion, collapsible, carousel, pagination, sidebar and scroll area | [Shared UI primitives](../components/ui/) | Retain content/navigation semantics unless an individually justified native container is adopted. Do not change scroll ownership with a cosmetic primitive swap. |
 | Command, tooltip, keyboard hints, empty/loading/progress/status | [Shared UI primitives](../components/ui/) | Retain existing semantic feedback and keyboard/accessibility behavior; do not add independent native overlays for every state. |
+
+### Next Stationary Family: Close
+
+The source audit identifies two concrete consumers, not a global button rewrite:
+
+- [ProfilePane](../components/app-ui/profile-pane.tsx): its fixed 44-point header
+  Close is separate from the scrolling body. Admit only settled, nonsecret
+  panels after extending overlay ownership; the current Back adapter correctly
+  rejects all overlays, including Profile. Keep the existing controlled
+  `onOpenChange` and focus-return contract. Credential/security panels stay DOM.
+- [LocationImmersiveMap](../components/one-location/location-immersive-map.tsx):
+  its stationary 56-point exit invokes the existing `closeMap` owner. It is used
+  by Location, its map route and check-in. Verify its navigation fallback does
+  not discard the warm vault before native admission. Do not bundle Locate:
+  that callback can update an already-consented location share.
+
+These controls are **not implemented or enabled natively**. The current bridge
+has one lease, a fixed `top-shell-back` identity and 44-point geometry. Close
+requires explicit control identity, scoped retirement, owning-overlay admission,
+and settlement-aware geometry. A ResizeObserver alone cannot detect translation
+of a sliding Profile pane. Retire before motion or a newer interaction layer;
+restore DOM interaction only after confirmed native removal. The drawer's
+moving Close stays React. Back's outstanding physical accessibility acceptance
+still precedes admission of this family.
 
 ### Stock Apple Pattern Mapping
 
@@ -305,15 +329,38 @@ Physical all-route/theme acceptance is separate from compilation or a single
 Chat-band comparison. Keyboard and privacy-cover theme parity remain separate
 verification items.
 
+The 2026-10-04 warm iPhone appearance rehearsal selected Light and Dark through
+Profile, verified native tab selection and status/header canvas matching on
+Chat, One, Connect and Feed, and exercised the 44-point native Back on Wallet in
+each theme. XCTest restored the original known app preference and returned to
+unlocked Chat. Pixel samples remained in memory, with no screenshots retained.
+This covers those routes and transitions, not every screen, accent, accessibility
+setting, keyboard or OS privacy presentation.
+
+The same rehearsal passed Apple's [automated accessibility audit](https://developer.apple.com/documentation/xcuiautomation/xcuiapplication/performaccessibilityaudit(for:_:))
+for the identified native Back control in both themes: contrast, hit region,
+sufficient description and traits. Issues attributed to other controls are out
+of this bounded check; unattributed issues still fail. This is not an app-wide
+audit, VoiceOver focus/reading-order proof, or Dynamic Type/reduced-transparency
+acceptance. Those release-admission gates remain open.
+
 ### Chat Body Gesture
 
-The existing history drawer owns the right-swipe action. Its transcript supplies
-the gesture surface; no window-wide touch handler or inferred button invokes
+The existing history drawer owns opening and closing. The transcript supplies
+the rightward opening gesture; the open panel and scrim supply the leftward
+closing gesture. No window-wide touch handler or inferred button invokes
 navigation. Only panel transform and scrim opacity track the finger. Resting CSS
 translation is suppressed during the pull so it cannot add a second offset.
 The conversation, document and bottom shell do not move or remount. Preview stays
 inert; committed open uses existing focus/overlay authority. Native chrome is
 isolated while dragging. Vertical scroll, horizontal tables, text selection,
 inputs, overlays, keyboard and the 28px edge-back lane keep their own gestures.
+Short or cancelled gestures settle to the controlled state; completed drags call
+its existing owner once. A horizontal row drag suppresses the trailing pointer
+click without suppressing keyboard activation or a subsequent deliberate tap.
 Cancelled/unmounted gestures remove temporary compositor hints and inline styles.
-Settlement uses the shared sheet tokens and reduced-motion preference.
+Settlement uses the shared sheet tokens and reduced-motion preference. Chromium
+and WebKit checks cover finger-position samples and stationary body/bottom-bar
+geometry at 390px and 1440px. The latest signed iPhone build also passed a real
+opening and closing pan in one unlocked Chat session on 2026-10-04. This is
+interaction evidence, not measured frame-pacing or accessibility acceptance.

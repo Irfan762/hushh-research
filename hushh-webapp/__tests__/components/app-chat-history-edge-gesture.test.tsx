@@ -44,12 +44,14 @@ function mountChat() {
   };
 }
 
-function mountGesture() {
+function mountGesture(open = false) {
   const nodes = mountChat();
   const onOpen = vi.fn();
-  const view = render(<AppChatHistoryEdgeGesture enabled onOpen={onOpen}
+  const onClose = vi.fn();
+  nodes.drawer.setAttribute("aria-hidden", String(!open));
+  const view = render(<AppChatHistoryEdgeGesture enabled open={open} onOpen={onOpen} onClose={onClose}
     surfaceRef={{ current: nodes.transcript }} drawerRef={{ current: nodes.drawer }} scrimRef={{ current: nodes.overlay }} />);
-  return { ...nodes, onOpen, view };
+  return { ...nodes, onOpen, onClose, view };
 }
 
 describe("chat history body gesture", () => {
@@ -59,6 +61,7 @@ describe("chat history body gesture", () => {
     document.documentElement.classList.remove("kb-open");
     document.body.innerHTML = "";
     vi.restoreAllMocks();
+    vi.useRealTimers();
   });
 
   it("tracks the finger with the portalled panel and visible scrim without moving the body; commits through the owner", () => {
@@ -91,7 +94,7 @@ describe("chat history body gesture", () => {
     expect(drawer.style.transform).toBe("translate3d(-320px, 0, 0)");
     view.unmount();
     expect(drawer.style.transform).toBe("");
-    const next = render(<AppChatHistoryEdgeGesture enabled onOpen={onOpen}
+    const next = render(<AppChatHistoryEdgeGesture enabled onOpen={onOpen} onClose={vi.fn()}
       surfaceRef={{ current: transcript }} drawerRef={{ current: drawer }} scrimRef={{ current: document.querySelector<HTMLElement>("[data-agent-history-scrim]") }} />);
 
     const textarea = document.createElement("textarea");
@@ -152,13 +155,14 @@ describe("chat history body gesture", () => {
     const nodes = mountChat();
     const refs = { surfaceRef: { current: nodes.transcript }, drawerRef: { current: nodes.drawer }, scrimRef: { current: nodes.overlay } };
     const onOpen = vi.fn();
-    const view = render(<AppChatHistoryEdgeGesture enabled open={false} onOpen={onOpen} {...refs} />);
+    const onClose = vi.fn();
+    const view = render(<AppChatHistoryEdgeGesture enabled open={false} onOpen={onOpen} onClose={onClose} {...refs} />);
     touch("touchstart", 80, 300, nodes.transcript);
     touch("touchmove", 200, 300, nodes.transcript);
     touch("touchend", 200, 300, nodes.transcript);
     expect(onOpen).toHaveBeenCalledOnce();
-    view.rerender(<AppChatHistoryEdgeGesture enabled open onOpen={onOpen} {...refs} />);
-    view.rerender(<AppChatHistoryEdgeGesture enabled open={false} onOpen={onOpen} {...refs} />);
+    view.rerender(<AppChatHistoryEdgeGesture enabled open onOpen={onOpen} onClose={onClose} {...refs} />);
+    view.rerender(<AppChatHistoryEdgeGesture enabled open={false} onOpen={onOpen} onClose={onClose} {...refs} />);
     expect(nodes.drawer.style.transform).toBe("translate3d(-320px, 0, 0)");
     act(() => { vi.runAllTimers(); });
     expect(nodes.drawer.style.transform).toBe("");
@@ -166,5 +170,74 @@ describe("chat history body gesture", () => {
     expect(native.dragging).toBe(false);
     view.unmount();
     vi.useRealTimers();
+  });
+
+  it("tracks closing from a chat row without selecting it or moving the page, and commits once", () => {
+    const { drawer, overlay, transcript, onOpen, onClose } = mountGesture(true);
+    native.blocked = true; // The open drawer itself owns native isolation.
+    const row = document.createElement("button");
+    drawer.append(row);
+    const select = vi.fn();
+    row.addEventListener("click", select);
+    touch("touchstart", 250, 300, row);
+    touch("touchmove", 190, 302, row);
+    expect(drawer.style.transform).toBe("translate3d(-60px, 0, 0)");
+    expect(drawer.style.transition).toBe("none");
+    expect(Number(overlay.style.opacity)).toBeCloseTo(260 / 320, 3);
+    expect(transcript.style.transform).toBe("");
+    expect(document.body.style.transform).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+    touch("touchend", 100, 303, row);
+    touch("touchend", 100, 303, row);
+    expect(onClose).toHaveBeenCalledOnce();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(drawer.style.transform).toBe("translate3d(-320px, 0, 0)");
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(select).not.toHaveBeenCalled();
+  });
+
+  it("restores an incomplete close; retains vertical scrolling, taps and nested-overlay ownership", () => {
+    vi.useFakeTimers();
+    const { drawer, overlay, onClose } = mountGesture(true);
+    const backdropClick = vi.fn();
+    overlay.addEventListener("click", backdropClick);
+    touch("touchstart", 350, 300, overlay);
+    touch("touchmove", 330, 300, overlay);
+    touch("touchend", 330, 300, overlay);
+    expect(drawer.style.transform).toBe("translate3d(0px, 0, 0)");
+    expect(onClose).not.toHaveBeenCalled();
+    overlay.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(backdropClick).not.toHaveBeenCalled();
+    act(() => { vi.runAllTimers(); });
+    expect(drawer.style.transform).toBe("");
+    expect(native.dragging).toBe(false);
+    touch("touchstart", 250, 300, drawer);
+    touch("touchmove", 245, 200, drawer);
+    touch("touchend", 100, 200, drawer);
+    expect(drawer.style.transform).toBe("");
+    const row = document.createElement("button");
+    drawer.append(row);
+    const selected = vi.fn();
+    row.addEventListener("click", selected);
+    touch("touchstart", 200, 300, row);
+    touch("touchend", 200, 300, row);
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(selected).toHaveBeenCalledOnce();
+    const modal = document.createElement("div");
+    modal.dataset.slot = "alert-dialog-content";
+    modal.dataset.state = "open";
+    document.body.append(modal);
+    touch("touchstart", 250, 300, drawer);
+    touch("touchmove", 100, 300, drawer);
+    touch("touchend", 100, 300, drawer);
+    expect(drawer.style.transform).toBe("");
+    expect(onClose).not.toHaveBeenCalled();
+    modal.remove();
+    touch("touchstart", 250, 300, drawer);
+    touch("touchmove", 100, 300, drawer);
+    touch("touchcancel", 100, 300, drawer);
+    touch("touchend", 100, 300, drawer);
+    expect(drawer.style.transform).toBe("translate3d(0px, 0, 0)");
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

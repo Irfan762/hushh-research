@@ -326,7 +326,43 @@ for (const width of [390, 1440])
     expect(result.filter).toContain("blur");
     const drawer = page.getByRole("dialog", { name: "Agent chat history" });
     await expect(drawer).toBeVisible();
-    await page.getByRole("button", { name: "Close chat history", exact: true }).click();
+    // Let the opening settle, then exercise the same owner in the other
+    // direction. WebKit and Chromium must follow the finger, not wait for up.
+    await expect(page.locator("[data-agent-history-drawer]")).not.toHaveAttribute("style", /will-change/);
+    const closing = await page.evaluate(async () => {
+      const panel = document.querySelector<HTMLElement>("[data-agent-history-drawer]")!;
+      const scrim = document.querySelector<HTMLElement>("[data-agent-history-scrim]")!;
+      const body = document.querySelector<HTMLElement>("[data-gesture-body]")!;
+      const bar = document.querySelector<HTMLElement>("[data-fixture-bottom-bar]")!;
+      const before = { body: body.getBoundingClientRect().x, bar: bar.getBoundingClientRect().x };
+      let time = 0;
+      function finger(type: string, dx: number) {
+        const event = new Event(type, { bubbles: true });
+        const point = { identifier: 1, clientX: 250 + dx, clientY: 500, target: panel };
+        Object.defineProperty(event, "touches", { value: type === "touchend" ? [] : [point] });
+        Object.defineProperty(event, "changedTouches", { value: [point] });
+        Object.defineProperty(event, "timeStamp", { value: time += 120 });
+        panel.dispatchEvent(event);
+      }
+      finger("touchstart", 0);
+      const samples = [];
+      for (const dx of [-24, -48, -72, -96, -120]) {
+        finger("touchmove", dx);
+        await new Promise(requestAnimationFrame);
+        samples.push({ offset: panel.getBoundingClientRect().x, expected: dx,
+          opacity: Number(getComputedStyle(scrim).opacity), inert: panel.inert });
+      }
+      const stationary = body.getBoundingClientRect().x === before.body && bar.getBoundingClientRect().x === before.bar;
+      finger("touchend", -120);
+      return { samples, stationary };
+    });
+    for (const sample of closing.samples) {
+      expect(sample.offset).toBeCloseTo(sample.expected, 0);
+      expect(sample.opacity).toBeGreaterThan(0);
+      expect(sample.opacity).toBeLessThan(1);
+      expect(sample.inert).toBe(false);
+    }
+    expect(closing.stationary).toBe(true);
     await expect(drawer).toBeHidden();
     await expect(page.getByRole("textbox", { name: "Chat draft" })).toBeEnabled();
   });

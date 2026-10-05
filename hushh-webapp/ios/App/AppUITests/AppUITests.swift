@@ -164,12 +164,20 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(close.waitForExistence(timeout: 10), "A body swipe did not open chat history")
         print("CHAT_CHECK_SWIPE_OPEN")
         XCTAssertEqual(webView.frame, hostFrame, "The drawer shifted the Capacitor host")
-        close.tap()
+        // Mirror the opening pan through the real panel body; a row beneath
+        // the finger must not be selected by the release click.
+        let closingStart = origin.withOffset(CGVector(dx: hostFrame.width * 0.70, dy: hostFrame.height * 0.55))
+        let closingEnd = origin.withOffset(CGVector(dx: hostFrame.width * 0.16, dy: hostFrame.height * 0.55))
+        closingStart.press(forDuration: 0.05, thenDragTo: closingEnd, withVelocity: .slow, thenHoldForDuration: 0.05)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: close)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: 10), .completed,
+                       "A reverse body swipe did not close chat history")
         XCTAssertTrue(composer.waitForExistence(timeout: 10) && composer.isHittable)
         XCTAssertEqual(composer.frame.minX, composerFrame.minX, accuracy: 1,
                        "The drawer shifted the conversation instead of overlaying it")
         XCTAssertFalse(webView.buttons["Unlock"].exists, "The gesture lost the unlocked session")
         print("CHAT_DRAWER_GESTURE_CONTINUITY body_swipe_fixed_host")
+        print("CHAT_DRAWER_BIDIRECTIONAL_CONTINUITY open_close_warm_chat")
     }
 
     func testLocalSessionVoiceBarCancelsFromItsBodyAndReturnsToChat() throws {
@@ -492,6 +500,124 @@ final class AppUITests: XCTestCase {
         XCTAssertTrue(app.webViews.buttons.matching(NSPredicate(
             format: "label BEGINSWITH %@", "Open chat history"
         )).firstMatch.exists, "Status canvas proof requires the existing Chat page")
+        assertStatusCanvasMatchesHeader()
+    }
+
+    func testLocalSessionNativeChromeFollowsAppTheme() throws {
+        guard ProcessInfo.processInfo.environment["HUSHH_RUN_NATIVE_CHROME_SMOKE"] == "true" else {
+            throw XCTSkip("Opt-in appearance proof; temporarily changes and restores the existing app preference")
+        }
+        let app = XCUIApplication()
+        guard [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state) else {
+            throw XCTSkip("Appearance proof must not cold-launch or reset the session")
+        }
+        app.activate()
+        let hosts = app.webViews.matching(identifier: "native-webview")
+        let web = hosts.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 15))
+        XCTAssertFalse(web.buttons["Unlock"].exists, "Normal vault unlock is required")
+
+        func openPreferences() {
+            let close = app.buttons["Close Profile"].firstMatch
+            if close.exists && themeOption("System").exists && themeOption("System").isHittable { return }
+            if !close.exists {
+                let profile = app.buttons["Open Profile"].firstMatch
+                XCTAssertTrue(profile.waitForExistence(timeout: 10) && profile.isHittable, "THEME_PROFILE_UNAVAILABLE")
+                profile.tap()
+            }
+            XCTAssertTrue(close.waitForExistence(timeout: 10) && close.isHittable, "THEME_PROFILE_NOT_SETTLED")
+            for _ in 0..<4 {
+                let back = app.buttons["Back in Profile"].firstMatch
+                if !back.waitForExistence(timeout: 1) || !back.isHittable { break }
+                back.tap()
+            }
+            let preferences = web.buttons.matching(NSPredicate(
+                format: "label BEGINSWITH %@", "Appearance & preferences"
+            )).firstMatch
+            XCTAssertTrue(preferences.waitForExistence(timeout: 10), "THEME_PREFERENCES_UNAVAILABLE")
+            for _ in 0..<3 {
+                if preferences.isHittable { break }
+                web.swipeUp()
+            }
+            XCTAssertTrue(preferences.isHittable, "THEME_PREFERENCES_NOT_HITTABLE")
+            preferences.tap()
+            XCTAssertTrue(themeOption("System").waitForExistence(timeout: 10), "THEME_OPTIONS_UNAVAILABLE")
+        }
+        func themeOption(_ label: String) -> XCUIElement {
+            // WebKit maps authored role=radio differently across OS releases.
+            // Match the explicit accessible name, not an assumed XCUI type.
+            web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", label)).firstMatch
+        }
+        func selected(_ label: String) -> Bool {
+            let radio = themeOption(label)
+            return radio.exists && (radio.isSelected || (radio.value as? String) == "1")
+        }
+        func selectTheme(_ label: String) {
+            let radio = themeOption(label)
+            XCTAssertTrue(radio.exists && radio.isHittable, "THEME_OPTION_NOT_HITTABLE")
+            if !selected(label) { radio.tap() }
+            let acknowledged = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in selected(label) }, object: web)
+            XCTAssertEqual(XCTWaiter.wait(for: [acknowledged], timeout: 5), .completed, "THEME_SELECTION_NOT_ACKNOWLEDGED")
+            app.buttons["Close Profile"].firstMatch.tap()
+        }
+
+        openPreferences()
+        guard let original = ["Light", "Dark", "System"].first(where: selected) else {
+            XCTFail("THEME_ORIGINAL_SELECTION_UNKNOWN")
+            return // Never change a preference whose restoration value is unknown.
+        }
+        addTeardownBlock {
+            // XCTest teardown also runs after fail-fast assertions. No sign-out,
+            // new app process, storage injection or OS appearance changes.
+            openPreferences()
+            selectTheme(original)
+            self.perfTapNav(app, label: "Chat")
+            XCTAssertFalse(web.buttons["Unlock"].exists, "Theme restoration lost the session")
+        }
+        app.buttons["Close Profile"].firstMatch.tap()
+        for theme in ["Light", "Dark"] {
+            openPreferences()
+            selectTheme(theme)
+            for destination in ["Chat", "One", "Connect", "Feed"] {
+                perfTapNav(app, label: destination)
+                let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
+                let selectedTab = bar.buttons[destination]
+                let settled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: selectedTab)
+                XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 10), .completed, "THEME_ROUTE_NOT_SETTLED")
+                XCTAssertFalse(web.buttons["Unlock"].exists, "Theme route lost the unlocked session")
+                XCTAssertEqual(hosts.count, 1)
+                assertStatusCanvasMatchesHeader(expectedDark: theme == "Dark")
+                print("NATIVE_THEME_ROUTE theme=\(theme) tab=\(destination) matching=true")
+            }
+            perfTapNav(app, label: "One")
+            let wallet = web.links["Open Wallet"].firstMatch
+            XCTAssertTrue(wallet.waitForExistence(timeout: 10))
+            for _ in 0..<3 {
+                if wallet.isHittable { break }
+                web.swipeUp()
+            }
+            XCTAssertTrue(wallet.isHittable)
+            wallet.tap()
+            let back = app.buttons["top-shell-back"].firstMatch
+            XCTAssertTrue(back.waitForExistence(timeout: 10) && back.isHittable, "THEME_NATIVE_BACK_UNAVAILABLE")
+            XCTAssertEqual(back.frame.width, 44, accuracy: 1)
+            XCTAssertEqual(back.frame.height, 44, accuracy: 1)
+            assertStatusCanvasMatchesHeader(expectedDark: theme == "Dark")
+            // Bounded native-control audit, not an app-wide accessibility pass.
+            // Ignore only issues explicitly attributed to other controls;
+            // unattributed issues remain failures rather than disappearing.
+            try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .sufficientElementDescription, .trait]) { issue in
+                guard let element = issue.element else { return false }
+                return element.identifier != "top-shell-back"
+            }
+            print("NATIVE_BACK_ACCESSIBILITY theme=\(theme) contrast_hit_description_traits=true")
+            back.tap()
+            XCTAssertTrue(wallet.waitForExistence(timeout: 10), "THEME_BACK_RETURN_FAILED")
+            print("NATIVE_THEME_BACK theme=\(theme) warm_return=true")
+        }
+    }
+
+    private func assertStatusCanvasMatchesHeader(expectedDark: Bool? = nil) {
         let status = XCUIApplication(bundleIdentifier: "com.apple.springboard").statusBars.firstMatch
         XCTAssertTrue(status.waitForExistence(timeout: 5), "System status region unavailable")
         // Keep pixels in memory only: no attachment, snapshot or protected
@@ -525,6 +651,10 @@ final class AppUITests: XCTestCase {
         let matching = zip(top, header).allSatisfy { abs($0 - $1) < 0.18 }
         print("STATUS_CANVAS matching=\(matching)")
         XCTAssertTrue(matching, "System status canvas must blend with the adjacent app header")
+        if let expectedDark {
+            let brightness = header.reduce(0, +) / 3
+            XCTAssertTrue(expectedDark ? brightness < 0.35 : brightness > 0.7, "STATUS_THEME_NOT_APPLIED")
+        }
     }
 
     func testLocalSessionMemorySwipeStopsOnAdd() throws {
