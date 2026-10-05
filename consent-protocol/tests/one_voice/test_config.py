@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from hushh_mcp.one_voice.config import (
+    MAIL_SCHEDULED_DRAIN_ENABLED_ENV,
     ONE_VOICE_LIVE_ENABLED_ENV,
     ONE_VOICE_MAIL_DRAFTS_ENABLED_ENV,
     ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED_ENV,
@@ -16,6 +17,7 @@ from hushh_mcp.one_voice.config import (
     live_voice_enabled,
     voice_mail_drafts_enabled,
     voice_mail_schedule_send_enabled,
+    voice_mail_scheduled_drain_enabled,
 )
 
 
@@ -77,13 +79,19 @@ def test_limits_must_be_positive_integers(monkeypatch):
             "mail_schedule_send_enabled",
         ),
         (ONE_VOICE_MAIL_DRAFTS_ENABLED_ENV, voice_mail_drafts_enabled, "mail_drafts_enabled"),
+        (
+            MAIL_SCHEDULED_DRAIN_ENABLED_ENV,
+            voice_mail_scheduled_drain_enabled,
+            "mail_scheduled_drain_enabled",
+        ),
     ],
 )
 def test_new_mail_capabilities_are_off_until_explicitly_enabled(
     monkeypatch, env, predicate, method
 ):
-    """Scheduled sends and draft sends are new delivery paths: unset is OFF, and
-    the facade the tools consult reads the same switch at call time."""
+    """Scheduled sends, the drain that fires them, and draft sends are new
+    delivery paths: unset is OFF, and the facade the tools consult reads the
+    same switch at call time."""
     admission = OneVoiceMailAdmission()
     monkeypatch.delenv(env, raising=False)
     assert predicate() is False

@@ -53,6 +53,7 @@ from hushh_mcp.services.google_drive_blob_attachment_service import (
     DriveBlobDescriptor,
     GoogleDriveBlobAttachmentService,
 )
+from hushh_mcp.services.owner_time import SCHEDULE_HORIZON_DAYS, SCHEDULE_MIN_LEAD_SECONDS
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +71,14 @@ _CRLF_RE = re.compile(r"[\r\n]")
 _SCHEDULE_WINDOW = timedelta(hours=24)
 _SCHEDULE_PAYLOAD_INFO = b"gmail-owner-schedule-payload-v1"
 _SCHEDULE_PAYLOAD_PREFIX = "sp1."
-_SCHEDULE_PAYLOAD_KEYS = frozenset({"to", "subject", "body", "recipient_user_id"})
+_SCHEDULE_PAYLOAD_KEYS = frozenset({"to", "subject", "body", "recipient_user_id", "sender_sub"})
 _SCHEDULE_SEALED_MAX_CHARS = 256 * 1024
 _SCHEDULE_IDEMPOTENCY_PREFIX = "one-voice-schedule-mail-v1"
 _SCHEDULE_DISPLAY_MAX_CHARS = 120
 _SCHEDULED_LIST_MAX = 25
+# A cancel renames its row's idempotency key, so the same email to the same
+# person for the same time can be scheduled again once it was cancelled.
+_SCHEDULE_CANCELLED_KEY_MARK = ":cancelled:"
 
 _EMAIL_AGENT_INTRO_PHRASES = (
     "explain features of the email agent",
@@ -379,13 +383,20 @@ def _safe_attachment_descriptor(
 
 
 def _schedule_payload_fields(payload: Any) -> dict[str, str]:
-    """The exact sealed shape: four string fields and nothing else."""
+    """The exact sealed shape: five string fields and nothing else.
+
+    ``sender_sub`` is the Google account the owner approved the send from. A
+    send fires up to a month later, and only while that account is still the
+    one connected.
+    """
     if not isinstance(payload, dict) or set(payload) != _SCHEDULE_PAYLOAD_KEYS:
         raise ValueError("scheduled payload shape is invalid")
     if any(not isinstance(payload[key], str) for key in _SCHEDULE_PAYLOAD_KEYS):
         raise ValueError("scheduled payload fields must be text")
     if not payload["to"].strip() or not payload["recipient_user_id"].strip():
         raise ValueError("scheduled payload needs a recipient")
+    if not payload["sender_sub"].strip():
+        raise ValueError("scheduled payload needs a sending account")
     return {key: payload[key] for key in sorted(_SCHEDULE_PAYLOAD_KEYS)}
 
 
@@ -1169,23 +1180,39 @@ class GmailDeliveryService:
             "body": str(payload.get("body") or ""),
         }
 
+    async def current_sender_sub(self, *, user_id: str) -> str | None:
+        """The Google account id of the Gmail connection that would send now.
+
+        None when no usable connection exists. A scheduled send records this
+        when the owner approves it and fires only while it is unchanged: a
+        reconnect to another Google account must not send the owner's words
+        from an address they never approved.
+        """
+        user_id = _text(user_id)
+        if not user_id:
+            return None
+        row = await asyncio.to_thread(self.gmail_service._fetch_connection_row, user_id=user_id)
+        if not row or row.get("status") != "connected" or row.get("revoked"):
+            return None
+        return _text(row.get("google_sub")) or None
+
     async def schedule_send(
         self,
         *,
         user_id: str,
         payload: dict[str, Any],
         send_at: datetime,
-        email_binding: str,
         recipient_display: str,
     ) -> dict[str, Any]:
         """Store one confirmed send to fire at ``send_at``, idempotently.
 
         ``payload`` carries the sealed fields (to, subject, body,
-        recipient_user_id). The row stores only ciphertext, HMACs and two
-        display labels; the envelope HMAC is the one ``prepare`` computes for an
-        immediate send of the same draft, so ``execute`` verifies it unchanged.
-        The time and the recipient binding live in the idempotency key instead:
-        the same draft at the same time to the same person is one row.
+        recipient_user_id, sender_sub). The row stores only ciphertext, HMACs
+        and two display labels; the envelope HMAC is the one ``prepare``
+        computes for an immediate send of the same draft, so ``execute``
+        verifies it unchanged. The time and the recipient live in the
+        idempotency key instead: the same draft to the same person at the same
+        time is one row, whichever conversation confirmed it.
 
         Returns ``{"action_id", "state", "send_at", "created"}``. A second
         call for the same send returns the existing row with ``created`` False.
@@ -1201,6 +1228,12 @@ class GmailDeliveryService:
         if not isinstance(send_at, datetime) or send_at.tzinfo is None:
             raise GmailDeliveryError("INVALID_SEND_AT", "Choose a valid send time.")
         send_at = send_at.astimezone(timezone.utc)
+        # The voice tool validated this time already; the ledger does not rely
+        # on that. A time the drain could not honour is never stored.
+        now = _utcnow()
+        too_soon = send_at <= now + timedelta(seconds=SCHEDULE_MIN_LEAD_SECONDS)
+        if too_soon or send_at > now + timedelta(days=SCHEDULE_HORIZON_DAYS):
+            raise GmailDeliveryError("INVALID_SEND_AT", "Choose a valid send time.")
         try:
             fields = _schedule_payload_fields(payload)
         except ValueError:
@@ -1212,15 +1245,13 @@ class GmailDeliveryService:
             raise GmailDeliveryError(
                 "INVALID_RECIPIENTS", "A scheduled email goes to exactly one person."
             )
-        binding = _text(email_binding)
-        if not binding:
-            raise GmailDeliveryError("INVALID_IDEMPOTENCY_KEY", "Use a valid confirmation key.")
         recipient_user_id = fields["recipient_user_id"]
         sealed_fields = {
             "to": draft.to[0],
             "subject": draft.subject,
             "body": draft.body,
             "recipient_user_id": recipient_user_id,
+            "sender_sub": fields["sender_sub"],
         }
         # Exactly prepare()'s envelope for this draft: no schedule fields in it.
         envelope_hmac = self._envelope_hmac(draft)
@@ -1231,7 +1262,6 @@ class GmailDeliveryService:
                     envelope_hmac,
                     send_at.isoformat(),
                     recipient_user_id,
-                    binding,
                 )
             )
         )
@@ -1317,7 +1347,9 @@ class GmailDeliveryService:
         user_id = _text(user_id)
         if not user_id:
             return []
-        bounded = max(1, min(int(limit), _SCHEDULED_LIST_MAX))
+        # One past the largest page: a caller asking for a page plus one can
+        # tell a full list from a truncated one.
+        bounded = max(1, min(int(limit), _SCHEDULED_LIST_MAX + 1))
         pool = await get_pool()
         async with pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1357,6 +1389,9 @@ class GmailDeliveryService:
         A compare-and-set on ``state = 'scheduled'``: the drain arms a due row
         under the same row lock, so exactly one of a cancel and a send wins.
         The sealed envelope leaves with the cancel; nothing can fire it now.
+        The same write renames the row's idempotency key (still unique: it ends
+        in the action id), so scheduling the same email for the same time again
+        stores a new send instead of answering with this cancelled one.
         Returns ``{"cancelled": bool, "state": str | None, "sent_at": ...}``
         where ``state`` is the row's state after this call (None when absent).
         """
@@ -1368,12 +1403,16 @@ class GmailDeliveryService:
             flipped = await conn.fetchrow(
                 """
                 UPDATE gmail_owner_send_actions
-                SET state = 'cancelled', payload_sealed = NULL, updated_at = NOW()
+                SET state = 'cancelled',
+                    payload_sealed = NULL,
+                    idempotency_hmac = idempotency_hmac || $3 || action_id,
+                    updated_at = NOW()
                 WHERE action_id = $1 AND user_id = $2 AND state = 'scheduled'
                 RETURNING action_id, state, sent_at
                 """,
                 action_id,
                 user_id,
+                _SCHEDULE_CANCELLED_KEY_MARK,
             )
             if flipped is not None:
                 return {"cancelled": True, "state": "cancelled", "sent_at": None}

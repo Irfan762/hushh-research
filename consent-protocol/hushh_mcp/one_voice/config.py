@@ -25,6 +25,7 @@ ONE_VOICE_MAIL_NARRATION_ENABLED_ENV = "ONE_VOICE_MAIL_NARRATION_ENABLED"
 ONE_VOICE_MAIL_REPLY_ENABLED_ENV = "ONE_VOICE_MAIL_REPLY_ENABLED"
 ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED_ENV = "ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED"
 ONE_VOICE_MAIL_DRAFTS_ENABLED_ENV = "ONE_VOICE_MAIL_DRAFTS_ENABLED"
+MAIL_SCHEDULED_DRAIN_ENABLED_ENV = "MAIL_SCHEDULED_DRAIN_ENABLED"
 
 PROTOCOL_VERSION: Final = "one-voice-v1"
 
@@ -174,7 +175,8 @@ def voice_mail_schedule_send_enabled() -> bool:
 
     Unset means OFF: a scheduled send is new capability, and it is the first
     voice path whose delivery happens with no device present. It is also the kill
-    switch for scheduling and for listing or cancelling scheduled mail.
+    switch for scheduling. Listing and cancelling stay open while either this or
+    the drain switch is on, so a send that could still fire can always be stopped.
     """
     return _clean(ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED_ENV).lower() in _TRUE_VALUES
 
@@ -186,6 +188,16 @@ def voice_mail_drafts_enabled() -> bool:
     kill switch for the drafts list, the draft open route and draft sends.
     """
     return _clean(ONE_VOICE_MAIL_DRAFTS_ENABLED_ENV).lower() in _TRUE_VALUES
+
+
+def voice_mail_scheduled_drain_enabled() -> bool:
+    """Whether the server drain that fires scheduled sends is switched on.
+
+    Unset means OFF. The voice tools read it too: with the drain off nothing
+    would ever send a scheduled email, so no new one is accepted, while the
+    owner can still list and cancel what is waiting and could fire later.
+    """
+    return _clean(MAIL_SCHEDULED_DRAIN_ENABLED_ENV).lower() in _TRUE_VALUES
 
 
 class OneVoiceMailAdmission:
@@ -210,3 +222,6 @@ class OneVoiceMailAdmission:
 
     def mail_drafts_enabled(self) -> bool:
         return voice_mail_drafts_enabled()
+
+    def mail_scheduled_drain_enabled(self) -> bool:
+        return voice_mail_scheduled_drain_enabled()

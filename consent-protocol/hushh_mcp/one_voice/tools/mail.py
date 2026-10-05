@@ -1247,8 +1247,30 @@ def _schedule_off() -> Rejected:
 
 
 def _schedule_gates(admission: OneVoiceMailAdmission) -> Rejected | None:
-    """Both switches, checked when the card is prepared and again on the yes."""
+    """Every switch a new scheduled send needs, at the card and again on the yes.
+
+    The drain's switch is one of them: with the drain off nothing would ever
+    send the email, so accepting it would be a promise nobody keeps.
+    """
     if not admission.mail_schedule_send_enabled():
+        return _schedule_off()
+    if not admission.mail_reads_enabled():
+        return _unavailable("voice_mail_reads_disabled")
+    if not admission.mail_scheduled_drain_enabled():
+        return Rejected(
+            reason_code="voice_mail_drain_disabled",
+            spoken_facts=["Scheduling isn't available right now."],
+        )
+    return None
+
+
+def _scheduled_list_gates(admission: OneVoiceMailAdmission) -> Rejected | None:
+    """Listing and cancelling stay open while a waiting send could still fire.
+
+    Either switch is enough: with scheduling off the drain may still send what
+    was stored earlier, and the owner must always be able to see and stop it.
+    """
+    if not (admission.mail_schedule_send_enabled() or admission.mail_scheduled_drain_enabled()):
         return _schedule_off()
     if not admission.mail_reads_enabled():
         return _unavailable("voice_mail_reads_disabled")
@@ -1272,6 +1294,22 @@ async def _schedule_send_refusal(ctx: ToolContext) -> Rejected | None:
 
 def _schedule_delivery(ctx: ToolContext) -> Any:
     return ctx.service(MAIL_DELIVERY_SERVICE, get_gmail_delivery_service)
+
+
+def _sender_binding(ctx: ToolContext, sender_sub: str) -> str:
+    """Pins the sending Google account in the card row without retaining its id."""
+    secret = get_core_security_settings().app_signing_key
+    if not secret:
+        raise ValueError("voice mail binding key is unavailable")
+    material = f"one-voice-schedule-sender-v1:{ctx.user_id}:{sender_sub}"
+    return hmac.new(secret.encode("utf-8"), material.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _schedule_not_connected() -> Rejected:
+    return Rejected(
+        reason_code="mail_connect_required",
+        spoken_facts=["Mail isn't connected, so I can't schedule this."],
+    )
 
 
 def _when(send_at: datetime, zone: str, now: datetime) -> str:
@@ -1364,14 +1402,20 @@ async def _prepare_schedule_mail(
     not_ready = await _schedule_send_refusal(ctx)
     if not_ready is not None:
         return not_ready
+    # The account it would send from today. The send fires much later, so the
+    # yes approves this account and the drain sends only from it.
+    sender_sub = await _schedule_delivery(ctx).current_sender_sub(user_id=ctx.user_id)
+    if not sender_sub:
+        return _schedule_not_connected()
     return Prepared(
         summary=f"send this to {person.display_name} {_when(send_at, zone, now)}",
-        # An HMAC pins the confirmed recipient without retaining their address
-        # in the long-lived pending-action row; the time is the server's own
-        # reading of the argument, compared again on the yes.
+        # HMACs pin the confirmed recipient and the sending account without
+        # retaining either in the long-lived pending-action row; the time is
+        # the server's own reading of the argument, compared again on the yes.
         snapshot={
             "recipient_user_id": args.recipient.user_id,
             "email_binding": _email_binding(ctx, args.recipient.user_id, to_email),
+            "sender_binding": _sender_binding(ctx, sender_sub),
             "send_at_iso": send_at.isoformat(),
             "send_at_label": format_schedule_echo(send_at, zone, now=now),
             "owner_zone": zone,
@@ -1430,17 +1474,30 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
     not_ready = await _schedule_send_refusal(ctx)
     if not_ready is not None:
         return not_ready
+    delivery = _schedule_delivery(ctx)
+    # The account the card was approved for must still be the one connected:
+    # a reconnect to another Google account is a different sender.
+    sender_sub = await delivery.current_sender_sub(user_id=ctx.user_id)
+    if not sender_sub:
+        return _schedule_not_connected()
+    if not hmac.compare_digest(
+        str(prepared.get("sender_binding") or ""), _sender_binding(ctx, sender_sub)
+    ):
+        return Rejected(
+            reason_code="sender_account_changed",
+            spoken_facts=["Your Gmail account changed, so I didn't schedule it."],
+        )
     try:
-        stored = await _schedule_delivery(ctx).schedule_send(
+        stored = await delivery.schedule_send(
             user_id=ctx.user_id,
             payload={
                 "to": to_email,
                 "subject": subject,
                 "body": args.message,
                 "recipient_user_id": args.recipient.user_id,
+                "sender_sub": sender_sub,
             },
             send_at=send_at,
-            email_binding=binding,
             recipient_display=person.display_name,
         )
     except GmailDeliveryError as exc:
@@ -1449,6 +1506,14 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
             return Rejected(
                 reason_code="schedule_seal_failed",
                 spoken_facts=["I couldn't prepare that securely. Nothing was scheduled."],
+            )
+        if exc.code == "INVALID_SEND_AT":
+            # The ledger's own clock disagreed with the card's: the time slipped.
+            return Rejected(
+                reason_code="schedule_time_passed",
+                spoken_facts=[
+                    "That time passed while we were talking. Tell me a new time and I'll schedule it."
+                ],
             )
         return Rejected(
             reason_code="schedule_unavailable",
@@ -1479,12 +1544,21 @@ async def _schedule_mail(ctx: ToolContext, args: ScheduleMailInput) -> ToolResul
             spoken_facts=[fact],
         )
     # The same draft, person and time was scheduled before and has moved on:
-    # it is not scheduled again, and the reason is said plainly.
+    # it is not scheduled again, and the reason is said plainly. A voice cancel
+    # frees its key, so a row still holding one was cancelled by the server
+    # (the recipient was no longer connected), not by the owner.
+    if state in {"prepared", "sending"}:
+        return Rejected(
+            reason_code="schedule_in_flight",
+            spoken_facts=[
+                "That same email is being sent right now, so I didn't schedule it again."
+            ],
+        )
     if state == "cancelled":
         return Rejected(
             reason_code="schedule_previously_cancelled",
             spoken_facts=[
-                "You cancelled that same email for that time earlier, so I didn't schedule "
+                "That same email for that time was cancelled earlier, so I didn't schedule "
                 "it again. Give me a different time if you still want it sent."
             ],
         )
@@ -1531,11 +1605,12 @@ class ListScheduledMailResult(ToolResult):
 
 async def _list_scheduled_mail(ctx: ToolContext, args: ListScheduledMailInput) -> ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
-    refused = _schedule_gates(admission)
+    refused = _scheduled_list_gates(admission)
     if refused is not None:
         return refused
+    # One past the page: a full page and a truncated one must sound different.
     rows = await _schedule_delivery(ctx).list_scheduled_sends(
-        user_id=ctx.user_id, limit=min(args.limit + 1, 25)
+        user_id=ctx.user_id, limit=args.limit + 1
     )
     more = len(rows) > args.limit
     rows = rows[: args.limit]
@@ -1566,8 +1641,18 @@ async def _list_scheduled_mail(ctx: ToolContext, args: ListScheduledMailInput) -
         ctx.entities.offered_scheduled_mail = None
         offer_revision = None
     count = len(items)
+    # A count is spoken as a total only when it is one: with rows left past
+    # the page it is "the next n", never "you have n".
     if count == 0:
         facts = ["You have no scheduled emails."]
+    elif more:
+        when = _when(times[0], ctx.timezone, now)
+        facts = [
+            f"Here's your next scheduled email; there are more. It goes out {when}."
+            if count == 1
+            else f"Here are your next {count} scheduled emails; there are more. "
+            f"The next one goes out {when}."
+        ]
     else:
         when = _when(times[0], ctx.timezone, now)
         facts = [
@@ -1575,8 +1660,6 @@ async def _list_scheduled_mail(ctx: ToolContext, args: ListScheduledMailInput) -
             if count == 1
             else f"You have {count} scheduled emails. The next one goes out {when}."
         ]
-        if more:
-            facts.append(f"There are more; I listed the soonest {count}.")
     return ListScheduledMailResult(
         status="empty" if count == 0 else "ok",
         items=items,
@@ -1701,7 +1784,7 @@ async def _prepare_cancel_scheduled_mail(
     ctx: ToolContext, args: CancelScheduledMailInput
 ) -> Prepared | ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
-    refused = _schedule_gates(admission)
+    refused = _scheduled_list_gates(admission)
     if refused is not None:
         return refused
     resolved = _resolve_scheduled_target(ctx, args.ordinal)
@@ -1733,7 +1816,7 @@ async def _prepare_cancel_scheduled_mail(
 
 async def _cancel_scheduled_mail(ctx: ToolContext, args: CancelScheduledMailInput) -> ToolResult:
     admission = ctx.service(MAIL_ADMISSION_SERVICE, OneVoiceMailAdmission)
-    refused = _schedule_gates(admission)
+    refused = _scheduled_list_gates(admission)
     if refused is not None:
         return refused
     prepared = ctx.prepared or {}

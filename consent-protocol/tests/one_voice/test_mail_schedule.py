@@ -49,11 +49,12 @@ class Clock:
 
 
 class ScheduleAdmission(OneVoiceMailAdmission):
-    """Both switches, settable mid-test: a kill switch can flip under a waiting card."""
+    """Every switch, settable mid-test: a kill switch can flip under a waiting card."""
 
     def __init__(self) -> None:
         self.schedule = True
         self.reads = True
+        self.drain = True
 
     def mail_reads_enabled(self) -> bool:
         return self.reads
@@ -61,15 +62,26 @@ class ScheduleAdmission(OneVoiceMailAdmission):
     def mail_schedule_send_enabled(self) -> bool:
         return self.schedule
 
+    def mail_scheduled_drain_enabled(self) -> bool:
+        return self.drain
+
+
+SENDER_SUB = "google-sub-owner"
+
 
 class GmailDouble:
     def __init__(self) -> None:
         self.send_error: GmailApiError | None = None
+        self.sender_sub = SENDER_SUB
 
     async def assert_send_ready(self, *, user_id: str) -> None:
         assert user_id == OWNER
         if self.send_error is not None:
             raise self.send_error
+
+    def _fetch_connection_row(self, *, user_id: str) -> dict[str, Any] | None:
+        assert user_id == OWNER
+        return {"status": "connected", "revoked": False, "google_sub": self.sender_sub}
 
 
 @pytest.fixture
@@ -93,11 +105,13 @@ def h(monkeypatch):
     doubles = SimpleNamespace(
         clock=Clock(), admission=ScheduleAdmission(), gmail=GmailDouble(), ledger=ledger
     )
+    # The ledger checks the time against its own clock; it reads the same one.
+    monkeypatch.setattr(delivery_module, "_utcnow", doubles.clock)
     ctx.services.update(
         {
             mail.MAIL_CLOCK_SERVICE: doubles.clock,
             mail.MAIL_ADMISSION_SERVICE: doubles.admission,
-            mail.MAIL_DELIVERY_SERVICE: GmailDeliveryService(),
+            mail.MAIL_DELIVERY_SERVICE: GmailDeliveryService(gmail_service=doubles.gmail),
             "gmail": doubles.gmail,
         }
     )
@@ -162,10 +176,11 @@ async def test_a_confirmed_schedule_stores_one_sealed_row_and_says_the_owner_loc
     snapshot = row.args[PREPARED_KEY]
     assert snapshot["send_at_iso"] == SEND_AT_UTC.isoformat()
     assert snapshot["send_at_label"] == "Tomorrow, 9:00 AM IST"
-    # Nothing is stored before the yes, and the card row holds no plaintext.
+    # Nothing is stored before the yes, and the card row holds no plaintext,
+    # not even the sending account's id (only an HMAC of it).
     assert h.ledger.rows == {}
     for blob in _private(row.args, row.public(), proposed.result.model_public()):
-        for secret in (SUBJECT, MESSAGE, ADDRESS):
+        for secret in (SUBJECT, MESSAGE, ADDRESS, SENDER_SUB):
             assert secret not in blob
 
     confirmed = await _confirm(h, row.id)
@@ -189,6 +204,7 @@ async def test_a_confirmed_schedule_stores_one_sealed_row_and_says_the_owner_loc
         "subject": SUBJECT,
         "body": MESSAGE,
         "recipient_user_id": AYESHA,
+        "sender_sub": SENDER_SUB,
     }
     # The model, the narration and the retained ledger row never carry the mail.
     for blob in _private(
@@ -256,6 +272,20 @@ async def test_recipient_drift_between_card_and_yes_schedules_nothing(h, change)
     assert h.ledger.rows == {}
 
 
+async def test_a_reconnect_to_another_gmail_account_before_the_yes_schedules_nothing(h):
+    """The yes approves the account the card was shown for. A send that fires
+    weeks later from a different Google account is a different sender."""
+    await _confirm_ayesha(h)
+    proposed = await _propose(h)
+    h.gmail.sender_sub = "google-sub-someone-else"
+
+    confirmed = await _confirm(h, proposed.pending.id)
+
+    assert confirmed.result.reason_code == "sender_account_changed"
+    assert confirmed.result.spoken_facts == ["Your Gmail account changed, so I didn't schedule it."]
+    assert h.ledger.rows == {}
+
+
 async def test_a_time_that_passes_while_the_card_waits_is_not_scheduled(h):
     await _confirm_ayesha(h)
     proposed = await _propose(h, send_at="2026-10-05T19:40:00+05:30")
@@ -274,6 +304,8 @@ async def test_a_time_that_passes_while_the_card_waits_is_not_scheduled(h):
 async def test_the_same_schedule_confirmed_again_stores_one_row(h):
     await _confirm_ayesha(h)
     first = await _scheduled(h)
+    # Asked again in a later conversation: still the same send, not a second one.
+    h.ctx.conversation_id = "conv-later"
 
     again = await _scheduled(h)
 
@@ -346,6 +378,49 @@ async def test_the_kill_switch_refuses_honestly_at_the_card_and_on_the_yes(h):
     h.admission.reads = False
     withdrawn = await h.executor.call(h.ctx, "list_scheduled_mail", {})
     assert withdrawn.result.reason_code == "voice_mail_reads_disabled"
+
+
+async def test_with_the_drain_off_nothing_new_is_scheduled_at_the_card_or_on_the_yes(h):
+    """Nothing would ever send it, so it is not accepted."""
+    await _confirm_ayesha(h)
+    h.admission.drain = False
+    refused = await _propose(h)
+    assert (refused.result.reason_code, refused.pending) == ("voice_mail_drain_disabled", None)
+    assert refused.result.spoken_facts == ["Scheduling isn't available right now."]
+
+    h.admission.drain = True
+    proposed = await _propose(h)
+    h.admission.drain = False
+    confirmed = await _confirm(h, proposed.pending.id)
+    assert confirmed.result.reason_code == "voice_mail_drain_disabled"
+    assert h.ledger.rows == {}
+
+
+@pytest.mark.parametrize(
+    ("schedule", "drain", "open_"),
+    [(False, True, True), (True, False, True), (False, False, False)],
+)
+async def test_waiting_mail_stays_visible_and_cancellable_while_it_could_still_fire(
+    h, schedule, drain, open_
+):
+    """Scheduling switched off must not hide a send the drain may still fire."""
+    first, _second = await _listed(h)
+    h.admission.schedule, h.admission.drain = schedule, drain
+
+    listed = await h.executor.call(h.ctx, "list_scheduled_mail", {})
+    proposed = await _cancel(h, 1)
+
+    if not open_:
+        assert listed.result.reason_code == "voice_mail_schedule_disabled"
+        assert (proposed.result.reason_code, proposed.pending) == (
+            "voice_mail_schedule_disabled",
+            None,
+        )
+        return
+    assert listed.result.status == "ok"
+    confirmed = await _confirm(h, proposed.pending.id)
+    assert confirmed.result.status == "cancelled"
+    assert h.ledger.rows[first]["state"] == "cancelled"
 
 
 def test_schedule_tools_bind_to_the_gateway_with_spoken_confirmation():
@@ -435,6 +510,29 @@ async def test_an_empty_list_says_so_and_offers_nothing(h):
     assert h.ctx.entities.offered_scheduled_mail is None
 
 
+@pytest.mark.parametrize("limit", [1, 25])
+async def test_a_short_page_never_speaks_its_length_as_the_total(h, limit):
+    """Three waiting, one shown: "you have 1" would be false. The largest page
+    is checked too, where the old lookahead was clamped away."""
+    await _confirm_ayesha(h)
+    for day in range(6, 6 + max(3, limit + 1)):
+        await _scheduled(h, send_at=f"2026-10-{day:02d}T09:00:00+05:30")
+
+    listed = await h.executor.call(h.ctx, "list_scheduled_mail", {"limit": limit})
+
+    assert listed.result.coverage["returned"] == limit
+    assert len(h.ctx.entities.offered_scheduled_mail.action_ids) == limit
+    if limit == 1:
+        assert listed.result.spoken_facts == [
+            "Here's your next scheduled email; there are more. It goes out tomorrow at 9:00 AM IST."
+        ]
+    else:
+        assert listed.result.spoken_facts == [
+            "Here are your next 25 scheduled emails; there are more. "
+            "The next one goes out tomorrow at 9:00 AM IST."
+        ]
+
+
 # -- cancel_scheduled_mail -----------------------------------------------------------------
 
 
@@ -469,6 +567,23 @@ async def test_cancel_names_the_send_and_flips_only_that_row(h):
     again = await _cancel(h, 2)
     assert (again.result.status, again.pending) == ("already_cancelled", None)
     assert again.result.spoken_facts == ["That's already cancelled."]
+
+
+async def test_cancel_then_schedule_the_same_email_for_the_same_time_again(h):
+    """Cancel it, then "actually, schedule it again": a new send, said as one."""
+    first, _second = await _listed(h)
+    proposed = await _cancel(h, 1)
+    assert (await _confirm(h, proposed.pending.id)).result.status == "cancelled"
+
+    again = await _scheduled(h)
+
+    assert again.result.status == "scheduled"
+    assert again.result.spoken_facts == [
+        "Scheduled to send to Ayesha Sharma tomorrow at 9:00 AM IST."
+    ]
+    assert again.result.action_id != first
+    assert h.ledger.rows[again.result.action_id]["state"] == "scheduled"
+    assert h.ledger.rows[first]["state"] == "cancelled"
 
 
 @pytest.mark.parametrize(

@@ -1159,7 +1159,9 @@ _SCHEDULE_PAYLOAD = {
     "subject": "Diwali plans",
     "body": "Private scheduled body: see you on Saturday.",
     "recipient_user_id": "u-priya",
+    "sender_sub": "google-sub-owner",
 }
+_SCHEDULE_NOW = datetime(2026, 10, 5, 14, 6, 55, tzinfo=timezone.utc)
 _SEND_AT = datetime(2026, 10, 6, 3, 30, tzinfo=timezone.utc)
 
 
@@ -1236,10 +1238,14 @@ class ScheduleLedgerConn(_PrepareConn):
             }
             return {"action_id": action_id, "state": "scheduled", "send_at": send_at}
         if "SET state = 'cancelled'" in query:
-            row = self._owned(*args)
+            row = self._owned(args[0], args[1])
             if row is None or row["state"] != "scheduled":
                 return None
             row.update(state="cancelled", payload_sealed=None)
+            # Renamed only when the SQL renames it, so a cancel that keeps its
+            # key keeps blocking the same schedule here exactly as in Postgres.
+            if "idempotency_hmac = idempotency_hmac || $3 || action_id" in query:
+                row["idempotency_hmac"] = f"{row['idempotency_hmac']}{args[2]}{row['action_id']}"
             return {"action_id": row["action_id"], "state": "cancelled", "sent_at": None}
         if "SELECT state, sent_at" in query:
             return self._owned(*args)
@@ -1251,6 +1257,7 @@ def _schedule_service(monkeypatch, conn):
     monkeypatch.setattr(
         module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(conn))
     )
+    monkeypatch.setattr(module, "_utcnow", lambda: _SCHEDULE_NOW)
     return GmailDeliveryService(gmail_service=_Gmail())
 
 
@@ -1259,7 +1266,6 @@ async def _schedule(service, **overrides):
         "user_id": "owner",
         "payload": dict(_SCHEDULE_PAYLOAD),
         "send_at": _SEND_AT,
-        "email_binding": "binding-" + "b" * 56,
         "recipient_display": "Priya Sharma",
     }
     kwargs.update(overrides)
@@ -1287,11 +1293,55 @@ def test_schedule_payload_opens_only_for_its_owner_and_action(monkeypatch):
     ):
         with pytest.raises(ValueError, match="scheduled payload is unavailable"):
             service.open_schedule_payload(user_id=owner, action_id=action, sealed=value)
-    # Only the exact four-field shape seals.
-    with pytest.raises(ValueError):
-        service.seal_schedule_payload(
-            user_id="owner", action_id="action-1", payload={**_SCHEDULE_PAYLOAD, "cc": "x"}
-        )
+    # Only the exact five-field shape seals: never without the sending account.
+    unbound = {key: value for key, value in _SCHEDULE_PAYLOAD.items() if key != "sender_sub"}
+    for payload in (
+        {**_SCHEDULE_PAYLOAD, "cc": "x"},
+        unbound,
+        {**_SCHEDULE_PAYLOAD, "sender_sub": " "},
+    ):
+        with pytest.raises(ValueError):
+            service.seal_schedule_payload(user_id="owner", action_id="action-1", payload=payload)
+
+
+@pytest.mark.asyncio
+async def test_current_sender_sub_names_only_a_usable_connection(monkeypatch):
+    """The account a scheduled send is bound to, read from the connection row."""
+    row = {"status": "connected", "revoked": False, "google_sub": "google-sub-owner"}
+    gmail = _Gmail()
+    gmail._fetch_connection_row = lambda *, user_id: row if user_id == "owner" else None
+    service = GmailDeliveryService(gmail_service=gmail)
+
+    assert await service.current_sender_sub(user_id="owner") == "google-sub-owner"
+    assert await service.current_sender_sub(user_id="someone-else") is None
+    for change in ({"revoked": True}, {"status": "disconnected"}, {"google_sub": None}):
+        row = {"status": "connected", "revoked": False, "google_sub": "google-sub-owner", **change}
+        assert await service.current_sender_sub(user_id="owner") is None, change
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "send_at",
+    [
+        _SCHEDULE_NOW - timedelta(minutes=5),
+        _SCHEDULE_NOW + timedelta(seconds=30),
+        _SCHEDULE_NOW + timedelta(days=30, seconds=1),
+    ],
+)
+async def test_schedule_send_refuses_a_time_the_drain_could_not_honour(monkeypatch, send_at):
+    """The ledger checks the time itself; a caller that skipped the voice
+    tool's validation still cannot store a past, imminent or far-off send."""
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+
+    with pytest.raises(GmailDeliveryError) as refused:
+        await _schedule(service, send_at=send_at)
+
+    assert refused.value.code == "INVALID_SEND_AT"
+    assert conn.rows == {} and conn.calls == []
+    # The horizon itself is inside it.
+    edge = await _schedule(service, send_at=_SCHEDULE_NOW + timedelta(days=30))
+    assert edge["created"] is True
 
 
 @pytest.mark.asyncio
@@ -1308,14 +1358,22 @@ async def test_schedule_send_is_idempotent_and_persists_no_plaintext_envelope(mo
     row = conn.rows[first["action_id"]]
     assert row["expires_at"] == _SEND_AT + timedelta(hours=24)
     assert (row["recipient_display"], row["subject"]) == ("Priya Sharma", "Diwali plans")
-    # The body, the address and the recipient id reach the table only sealed.
+    # The body, the address, the recipient and the sending account reach the
+    # table only sealed.
     persisted = repr(conn.calls)
-    for secret in ("priya.sharma@example.com", "Priya.Sharma", "Private scheduled body", "u-priya"):
+    for secret in (
+        "priya.sharma@example.com",
+        "Priya.Sharma",
+        "Private scheduled body",
+        "u-priya",
+        "google-sub-owner",
+    ):
         assert secret not in persisted
     opened = service.open_schedule_payload(
         user_id="owner", action_id=first["action_id"], sealed=row["payload_sealed"]
     )
     assert opened["to"] == "priya.sharma@example.com"
+    assert opened["sender_sub"] == "google-sub-owner"
     # A different time is a different scheduled send, not a replay.
     later = await _schedule(service, send_at=_SEND_AT + timedelta(hours=1))
     assert later["created"] is True and later["action_id"] != first["action_id"]
@@ -1414,6 +1472,16 @@ async def test_cancel_is_a_compare_and_set_that_reports_the_state_it_lost_to(mon
     assert conn.rows[action_id]["payload_sealed"] is None
     again = await service.cancel_scheduled_send(user_id="owner", action_id=action_id)
     assert (again["cancelled"], again["state"]) == (False, "cancelled")
+
+    # "Cancel it -- actually, schedule it again for the same time": the cancel
+    # freed its key, so the same email, person and time is a new send.
+    rescheduled = await _schedule(service)
+    assert rescheduled["created"] is True and rescheduled["action_id"] != action_id
+    assert conn.rows[rescheduled["action_id"]]["state"] == "scheduled"
+    assert conn.rows[action_id]["state"] == "cancelled"
+    # A live schedule still answers its own replay.
+    replay = await _schedule(service)
+    assert replay == {**rescheduled, "created": False}
 
     # The drain armed it first: the cancel loses and says to what.
     raced = await _schedule(service, send_at=_SEND_AT + timedelta(hours=2))
