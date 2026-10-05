@@ -1359,9 +1359,13 @@ def test_cancel_marks_request_and_pending_scope_proposals_declined():
     assert out == {"status": "cancelled", "requestId": "req-1"}
     feed_params = [params for sql, params in db.calls if "INSERT INTO feed_events" in sql]
     assert [(p["owner_user_id"], p["actor_is_self"]) for p in feed_params] == [
-        ("user-a", True), ("user-b", False)
+        ("user-a", True),
+        ("user-b", False),
     ]
-    assert all(p["event_type"] == "connection_withdrawn" and p["source_row_id"] == "req-1" for p in feed_params)
+    assert all(
+        p["event_type"] == "connection_withdrawn" and p["source_row_id"] == "req-1"
+        for p in feed_params
+    )
     proposal_update = next(
         (sql, params) for sql, params in db.calls if "UPDATE connection_scope_proposals" in sql
     )

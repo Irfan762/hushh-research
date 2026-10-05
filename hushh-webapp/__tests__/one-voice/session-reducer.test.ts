@@ -5,6 +5,7 @@ import {
   NOT_SUCCESS_STATUSES,
   type ServerFrame,
   type ToolResultFrame,
+  type ToolResultPublic,
 } from "@/lib/one-voice/protocol";
 import {
   SOS_CLOSED_UNVERIFIED_FACT,
@@ -453,6 +454,110 @@ describe("reduceVoiceSession: answer ownership", () => {
     );
     expect(state.pendingAction?.resolvedStatus).toBe("executed");
     expect(state.lastResult).toBeNull();
+  });
+
+  // Rows the server offered under a revision: the list "the second one" and
+  // "reply to it" are spoken about.
+  const OFFERED_MAIL: ToolResultPublic = {
+    status: "ok",
+    spoken_facts: ["I read your 2 newest messages."],
+    items: [
+      { source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" },
+      { source_ref: "mail:2", subject: "March invoice", sender: "Acme" },
+    ],
+    coverage: { unit: "messages", returned: 2, scope: "newest" },
+    offer_revision: 7,
+    conversation_id: "11111111-2222-4333-8444-555555555555",
+  };
+
+  it("keeps an offered mail list on screen across the next question until that question answers", () => {
+    // Regression: the new input cleared the slot, so a spoken "open the second
+    // one" arrived with no list left on screen to open.
+    const read = run(
+      [
+        server({ type: "transcript.input", text: "What's in my inbox?", final: true, turn_id: "read" }),
+        server(toolResult({ call_id: "read-call", tool: "read_mail", turn_id: "read", status: "ok", result_public: OFFERED_MAIL })),
+      ],
+      connected(),
+    );
+    expect(read.lastResult).toBe(OFFERED_MAIL);
+
+    const asked = run(
+      [server({ type: "transcript.input", text: "Open the second one", final: true, turn_id: "open" })],
+      read,
+    );
+    expect(asked.activeInputTurnId).toBe("open");
+    expect(asked.lastResult).toBe(OFFERED_MAIL);
+
+    // Opening dispatches; it does not answer. It joins the timeline but never
+    // takes the slot from the list it opens a row of.
+    const dispatched = run(
+      [
+        server(toolResult({
+          call_id: "open-call",
+          tool: "open_mail",
+          turn_id: "open",
+          status: "mail_open_dispatched",
+          result_public: {
+            status: "mail_open_dispatched",
+            spoken_facts: ["Opening it."],
+            ordinal: 2,
+            offer_revision: 7,
+            conversation_id: "11111111-2222-4333-8444-555555555555",
+          },
+        })),
+      ],
+      asked,
+    );
+    expect(dispatched.toolTimeline.at(-1)?.result?.status).toBe("mail_open_dispatched");
+    expect(dispatched.lastResult).toBe(OFFERED_MAIL);
+
+    // Still the list while the next question is being answered...
+    const next = run(
+      [
+        server({ type: "turn", state: "model_end", turn_id: "open" }),
+        server({ type: "transcript.input", text: "What is my name?", final: true, turn_id: "name" }),
+      ],
+      dispatched,
+    );
+    expect(next.activeInputTurnId).toBe("name");
+    expect(next.lastResult).toBe(OFFERED_MAIL);
+
+    // ...until that question's own answer takes the slot.
+    const answered = run(
+      [server(toolResult({ call_id: "name-call", tool: "get_profile", turn_id: "name", status: "ok", result_public: { status: "ok", display_name: "Ankit" } }))],
+      next,
+    );
+    expect(answered.lastResult?.display_name).toBe("Ankit");
+  });
+
+  it("still gives the slot to a new question when the result has no offered rows to act on", () => {
+    const { offer_revision: _revision, ...unbound } = OFFERED_MAIL;
+    void _revision;
+    const cases: Array<[string, string, ToolResultPublic]> = [
+      [
+        "people",
+        "list_people",
+        { status: "ok", spoken_facts: ["You have 1 connection."], connected: [{ user_id: "u-1", display_name: "Priya" }] },
+      ],
+      ["an empty read", "read_mail", { ...OFFERED_MAIL, items: [] }],
+      ["rows with no offer to resolve a position against", "read_mail", unbound],
+    ];
+    for (const [label, tool, result] of cases) {
+      const shown = run(
+        [
+          server({ type: "transcript.input", text: "First", final: true, turn_id: "a" }),
+          server(toolResult({ call_id: "a-call", tool, turn_id: "a", status: "ok", result_public: result })),
+        ],
+        connected(),
+      );
+      expect(shown.lastResult, label).toBe(result);
+      const asked = run(
+        [server({ type: "transcript.input", text: "Second", final: true, turn_id: "b" })],
+        shown,
+      );
+      expect(asked.lastResult, label).toBeNull();
+    }
   });
 });
 

@@ -3601,6 +3601,7 @@
   {
     "route": "/one/profile/connectors/oauth/return",
     "mode": "redirect",
+    "persistentChrome": "none",
     "exemptionReason": "OAuth callback completes an external connector's authorization and returns to Connectors in the Profile pane.",
     "voicePlaybook": {
       "playbookId": "route.profile.connectors.oauth.return",
