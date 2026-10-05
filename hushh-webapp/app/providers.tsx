@@ -693,7 +693,7 @@ function AppShellFrame({ children }: ProvidersProps) {
                       {!hidesPersistentChrome && !isCanonicalChatRoute ? (
                         <AppTopShell model={topShellModel} />
                       ) : null}
-                      {!hidesPersistentChrome && !effectiveHideCommandBar && !isCanonicalChatRoute ? (
+                      {!hidesPersistentChrome && !effectiveHideCommandBar ? (
                         <KaiCommandBarGlobal />
                       ) : null}
                       <Suspense

@@ -2212,6 +2212,9 @@ body:has(.profile-account-content) .kai-bottom-nav-pill [role="radio"] {
 
 body:has(.profile-account-content)
   .kai-bottom-nav-pill
+  [role="radio"]:active,
+body:has(.profile-account-content)
+  .kai-bottom-nav-pill
   [role="radio"][aria-checked="true"] {
   color: var(--ios-account-accent) !important;
   font-weight: var(--ios-account-medium-weight);
@@ -5734,6 +5737,13 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
   letter-spacing: 0;
 }
 
+.kai-bottom-nav-pill [role="radio"] {
+  /* Selection and press feedback use the accent on the first frame. */
+  transition-property: opacity, transform;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.kai-bottom-nav-pill [role="radio"]:active,
 .kai-bottom-nav-pill [role="radio"][aria-checked="true"] {
   color: var(--app-accent-deep) !important;
   font-weight: 500;
@@ -5743,6 +5753,7 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
   color: #98989d !important;
 }
 
+.dark .kai-bottom-nav-pill [role="radio"]:active,
 .dark .kai-bottom-nav-pill [role="radio"][aria-checked="true"] {
   color: var(--app-accent-bright) !important;
 }
@@ -5790,10 +5801,10 @@ html:not([data-ambient-chrome-primed="true"]) .ambient-chrome-mask {
 
 [data-app-bottom-shell]
   .bottom-chrome-surface
-  :is(.text-foreground, .text-muted-foreground, .chrome-bottom-foreground),
+  :is(.text-foreground, .text-muted-foreground, .chrome-bottom-foreground):not([role="radio"]),
 [data-app-bottom-shell]
   .kai-bottom-nav-pill
-  :is(.text-foreground, .text-muted-foreground, .chrome-bottom-foreground) {
+  :is(.text-foreground, .text-muted-foreground, .chrome-bottom-foreground):not([role="radio"]) {
   color: currentColor !important;
 }
 

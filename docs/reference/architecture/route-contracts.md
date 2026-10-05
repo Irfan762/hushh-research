@@ -54,6 +54,14 @@ are prompt posture only; generated actions and their guards remain execution aut
 
 Keep navigation documentation aligned with `hushh-webapp/lib/navigation/routes.ts`:
 
+Search is the shared command palette on the current signed-in route, including
+Chat at `/`. Its `?search=1` marker controls visibility and the selected Search
+segment; typed queries and finance request payloads remain in memory. Opening
+uses contextual client navigation and dismissal removes the marker in place.
+Browser history and refresh restore visibility subject to existing auth/vault
+gates. Pending navigation selects the destination immediately; cancellation
+restores the committed selection.
+
 - `/`
 - `/welcome?tab=<research|blog|developers>`
 - `/login`
