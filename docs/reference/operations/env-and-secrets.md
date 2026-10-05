@@ -379,7 +379,7 @@ Used by:
 | `ONE_VOICE_MAIL_REPLY_ENABLED` | `hushh_mcp/one_voice/config.py`, `api/routes/one/gmail_delivery.py` | No | One Voice reply-in-thread (`reply_mail` and the HTTP send of a reply card). Off unless set; `deploy-uat.yml` passes `--one-voice-mail-reply-enabled` (`vars.ONE_VOICE_MAIL_REPLY_ENABLED_UAT`, default `true`) and production passes `false`, so it arrives through `BACKEND_RUNTIME_CONFIG_JSON`'s `one_voice_mail_reply_enabled` key, not a literal Cloud Run env var |
 | `ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED` | `hushh_mcp/one_voice/config.py` | No | One Voice scheduled send (`schedule_mail`, `list_scheduled_mail`, `cancel_scheduled_mail`); also their kill switch. Off unless set; `deploy-uat.yml` passes `--one-voice-mail-schedule-send-enabled` (`vars.ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED_UAT`, default `true`) and production passes `false`, through `BACKEND_RUNTIME_CONFIG_JSON`'s `one_voice_mail_schedule_send_enabled` key |
 | `ONE_VOICE_MAIL_DRAFTS_ENABLED` | `hushh_mcp/one_voice/config.py`, `api/routes/one/voice.py` | No | One Voice Gmail drafts (`list_drafts`, `open_draft`, `send_draft` and the draft open route); also their kill switch. Off unless set; `deploy-uat.yml` passes `--one-voice-mail-drafts-enabled` (`vars.ONE_VOICE_MAIL_DRAFTS_ENABLED_UAT`, default `true`) and production passes `false`, through `BACKEND_RUNTIME_CONFIG_JSON`'s `one_voice_mail_drafts_enabled` key |
-| `MAIL_SCHEDULED_DRAIN_ENABLED` | `api/routes/one/scheduled_mail_drain.py` | No | Opens `POST /api/one/email/scheduled/drain`, the Cloud Scheduler drain that delivers scheduled mail; the route answers 404 unless this is exactly `true`. Turning it off pauses delivery without withdrawing scheduling. `deploy-uat.yml` passes `--mail-scheduled-drain-enabled` (`vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT`, default `true`) and production passes `false`, through `BACKEND_RUNTIME_CONFIG_JSON`'s `mail_scheduled_drain_enabled` key |
+| `MAIL_SCHEDULED_DRAIN_ENABLED` | `api/routes/one/scheduled_mail_drain.py` | No | Opens `POST /api/one/email/scheduled/drain`, the Cloud Scheduler drain that delivers scheduled mail; the route answers 404 unless this is exactly `true`. Turning it off pauses delivery without withdrawing scheduling. `deploy-uat.yml` passes `--mail-scheduled-drain-enabled` (`vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT`, default `true`; the same variable pauses or resumes the `mail-scheduled-send-uat` job) and production passes `false`, through `BACKEND_RUNTIME_CONFIG_JSON`'s `mail_scheduled_drain_enabled` key |
 | `MAIL_SCHEDULED_DRAIN_SCHEDULER_SERVICE_ACCOUNT_EMAIL` | `api/routes/one/scheduled_mail_drain.py` | No | Optional restatement of the hard-coded scheduler identity (`mail-scheduled-send@hushh-pda-uat.iam.gserviceaccount.com` in UAT/test/local, `mail-scheduled-send@hushh-pda.iam.gserviceaccount.com` in production). Any other value makes the drain answer 503; it cannot widen who may call it |
 | `MAIL_SCHEDULED_DRAIN_SCHEDULER_AUDIENCE` | `api/routes/one/scheduled_mail_drain.py` | No | Optional restatement of the hard-coded OIDC audience (`https://api.uat.hushh.ai` in UAT/test/local, `https://api.hushh.ai` in production). Any other value makes the drain answer 503 |
 | `HUSSH_TECH_DEVELOPER_APP_ID` | `api/routes/hushh_tech.py` | No | Exact UAT product registration id from `BACKEND_RUNTIME_CONFIG_JSON` |
@@ -510,8 +510,23 @@ One mailbox production caveats:
   `POST https://api.uat.hushh.ai/api/one/email/scheduled/drain?limit=50` with a
   Google OIDC token for the dedicated `mail-scheduled-send` service account
   (no project roles, no stored credential). Production has no job and pins
-  `MAIL_SCHEDULED_DRAIN_ENABLED` to `false`. To pause delivery, pause the job
-  or set `vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT=false` and redeploy.
+  `MAIL_SCHEDULED_DRAIN_ENABLED` to `false`. The repository variable
+  `vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT` (default `true`) is the single
+  source of truth for both the drain route and the job: the deploy passes it
+  to the scheduler step as `MAIL_SCHEDULED_DRAIN_ENABLED`. Anything other than
+  exactly `true` pauses an existing job (the step fails unless it reads back
+  `PAUSED`) and never creates one; `true` creates or updates the job, resumes
+  it if paused and fails unless it reads back `ENABLED`. To stop delivery, set
+  the variable to `false` and redeploy. A manual `gcloud scheduler jobs pause`
+  works immediately but is undone by the next UAT backend deploy while the
+  variable is `true`.
+- The drain's owner notifications (`mail_scheduled_sent`, `_failed`,
+  `_unknown`, `_cancelled`, `_expired`) carry `deep_link=/one/feed`. No web or
+  native tap handler trusts `deep_link`; every one of them sends these types to
+  the Feed, which is where the send outcome itself is projected. A row whose
+  connected Gmail account changed since it was scheduled fails with
+  `sender_changed` and is never sent. Every terminal scheduled row has its
+  sealed payload cleared.
 - Account-deletion cleanup uses a dedicated Google OIDC scheduler identity and
   exact backend-origin audience. Never copy a reusable token into Cloud
   Scheduler headers or job metadata; the Scheduler service agent may mint only

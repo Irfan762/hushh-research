@@ -2325,6 +2325,9 @@ jobs:
       # Delivers One Voice scheduled mail. UAT only: production pins
       # MAIL_SCHEDULED_DRAIN_ENABLED to false and has no job. The route answers
       # 404 unless the drain flag reached this revision's runtime config.
+      # The same repository variable is the job's kill switch: anything but
+      # 'true' pauses the job (never creates it); 'true' creates or updates it
+      # and resumes a paused job, so a manual pause lasts until the next deploy.
       - name: Activate scheduled mail drain
         id: activate-scheduled-mail-drain
         if: steps.classify-uat-release.outputs.release_failed == 'false' && steps.scope.outputs.deploy_backend == 'true'
@@ -2337,10 +2340,24 @@ jobs:
           SCHEDULER_SERVICE_ACCOUNT_NAME: mail-scheduled-send
           JOB_NAME: mail-scheduled-send-uat
           BATCH_LIMIT: "50"
+          MAIL_SCHEDULED_DRAIN_ENABLED: ${{ vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT || 'true' }}
         run: |
           set -euo pipefail
           bash deploy/gmail/setup_scheduled_mail_scheduler.sh \
             | tee /tmp/uat-scheduled-mail-scheduler-setup.log
+
+          if [[ "${MAIL_SCHEDULED_DRAIN_ENABLED}" != "true" ]]; then
+            if gcloud scheduler jobs describe "${JOB_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${SCHEDULER_LOCATION}" \
+              --format='value(state)' > /tmp/uat-scheduled-mail-scheduler-state.txt 2>/dev/null \
+              && [[ "$(cat /tmp/uat-scheduled-mail-scheduler-state.txt)" != "PAUSED" ]]; then
+              echo "Scheduled mail drain kill switch did not pause ${JOB_NAME}" >&2
+              exit 1
+            fi
+            echo "Scheduled mail drain disabled by vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT"
+            exit 0
+          fi
 
           gcloud scheduler jobs describe "${JOB_NAME}" \
             --project="${PROJECT_ID}" \

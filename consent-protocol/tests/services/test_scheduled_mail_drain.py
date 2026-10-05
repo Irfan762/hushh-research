@@ -34,10 +34,16 @@ ADDRESS = "priya@example.com"
 SUBJECT = "Diwali plans"
 BODY = "See you at seven."
 NAME = "Priya Sharma"
+SENDER = "google-sub-owner-1"
 
 
 class _Delivery(GmailDeliveryService):
-    """The real service plus a stand-in for Stream S's I1 seal pair."""
+    """The real service plus stand-ins for the I1 seal pair and sender lookup."""
+
+    sender_sub: str | None = SENDER
+
+    async def current_sender_sub(self, *, user_id: str) -> str | None:
+        return self.sender_sub
 
     def open_schedule_payload(self, *, user_id: str, action_id: str, sealed: str) -> dict:
         prefix = f"sealed:{user_id}:{action_id}:"
@@ -56,6 +62,7 @@ def _payload(**changes: str) -> dict[str, str]:
         "subject": SUBJECT,
         "body": BODY,
         "recipient_user_id": RECIPIENT,
+        "sender_sub": SENDER,
         **changes,
     }
 
@@ -109,6 +116,13 @@ class _Transaction:
         return False
 
 
+def _update(row: dict[str, Any], query: str, **changes: Any) -> None:
+    """Apply an UPDATE's SET list, including the sealed-payload clear it states."""
+    row.update(changes)
+    if "payload_sealed = NULL" in query:
+        row["payload_sealed"] = None
+
+
 def _orphaned(row: dict[str, Any]) -> bool:
     return (
         row["state"] == "prepared"
@@ -154,8 +168,12 @@ class _Conn:
                 key=lambda row: row["sending_at"],
             )[: args[0]]
             for row in stale:
-                row.update(
-                    state="outcome_unknown", safe_error_code="drain_interrupted", updated_at=NOW
+                _update(
+                    row,
+                    query,
+                    state="outcome_unknown",
+                    safe_error_code="drain_interrupted",
+                    updated_at=NOW,
                 )
             return [{"action_id": row["action_id"], "user_id": row["user_id"]} for row in stale]
         if query == drain._CLAIM_SQL:
@@ -183,14 +201,25 @@ class _Conn:
             if row is None or row["state"] not in ("scheduled", "prepared") or row["sending_at"]:
                 return None
             if query == drain._ARM_SQL:
-                row.update(state="prepared", attempt_count=row["attempt_count"] + 1, updated_at=NOW)
+                _update(
+                    row,
+                    query,
+                    state="prepared",
+                    attempt_count=row["attempt_count"] + 1,
+                    updated_at=NOW,
+                )
             else:
-                row.update(state=args[2], safe_error_code=args[3], updated_at=NOW)
+                _update(row, query, state=args[2], safe_error_code=args[3], updated_at=NOW)
             return {"action_id": row["action_id"]}
         if query == drain._FAIL_ARMED_SQL:
             row = self._owned(args[0], args[1])
             if row is not None and row["state"] == "prepared" and row["sending_at"] is None:
-                row.update(state="failed", safe_error_code=args[2], updated_at=NOW)
+                _update(row, query, state="failed", safe_error_code=args[2], updated_at=NOW)
+            return None
+        if query == drain._SCRUB_TERMINAL_PAYLOAD_SQL:
+            row = self._owned(args[0], args[1])
+            if row is not None and row["state"] in drain.DRAIN_RESULT_KEYS:
+                _update(row, query)
             return None
         if query == drain._READ_STATE_SQL:
             row = self._owned(args[0], args[1])
@@ -388,7 +417,7 @@ async def test_due_rows_fire_in_send_at_order_through_unchanged_execute(harness)
     assert _push_bodies(h) == [f"Your scheduled email to {NAME} was sent."] * 2
     # The owner learns who; nothing else of the email leaves the ledger.
     rendered = json.dumps([result, [payload for _user, payload in h.pushes]])
-    for private in (ADDRESS, SUBJECT, BODY, RECIPIENT, OWNER):
+    for private in (ADDRESS, SUBJECT, BODY, RECIPIENT, OWNER, SENDER):
         assert private not in rendered
     assert all(payload["include_user_id"] is False for _user, payload in h.pushes)
 
@@ -474,6 +503,76 @@ async def test_changed_recipient_address_fails_closed(harness):
     assert h.executed == [] and h.gmail.posts == []
     assert result["failed"] == ["moved"]
     assert h.ledger.row("moved")["safe_error_code"] == "recipient_changed"
+
+
+@pytest.mark.parametrize(
+    ("sealed_sender", "current_sender"),
+    [
+        (SENDER, "google-sub-someone-else"),
+        (None, SENDER),
+        (SENDER, None),
+    ],
+    ids=["reconnected-to-another-account", "sealed-without-sender", "gmail-disconnected"],
+)
+@pytest.mark.asyncio
+async def test_changed_sending_account_fails_closed_without_reaching_execute(
+    harness, sealed_sender, current_sender
+):
+    h = harness
+    payload = _payload()
+    if sealed_sender is None:
+        payload.pop("sender_sub")
+    _schedule(h, "other-account", payload=payload)
+    h.service.sender_sub = current_sender
+
+    result = await _drain(h)
+
+    assert h.executed == [] and h.gmail.posts == []
+    assert result["failed"] == ["other-account"] and result["fired"] == 0
+    row = h.ledger.row("other-account")
+    assert (row["state"], row["safe_error_code"]) == ("failed", "sender_changed")
+    assert _push_bodies(h) == [
+        f"Your scheduled email to {NAME} couldn't be sent (your connected Gmail account "
+        "changed). Nothing was delivered — you can review and resend it."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_every_terminal_state_clears_the_sealed_payload(harness):
+    h = harness
+    _schedule(h, "sent", send_at=NOW - timedelta(minutes=9))
+    _schedule(h, "tampered", send_at=NOW - timedelta(minutes=8), envelope_hmac="f" * 64)
+    _schedule(h, "expired", send_at=NOW - timedelta(hours=25))
+    _schedule(
+        h, "other-account", send_at=NOW - timedelta(minutes=7), payload=_payload(sender_sub="x")
+    )
+    _schedule(h, "crashed", state="sending", sending_at=NOW - timedelta(minutes=15))
+    _schedule(h, "waiting", send_at=NOW + timedelta(minutes=5))
+
+    result = await _drain(h)
+    _schedule(h, "disconnected")
+    h.connections = []
+    later = await _drain(h)
+
+    assert result["sent"] == ["sent"] and result["expired"] == ["expired"]
+    assert result["failed"] == ["tampered", "other-account"]
+    assert result["outcome_unknown"] == ["crashed"] and later["cancelled"] == ["disconnected"]
+    for action_id in ("sent", "tampered", "expired", "other-account", "crashed", "disconnected"):
+        assert h.ledger.row(action_id)["payload_sealed"] is None, action_id
+    # A row still waiting to be sent keeps the payload it will need.
+    assert h.ledger.row("waiting")["payload_sealed"] is not None
+
+
+@pytest.mark.asyncio
+async def test_outcome_unknown_from_execute_clears_the_sealed_payload(harness):
+    h = harness
+    _schedule(h, "ambiguous")
+    h.gmail.status = 503
+
+    result = await _drain(h)
+
+    assert result["outcome_unknown"] == ["ambiguous"]
+    assert h.ledger.row("ambiguous")["payload_sealed"] is None
 
 
 @pytest.mark.asyncio

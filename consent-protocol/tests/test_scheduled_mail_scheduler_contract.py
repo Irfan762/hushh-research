@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,111 @@ def _run_scheduler_with(tmp_path: Path, **overrides: str) -> subprocess.Complete
     return result
 
 
+# A gcloud stand-in that keeps one job's state in a file, so the script's own
+# describe/pause/resume decisions run for real.
+_STATEFUL_GCLOUD = """
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+state_file = pathlib.Path(os.environ["FAKE_JOB_STATE"])
+with open(os.environ["FAKE_GCLOUD_CALLS"], "a") as calls:
+    calls.write(" ".join(args[:3]) + "\\n")
+if args[:2] == ["iam", "service-accounts"]:
+    sys.exit(0)
+verb = args[2]
+state = state_file.read_text() if state_file.exists() else ""
+if verb == "describe":
+    if not state:
+        sys.exit(1)
+    if "--format=value(state)" in args:
+        print(state)
+    else:
+        print("\\t".join([state, *os.environ["FAKE_JOB_EVIDENCE"].split("|")]))
+elif verb == "create":
+    state_file.write_text("ENABLED")
+elif verb == "update" and not state:
+    sys.exit(1)
+elif verb == "pause" and os.environ["FAKE_PAUSE_TAKES"] == "1":
+    state_file.write_text("PAUSED")
+elif verb == "resume":
+    state_file.write_text("ENABLED")
+"""
+
+
+def _run_scheduler_against(
+    tmp_path: Path, *, job_state: str | None, enabled: str, pause_takes: bool = True
+) -> tuple[subprocess.CompletedProcess[str], list[str], str | None]:
+    """Run the real script against a stateful gcloud; return its verbs and final state."""
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    state = tmp_path / "job-state"
+    calls = tmp_path / "gcloud-calls"
+    if job_state is not None:
+        state.write_text(job_state)
+    fake_gcloud = fake_bin / "gcloud"
+    fake_gcloud.write_text(f"#!{sys.executable}\n{_STATEFUL_GCLOUD}")
+    fake_gcloud.chmod(0o755)
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "PATH": f"{fake_bin}:{environment['PATH']}",
+            "PROJECT_ID": "hushh-pda-uat",
+            "BACKEND_URL": "https://api.uat.hushh.ai",
+            "OIDC_AUDIENCE": "https://api.uat.hushh.ai",
+            "MAIL_SCHEDULED_DRAIN_ENABLED": enabled,
+            "FAKE_JOB_STATE": str(state),
+            "FAKE_GCLOUD_CALLS": str(calls),
+            "FAKE_PAUSE_TAKES": "1" if pause_takes else "0",
+            "FAKE_JOB_EVIDENCE": "|".join(
+                ["* * * * *", URI, "POST", SERVICE_ACCOUNT, "https://api.uat.hushh.ai"]
+            ),
+        }
+    )
+    result = subprocess.run(  # noqa: S603 - fixed repository-owned shell helper
+        ["bash", str(SCRIPT)], env=environment, capture_output=True, check=False, text=True
+    )
+    lines = calls.read_text().splitlines() if calls.exists() else []
+    verbs = [line.split()[2] for line in lines if line.startswith("scheduler jobs ")]
+    return result, verbs, state.read_text() if state.exists() else None
+
+
+@pytest.mark.parametrize("enabled", ["false", "", "TRUE"])
+def test_kill_switch_pauses_an_existing_job_and_never_rearms_it(tmp_path: Path, enabled: str):
+    result, verbs, final = _run_scheduler_against(tmp_path, job_state="ENABLED", enabled=enabled)
+
+    assert result.returncode == 0, result.stderr
+    assert "pause" in verbs
+    assert not {"create", "update", "resume"} & set(verbs)
+    assert final == "PAUSED"
+
+
+def test_kill_switch_never_creates_a_missing_job(tmp_path: Path):
+    result, verbs, final = _run_scheduler_against(tmp_path, job_state=None, enabled="false")
+
+    assert result.returncode == 0, result.stderr
+    assert verbs == ["describe"] and final is None
+
+
+def test_kill_switch_fails_the_deploy_when_the_job_does_not_pause(tmp_path: Path):
+    result, _verbs, final = _run_scheduler_against(
+        tmp_path, job_state="ENABLED", enabled="false", pause_takes=False
+    )
+
+    assert result.returncode != 0
+    assert "not PAUSED" in result.stderr and final == "ENABLED"
+
+
+def test_enabled_deploy_resumes_a_manually_paused_job(tmp_path: Path):
+    """The repository variable, not a manual pause, is the source of truth."""
+    result, verbs, final = _run_scheduler_against(tmp_path, job_state="PAUSED", enabled="true")
+
+    assert result.returncode == 0, result.stderr
+    assert "update" in verbs and "resume" in verbs and "create" not in verbs
+    assert final == "ENABLED"
+
+
 def test_script_is_executable_and_never_mutates_runtime_iam():
     source = SCRIPT.read_text(encoding="utf-8")
 
@@ -70,8 +176,9 @@ def test_dry_run_prints_the_exact_oidc_job_without_calling_gcloud(tmp_path: Path
         ["gcloud", "iam", "service-accounts", "create"],
         ["gcloud", "scheduler", "jobs", "update"],
         ["gcloud", "scheduler", "jobs", "create"],
+        ["gcloud", "scheduler", "jobs", "resume"],
     ]
-    for job in lines[1:]:
+    for job in lines[1:3]:
         assert " mail-scheduled-send-uat " in job
         assert "'--schedule=* * * * *'" in job
         assert f"'--uri={URI}'" in job
@@ -137,6 +244,10 @@ def test_uat_activates_the_job_only_after_release_classification():
     assert step["env"]["SCHEDULER_SERVICE_ACCOUNT_NAME"] == "mail-scheduled-send"
     assert step["env"]["JOB_NAME"] == "mail-scheduled-send-uat"
     assert step["env"]["BATCH_LIMIT"] == "50"
+    # One repository variable both opens the drain route and runs the job.
+    switch = "${{ vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT || 'true' }}"
+    assert step["env"]["MAIL_SCHEDULED_DRAIN_ENABLED"] == switch
+    assert f'--mail-scheduled-drain-enabled "{switch}"' in UAT_WORKFLOW.read_text(encoding="utf-8")
     assert step["env"]["OIDC_AUDIENCE"] == "${{ env.CONSENT_API_PUBLIC_ORIGIN }}"
     assert "bash deploy/gmail/setup_scheduled_mail_scheduler.sh" in step["run"]
     assert f"'{URI}'" in step["run"]

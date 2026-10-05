@@ -7,6 +7,13 @@ set -euo pipefail
 # confirmed by the owner when they scheduled it. Production has no job.
 # DRY_RUN=1 validates the inputs and prints the gcloud commands without
 # calling gcloud.
+#
+# MAIL_SCHEDULED_DRAIN_ENABLED is the kill switch and the single source of
+# truth for the job's state. The UAT deploy passes the same repository variable
+# (vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT, default true) that opens the drain
+# route. Exactly "true" creates or updates the job and resumes it if paused, so
+# a manual pause is overwritten by the next deploy. Any other value pauses an
+# existing job and never creates one.
 
 readonly UAT_PROJECT_ID="hushh-pda-uat"
 readonly UAT_SCHEDULER_LOCATION="us-central1"
@@ -29,7 +36,14 @@ BATCH_LIMIT="${BATCH_LIMIT:-50}"
 SCHEDULER_SERVICE_ACCOUNT_NAME="${SCHEDULER_SERVICE_ACCOUNT_NAME:-${UAT_SCHEDULER_SERVICE_ACCOUNT_NAME}}"
 SCHEDULER_SERVICE_ACCOUNT_EMAIL="${SCHEDULER_SERVICE_ACCOUNT_EMAIL:-}"
 OIDC_AUDIENCE="${OIDC_AUDIENCE:-}"
+# Unset keeps this helper's historical behavior (configure the job); a value
+# that is set, even empty, must be exactly "true" to run it.
+MAIL_SCHEDULED_DRAIN_ENABLED="${MAIL_SCHEDULED_DRAIN_ENABLED-true}"
 DRY_RUN="${DRY_RUN:-0}"
+DRAIN_ENABLED=0
+if [[ "${MAIL_SCHEDULED_DRAIN_ENABLED}" == "true" ]]; then
+  DRAIN_ENABLED=1
+fi
 
 if [[ "${DRY_RUN}" != "0" && "${DRY_RUN}" != "1" ]]; then
   echo "DRY_RUN must be 0 or 1" >&2
@@ -113,6 +127,15 @@ print_command() {
   printf '\n'
 }
 
+if [[ "${DRY_RUN}" == "1" && "${DRAIN_ENABLED}" == "0" ]]; then
+  echo "# DRY_RUN=1: no gcloud command runs."
+  echo "# MAIL_SCHEDULED_DRAIN_ENABLED is not true: never create the job."
+  echo "# Pause the job when it exists and is not already paused:"
+  print_command gcloud scheduler jobs pause "${JOB_NAME}" \
+    --project="${PROJECT_ID}" --location="${SCHEDULER_LOCATION}"
+  exit 0
+fi
+
 if [[ "${DRY_RUN}" == "1" ]]; then
   echo "# DRY_RUN=1: no gcloud command runs."
   echo "# Create the scheduler identity if it is absent:"
@@ -124,12 +147,41 @@ if [[ "${DRY_RUN}" == "1" ]]; then
   echo "# Otherwise create it:"
   print_command gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
     --headers="Content-Type=application/json"
+  echo "# Resume it when it is paused:"
+  print_command gcloud scheduler jobs resume "${JOB_NAME}" \
+    --project="${PROJECT_ID}" --location="${SCHEDULER_LOCATION}"
   exit 0
 fi
 
 if ! command -v gcloud >/dev/null 2>&1; then
   echo "gcloud is required" >&2
   exit 1
+fi
+
+job_state() {
+  gcloud scheduler jobs describe "${JOB_NAME}" \
+    --project="${PROJECT_ID}" \
+    --location="${SCHEDULER_LOCATION}" \
+    --format='value(state)'
+}
+
+if [[ "${DRAIN_ENABLED}" == "0" ]]; then
+  if ! STATE="$(job_state 2>/dev/null)"; then
+    echo "Scheduled-mail drain disabled; ${JOB_NAME} does not exist and was not created"
+    exit 0
+  fi
+  if [[ "${STATE}" != "PAUSED" ]]; then
+    gcloud scheduler jobs pause "${JOB_NAME}" \
+      --project="${PROJECT_ID}" \
+      --location="${SCHEDULER_LOCATION}" >/dev/null
+  fi
+  STATE="$(job_state)"
+  if [[ "${STATE}" != "PAUSED" ]]; then
+    echo "Scheduled-mail drain kill switch failed: ${JOB_NAME} is ${STATE}, not PAUSED" >&2
+    exit 1
+  fi
+  echo "Scheduled-mail drain disabled; ${JOB_NAME} verified PAUSED"
+  exit 0
 fi
 
 if ! gcloud iam service-accounts describe "${SCHEDULER_SERVICE_ACCOUNT_EMAIL}" \
@@ -155,6 +207,13 @@ if gcloud scheduler jobs describe "${JOB_NAME}" \
 else
   gcloud scheduler jobs create http "${JOB_NAME}" "${COMMON_ARGS[@]}" \
     --headers="Content-Type=application/json" >/dev/null
+fi
+
+# The repository variable, not a manual pause, decides whether the job runs.
+if [[ "$(job_state)" == "PAUSED" ]]; then
+  gcloud scheduler jobs resume "${JOB_NAME}" \
+    --project="${PROJECT_ID}" \
+    --location="${SCHEDULER_LOCATION}" >/dev/null
 fi
 
 JOB_EVIDENCE="$(gcloud scheduler jobs describe "${JOB_NAME}" \

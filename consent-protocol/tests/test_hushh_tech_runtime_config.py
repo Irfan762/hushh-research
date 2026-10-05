@@ -21,6 +21,17 @@ def _module():
     return module
 
 
+def _unset_for_this_test(monkeypatch, name: str) -> None:
+    """Unset ``name`` and restore its prior state after the test.
+
+    ``delenv`` of an absent variable registers no undo, and hydration writes
+    with ``os.environ.setdefault``, so a bare delete lets the hydrated value
+    leak into every later test in the session.
+    """
+    monkeypatch.setenv(name, "x")
+    monkeypatch.delenv(name)
+
+
 def test_passkey_rp_ids_are_derived_from_the_active_frontend_origin():
     module = _module()
 
@@ -101,7 +112,7 @@ def test_generator_and_runtime_hydrate_every_hushh_tech_policy_key(monkeypatch):
 
     for env_name in runtime_settings._BACKEND_RUNTIME_ENV_MAP.values():
         if env_name.startswith("HUSSH_TECH_"):
-            monkeypatch.delenv(env_name, raising=False)
+            _unset_for_this_test(monkeypatch, env_name)
     monkeypatch.setenv("BACKEND_RUNTIME_CONFIG_JSON", json.dumps(expected))
     runtime_settings.hydrate_runtime_environment()
 
@@ -200,7 +211,7 @@ def test_voice_mail_reply_switch_is_generated_off_unless_a_lane_turns_it_on(monk
     generated = module._build_backend_runtime_config(args)["one_voice_mail_reply_enabled"]
     assert generated == "true"
 
-    monkeypatch.delenv("ONE_VOICE_MAIL_REPLY_ENABLED", raising=False)
+    _unset_for_this_test(monkeypatch, "ONE_VOICE_MAIL_REPLY_ENABLED")
     assert voice_mail_reply_enabled() is False
     monkeypatch.setenv(
         "BACKEND_RUNTIME_CONFIG_JSON", json.dumps({"one_voice_mail_reply_enabled": generated})
@@ -245,7 +256,7 @@ def test_mail_part_two_switches_are_generated_off_unless_a_lane_turns_them_on(
     generated = module._build_backend_runtime_config(args)[key]
     assert generated == "true"
 
-    monkeypatch.delenv(env_name, raising=False)
+    _unset_for_this_test(monkeypatch, env_name)
     monkeypatch.setenv("BACKEND_RUNTIME_CONFIG_JSON", json.dumps({key: generated}))
     runtime_settings.hydrate_runtime_environment()
     assert os.environ.get(env_name) == "true"
