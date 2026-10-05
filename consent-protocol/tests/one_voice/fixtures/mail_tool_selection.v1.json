@@ -1618,6 +1618,25 @@
       "note": "a position in the scheduled list just shown is a scheduled cancel, not a pending card"
     },
     {
+      "id": "schedule-007",
+      "family": "schedule",
+      "screen": "one_home",
+      "history": [
+        "look up Ayesha Sharma among my connections",
+        "yes, that's her"
+      ],
+      "utterance": "in 30 minutes send her that I am stuck in traffic",
+      "expected_tools": [
+        "schedule_mail",
+        "resolve_person"
+      ],
+      "forbidden_tools": [
+        "read_mail",
+        "send_mail"
+      ],
+      "note": "a duration from now is a scheduled send (send_in_minutes, counted by the server), never an immediate draft"
+    },
+    {
       "id": "send-007",
       "family": "send",
       "screen": "one_home",
