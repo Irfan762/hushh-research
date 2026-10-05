@@ -319,6 +319,36 @@ function assertOneColumn(measured: Measure, label: string) {
   expect.soft(leftInset, `${label}: left inset`).toBeGreaterThanOrEqual(12);
 }
 
+for (const width of [393, 1440])
+  for (const dark of [false, true])
+    for (const profile of [false, true])
+      test(`navigation uses its accent immediately: ${width}px ${dark ? "dark" : "light"} ${profile ? "profile" : "standard"}`, async ({ page }) => {
+        const errors: string[] = [];
+        page.on("pageerror", (error) => errors.push(error.message));
+        await open(page, width, dark, VARIANTS[0], errors);
+        if (profile) {
+          await page.locator("[data-fixture-page]").evaluate((element) => {
+            element.classList.add("profile-account-content");
+          });
+        }
+        const selected = page.getByRole("radio", { name: "Connect" });
+        const accent = await selected.evaluate((element) => getComputedStyle(element).color);
+        for (const label of ["Chat", "One", "Feed", "Search"]) {
+          const button = page.getByRole("radio", { name: label });
+          await button.hover();
+          await page.mouse.down();
+          const pressed = await button.evaluate((element) => ({
+            color: getComputedStyle(element).color,
+            transitions: getComputedStyle(element).transitionProperty,
+          }));
+          expect(pressed.color, `${label} press color`).toBe(accent);
+          expect(pressed.transitions).not.toMatch(/color|all/);
+          await page.mouse.move(0, 0);
+          await page.mouse.up();
+        }
+        expect(errors).toEqual([]);
+      });
+
 for (const variant of VARIANTS)
   for (const width of variant.widths ?? WIDTHS)
     for (const dark of [false, true])

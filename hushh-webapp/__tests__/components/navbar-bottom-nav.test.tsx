@@ -33,6 +33,7 @@ const kaiSessionMock = vi.hoisted(() => {
 
 vi.mock("next/navigation", () => ({
   usePathname: () => navigationMock.pathname,
+  useSearchParams: () => new URLSearchParams(),
   useRouter: () => ({ push: navigationMock.push }),
 }));
 vi.mock("@/hooks/use-auth", () => ({

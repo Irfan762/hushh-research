@@ -29,6 +29,10 @@ describe("Navbar bottom chrome contract", () => {
     const searchBar = read("components/kai/kai-command-bar-global.tsx");
     const agentBar = read("components/agent/command-agent-bar.tsx");
     const providers = read("app/providers.tsx");
+    // Chat has no top shell, but Search still needs its global receiver.
+    expect(providers).toMatch(
+      /!hidesPersistentChrome && !effectiveHideCommandBar \? \(\s*<KaiCommandBarGlobal/,
+    );
 
     // One column for both bars: the pill fills the shared bottom chrome
     // column and carries no viewport or route arithmetic of its own.

@@ -151,6 +151,30 @@ describe("WalletWorkspace at scale", () => {
     expect(screen.queryByLabelText("Nickname")).toBeNull();
   });
 
+  it.each([0, 1])("shows the introduction before a delayed request resolves with %i cards", async (count) => {
+    let finish!: (cards: ReturnType<typeof makeCards>) => void;
+    serviceMock.listCardSummaries.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<WalletWorkspace />);
+
+    expect(screen.getByTestId("one-wallet-loading")).toHaveAttribute("aria-busy", "true");
+    const art = screen.getByTestId("one-wallet-empty-art").querySelector("img");
+    expect(art).toBeTruthy();
+    expect(screen.getByText("All your cards.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Opening your wallet…" })).toBeDisabled();
+    expect(screen.queryByTestId("one-wallet-empty")).toBeNull();
+
+    await waitFor(() => expect(serviceMock.listCardSummaries).toHaveBeenCalled());
+    await act(async () => { finish(makeCards(count)); });
+    expect(screen.queryByTestId("one-wallet-loading")).toBeNull();
+    if (count === 0) {
+      expect(screen.getByTestId("one-wallet-empty-art").querySelector("img")).toBe(art);
+      expect(screen.getByRole("button", { name: "Add a Card" })).toBeEnabled();
+    } else {
+      expect(screen.getByTestId("one-wallet-list")).toBeTruthy();
+      expect(screen.queryByTestId("one-wallet-empty")).toBeNull();
+    }
+  });
+
   it("renders the Wallet hero and keeps its CTA wired to the existing add-card flow", async () => {
     serviceMock.listCardSummaries.mockResolvedValue([]);
     render(<WalletWorkspace />);

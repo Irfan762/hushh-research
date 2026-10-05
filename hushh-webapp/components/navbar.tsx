@@ -4,7 +4,7 @@
 "use client";
 
 import React, { useEffect, useMemo, type CSSProperties } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Compass as PhosphorCompass,
   Search as MagnifyingGlass,
@@ -233,6 +233,7 @@ export const Navbar = ({
   layout?: "fixed" | "slot";
 }) => {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const interactionIntents = useInteractionIntents();
   const { isAuthenticated } = useAuth();
@@ -411,6 +412,7 @@ export const Navbar = ({
   const routeActiveNav = resolveBottomNavActiveKey(
     normalizedPathname,
     bottomNavScope,
+    searchParams,
   );
   const optimisticNav = useMemo(() => {
     const pendingTarget = [...interactionIntents]
@@ -422,19 +424,15 @@ export const Navbar = ({
           intent.target,
       )?.target;
     if (!pendingTarget) return null;
-    return (
-      navOptions.find((option) => {
-        const action = resolveBottomNavAction(
-          option.value as AppBottomNavKey,
-          resolveBottomNavSpecialistOptionKeys(bottomNavScope).includes(
-            option.value as AppBottomNavKey,
-          )
-            ? bottomNavScope
-            : "one",
-        );
-        return action.type === "route" && action.href === pendingTarget;
-      })?.value ?? null
+    const target = new URL(pendingTarget, "https://app.invalid");
+    const pendingKey = resolveBottomNavActiveKey(
+      target.pathname,
+      bottomNavScope,
+      target.searchParams,
     );
+    return navOptions.some((option) => option.value === pendingKey)
+      ? pendingKey
+      : null;
   }, [bottomNavScope, interactionIntents, navOptions]);
   const activeNav = (optimisticNav ?? routeActiveNav) as AppBottomNavKey;
 
