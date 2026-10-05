@@ -458,6 +458,8 @@ final class AppUITests: XCTestCase {
         if previousProfile.exists && previousProfile.isHittable { previousProfile.tap() }
         let openProfile = app.buttons["Open Profile"].firstMatch
         XCTAssertTrue(openProfile.waitForExistence(timeout: 15) && openProfile.isHittable)
+        XCTAssertGreaterThanOrEqual(openProfile.frame.width, 44, "Profile photo needs a full shell hit target")
+        XCTAssertGreaterThanOrEqual(openProfile.frame.height, 44, "Profile photo needs a full shell hit target")
         openProfile.tap()
         // The pane can resume a nested setting from the same session. Reach
         // its home through its actual Back controls, not a cold route/reset.
@@ -572,7 +574,13 @@ final class AppUITests: XCTestCase {
             openPreferences()
             selectTheme(original)
             self.perfTapNav(app, label: "Chat")
+            let chat = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch.buttons["Chat"]
+            let selectedChat = XCTNSPredicateExpectation(predicate: NSPredicate(format: "selected == true"), object: chat)
+            XCTAssertEqual(XCTWaiter.wait(for: [selectedChat], timeout: 10), .completed, "THEME_RESTORE_CHAT_NOT_SELECTED")
+            let composer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
+            XCTAssertTrue(composer.waitForExistence(timeout: 10) && composer.isHittable, "THEME_RESTORE_CHAT_NOT_READY")
             XCTAssertFalse(web.buttons["Unlock"].exists, "Theme restoration lost the session")
+            print("NATIVE_THEME_RESTORED original_preference_unlocked_chat=true")
         }
         app.buttons["Close Profile"].firstMatch.tap()
         for theme in ["Light", "Dark"] {
@@ -608,7 +616,13 @@ final class AppUITests: XCTestCase {
             // unattributed issues remain failures rather than disappearing.
             try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .sufficientElementDescription, .trait]) { issue in
                 guard let element = issue.element else { return false }
-                return element.identifier != "top-shell-back"
+                print("NATIVE_BACK_AUDIT_ISSUE identified=\(!element.identifier.isEmpty) overlaps_back=\(element.frame.intersects(back.frame)) type=\(issue.auditType.rawValue)")
+                let publicControls = ["Open Profile", "Add card", "Done", "Search cards", "Go back", "One.", "Chat", "One", "Connect", "Feed", "Search", "Top of screen", "Scroll to top", "Status bar", "Back", "Skip to main content"]
+                let publicIndex = publicControls.firstIndex(of: element.label) ?? -1
+                print("NATIVE_AUDIT_GEOMETRY public_control=\(publicIndex) x=\(Int(element.frame.minX)) y=\(Int(element.frame.minY)) width=\(Int(element.frame.width)) height=\(Int(element.frame.height))")
+                print("NATIVE_AUDIT_ELEMENT type=\(element.elementType.rawValue) label_empty=\(element.label.isEmpty)")
+                return !element.identifier.isEmpty && element.identifier != "top-shell-back" &&
+                    !element.frame.intersects(back.frame)
             }
             print("NATIVE_BACK_ACCESSIBILITY theme=\(theme) contrast_hit_description_traits=true")
             back.tap()

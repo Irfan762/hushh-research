@@ -208,6 +208,12 @@ describe("chat history body gesture", () => {
     expect(onClose).not.toHaveBeenCalled();
     overlay.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
     expect(backdropClick).not.toHaveBeenCalled();
+    // A fresh tap during snap-back is intentional, not the prior drag's click.
+    // Do not wait for settlement before checking this regression.
+    touch("touchstart", 350, 300, overlay);
+    touch("touchend", 350, 300, overlay);
+    overlay.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
+    expect(backdropClick).toHaveBeenCalledOnce();
     act(() => { vi.runAllTimers(); });
     expect(drawer.style.transform).toBe("");
     expect(native.dragging).toBe(false);

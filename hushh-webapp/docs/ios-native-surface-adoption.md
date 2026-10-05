@@ -28,6 +28,9 @@ another navigation stack, WebView, session, or information store.
 - [ProfileAvatarEditor](../components/profile/profile-avatar-editor.tsx) opens an
   in-place DOM photo preview with close and existing Photo options. The preview
   itself neither writes a photo nor opens a picker.
+  The shared top-shell Profile action retains a 32-point photo inside a
+  44-point touch target; increasing its hit area does not enlarge the image or
+  replace Profile with another native content container.
 - [The global Search host](../components/kai/kai-command-bar-global.tsx) is mounted
   on Chat by [Providers](../app/providers.tsx). Native Search opens that existing
   palette; it is not an independent search route or native result engine.
@@ -337,12 +340,14 @@ unlocked Chat. Pixel samples remained in memory, with no screenshots retained.
 This covers those routes and transitions, not every screen, accent, accessibility
 setting, keyboard or OS privacy presentation.
 
-The same rehearsal passed Apple's [automated accessibility audit](https://developer.apple.com/documentation/xcuiautomation/xcuiapplication/performaccessibilityaudit(for:_:))
-for the identified native Back control in both themes: contrast, hit region,
-sufficient description and traits. Issues attributed to other controls are out
-of this bounded check; unattributed issues still fail. This is not an app-wide
-audit, VoiceOver focus/reading-order proof, or Dynamic Type/reduced-transparency
-acceptance. Those release-admission gates remain open.
+Apple's [automated accessibility audit](https://developer.apple.com/documentation/xcuiautomation/xcuiapplication/performaccessibilityaudit(for:_:))
+covers contrast, hit region, sufficient description and traits in the bounded
+Back rehearsal. Review found that its initial filter silently ignored unnamed
+elements, so that earlier pass is not admission evidence. The tightened filter
+retains unidentified and Back-overlapping issues. It reported a hit-region issue
+outside Back on an unnamed element; that finding remains under investigation.
+This is not an app-wide audit, VoiceOver focus/reading-order proof, or Dynamic
+Type/reduced-transparency acceptance. Those release-admission gates remain open.
 
 ### Chat Body Gesture
 

@@ -118,6 +118,9 @@ export function AppChatHistoryEdgeGesture({ enabled, open = false, surfaceRef, d
       else gesture = null;
     };
     const start = (event: TouchEvent) => {
+      // A fresh touch ends the prior drag's synthetic-click sequence even if
+      // settlement or an excluded control prevents this touch becoming a pan.
+      suppressClickUntil = 0;
       if (event.touches.length !== 1) { cancel(); return; }
       const touch = event.touches[0];
       if (!touch) return;
@@ -126,7 +129,6 @@ export function AppChatHistoryEdgeGesture({ enabled, open = false, surfaceRef, d
       if (settling || (initialOpen ? origin === surface : origin !== surface) ||
           panel.getAttribute("aria-hidden") !== String(!initialOpen) || touch.clientX <= EDGE_BACK_LANE ||
           (!initialOpen && nativeShellOverlayBlocked()) || domBlocked() || excludedTarget(event.target, origin, initialOpen)) return;
-      suppressClickUntil = 0; // A new deliberate tap is not the prior drag's click.
       // Include the authored closed shadow clearance, not just panel width.
       const width = initialOpen ? panel.offsetWidth + shadowClearance : Math.max(panel.offsetWidth, -panel.getBoundingClientRect().left);
       if (width <= 0) return;
@@ -151,7 +153,7 @@ export function AppChatHistoryEdgeGesture({ enabled, open = false, surfaceRef, d
         setDragging(true);
       }
       suppressClickUntil = performance.now() + 500;
-      event.stopPropagation(); // Do not also open Profile from the same left pan.
+      event.stopPropagation(); // Keep owned moves local; Profile already yields to the open drawer.
       place(gesture, (gesture.initialOpen ? gesture.width : 0) + dx, "drag");
     };
     const end = (event: TouchEvent) => {
