@@ -261,7 +261,9 @@ class _Conn:
         if "SET state = 'expired'" in query:
             row = self._owned(args[0], args[1])
             if row is not None and row["state"] == "prepared" and row["expires_at"] <= NOW:
-                row.update(state="expired", updated_at=NOW)
+                # Immediate confirmations only, when the statement says so.
+                if "send_at IS NULL" not in query or row["send_at"] is None:
+                    row.update(state="expired", updated_at=NOW)
             return None
         if "SELECT action_id, state, expires_at, sent_at, envelope_hmac" in query:
             row = self._owned(args[0], args[1])
@@ -690,8 +692,8 @@ async def test_read_back_failure_after_execute_is_deferred_not_raised(harness):
 @pytest.mark.asyncio
 async def test_refusal_after_the_window_passed_is_labelled_window_passed(harness):
     """execute() refuses an armed row whose window passed while it was armed
-    (its own 'expired' write rolls back with the refusal). The drain records
-    that as the window, not as an unexplained refusal."""
+    and leaves it armed (its expiry write is for immediate sends only). The
+    drain records that as the window, not as an unexplained refusal."""
     h = harness
     _schedule(h, "late-arm")
     real_execute = h.service.execute

@@ -869,18 +869,19 @@ class GmailDeliveryService:
                     status_code=409,
                 )
         async with pool.acquire() as conn:
-            # An expired action can never be sent, so a scheduled one's sealed
-            # mail and display subject leave with it (an immediate send never
-            # stores either). Committed on its own, before the claim: the claim
-            # refuses an expired row by raising inside its transaction, which
-            # would roll this write back with it.
+            # Committed on its own, before the claim: the claim refuses an
+            # expired row by raising inside its transaction, which would roll
+            # this write back with it. Immediate confirmations only: an armed
+            # scheduled send past its window is still refused by the claim
+            # (expires_at > NOW()), and the drain records it as failed, so the
+            # Feed keeps the unsent email.
             await conn.execute(
                 """
                 UPDATE gmail_owner_send_actions
-                SET state = 'expired', updated_at = NOW(),
-                    payload_sealed = NULL, subject = NULL
+                SET state = 'expired', updated_at = NOW()
                 WHERE action_id = $1 AND user_id = $2
                   AND state = 'prepared' AND expires_at <= NOW()
+                  AND send_at IS NULL
                 """,
                 action_id,
                 user_id,

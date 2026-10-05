@@ -139,8 +139,9 @@ WHERE action_id = $1 AND user_id = $2
 RETURNING action_id
 """
 
-# execute() refuses an armed row whose window closed while it was armed (its own
-# 'expired' write rolls back with that refusal), so the window names the reason.
+# execute() refuses an armed row whose window closed while it was armed and
+# leaves it armed (its expiry write skips scheduled rows), so the window names
+# the reason here.
 _FAIL_ARMED_SQL = """
 UPDATE gmail_owner_send_actions
 SET state = 'failed',

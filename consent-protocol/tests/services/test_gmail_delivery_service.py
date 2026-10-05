@@ -1266,6 +1266,17 @@ class ScheduleLedgerConn(_PrepareConn):
             return self._by_key(*args)
         if "FOR UPDATE" in query and "WHERE action_id = $1 AND user_id = $2" in query:
             return self._owned(*args)
+        if "SET state = 'sending'" in query:
+            row = self._owned(args[0], args[1])
+            if (
+                row is None
+                or row["state"] != "prepared"
+                or row["expires_at"] <= self.now
+                or row["envelope_hmac"] != args[2]
+            ):
+                return None
+            row.update(state="sending")
+            return {key: row[key] for key in ("action_id", "state", "expires_at", "sent_at")}
         if "INSERT INTO gmail_owner_send_actions" in query:
             (action_id, user_id, envelope, idem, expires_at, send_at, sealed, display, subject) = (
                 args
@@ -1578,7 +1589,13 @@ async def test_an_immediate_prepare_never_expires_a_scheduled_send(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_execute_expiring_a_scheduled_send_drops_its_sealed_mail_and_subject(monkeypatch):
+async def test_execute_persists_an_immediate_expiry_and_leaves_a_late_scheduled_send_to_the_drain(
+    monkeypatch,
+):
+    """The expiry write is durable for an immediate confirmation (a refusal
+    rolls back the claim's transaction, never this write), while a scheduled
+    send past its window stays armed: the drain records it as failed, which is
+    what puts the unsent email in the Feed. Both are refused."""
     conn = ScheduleLedgerConn()
     service = _schedule_service(monkeypatch, conn)
     scheduled = await _schedule(service)
@@ -1589,13 +1606,22 @@ async def test_execute_expiring_a_scheduled_send_drops_its_sealed_mail_and_subje
         )
     )
     row.update(state="prepared")
+    # Same draft, so the same envelope HMAC: an immediate confirmation of it.
+    conn.rows["immediate"] = {
+        **row,
+        "action_id": "immediate",
+        "idempotency_hmac": "other",
+        "send_at": None,
+        "payload_sealed": None,
+        "subject": None,
+    }
     conn.now = row["expires_at"]
 
-    with pytest.raises(GmailDeliveryError) as refused:
-        await service.execute(
-            user_id="owner", action_id=scheduled["action_id"], draft_payload=draft_payload
-        )
+    for action_id in ("immediate", scheduled["action_id"]):
+        with pytest.raises(GmailDeliveryError) as refused:
+            await service.execute(user_id="owner", action_id=action_id, draft_payload=draft_payload)
+        assert refused.value.code == "ACTION_NOT_SENDABLE"
 
-    assert refused.value.code == "ACTION_NOT_SENDABLE"
-    assert (row["state"], row["payload_sealed"], row["subject"]) == ("expired", None, None)
-    assert row["recipient_display"] == "Priya Sharma"
+    assert conn.rows["immediate"]["state"] == "expired"
+    assert row["state"] == "prepared"
+    assert row["payload_sealed"] is not None
