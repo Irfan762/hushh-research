@@ -303,6 +303,11 @@ scrolled fully above fixed chrome on compact viewports. 9. Decorative glass fade
     changes may do so. Every shared tab strip uses the Location-proven Morphy
     rail and one moving solid selection surface attached to the same live swipe
     position; route-specific underline variants are not allowed.
+    Normalize terminal snap geometry before releasing pager ownership; never
+    reposition a live drag to repair a settled pixel residual. Mail's Overview,
+    KYC, and Receipts share this pager, including disconnected/loading content.
+    Inactive panes stay mounted for draft continuity but remain inert and cannot
+    publish voice actions. Onboarding remains a separate receipts-only flow.
 
 ## Pixel Grid And Symmetry Contract
 
