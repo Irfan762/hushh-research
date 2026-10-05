@@ -30,7 +30,6 @@ import {
   FingerprintProfileIcon,
   GmailAgentIcon,
   InboxRowIcon,
-  KeyRowIcon,
   LocationAgentIcon,
   MarketplaceAgentIcon,
   MemoryAgentIcon,
@@ -507,11 +506,11 @@ function isPasskeyVaultMethod(method: VaultMethod | null): boolean {
 }
 
 const VAULT_INLINE_CONTROL_CLASS =
-  "inline-flex h-8 w-full min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium sm:w-auto sm:min-w-[7.5rem]";
+  "inline-flex min-h-11 min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium";
 const VAULT_INLINE_BADGE_CLASS =
-  "inline-flex h-8 w-full min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium sm:w-auto sm:min-w-[7.5rem]";
+  "inline-flex min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium";
 const VAULT_INLINE_ACTIONS_CLASS =
-  "grid w-full min-w-0 grid-cols-2 items-center gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end";
+  "flex min-w-0 flex-wrap items-center gap-2 sm:justify-end";
 
 function vaultWrapperKey(
   wrapper: Pick<VaultWrapper, "method" | "wrapperId">,
@@ -539,16 +538,6 @@ function describePasskeyWrapper(wrapper: VaultWrapper): string {
   return parts.join(" / ");
 }
 
-function VaultComingSoonBadge() {
-  return (
-    <Badge
-      variant="secondary"
-      className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium"
-    >
-      Coming soon
-    </Badge>
-  );
-}
 
 function profileRouteRequiresUnlockedVault(
   panel: ProfilePanel | null,
@@ -2197,12 +2186,6 @@ function ProfilePageContent({
     vaultMethod === "passphrase" &&
     quickMethodReadyOnCurrentDevice,
   );
-  const defaultUnlockDescription =
-    vaultMethod === "passphrase"
-      ? "Passphrase opens your vault by default."
-      : vaultMethod
-        ? `${readableMethod(vaultMethod)} opens your vault by default.`
-        : "Default unlock is not set.";
   const canEditKaiPreferences = Boolean(
     user?.uid && vaultAccess.hasVault && vaultAccess.canMutateSecureData,
   );
@@ -3875,7 +3858,6 @@ function ProfilePageContent({
                 icon={VaultRowIcon}
                 iconTone="capability"
                 title="Default unlock"
-                description={defaultUnlockDescription}
                 trailing={
                   <div
                     className={VAULT_INLINE_ACTIONS_CLASS}
@@ -3941,11 +3923,6 @@ function ProfilePageContent({
                   enrolledPasskeyWrappers.length > 0
                     ? `Add another ${readableQuickMethod(recommendedQuickMethod)}`
                     : `Add ${readableQuickMethod(recommendedQuickMethod)}`
-                }
-                description={
-                  isPasskeyVaultMethod(recommendedQuickMethod)
-                    ? "Save a passkey."
-                    : "Enable quick unlock."
                 }
                 disabled={switchingVaultMethod}
                 chevron
@@ -4026,22 +4003,12 @@ function ProfilePageContent({
                 icon={PassphraseRowIcon}
                 iconTone="capability"
                 title="Change passphrase"
-                description="Update vault protection."
                 disabled={switchingVaultMethod}
                 chevron
                 onClick={() => setPassphraseDialogOpen(true)}
               />
             ) : null}
 
-            <SettingsRow
-              icon={KeyRowIcon}
-              iconTone="capability"
-              title="BYOK and passkeys"
-              description="Additional key methods are being verified."
-              disabled
-              trailing={<VaultComingSoonBadge />}
-              stackTrailingOnMobile
-            />
           </>
         ) : null}
       </SettingsGroup>

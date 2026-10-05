@@ -21,6 +21,7 @@ export function AgentBarSurface({ className, children, embedded = false, ...prop
       className={cn(
         !embedded && "bottom-chrome-surface",
         "pointer-events-auto relative flex min-h-11 items-center overflow-hidden rounded-full",
+        dock && "min-h-[3.25rem] rounded-[1.5rem]",
         BOTTOM_CHROME_COLUMN_CLASSNAME,
         className,
         suppressed && "hidden",

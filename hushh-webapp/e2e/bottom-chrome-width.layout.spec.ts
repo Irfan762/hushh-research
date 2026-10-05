@@ -221,6 +221,26 @@ test("shared dock retains material and input identity with aligned edges and key
     expect(sendFrame!.width).toBeGreaterThanOrEqual(44);
     await input.fill("");
     expect((await measureInput()).height).toBeLessThanOrEqual(48);
+    const emptyTextFrame = await dock.boundingBox();
+    const material = () => dock.evaluate(node => {
+      const style = getComputedStyle(node);
+      return { radius: style.borderRadius, background: style.backgroundColor, border: style.borderWidth };
+    });
+    const textMaterial = await material();
+    await page.getByTestId("fixture-route").click();
+    await expect(input).toHaveCount(0);
+    await expect.poll(async () => {
+      const frame = await dock.boundingBox();
+      return Math.max(...(["x", "y", "width", "height"] as const)
+        .map(key => Math.abs(emptyTextFrame![key] - frame![key])));
+    }, { message: "Route handoff must settle to the identical Agent Bar frame" }).toBeLessThanOrEqual(EDGE_TOLERANCE_PX);
+    expect(await material()).toEqual(textMaterial);
+    expect(await dock.evaluate((node, original) => node === original, retainedBar)).toBe(true);
+    await page.getByTestId("fixture-route").click();
+    await expect(input).toBeVisible();
+    // Routes retain the outer surface, not an unmounted route's textarea.
+    await retainedInput?.dispose();
+    const currentInput = await input.elementHandle();
     await input.fill("Unsent synthetic draft");
     const barFrame = await dock.boundingBox();
     const navFrame = await page.locator(".kai-bottom-nav-pill").boundingBox();
@@ -230,7 +250,7 @@ test("shared dock retains material and input identity with aligned edges and key
     await expect(input).toBeHidden();
     await page.getByTestId("fixture-mode").click();
     await expect(input).toHaveValue("Unsent synthetic draft");
-    expect(await input.evaluate((node, original) => node === original, retainedInput)).toBe(true);
+    expect(await input.evaluate((node, original) => node === original, currentInput)).toBe(true);
     expect(await dock.evaluate((node, original) => node === original, retainedBar)).toBe(true);
     await page.evaluate(() => {
       document.documentElement.classList.add("native-keyboard-inset", "kb-open");
@@ -253,7 +273,7 @@ test("shared dock retains material and input identity with aligned edges and key
     await expect(input).toHaveCount(0);
     expect(await dock.evaluate((node, original) => node === original, retainedBar)).toBe(true);
     expect(errors).toEqual([]);
-    await retainedInput?.dispose();
+    await currentInput?.dispose();
     await retainedBar?.dispose();
   }
 });

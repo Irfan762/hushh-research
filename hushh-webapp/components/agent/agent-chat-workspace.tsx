@@ -8532,7 +8532,11 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             <NativeChatChrome kind="history" owner={renderedWorkspaceOwnerId}
               pendingAttention={driveReviewsPending}
               context={`${pathname}:${isVaultUnlocked}:${agentSurface}`}
-              eligible={isCanonicalChatRoute && hasChatAccess && !isHistoryDrawerOpen && driveReviewsPending === 0}
+              // History and Close must be one presentation through the entire
+              // drawer lifecycle. The native History-only pilot cannot own
+              // the modal's Close action yet; retain the coherent web control
+              // rather than swap materials or bypass overlay isolation.
+              eligible={false}
               onActivate={toggleHistoryDrawer} focusRef={historyDrawerFallbackRef} ref={historyChromeRef}
               className="relative z-[540] flex h-11 w-11 shrink-0 items-center justify-center">
             <ShellActionSurface

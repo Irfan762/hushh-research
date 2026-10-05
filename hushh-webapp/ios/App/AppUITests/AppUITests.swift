@@ -372,6 +372,7 @@ final class AppUITests: XCTestCase {
         }
         app.activate()
         dismissRehearsalChatKeyboard(app)
+        cancelRehearsalVoiceCapture(app)
         let bar = app.descendants(matching: .any).matching(identifier: "one-native-navigation").firstMatch
         // WebKit exposes nested AX WebView nodes on physical iOS. Count the
         // existing identified Capacitor host, not its accessibility descendants.
@@ -755,7 +756,22 @@ final class AppUITests: XCTestCase {
         XCTAssertEqual(app.webViews.count, 1 + webView.webViews.count,
                        "Photo preview introduced another WebView host")
         XCTAssertFalse(webView.buttons["Unlock"].exists, "Preview lost the unlocked session")
-        app.buttons["Close Profile"].firstMatch.tap()
+        let profileClose = app.buttons["Close Profile"].firstMatch
+        XCTAssertTrue(profileClose.exists && profileClose.isHittable)
+        // Drag the unoccupied middle of the owned Profile header, not a row
+        // action, field, photo, horizontal rail or an inferred DOM control.
+        let origin = webView.coordinate(withNormalizedOffset: CGVector(dx: 0, dy: 0))
+        let headerY = profileClose.frame.midY - webView.frame.minY
+        let pullStart = origin.withOffset(CGVector(dx: webView.frame.width * 0.40, dy: headerY))
+        let pullEnd = origin.withOffset(CGVector(dx: webView.frame.width * 0.86, dy: headerY + 2))
+        let hostFrame = webView.frame
+        pullStart.press(forDuration: 0.05, thenDragTo: pullEnd)
+        let retired = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: profileClose)
+        XCTAssertEqual(XCTWaiter.wait(for: [retired], timeout: 10), .completed,
+                       "Profile pull did not dismiss through its owning Sheet")
+        XCTAssertEqual(webView.frame, hostFrame, "Profile pull moved the Capacitor host")
+        XCTAssertFalse(webView.buttons["Unlock"].exists, "Profile pull lost the unlocked session")
+        print("PROFILE_DRAG_CONTINUITY close_warm_single_host")
         print("PROFILE_PHOTO_PREVIEW_CONTINUITY open_close_without_mutation")
     }
 

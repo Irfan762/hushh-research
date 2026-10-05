@@ -51,6 +51,11 @@ another navigation stack, WebView, session, or information store.
   remain on the accepted DOM controls until physical acceptance is complete.
   Pending History review badges retain DOM presentation. Choices invoke the
   existing drawer and agent-surface handlers, never a native router.
+  History is currently **not admitted by Chat**, including the Debug pilot:
+  opening the modal retired its native trigger and exposed a different DOM
+  Close. Chat now keeps one shared History/Close presentation for the full
+  lifecycle. The native implementation remains available for bounded testing;
+  re-admission requires an owned, verified Close handoff, not an overlay bypass.
 - [AgentDock](../components/agent/agent-dock.tsx) retains one material Agent Bar
   across route changes. Canonical Chat projects its existing form into that bar;
   microphone providers and the voice control remain mounted. Drafts and sends
@@ -67,6 +72,15 @@ another navigation stack, WebView, session, or information store.
   do not depend on a Chat-route ancestor. Chromium/WebKit checks cover narrow
   widths, long unbroken drafts, multiline growth, shrink-back and input identity.
   Physical appearance acceptance remains separate from those layout contracts.
+  Voice and the empty composer share a 52px resting frame and the same material
+  and corner radius. Route handoff changes content opacity only; multiline
+  writing still grows within its existing ceiling.
+- [ProfilePaneDrag](../components/app-ui/profile-pane-drag.tsx) tracks a rightward
+  pull of the open Profile sheet and its scrim without moving the app body.
+  The controlled Sheet remains the dismissal, focus and modal authority. Short
+  pulls restore the open pane; fields, controls, vertical scroll, horizontal
+  rails, nested overlays and the keyboard retain their interaction ownership.
+  This is a React presentation adapter, not native Liquid Glass.
 
 Apple recommends standard system controls and reserves Liquid Glass primarily for
 the interactive layer above content. Native material is not equivalent to adding
