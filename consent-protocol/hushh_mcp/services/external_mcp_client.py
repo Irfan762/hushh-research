@@ -96,6 +96,29 @@ def _http_status_from_error(error: BaseException, *, _seen: set[int] | None = No
     return None
 
 
+def _error_types(error: BaseException, *, _seen: set[int] | None = None, _depth: int = 0) -> str:
+    """Exception class names only, so a flattened failure can be told apart in logs.
+
+    Never the message, arguments or traceback: those can carry authorization
+    headers, URLs and returned document text. A class name cannot.
+    """
+    seen = _seen if _seen is not None else set()
+    if id(error) in seen or _depth > 4:
+        return ""
+    seen.add(id(error))
+    names = [type(error).__name__]
+    children = list(getattr(error, "exceptions", None) or ())
+    for link in (error.__cause__, error.__context__):
+        if isinstance(link, BaseException):
+            children.append(link)
+    for child in children[:4]:
+        if isinstance(child, BaseException) and (
+            nested := _error_types(child, _seen=seen, _depth=_depth + 1)
+        ):
+            names.append(nested)
+    return "<".join(names)
+
+
 def _normalize_and_cap(
     result: Any, *, project: Callable[[dict[str, Any]], dict[str, Any]] | None = None
 ) -> ExternalMcpToolResult:
@@ -293,6 +316,14 @@ async def list_tools(
         raise ExternalMcpTimeoutError() from error
     except Exception as error:
         status = _http_status_from_error(error)
+        # This branch flattens every unexpected failure (a transport error, a
+        # response the SDK cannot parse) into "could not reach", so record what
+        # it was. Class names only; see _error_types.
+        logger.warning(
+            "external_mcp_client.list_tools_failed status=%s types=%s",
+            status,
+            _error_types(error),
+        )
         if status in {401, 403}:
             raise ExternalMcpAuthError() from error
         raise ExternalMcpError(
@@ -343,7 +374,11 @@ async def call_tool(
         # Provider/SDK exceptions can contain authorization headers, arguments,
         # URLs, and returned document text. Never retain their traceback or
         # model-supplied tool name in application diagnostics.
-        logger.warning("external_mcp_client.call_tool_failed status=%s", status)
+        logger.warning(
+            "external_mcp_client.call_tool_failed status=%s types=%s",
+            status,
+            _error_types(error),
+        )
         if status in {401, 403}:
             raise ExternalMcpAuthError() from error
         raise ExternalMcpError(
