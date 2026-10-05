@@ -62,6 +62,11 @@ another navigation stack, WebView, session, or information store.
   adapter's alternate text field is not presented alongside canonical Chat;
   its own unsent draft remains with that adapter. Reduced motion removes the
   short content transition.
+  The portalled field carries its own bounded corners and six-line ceiling,
+  with internal scrolling and 44-point Send/microphone targets; these styles
+  do not depend on a Chat-route ancestor. Chromium/WebKit checks cover narrow
+  widths, long unbroken drafts, multiline growth, shrink-back and input identity.
+  Physical appearance acceptance remains separate from those layout contracts.
 
 Apple recommends standard system controls and reserves Liquid Glass primarily for
 the interactive layer above content. Native material is not equivalent to adding

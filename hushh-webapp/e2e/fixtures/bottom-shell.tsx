@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { AppBottomShell } from "../../components/app-ui/app-bottom-shell";
@@ -6,6 +6,7 @@ import { useVoiceSessionStore } from "../../lib/one-voice/session-store";
 import { INITIAL_VOICE_SESSION_STATE } from "../../lib/one-voice/session-types";
 import { AgentDockProvider, AgentDockPortal } from "../../components/agent/agent-dock";
 import { AgentBarSurface } from "../../components/agent/agent-bar-surface";
+import { ShellActionSurface } from "../../components/app-ui/shell-action-surface";
 
 /**
  * The persistent bottom chrome exactly as `app/providers.tsx` mounts it: the
@@ -50,6 +51,13 @@ function Page() {
   const [chat, setChat] = useState(dataset.composer === "true");
   const [voice, setVoice] = useState(false);
   const [draft, setDraft] = useState("");
+  const field = useRef<HTMLTextAreaElement>(null);
+  useLayoutEffect(() => {
+    if (!field.current) return;
+    field.current.style.height = "0px";
+    const ceiling = Number.parseFloat(getComputedStyle(field.current).maxHeight);
+    field.current.style.height = `${Math.min(field.current.scrollHeight, ceiling)}px`;
+  }, [draft, chat]);
   return (
     <AgentDockProvider>
       <main
@@ -70,9 +78,14 @@ function Page() {
       <AppBottomShell model={{ navigationHidden: false, agentBarHidden: chat }} />
       {chat ? <AgentDockPortal enabled visible={!voice}>
         <form data-agent-chat-composer-form="root" onSubmit={event => event.preventDefault()}>
-          <AgentBarSurface embedded className="agent-chat-composer-surface min-h-11 gap-2 px-3">
-            <textarea aria-label="Message One" rows={1} value={draft} onChange={event => setDraft(event.target.value)} className="min-w-0 flex-1 resize-none bg-transparent py-3 text-sm" />
-            <button type="submit" aria-label="Send message" className="h-11 w-11 shrink-0">Send</button>
+          <AgentBarSurface embedded className="agent-chat-composer-surface agent-chat-composer-compact flex min-w-0 items-end gap-2 overflow-hidden">
+            <div className="relative flex min-h-0 min-w-0 flex-1 items-center">
+              <textarea ref={field} aria-label="Message One" placeholder="Message One..." rows={1} value={draft} onChange={event => setDraft(event.target.value)} className="agent-chat-composer-field block w-full min-w-0 resize-none overflow-y-auto border-0 bg-transparent text-[16px] break-words [overflow-wrap:anywhere]" />
+            </div>
+            <div className="agent-chat-composer-actions flex shrink-0 items-center gap-1">
+              <ShellActionSurface aria-label="Start voice mode">Mic</ShellActionSurface>
+              <ShellActionSurface type="submit" aria-label="Send message">Send</ShellActionSurface>
+            </div>
           </AgentBarSurface>
         </form>
       </AgentDockPortal> : null}

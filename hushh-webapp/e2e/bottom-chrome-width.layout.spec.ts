@@ -199,6 +199,28 @@ test("shared dock retains material and input identity with aligned edges and key
     await expect(input).toBeVisible();
     const retainedBar = await dock.elementHandle();
     const retainedInput = await input.elementHandle();
+    const measureInput = () => input.evaluate(node => {
+      const field = node as HTMLTextAreaElement;
+      const frame = field.getBoundingClientRect();
+      const surface = field.closest("[data-agent-dock-surface]")!.getBoundingClientRect();
+      return {
+        height: frame.height, contentHeight: field.scrollHeight,
+        within: frame.left >= surface.left && frame.right <= surface.right,
+        radius: getComputedStyle(field).borderRadius,
+      };
+    });
+    await input.fill(Array.from({ length: 30 }, (_, i) => `Line ${i + 1}: ${"wrappedtext".repeat(8)}`).join("\n"));
+    const multiline = await measureInput();
+    expect(multiline.within).toBe(true);
+    expect(multiline.height).toBeLessThanOrEqual(160);
+    expect(multiline.contentHeight).toBeGreaterThan(multiline.height);
+    expect(multiline.radius).toBe("0px");
+    const sendFrame = await page.getByRole("button", { name: "Send message" }).boundingBox();
+    const inputFrame = await input.boundingBox();
+    expect(inputFrame!.x + inputFrame!.width).toBeLessThanOrEqual(sendFrame!.x);
+    expect(sendFrame!.width).toBeGreaterThanOrEqual(44);
+    await input.fill("");
+    expect((await measureInput()).height).toBeLessThanOrEqual(48);
     await input.fill("Unsent synthetic draft");
     const barFrame = await dock.boundingBox();
     const navFrame = await page.locator(".kai-bottom-nav-pill").boundingBox();

@@ -486,6 +486,7 @@ final class AppUITests: XCTestCase {
             let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: element)
             XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 10), .completed, message)
         }
+        print("NATIVE_CHAT_ENTRY keyboard=\(app.keyboards.firstMatch.exists) history_dom=\(web.buttons.matching(NSPredicate(format: "label BEGINSWITH %@ AND identifier != %@", "Open chat history", "chat-history-toggle")).firstMatch.exists) picker_native=\(selector.exists)")
         XCTAssertTrue(history.waitForExistence(timeout: 15) && history.isHittable,
                       "NATIVE_CHAT_HISTORY_UNAVAILABLE: badge must be zero and Debug family explicitly admitted")
         XCTAssertTrue(selector.waitForExistence(timeout: 15) && selector.isHittable, "NATIVE_CHAT_PICKER_UNAVAILABLE")

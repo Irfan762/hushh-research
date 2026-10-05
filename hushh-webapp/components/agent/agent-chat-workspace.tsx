@@ -3499,7 +3499,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     // lines), then scrolls inside itself, as in the reference composer. It no
     // longer jumps into the tall editor on the second line (founder direction,
     // 2026-09-29); that editor is only for opening a pasted-text attachment.
-    const nextHeight = textarea.scrollHeight;
+    const ceiling = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const nextHeight = Number.isFinite(ceiling)
+      ? Math.min(textarea.scrollHeight, ceiling)
+      : textarea.scrollHeight;
 
     if (!input.trim() && wasExpanded) {
       textarea.style.height = previousHeight;
@@ -10195,14 +10198,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                     className={cn(
                       composerExpanded
                         ? "agent-chat-composer-surface relative mb-2 block overflow-hidden rounded-[24px]"
-                        : "agent-chat-composer-surface flex min-h-[3.75rem] items-center gap-2 overflow-hidden rounded-[var(--app-input-radius)] px-2.5 pl-3.5",
+                        : "agent-chat-composer-surface agent-chat-composer-compact flex min-w-0 items-end gap-2 overflow-hidden",
                       !isCanonicalChatRoute && "max-w-none",
                       composerExpanded
                         ? isCanonicalChatRoute
                           ? ""
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-foreground/[0.045]"
                         : isCanonicalChatRoute
-                          ? "min-h-11 rounded-[var(--app-input-radius)]"
+                          ? ""
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]",
                     )}
                   >
@@ -10257,7 +10260,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         className={
                           composerExpanded
                             ? "block h-[30dvh] w-full resize-none overscroll-contain overflow-y-auto bg-transparent px-4 pb-14 pr-32 pt-4 text-[16px] leading-6 text-foreground caret-[color:var(--app-accent)] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:px-5 sm:pb-16 sm:pr-36 sm:pt-5 sm:text-sm break-words [overflow-wrap:anywhere] [word-break:break-word]"
-                                : "h-auto max-h-40 min-h-0 min-w-0 flex-1 resize-none overscroll-contain overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-0 bg-transparent px-0 py-3 text-[15px] leading-snug text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60 sm:max-h-44 sm:text-sm break-words [overflow-wrap:anywhere] [word-break:break-word]"
+                                : "agent-chat-composer-field block w-full min-w-0 resize-none overscroll-contain overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-0 bg-transparent text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60 break-words [overflow-wrap:anywhere] [word-break:break-word]"
                         }
                       />
                     </div>
@@ -10268,7 +10271,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                               : "flex shrink-0 items-center gap-1.5"
                           }
                         >
-                          <div className="flex items-center gap-1 rounded-full border border-foreground/[0.08] bg-foreground/[0.045] p-1">
+                          <div className="agent-chat-composer-actions flex items-center gap-1">
                             {composerActionRail}
                           </div>
                         </div>

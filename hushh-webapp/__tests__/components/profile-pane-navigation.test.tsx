@@ -117,6 +117,32 @@ describe("Profile pane touch navigation", () => {
     window.removeEventListener(PROFILE_PANE_OPEN_EVENT, opened);
   });
 
+  it("opens from an admitted roster link drag without stealing its tap or a nested control", () => {
+    const opened = vi.fn();
+    const clicked = vi.fn((event: React.MouseEvent) => event.preventDefault());
+    window.addEventListener(PROFILE_PANE_OPEN_EVENT, opened);
+    const view = render(<><AppProfileEdgeGesture enabled /><a data-profile-body-swipe="" href="/one/calendar" onClick={clicked}>Calendar<button type="button"><svg data-testid="nested-control" /></button></a></>);
+    const link = view.getByText("Calendar");
+    fireEvent.click(link);
+    expect(clicked).toHaveBeenCalledTimes(1);
+    clicked.mockClear();
+    const swipe = (target: Element) => {
+      fireEvent.touchStart(target, { touches: [{ identifier: 1, clientX: 320, clientY: 160 }] });
+      fireEvent.touchMove(target, { touches: [{ identifier: 1, clientX: 150, clientY: 162 }] });
+      fireEvent.touchEnd(target, { changedTouches: [{ identifier: 1, clientX: 140, clientY: 162 }] });
+    };
+    swipe(view.getByTestId("nested-control"));
+    expect(opened).not.toHaveBeenCalled();
+    swipe(link);
+    expect(opened).toHaveBeenCalledTimes(1);
+    fireEvent.click(link, { detail: 1 });
+    expect(clicked).not.toHaveBeenCalled();
+    fireEvent.click(link, { detail: 0 }); // Keyboard activation is never consumed.
+    expect(clicked).toHaveBeenCalledTimes(1);
+    view.unmount();
+    window.removeEventListener(PROFILE_PANE_OPEN_EVENT, opened);
+  });
+
   it("does not attach the Profile opener to dedicated Profile routes", () => {
     navigation.pathname = "/one/profile/account";
     const opened = vi.fn();

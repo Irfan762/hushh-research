@@ -365,25 +365,25 @@ describe("SwipeViews", () => {
     // in — a window-only listener never fires, Embla keeps a stale width, and
     // it translates by the wrong distance, leaving the previous pane clipped
     // beside the selected one (the Memory /one/pkm report).
-    let observerCallback: ResizeObserverCallback | null = null;
+    const viewportCallbacks = new Set<ResizeObserverCallback>();
     let observed: Element | null = null;
     let disconnected = false;
     const originalResizeObserver = globalThis.ResizeObserver;
     const originalRaf = globalThis.requestAnimationFrame;
 
     beforeEach(() => {
-      observerCallback = null;
+      viewportCallbacks.clear();
       observed = null;
       disconnected = false;
       globalThis.ResizeObserver = class {
-        constructor(callback: ResizeObserverCallback) {
-          observerCallback = callback;
-        }
+        constructor(private callback: ResizeObserverCallback) {}
         observe(element: Element) {
           observed = element;
+          if (element === embla.rootNode) viewportCallbacks.add(this.callback);
         }
         disconnect() {
           disconnected = true;
+          viewportCallbacks.delete(this.callback);
         }
         unobserve() {}
       } as unknown as typeof ResizeObserver;
@@ -400,7 +400,7 @@ describe("SwipeViews", () => {
     });
 
     const emitWidth = (width: number) => {
-      observerCallback?.(
+      for (const callback of viewportCallbacks) callback(
         [{ contentRect: { width } } as unknown as ResizeObserverEntry],
         {} as ResizeObserver,
       );
@@ -441,6 +441,27 @@ describe("SwipeViews", () => {
       emitWidth(800); // taller content, identical width
 
       expect(embla.reInit).not.toHaveBeenCalled();
+    });
+
+    it("does not snap a tapped tab back while route state catches up, but still repairs changed geometry", () => {
+      let width = 800;
+      let target = 0;
+      vi.spyOn(embla.rootNode!, "getBoundingClientRect").mockImplementation(() => ({ width } as DOMRect));
+      embla.engine = {
+        containerRect: { width: 800 }, scrollSnaps: [0, -800],
+        target: { get: () => target },
+      } as ReturnType<EmblaCarouselType["internalEngine"]>;
+      renderPager();
+      embla.scrollTo.mockClear();
+      requestTopShellTabSelection("resize", "second");
+      target = -800;
+      embla.scrollTo.mockClear();
+      emitWidth(800);
+      expect(embla.scrollTo).not.toHaveBeenCalled();
+      width = 785;
+      emitWidth(785);
+      expect(embla.reInit).toHaveBeenCalled();
+      expect(embla.scrollTo).toHaveBeenCalledWith(0, true);
     });
 
     it("disconnects the observer on unmount", () => {

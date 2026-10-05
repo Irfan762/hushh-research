@@ -61,7 +61,7 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('"motion-step-enter flex w-full items-start gap-2"');
     expect(workspace).not.toContain("animate-in fade-in slide-in-from-bottom-1");
     expect(workspace).toContain('"agent-chat-composer"');
-    expect(workspace).toContain("min-h-11 rounded-[var(--app-input-radius)]");
+    expect(workspace).toContain("agent-chat-composer-compact");
     // Persistent desktop column (2026-09-29): one solid chat-scoped surface
     // beside the conversation, separated by a hairline, never glass.
     expect(history).toContain('"border-r border-[color:var(--one-chat-divider)] bg-[color:var(--one-chat-sidebar)]"');
@@ -115,16 +115,14 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("agent-chat-composer-expanded-textarea");
     expect(workspace).toContain("overflow-y-auto");
     expect(workspace).toContain("agent-chat-composer-surface");
-    expect(workspace).toContain("px-0 py-3");
+    expect(workspace).toContain("agent-chat-composer-field");
     expect(workspace).not.toContain("<Sparkles className=\"h-3.5 w-3.5\" />");
-    expect(workspace).toContain("rounded-[var(--app-input-radius)]");
     expect(workspace).not.toContain("agent-chat-composer\"\n                      className=\"flex min-h-16 items-end gap-2 rounded-2xl border");
     expect(workspace).toContain('"flex shrink-0 items-center gap-1.5"');
     // One text box serves both sizes: two separate ones were swapped when a
     // long draft auto-expanded and keystrokes in that frame were lost.
     expect(workspace.match(/ref=\{composerTextareaRef\}/g) ?? []).toHaveLength(1);
-    expect(workspace).toContain("max-h-40");
-    expect(workspace).toContain("sm:max-h-44");
+    expect(read("app/globals.css")).toContain("max-height: min(10rem, 24dvh)");
     // The transcript's bottom band follows the composer's measured height.
     expect(workspace).toContain("--agent-chat-composer-stack-height");
     expect(workspace).toContain("h-[30dvh]");

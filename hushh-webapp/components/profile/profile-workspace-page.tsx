@@ -4660,7 +4660,7 @@ function ProfilePageContent({
       as="div"
       width="reading"
       fitContent
-      className={cn("relative isolate pb-3", isPanePresentation && "profile-pane-page")}
+      className={cn("relative isolate", isPanePresentation ? "profile-pane-page" : "pb-3")}
       nativeTest={
         isPanePresentation
           ? undefined

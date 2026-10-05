@@ -607,6 +607,11 @@ export function SwipeViews({
 
       if (!widthChanged && !engineIsStale && !slideCountStale && !misaligned)
         return;
+      // A tab press starts travel before the route reports its new value.
+      // Position-only repair against that old value would snap the pager back
+      // mid-animation. Real geometry changes still require immediate repair.
+      if (isAnimatingRef.current && !widthChanged && !engineIsStale && !slideCountStale)
+        return;
 
       // Re-measure only when the measurement is the thing at fault; reInit()
       // preserves whatever index the engine believes it is on, which may
