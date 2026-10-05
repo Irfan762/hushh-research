@@ -817,7 +817,7 @@ final class AppUITests: XCTestCase {
         XCTAssertFalse(keyboard.exists, "SOFTWARE_KEYBOARD_NOT_DISMISSED")
         XCTAssertTrue((composer.value as? String) == draft, "KEYBOARD_CHANGED_UNSENT_DRAFT")
         perfTapNav(app, label: "One")
-        let mail = web.buttons.matching(NSPredicate(format: "label == %@ OR label BEGINSWITH %@", "Mail", "Mail,")).firstMatch
+        let mail = web.links.matching(NSPredicate(format: "label == %@", "Open Mail")).firstMatch
         XCTAssertTrue(mail.waitForExistence(timeout: 15) && mail.isHittable, "MAIL_ENTRY_UNAVAILABLE")
         mail.tap()
         func tab(_ name: String) -> XCUIElement {
