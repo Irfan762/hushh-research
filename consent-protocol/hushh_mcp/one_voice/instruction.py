@@ -2,18 +2,20 @@
 
 The authored voice lives in ``hushh_mcp/agents/one/agent.yaml`` under
 ``capabilities.voice_head.instruction`` (no parallel prompt file). This module
-appends what only the runtime knows: the tool list, the screen allowlist, the
-current screen, and the narration contract that keeps every spoken fact tied
-to a tool result.
+appends what only the runtime knows: the owner's clock, the tool list, the
+screen allowlist, the current screen, and the narration contract that keeps
+every spoken fact tied to a tool result.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 from hushh_mcp.hushh_adk.manifest import ManifestLoader
+from hushh_mcp.services.owner_time import render_time_block
 
 _MANIFEST_PATH = Path(__file__).resolve().parents[1] / "agents" / "one" / "agent.yaml"
 
@@ -292,7 +294,16 @@ def build_instruction(
     screen_id: str | None,
     display_name: str | None,
     resumed: bool = False,
+    timezone: str = "UTC",
+    now: datetime | None = None,
 ) -> str:
+    """The Live head's system instruction for one session.
+
+    ``timezone`` is the owner's IANA zone hint and ``now`` the wall clock
+    (server time when omitted). Together they give the model the owner's local
+    time to resolve "tomorrow" or "kal subah" against; the server re-validates
+    every send time it is handed, so this is context, never authority.
+    """
     authored = str(voice_head_config()["instruction"]).strip()
     tool_lines = "\n".join(
         f"- {item['name']}: {str(item.get('description') or '').strip().splitlines()[0]}"
@@ -306,6 +317,7 @@ def build_instruction(
         for part in (
             authored,
             person + (" " if person and current else "") + current,
+            render_time_block(timezone_name=timezone, now=now),
             "Tools you can call:\n" + tool_lines,
             "Screens open_screen can open: " + screens,
             NARRATION_CONTRACT,

@@ -589,3 +589,9 @@ tests/test_provision_curated_connector.py
 
 # Circle chat membership, encrypted relay, retries, delivery and migration replay.
 tests/test_circle_chat.py
+
+# Scheduled mail by voice: migration 275 shape and rollback guard, the owner-local
+# send-time rules, and the schedule/list/cancel tools against the sealed ledger.
+tests/test_scheduled_mail_send_migration.py
+tests/services/test_owner_time.py
+tests/one_voice/test_mail_schedule.py

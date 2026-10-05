@@ -4,7 +4,7 @@ import base64
 import hashlib
 import re
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from email import message_from_bytes
 from email.policy import default
 from types import SimpleNamespace
@@ -1150,3 +1150,273 @@ async def test_verified_attachment_is_added_to_mime_only_after_claim(monkeypatch
     assert attachments[0].get_content_type() == "text/plain"
     assert attachments[0].get_payload(decode=True) == _BLOB
     assert _BLOB.decode().strip() not in repr(conn.calls)
+
+
+# -- scheduled sends (migration 275) ------------------------------------------------------
+
+_SCHEDULE_PAYLOAD = {
+    "to": "Priya.Sharma@Example.com",
+    "subject": "Diwali plans",
+    "body": "Private scheduled body: see you on Saturday.",
+    "recipient_user_id": "u-priya",
+}
+_SEND_AT = datetime(2026, 10, 6, 3, 30, tzinfo=timezone.utc)
+
+
+class ScheduleLedgerConn(_PrepareConn):
+    """Just enough of gmail_owner_send_actions for the schedule SQL, keyed by
+    (user, idempotency HMAC) like the table's UNIQUE constraint. Shared with the
+    voice tool tests, so both exercise the real service against one ledger."""
+
+    def __init__(self):
+        super().__init__()
+        self.rows: dict[str, dict[str, object]] = {}
+        self.fail_with: Exception | None = None
+
+    def _by_key(self, user_id, idempotency_hmac):
+        return next(
+            (
+                row
+                for row in self.rows.values()
+                if (row["user_id"], row["idempotency_hmac"]) == (user_id, idempotency_hmac)
+            ),
+            None,
+        )
+
+    def _owned(self, action_id, user_id):
+        row = self.rows.get(action_id)
+        return row if row is not None and row["user_id"] == user_id else None
+
+    async def fetch(self, query, *args):
+        self.calls.append((query, args))
+        if self.fail_with is not None:
+            raise self.fail_with
+        assert "WHERE user_id = $1 AND state = 'scheduled'" in query, query
+        assert "payload_sealed" not in query
+        waiting = sorted(
+            (
+                r
+                for r in self.rows.values()
+                if r["user_id"] == args[0] and r["state"] == "scheduled"
+            ),
+            key=lambda r: (r["send_at"], r["action_id"]),
+        )
+        return [
+            {key: row[key] for key in ("action_id", "recipient_display", "subject", "send_at")}
+            | {"created_at": row["send_at"]}
+            for row in waiting[: args[1]]
+        ]
+
+    async def fetchrow(self, query, *args):
+        self.calls.append((query, args))
+        if self.fail_with is not None:
+            raise self.fail_with
+        if "SELECT action_id, state, send_at, sent_at, recipient_display" in query:
+            return self._owned(*args)
+        if "FOR UPDATE" in query and "idempotency_hmac = $2" in query:
+            return self._by_key(*args)
+        if "INSERT INTO gmail_owner_send_actions" in query:
+            (action_id, user_id, envelope, idem, expires_at, send_at, sealed, display, subject) = (
+                args
+            )
+            if self._by_key(user_id, idem) is not None:
+                return None
+            self.rows[action_id] = {
+                "action_id": action_id,
+                "user_id": user_id,
+                "envelope_hmac": envelope,
+                "idempotency_hmac": idem,
+                "state": "scheduled",
+                "expires_at": expires_at,
+                "send_at": send_at,
+                "sent_at": None,
+                "payload_sealed": sealed,
+                "recipient_display": display,
+                "subject": subject,
+            }
+            return {"action_id": action_id, "state": "scheduled", "send_at": send_at}
+        if "SET state = 'cancelled'" in query:
+            row = self._owned(*args)
+            if row is None or row["state"] != "scheduled":
+                return None
+            row.update(state="cancelled", payload_sealed=None)
+            return {"action_id": row["action_id"], "state": "cancelled", "sent_at": None}
+        if "SELECT state, sent_at" in query:
+            return self._owned(*args)
+        raise AssertionError(f"unexpected query: {query}")
+
+
+def _schedule_service(monkeypatch, conn):
+    module = _signing_key(monkeypatch)
+    monkeypatch.setattr(
+        module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(conn))
+    )
+    return GmailDeliveryService(gmail_service=_Gmail())
+
+
+async def _schedule(service, **overrides):
+    kwargs = {
+        "user_id": "owner",
+        "payload": dict(_SCHEDULE_PAYLOAD),
+        "send_at": _SEND_AT,
+        "email_binding": "binding-" + "b" * 56,
+        "recipient_display": "Priya Sharma",
+    }
+    kwargs.update(overrides)
+    return await service.schedule_send(**kwargs)
+
+
+def test_schedule_payload_opens_only_for_its_owner_and_action(monkeypatch):
+    _signing_key(monkeypatch)
+    service = GmailDeliveryService(gmail_service=_Gmail())
+    sealed = service.seal_schedule_payload(
+        user_id="owner", action_id="action-1", payload=_SCHEDULE_PAYLOAD
+    )
+
+    for secret in ("Priya.Sharma", "Diwali", "Private scheduled body", "u-priya"):
+        assert secret not in sealed
+    assert service.open_schedule_payload(
+        user_id="owner", action_id="action-1", sealed=sealed
+    ) == dict(_SCHEDULE_PAYLOAD)
+    flipped = sealed[:-6] + ("A" if sealed[-6] != "A" else "B") + sealed[-5:]
+    for owner, action, value in (
+        ("another-owner", "action-1", sealed),
+        ("owner", "action-2", sealed),
+        ("owner", "action-1", flipped),
+        ("owner", "action-1", "v1:" + sealed),
+    ):
+        with pytest.raises(ValueError, match="scheduled payload is unavailable"):
+            service.open_schedule_payload(user_id=owner, action_id=action, sealed=value)
+    # Only the exact four-field shape seals.
+    with pytest.raises(ValueError):
+        service.seal_schedule_payload(
+            user_id="owner", action_id="action-1", payload={**_SCHEDULE_PAYLOAD, "cc": "x"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_schedule_send_is_idempotent_and_persists_no_plaintext_envelope(monkeypatch):
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+
+    first = await _schedule(service)
+    again = await _schedule(service)
+
+    assert first["created"] is True and first["state"] == "scheduled"
+    assert again == {**first, "created": False}
+    assert len(conn.rows) == 1
+    row = conn.rows[first["action_id"]]
+    assert row["expires_at"] == _SEND_AT + timedelta(hours=24)
+    assert (row["recipient_display"], row["subject"]) == ("Priya Sharma", "Diwali plans")
+    # The body, the address and the recipient id reach the table only sealed.
+    persisted = repr(conn.calls)
+    for secret in ("priya.sharma@example.com", "Priya.Sharma", "Private scheduled body", "u-priya"):
+        assert secret not in persisted
+    opened = service.open_schedule_payload(
+        user_id="owner", action_id=first["action_id"], sealed=row["payload_sealed"]
+    )
+    assert opened["to"] == "priya.sharma@example.com"
+    # A different time is a different scheduled send, not a replay.
+    later = await _schedule(service, send_at=_SEND_AT + timedelta(hours=1))
+    assert later["created"] is True and later["action_id"] != first["action_id"]
+
+
+@pytest.mark.asyncio
+async def test_scheduled_row_is_sendable_by_the_unchanged_execute_path(monkeypatch):
+    """The envelope a schedule stores is the one prepare() computes for an
+    immediate send of the same draft, so execute() verifies the drained payload
+    with zero changes -- and still refuses a payload that was altered."""
+    from hushh_mcp.services import gmail_delivery_service as module
+
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+    scheduled = await _schedule(service)
+    row = conn.rows[scheduled["action_id"]]
+    draft_payload = GmailDeliveryService.scheduled_draft_payload(
+        service.open_schedule_payload(
+            user_id="owner", action_id=scheduled["action_id"], sealed=row["payload_sealed"]
+        )
+    )
+
+    prepare_conn = _PrepareConn()
+    monkeypatch.setattr(
+        module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(prepare_conn))
+    )
+    await service.prepare(user_id="owner", draft_payload=draft_payload, idempotency_key="k" * 16)
+    prepared_envelope = next(
+        args[2] for query, args in prepare_conn.calls if "INSERT INTO" in query
+    )
+    assert prepared_envelope == row["envelope_hmac"]
+
+    gmail = _Gmail()
+    gmail.get_send_access_token = AsyncMock(return_value="token")
+    sender = GmailDeliveryService(gmail_service=gmail)
+    armed = {**row, "state": "prepared"}
+    execute_conn = _ActionConn([armed, {**armed, "state": "sending"}])
+    monkeypatch.setattr(
+        module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(execute_conn))
+    )
+
+    class _Client:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, *, headers, json):
+            return SimpleNamespace(
+                status_code=200,
+                content=b"{}",
+                json=lambda: {"id": "gmail-message-1", "threadId": "t-1"},
+            )
+
+    monkeypatch.setattr(module.httpx, "AsyncClient", _Client)
+    result = await sender.execute(
+        user_id="owner", action_id=scheduled["action_id"], draft_payload=draft_payload
+    )
+    assert result["state"] == "sent"
+
+    # Negative control: a tampered body no longer matches the stored envelope.
+    execute_conn = _ActionConn([armed])
+    monkeypatch.setattr(
+        module, "get_pool", lambda: __import__("asyncio").sleep(0, result=_Pool(execute_conn))
+    )
+    with pytest.raises(GmailDeliveryError) as changed:
+        await sender.execute(
+            user_id="owner",
+            action_id=scheduled["action_id"],
+            draft_payload={**draft_payload, "body": "Send the money now."},
+        )
+    assert changed.value.code == "DRAFT_CHANGED"
+
+
+@pytest.mark.asyncio
+async def test_cancel_is_a_compare_and_set_that_reports_the_state_it_lost_to(monkeypatch):
+    conn = ScheduleLedgerConn()
+    service = _schedule_service(monkeypatch, conn)
+    scheduled = await _schedule(service)
+    action_id = scheduled["action_id"]
+
+    # Another owner cannot cancel it, and learns nothing about it.
+    assert await service.cancel_scheduled_send(user_id="intruder", action_id=action_id) == {
+        "cancelled": False,
+        "state": None,
+        "sent_at": None,
+    }
+    assert conn.rows[action_id]["state"] == "scheduled"
+
+    first = await service.cancel_scheduled_send(user_id="owner", action_id=action_id)
+    assert first == {"cancelled": True, "state": "cancelled", "sent_at": None}
+    assert conn.rows[action_id]["payload_sealed"] is None
+    again = await service.cancel_scheduled_send(user_id="owner", action_id=action_id)
+    assert (again["cancelled"], again["state"]) == (False, "cancelled")
+
+    # The drain armed it first: the cancel loses and says to what.
+    raced = await _schedule(service, send_at=_SEND_AT + timedelta(hours=2))
+    conn.rows[raced["action_id"]]["state"] = "sent"
+    lost = await service.cancel_scheduled_send(user_id="owner", action_id=raced["action_id"])
+    assert (lost["cancelled"], lost["state"]) == (False, "sent")

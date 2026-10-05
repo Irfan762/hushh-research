@@ -653,6 +653,9 @@ class VoiceSession:
             screen_id=self.ctx.screen.screen_id,
             display_name=self._display_name,
             resumed=self.conversation.session_count > 1,
+            # The owner's zone, so "tomorrow at 9" means their 9. The session
+            # clock is monotonic, so the instruction reads the wall clock itself.
+            timezone=self._client_timezone,
         )
         live_config = {
             "system_instruction": instruction,
