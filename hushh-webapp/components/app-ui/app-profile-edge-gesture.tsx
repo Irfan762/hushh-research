@@ -5,7 +5,7 @@ import { ChevronLeft } from "@/components/icons";
 import { usePathname } from "next/navigation";
 
 import { requestProfilePaneOpen } from "@/lib/navigation/profile-pane";
-import { ROUTES } from "@/lib/navigation/routes";
+import { normalizeStaticExportPathname, ROUTES } from "@/lib/navigation/routes";
 
 const BACK_GESTURE_RESERVED_WIDTH_PX = 28;
 const AXIS_LOCK_PX = 8;
@@ -35,7 +35,8 @@ function isOneSurfaceRoute(pathname: string): boolean {
   // affordance on other authenticated routes, but a finance/location/connect
   // surface must retain ownership of its own horizontal gestures and tab
   // pagers.
-  return pathname === ROUTES.ONE_HOME || pathname === ROUTES.HOME;
+  const route = normalizeStaticExportPathname(pathname);
+  return route === ROUTES.ONE_HOME || route === ROUTES.HOME;
 }
 
 function hasHorizontalScrollParent(target: HTMLElement | null): boolean {

@@ -21,7 +21,8 @@ describe("Profile pane touch navigation", () => {
     document.documentElement.removeAttribute("data-app-profile-edge-active");
   });
 
-  it("opens from a broad leftward body swipe on the One surface", () => {
+  it.each(["/one", "/one/", "/one/index.html", "/"])("opens from a broad leftward body swipe on %s", (pathname) => {
+    navigation.pathname = pathname;
     const opened = vi.fn();
     window.addEventListener(PROFILE_PANE_OPEN_EVENT, opened);
     render(<AppProfileEdgeGesture enabled />);
@@ -180,8 +181,8 @@ describe("Profile pane touch navigation", () => {
     window.removeEventListener(PROFILE_PANE_OPEN_EVENT, opened);
   });
 
-  it("leaves Finance and other One descendants to their own swipe surfaces", () => {
-    navigation.pathname = "/one/finance";
+  it.each(["/one/finance", "/one/finance/", "/one/finance/index.html"])("leaves %s to its own swipe surfaces", (pathname) => {
+    navigation.pathname = pathname;
     const opened = vi.fn();
     window.addEventListener(PROFILE_PANE_OPEN_EVENT, opened);
     const view = render(<AppProfileEdgeGesture enabled />);

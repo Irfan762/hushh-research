@@ -52,7 +52,6 @@ describe("recursive Profile pane contracts", () => {
     expect(gesture).toContain("BACK_GESTURE_RESERVED_WIDTH_PX = 28");
     expect(gesture).toContain('event.pointerType !== "touch"');
     expect(gesture).toContain("[data-slot=\"sheet-content\"]");
-    expect(gesture).toContain('pathname === ROUTES.ONE_HOME');
     expect(providers).toContain("touch-pan-y");
     expect(providers).toContain("clearProfilePaneQuery");
   });
