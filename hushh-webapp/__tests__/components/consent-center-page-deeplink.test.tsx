@@ -317,6 +317,10 @@ function pendingListResponse(entry: Record<string, unknown>) {
 
 /** Kushal's dinner request, as the pending list sends it today. */
 function foodRequestEntry() {
+  const now = Date.now();
+  const decisionDeadline = new Date(now);
+  decisionDeadline.setDate(decisionDeadline.getDate() + 7);
+
   return {
     id: "req_food",
     request_id: "req_food",
@@ -332,8 +336,10 @@ function foodRequestEntry() {
     counterpart_email: "kushal@example.com",
     reason: "Picking a place for our dinner together",
     // Numeric epoch string, exactly as the pending list serialises it.
-    issued_at: String(Date.now() - 60_000),
-    approval_timeout_at: new Date(new Date().getFullYear(), 9, 5, 13, 51).getTime(),
+    issued_at: String(now - 60_000),
+    // Keep the deadline outside the current day: `formatDecideBy` deliberately
+    // says "Today" for a same-day deadline.
+    approval_timeout_at: decisionDeadline.getTime(),
     metadata: { expiry_hours: 168 },
   };
 }
@@ -1891,7 +1897,7 @@ describe("ConsentCenterPage requestId deep links", () => {
     // The wire sends issued_at as a numeric string; it used to read
     // "Unavailable".
     expect(valueFor("Requested")).toMatch(/^Today, /);
-    expect(valueFor("Decide by")).toMatch(/^Oct 5/);
+    expect(valueFor("Decide by")).toMatch(/^[A-Z][a-z]{2} \d{1,2}(, \d{4})?$/);
     // The request carries the same name its access will.
     expect(valueFor("Access")).toBe("Food preferences");
     // One duration wording: the requester's card says "7 days", so the
