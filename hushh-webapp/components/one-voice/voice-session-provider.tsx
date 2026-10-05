@@ -1099,7 +1099,6 @@ export function VoiceSessionProvider({
             frame.origin_turn_id !== activeInputTurnId
           )
             return;
-          if (frame.narration === true) session.narrating = true;
           const firstForTurn =
             !session.measuredAudioTurns.has(frame.turn_id) &&
             !session.firstAudioReceivedAt.has(frame.turn_id);
@@ -1116,6 +1115,9 @@ export function VoiceSessionProvider({
               pcm16,
               frame.turn_id,
             );
+            // A rejected chunk has no playback-stop callback to reopen the mic.
+            if (queued && frame.narration === true)
+              session.narrating = true;
             if (!queued && firstForTurn)
               session.firstAudioReceivedAt.delete(frame.turn_id);
           } catch {
