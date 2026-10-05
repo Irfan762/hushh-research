@@ -154,8 +154,14 @@ function extractSource(): Source {
     panelHeaderClass: stringConstant(panel, "PANEL_HEADER", VOICE_PANEL_PATH),
     panelContentClass: stringConstant(panel, "PANEL_CONTENT", VOICE_PANEL_PATH),
     dockClass: [
-      required(dockSurface, /className=\{cn\(\s*"([^"]+)"/,
+      // This fixture measures the active, non-embedded shared dock. Include
+      // its conditional surface and dock geometry, not just the next literal.
+      required(dockSurface, /className=\{cn\(\s*!embedded && "([^"]+)"/,
+        "non-embedded AgentBarSurface classes", AGENT_BAR_SURFACE_PATH)[1],
+      required(dockSurface, /className=\{cn\(\s*!embedded && "[^"]+",\s*"([^"]+)"/,
         "shared AgentBarSurface classes", AGENT_BAR_SURFACE_PATH)[1],
+      required(dockSurface, /dock && "([^"]+)"/,
+        "active AgentBarSurface dock classes", AGENT_BAR_SURFACE_PATH)[1],
       required(control,
         /<AgentBarSurface\s+data-testid="one-voice-agent-bar"[\s\S]*?className="([^"]+)"/,
         "One Voice dock adapter classes", VOICE_CONTROL_PATH)[1],

@@ -905,7 +905,12 @@ describe("ProfileReceiptsPage", () => {
     render(<ProfileReceiptsPage initialWorkspace={workspace} />);
     if (workspace === "overview") {
       expect(await screen.findByRole("status", { name: "Fetching receipts" })).toBeVisible();
-      expect(screen.queryByRole("progressbar", { hidden: true })).not.toBeInTheDocument();
+      expect(
+        within(screen.getByRole("tabpanel", { name: "Overview" })).queryByRole(
+          "progressbar",
+          { hidden: true },
+        ),
+      ).not.toBeInTheDocument();
       expect(screen.getByTestId("mail-receipt-sync")).toHaveTextContent("Receipt sync");
     } else {
       await waitFor(() => {
@@ -1035,7 +1040,7 @@ describe("ProfileReceiptsPage", () => {
       screen.getByRole("heading", { name: /checking your gmail status/i }),
     ).toBeTruthy();
     expect(
-      screen.getByText(
+      within(screen.getByRole("tabpanel", { name: "Receipts" })).getByText(
         /your inbox and receipts will appear here as they are ready/i,
       ),
     ).toBeTruthy();
@@ -1120,7 +1125,7 @@ describe("ProfileReceiptsPage", () => {
       screen.getByRole("heading", { name: /mail not connected/i }),
     ).toBeTruthy();
     expect(
-      screen.getByText(
+      within(screen.getByRole("tabpanel", { name: "Receipts" })).getByText(
         /syncs receipts to build your private shopping memory/i,
       ),
     ).toBeTruthy();
@@ -1452,13 +1457,21 @@ describe("ProfileReceiptsPage", () => {
     render(<ProfileReceiptsPage />);
     fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
     const panel = await screen.findByText("KYC requests");
+    const workspacePanel = screen.getByRole("tabpanel", { name: "KYC" });
+    expect(workspacePanel).toContainElement(panel);
     expect(panel).toBeVisible();
     fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
-    expect(panel).not.toBeVisible();
+    expect(workspacePanel).toHaveAttribute("aria-hidden", "true");
+    expect(workspacePanel).toHaveAttribute("inert");
+    expect(screen.queryByRole("tabpanel", { name: "KYC" })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Receipts" }));
-    expect(panel).not.toBeVisible();
+    expect(workspacePanel).toHaveAttribute("aria-hidden", "true");
+    expect(workspacePanel).toHaveAttribute("inert");
     fireEvent.click(screen.getByRole("tab", { name: "KYC" }));
     expect(screen.getByText("KYC requests")).toBe(panel);
+    expect(screen.getByRole("tabpanel", { name: "KYC" })).toBe(workspacePanel);
+    expect(workspacePanel).toHaveAttribute("aria-hidden", "false");
+    expect(workspacePanel).not.toHaveAttribute("inert");
     expect(panel).toBeVisible();
   });
 
