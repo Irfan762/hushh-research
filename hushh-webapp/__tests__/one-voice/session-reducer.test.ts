@@ -733,6 +733,41 @@ describe("reduceVoiceSession: answer ownership", () => {
     expect(replaced.lastResult).toBe(confirmation);
   });
 
+  it("an older confirmation cannot clear a newer offered answer, even after a card refresh", () => {
+    for (const tool of ["read_mail", "list_drafts", "list_scheduled_mail"]) {
+      const card = pendingActionFrame({ origin_turn_id: "old", turn_id: "old" });
+      const newerList = { ...OFFERED_MAIL, offer_revision: 8 };
+      const receipt = { status: "deleted", spoken_facts: ["Deleted."] };
+      const shown = run([
+        server({ type: "transcript.input", turn_id: "old", text: "Delete the first item", final: true }),
+        server(toolResult({ call_id: "old-list", tool, turn_id: "old", result_public: OFFERED_MAIL })),
+        server(card),
+        server({ type: "transcript.input", turn_id: "new", text: "Show the latest list", final: true }),
+        server(toolResult({ call_id: "new-list", tool, turn_id: "new", result_public: newerList })),
+        server({ type: "turn", turn_id: "new", state: "model_end" }),
+      ], connected());
+
+      for (const refreshCard of [false, true]) {
+        const refreshed = refreshCard
+          ? run([server({ ...card, turn_id: undefined })], shown)
+          : shown;
+        const resolved = run([server({
+          type: "pending_action.resolved",
+          pending_action_id: card.pending_action_id,
+          status: "executed",
+          result_public: receipt,
+        })], refreshed);
+        expect(resolved.lastResult, tool).toBe(newerList);
+        expect(resolved.pendingAction?.resolvedResult).toBe(receipt);
+        const late = run([server(toolResult({
+          call_id: "old-action", tool: card.tool, turn_id: "old",
+          pending_action_id: card.pending_action_id, result_public: receipt,
+        }))], resolved);
+        expect(late.lastResult, tool).toBe(newerList);
+      }
+    }
+  });
+
   it("still gives the slot to a new question when the result has no offered rows to act on", () => {
     const { offer_revision: _revision, ...unbound } = OFFERED_MAIL;
     void _revision;

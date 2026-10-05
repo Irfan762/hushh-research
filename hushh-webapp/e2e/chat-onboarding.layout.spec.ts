@@ -121,6 +121,46 @@ async function assertContract(page: Page, viewportWidth: number) {
   expect(Math.abs(connect.x - bubble.x)).toBeLessThanOrEqual(6);
   expect(connect.height).toBeGreaterThanOrEqual(44);
 
+  // Starters occupy three equal desktop tracks and one phone track. Follow-ups
+  // remain quiet text rows. Both are borderless, left-aligned and focusable.
+  for (const testId of ["agent-prompt-suggestions", "agent-follow-up-suggestions"]) {
+    const prompts = page.getByTestId(testId).getByRole("button");
+    const isStarter = testId === "agent-prompt-suggestions";
+    await expect(prompts).toHaveCount(isStarter ? 3 : 2);
+    const geometries = await prompts.evaluateAll((nodes) => nodes.map((node) => {
+      const box = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return { x: box.x, y: box.y, width: box.width, right: box.right, height: box.height,
+        textAlign: style.textAlign, border: style.borderTopWidth, fill: style.backgroundColor };
+    }));
+    for (const geometry of geometries) {
+      if (!isStarter || viewportWidth < 640) expect(Math.abs(geometry.x - bubble.x)).toBeLessThanOrEqual(6);
+      expect(geometry.right).toBeLessThanOrEqual(viewportWidth);
+      expect(geometry.height).toBeGreaterThanOrEqual(44);
+      expect(geometry.textAlign).toBe("left");
+      expect(geometry.border).toBe("0px");
+      expect(geometry.fill).toBe("rgba(0, 0, 0, 0)");
+    }
+    if (isStarter) {
+      for (const geometry of geometries) {
+        expect(Math.abs(geometry.width - geometries[0].width)).toBeLessThanOrEqual(1);
+        expect(Math.abs(geometry.height - geometries[0].height)).toBeLessThanOrEqual(1);
+      }
+      expect(Math.abs(geometries[0].x - bubble.x)).toBeLessThanOrEqual(6);
+      if (viewportWidth >= 640) {
+        expect(geometries.every((geometry) => geometry.y === geometries[0].y)).toBe(true);
+        const firstGap = geometries[1].x - geometries[0].right;
+        expect(Math.abs(firstGap - (geometries[2].x - geometries[1].right))).toBeLessThanOrEqual(1);
+        expect(firstGap).toBe(24);
+      }
+    } else if (viewportWidth < 600) {
+      expect((await prompts.last().boundingBox())!.height).toBeGreaterThan(44);
+    }
+    await prompts.first().focus();
+    await expect(prompts.first()).toBeFocused();
+    expect(await prompts.first().evaluate((node) => getComputedStyle(node).boxShadow)).not.toBe("none");
+  }
+
   // The tip's dismiss control keeps a full tap target.
   const dismiss = (await page.getByRole("button", { name: "Dismiss tip" }).boundingBox())!;
   expect(dismiss.width).toBeGreaterThanOrEqual(44);
@@ -220,6 +260,12 @@ for (const theme of ["light", "dark"] as const) {
   });
 
   test.describe(`desktop (${theme})`, () => {
+    test("starter tracks remain symmetric at the tablet breakpoint", async ({ page }) => {
+      await mount(page, theme);
+      await page.setViewportSize({ width: 640, height: 900 });
+      await assertContract(page, 640);
+    });
+
     test.use({ viewport: { width: 1440, height: 900 } });
 
     test("chips sit under One's reply, and the keyboard walks them", async ({ page }) => {

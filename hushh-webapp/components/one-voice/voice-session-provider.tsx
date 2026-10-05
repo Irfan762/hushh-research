@@ -42,6 +42,7 @@ import {
   type AgentConversationRequest,
 } from "@/lib/agent/agent-voice-settings";
 import { readVoicePreferences } from "@/lib/agent/voice-preferences";
+import { readSpeakerphoneSafePreference } from "@/lib/one-voice/speakerphone-preferences";
 import {
   appInteractionCoordinator,
   type VoiceSessionLease,
@@ -832,7 +833,10 @@ export function VoiceSessionProvider({
         clearTimeout(reconnectRetryTimerRef.current);
         reconnectRetryTimerRef.current = null;
       }
-      if (openingRef.current) openingRef.current.cancelled = true;
+      if (openingRef.current) {
+        openingRef.current.cancelled = true;
+        openingRef.current = null;
+      }
       const session = sessionRef.current;
       traceVoiceSession("stop", {
         reason,
@@ -842,7 +846,11 @@ export function VoiceSessionProvider({
           session?.captureReady && session.capture?.isTrackLive?.() !== false,
         ),
       });
-      if (!session) return;
+      if (!session) {
+        // Stop must settle immediately even while the lazy client is loading.
+        dispatch({ type: "closed", code: 1000, reason: localCloseReason(reason), now: now() });
+        return;
+      }
       session.stoppedLocally = true;
       // The client reports its close synchronously; handleClose tears down.
       session.client.close(localCloseReason(reason));
@@ -855,7 +863,7 @@ export function VoiceSessionProvider({
         });
       }
     },
-    [handleClose],
+    [dispatch, handleClose, now],
   );
   const stopRef = useRef(stopSession);
   const pauseRef = useRef<(reason: string) => void>(() => undefined);
@@ -1196,6 +1204,10 @@ export function VoiceSessionProvider({
       )();
       session.capture = capture;
       session.captureReady = false;
+      // Begin conservatively before socket/playback can race microphone setup.
+      // Keep this same gate when selecting half duplex so no speaking edge or
+      // acoustic tail is lost during asynchronous capture startup.
+      session.gate ??= new HalfDuplexGate({ now: () => now() });
       session.speechEndProbe.reset();
       capture.setMuted(mutedRef.current);
       let result: CaptureStartResult;
@@ -1280,14 +1292,14 @@ export function VoiceSessionProvider({
         });
       }
       session.captureReady = true;
-      const preference = depsRef.current?.halfDuplexPreference?.() ?? "auto";
+      const preference = depsRef.current?.halfDuplexPreference?.() ??
+        (readSpeakerphoneSafePreference(latest.current.user?.uid)
+          ? "speakerphone-safe" : "auto");
       const halfDuplex = decideHalfDuplex({
         echoCancellation: result.echoCancellation,
         forced: preference === "speakerphone-safe",
       });
-      session.gate = halfDuplex
-        ? new HalfDuplexGate({ now: () => now() })
-        : null;
+      if (!halfDuplex) session.gate = null;
       dispatch({ type: "half_duplex", enabled: halfDuplex });
     },
     [dispatch, dispatchLevel, now, perfNow],
@@ -1326,7 +1338,7 @@ export function VoiceSessionProvider({
         measuredAudioTurns: new Set(),
         audioContext,
         lease: null,
-        gate: null,
+        gate: new HalfDuplexGate({ now: () => now() }),
         narrating: false,
         paused: false,
         pauseReason: null,
@@ -1390,7 +1402,9 @@ export function VoiceSessionProvider({
           depsRef.current?.createClient ?? defaultCreateClient
         )(clientOptions);
       } catch (error) {
-        openingRef.current = null;
+        if (openingRef.current === opening) openingRef.current = null;
+        teardown(session, "client_unavailable");
+        if (opening.cancelled) return false;
         dispatch({
           type: "closed",
           code: 1000,
@@ -1400,14 +1414,14 @@ export function VoiceSessionProvider({
         dispatch({ type: "local_error", error: toVoiceError(error) });
         return false;
       }
-      openingRef.current = null;
+      if (openingRef.current === opening) openingRef.current = null;
       if (opening.cancelled || sessionRef.current) {
-        dispatch({
-          type: "closed",
-          code: 1000,
-          reason: localCloseReason("cancelled"),
-          now: now(),
-        });
+        // Release the early AudioContext/player without letting this stale
+        // attempt overwrite the state of a newer owner or session.
+        session.stoppedLocally = true;
+        session.closeHandled = true;
+        teardown(session, "cancelled");
+        session.client.close(localCloseReason("cancelled"));
         return false;
       }
       sessionRef.current = session;
@@ -1427,9 +1441,8 @@ export function VoiceSessionProvider({
       session.unsubscribes.push(
         playback.onSpeakingChanged((speaking) => {
           if (sessionRef.current !== session) return;
-          // The player reports silence once the queue has drained, tail included,
-          // so the mic reopens when the narration has actually stopped being
-          // audible rather than when the last chunk was handed over.
+          // The player reports silence after its queue drains. In half duplex,
+          // the retained gate adds the acoustic tail before reopening the mic.
           if (!speaking) session.narrating = false;
           session.gate?.onSpeaking(speaking);
           dispatch({ type: "speaking", speaking });
@@ -1479,7 +1492,7 @@ export function VoiceSessionProvider({
         dispatch({ type: "resumed" });
       return true;
     },
-    [dispatch, handleClose, handleFrame, now, perfNow, startCapture],
+    [dispatch, handleClose, handleFrame, now, perfNow, startCapture, teardown],
   );
 
   const resumeSession = useCallback(

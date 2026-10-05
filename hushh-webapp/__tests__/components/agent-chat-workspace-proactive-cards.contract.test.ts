@@ -34,21 +34,6 @@ describe("Agent One chat workspace wiring contract", () => {
     expect(source).toContain('Drive ${driveReviewsPending === 1 ? "review needs" : "reviews need"} you');
   });
 
-  it("uses one accessible quick-prompt rail for both empty and post-setup states", () => {
-    expect(source).toContain("function AgentPromptSuggestions(");
-    expect(source).toContain('data-testid="agent-chat-suggestions"');
-    expect(source).toContain('aria-label="Suggestions"');
-    const suggestions = source.slice(
-      source.indexOf("function AgentPromptSuggestions("),
-      source.indexOf("function AgentPromptSuggestions(") + 1800,
-    );
-    expect(suggestions).toContain('type="button"');
-    expect(suggestions).toContain("disabled={disabled}");
-    expect(suggestions).toContain("!min-h-11");
-    expect(source).toContain("onClick={() => onPromptSelect(prompt)}");
-    expect(source).toContain("setInput(prompt)");
-  });
-
   it("runs post-setup onboarding as ordinary chat turns, with the tile grid retired", () => {
     // Founder decision (2026-09-27): the first message is fixed text typed out
     // through the same AgentBubble path as a real reply, then three questions

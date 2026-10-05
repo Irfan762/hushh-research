@@ -79,7 +79,6 @@ import { useFeedAttentionTurn } from "@/lib/agent/use-feed-attention-turn";
 import {
   Check,
   ChevronDown,
-  ChevronRight,
   Cloud,
   Copy,
   FileText,
@@ -194,7 +193,7 @@ import {
   OneChatTimeSeparator,
 } from "@/components/agent/chat-message-styles";
 import { SelectionChip } from "@/components/agent/selection-chip";
-import { AgentFollowUpSuggestions, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
+import { AgentFollowUpSuggestions, AgentSuggestionList, visibleFollowUps } from "@/components/agent/agent-follow-up-suggestions";
 import { PuppyOneSurface } from "@/components/agent/puppy-one-surface";
 import {
   AgentTurnStreamPanel,
@@ -211,6 +210,7 @@ import type { DriveBatchProgress, DriveCompilationUiState } from "@/lib/agent/dr
 import { driveOwnerCompileKey, type DriveOwnerCompileWindow } from "@/lib/agent/connector-read-receipt";
 import { useEntryWelcome } from "@/lib/agent/use-entry-welcome";
 import { useChatOnboarding } from "@/lib/agent/chat-onboarding/use-chat-onboarding";
+import { useGmailConnectorStatus } from "@/lib/profile/gmail-connector-store";
 import {
   ChatOnboardingDailyTip,
   ChatOnboardingTurns,
@@ -235,7 +235,13 @@ import {
   getWelcomePrompts,
 } from "@/lib/agent/agent-welcome-prompts";
 import type { ClientPrompt } from "@/lib/one-location/types";
-import { AgentVoiceWaveInput } from "@/components/agent/agent-voice-wave-input";
+import { AgentBar } from "@/components/agent/agent-bar";
+import { AgentBarSurface } from "@/components/agent/agent-bar-surface";
+import { AgentDockPortal, useAgentDockFrame, useAgentDockHost } from "@/components/agent/agent-dock";
+import { NativeChatChrome, type NativeChatChromeHandle } from "@/components/app-ui/native-chat-chrome";
+import { useOptionalLocationCommand } from "@/components/agent/location-command-provider";
+import { useOneVoiceLiveEnabled } from "@/lib/one-voice/readiness";
+import { useVoiceSessionStore } from "@/lib/one-voice/session-store";
 import { useAuth } from "@/hooks/use-auth";
 import { useEffectiveAvatarUrl } from "@/hooks/use-effective-avatar-url";
 import {
@@ -1548,41 +1554,15 @@ function formatAgentDisplayName(
 function AgentPromptSuggestions({
   prompts,
   disabled,
-  align = "center",
   onPromptSelect,
 }: {
   prompts: readonly string[];
   disabled: boolean;
-  align?: "center" | "start";
   onPromptSelect: (prompt: string) => void;
 }) {
   return (
-    <div
-      data-testid="agent-chat-suggestions"
-      role="group"
-      aria-label="Suggestions"
-      className={cn(
-        "flex flex-wrap gap-2.5",
-        align === "center" ? "justify-center" : "justify-start",
-      )}
-    >
-      {prompts.map((prompt) => (
-        <button
-          key={prompt}
-          type="button"
-          disabled={disabled}
-          onClick={() => onPromptSelect(prompt)}
-          className="group relative inline-flex !h-auto !min-h-11 max-w-full items-center !justify-between gap-2.5 overflow-hidden !rounded-2xl border border-[color:var(--app-glass-border)] bg-[color:var(--app-glass-surface)] !px-4 !py-2.5 text-left text-sm font-medium text-foreground shadow-[var(--app-glass-shadow)] transition-colors duration-150 hover:bg-[color:var(--app-shell-surface-bg-hover)] active:opacity-90 disabled:pointer-events-none disabled:opacity-60"
-        >
-          <span className="min-w-0 whitespace-normal leading-5">{prompt}</span>
-          <ChevronRight
-            className="h-4 w-4 shrink-0 text-[color:var(--app-accent-deep)]"
-            aria-hidden
-          />
-          <MaterialRipple variant="none" effect="glass" disabled={disabled} />
-        </button>
-      ))}
-    </div>
+    <AgentSuggestionList suggestions={prompts} disabled={disabled} layout="starter-grid"
+      label="Suggestions" testId="agent-chat-suggestions" onSelect={onPromptSelect} />
   );
 }
 
@@ -1599,21 +1579,17 @@ function AgentWelcomePanel({
 }) {
   return (
     <section className="flex min-h-[clamp(18rem,45vh,32rem)] flex-col justify-center py-6 sm:py-10">
-      <div className="mx-auto flex w-full max-w-2xl flex-col items-center px-1 text-center sm:px-2">
-        <div className="mb-6 inline-flex items-center gap-2 rounded-full border border-black/10 bg-black/[0.035] px-3 py-1.5 text-xs font-medium text-[rgba(0,0,0,0.56)] dark:border-white/10 dark:bg-white/[0.04] dark:text-zinc-400">
-          One workspace
-        </div>
-        <h2 className="text-[34px] font-medium leading-[1.08] tracking-normal text-foreground max-sm:font-[family-name:var(--font-app-display)] max-sm:font-semibold max-sm:tracking-[-0.5px] sm:text-[38px]">
+      <div className="mx-auto flex w-full max-w-2xl flex-col items-start px-1 text-left sm:px-2">
+        <h2 className="text-[36px] font-medium leading-[1.12] tracking-[-0.75px] text-foreground max-sm:font-[family-name:var(--font-app-display)] max-sm:font-semibold sm:text-[44px]">
           Hi {name}
         </h2>
-        <p className="mt-3 max-w-xl text-[16px] leading-7 text-muted-foreground max-sm:font-[family-name:var(--font-app-body)] sm:text-[17px] mx-auto text-center text-balance">
-          Ask One about your calendar, your email, what it remembers, or who can see your information.
+        <p className="mt-3 max-w-xl text-[16px] leading-7 text-muted-foreground max-sm:font-[family-name:var(--font-app-body)] sm:text-[17px]">
+          What would you like to do today?
         </p>
         <AgentPromptSuggestions
           prompts={prompts}
           disabled={disabled}
           onPromptSelect={onPromptSelect}
-          align="center"
         />
       </div>
     </section>
@@ -2437,6 +2413,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
   const isCanonicalChatRoute = pathname === ROUTES.HOME;
+  const agentDockHost = useAgentDockHost();
+  const agentDockFrame = useAgentDockFrame();
   const searchParams = useSearchParams();
   const localCrmEnabled = isLocalCrmBuildEnabled();
   const { user, loading: authLoading, phoneNumber, sessionVerificationRequired } = useAuth();
@@ -2554,7 +2532,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       const transcript = transcriptRef.current;
       if (!transcript || !transcript.contains(element)) return;
       const top = transcriptRevealScrollTop(
-        measureTranscriptReveal(transcript, element, composerStackRef.current),
+        measureTranscriptReveal(transcript, element, isCanonicalChatRoute ? agentDockFrame : composerStackRef.current),
       );
       if (Math.abs(top - transcript.scrollTop) < 1) return;
       beginTranscriptProgrammaticScroll(top);
@@ -2563,7 +2541,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
       });
     });
-  }, [beginTranscriptProgrammaticScroll]);
+  }, [agentDockFrame, isCanonicalChatRoute, beginTranscriptProgrammaticScroll]);
   const enterPuppySurface = useCallback(() => {
     // Unconditional, and not behind a `voiceActive` guard. It is a no-op when
     // nothing is running, and it is the only shape that also covers the window
@@ -2833,6 +2811,14 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     setComposerExpandedState(expanded);
   }, []);
   const historyDrawerTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const historyChromeRef = useRef<NativeChatChromeHandle | null>(null);
+  const agentSurfaceFocusRef = useRef<HTMLButtonElement | null>(null);
+  const historyWasOpen = useRef(false);
+  useEffect(() => {
+    const dismissed = historyWasOpen.current && !isHistoryDrawerOpen;
+    historyWasOpen.current = isHistoryDrawerOpen;
+    if (dismissed) void historyChromeRef.current?.restoreFocus();
+  }, [isHistoryDrawerOpen]);
   const historyDrawerFallbackRef = useRef<HTMLButtonElement | null>(null);
   useLayoutEffect(() => {
     // Next.js can hide and preserve this route instead of unmounting it.
@@ -2936,7 +2922,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   });
 
   const voiceActive = voiceState !== "idle";
-  const voiceLevel = useAgentVoiceState((state) => state.level);
+  const commandPresentation = useOptionalLocationCommand();
+  const liveVoiceEnabled = useOneVoiceLiveEnabled();
+  const liveVoiceError = useVoiceSessionStore(state => state.state.error !== null);
+  const showVoiceBar = voiceActive || (liveVoiceEnabled
+    ? liveVoiceError
+    : Boolean(commandPresentation?.active) || commandPresentation?.view.phase === "result");
   const isToolWorking = activeFrontendToolCount > 0;
   const isPkmMemoryWorking = activePkmToolCount > 0;
   const isVisiblePkmMemoryWorking = visiblePkmToolCount > 0;
@@ -3342,7 +3333,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     // composer, not the raw scroll bottom, and is sticky once followed, so a
     // growing answer never slides under the composer and bottom bar.
     const endBelowBand = transcriptRevealScrollTop(
-      measureTranscriptReveal(transcript, messagesEnd, composerStackRef.current),
+      measureTranscriptReveal(transcript, messagesEnd, isCanonicalChatRoute ? agentDockFrame : composerStackRef.current),
     ) - transcript.scrollTop;
     const shouldFollowTranscript = transcriptFollowsLatest({
       userScrolled: transcriptUserScrollRef.current,
@@ -3367,7 +3358,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const target =
       (submittedTurn ? findPendingAssistantTurn(transcript) : null) ?? messagesEnd;
     const top = transcriptRevealScrollTop(
-      measureTranscriptReveal(transcript, target, composerStackRef.current),
+      measureTranscriptReveal(transcript, target, isCanonicalChatRoute ? agentDockFrame : composerStackRef.current),
     );
     if (Math.abs(top - transcript.scrollTop) < 1) return;
     beginTranscriptProgrammaticScroll(top);
@@ -3382,6 +3373,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     isPuppySurface,
     messages,
     pendingSpecialistDirective,
+    agentDockFrame,
+    isCanonicalChatRoute,
   ]);
 
   // Put One's transcript back where the reader left it after a look at Puppy.
@@ -3495,7 +3488,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
 
   useEffect(() => {
     const textarea = composerTextareaRef.current;
-    if (!textarea || voiceActive) return;
+    if (!textarea || showVoiceBar) return;
     const surface = composerSurfaceRef.current;
     const wasExpanded = composerExpanded;
     const previousHeight = textarea.style.height;
@@ -3506,7 +3499,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     // lines), then scrolls inside itself, as in the reference composer. It no
     // longer jumps into the tall editor on the second line (founder direction,
     // 2026-09-29); that editor is only for opening a pasted-text attachment.
-    const nextHeight = textarea.scrollHeight;
+    const ceiling = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const nextHeight = Number.isFinite(ceiling)
+      ? Math.min(textarea.scrollHeight, ceiling)
+      : textarea.scrollHeight;
 
     if (!input.trim() && wasExpanded) {
       textarea.style.height = previousHeight;
@@ -3515,7 +3511,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     }
     // The expanded writing surface owns its fixed, spacious height.
     textarea.style.height = composerExpanded ? "" : `${nextHeight}px`;
-  }, [composerExpanded, input, setComposerExpanded, voiceActive]);
+  }, [agentDockHost, composerExpanded, input, setComposerExpanded, showVoiceBar]);
 
   useLayoutEffect(() => {
     const fromRect = composerTransitionRectRef.current;
@@ -3667,6 +3663,13 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     conversationId,
     onFocusComposer: () => composerTextareaRef.current?.focus(),
     visiblePrompts: welcomePrompts,
+  });
+  const onboardingToken = useCallback(() => user?.getIdToken() ?? Promise.resolve(""), [user]);
+  const onboardingGmail = useGmailConnectorStatus({
+    userId: user?.uid,
+    enabled: isVaultUnlocked && chatOnboarding.turns.some((turn) =>
+      turn.action?.kind === "connector" && turn.action.provider === "gmail"),
+    idTokenProvider: user ? onboardingToken : null,
   });
 
   useEffect(() => {
@@ -7910,7 +7913,6 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   // Agent Chat never owns audio. Its microphone affordance delegates to the
   // persistent Agent Bar, which is the sole owner of command capture.
   const startConversationalVoice = requestAgentConversation;
-  const cancelConversationalVoice = requestAgentConversationStop;
 
   // The single agent bar always works. Before the vault is unlocked it runs the
   // informational tier (help + navigation), so the access banner is a soft,
@@ -7972,6 +7974,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     <ChatOnboardingTurns
       controller={chatOnboarding}
       slot={slot}
+      gmailConnected={Boolean(onboardingGmail.status?.connected &&
+        !onboardingGmail.status.revoked && !onboardingGmail.status.needs_reauth)}
       renderBubble={(message: ChatOnboardingBubbleMessage) => (
         <>
           {timeSeparators.has(message.id) ? (
@@ -8252,15 +8256,17 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
       return;
     }
     // The composer floats over the transcript, so "in view" ends at its top.
-    const visibleBottom =
-      composerStackRef.current?.getBoundingClientRect().top ??
-      transcript.getBoundingClientRect().bottom;
+    const transcriptRect = transcript.getBoundingClientRect();
+    const overlay = isCanonicalChatRoute ? agentDockFrame : composerStackRef.current;
+    const overlayRect = overlay?.getBoundingClientRect();
+    const visibleBottom = Math.max(transcriptRect.top, Math.min(transcriptRect.bottom,
+      overlayRect && overlayRect.height > 0 ? overlayRect.top : transcriptRect.bottom));
     let count = 0;
     transcript.querySelectorAll<HTMLElement>("[data-message-role]").forEach((row) => {
       if (row.getBoundingClientRect().bottom > visibleBottom + 4) count += 1;
     });
     setMessagesBelow(count);
-  }, [isPuppySurface]);
+  }, [agentDockFrame, isCanonicalChatRoute, isPuppySurface]);
   const scheduleMessagesBelowCount = useCallback(() => {
     if (messagesBelowFrameRef.current !== null) return;
     messagesBelowFrameRef.current = window.requestAnimationFrame(countMessagesBelow);
@@ -8289,7 +8295,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
   // draft that grows to several lines never covers the last message. A
   // reader already at the end stays at the end while it grows.
   useEffect(() => {
-    const stack = composerStackRef.current;
+    const stack = isCanonicalChatRoute ? agentDockFrame : composerStackRef.current;
     const transcript = transcriptRef.current;
     if (!stack || !transcript || typeof ResizeObserver === "undefined") return;
     const publish = () => {
@@ -8306,7 +8312,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
     const observer = new ResizeObserver(publish);
     observer.observe(stack);
     return () => observer.disconnect();
-  }, [isPuppySurface, scheduleMessagesBelowCount]);
+  }, [agentDockFrame, isCanonicalChatRoute, isPuppySurface, scheduleMessagesBelowCount]);
   const openGetApp = useCallback((trigger: HTMLButtonElement) => {
     // The drawer is modal at every width. Close it before raising the sheet.
     getAppReturnFocusRef.current =
@@ -8478,6 +8484,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
         )}
       >
         <AgentConnectionsDrawer
+          gestureSurfaceRef={transcriptRef}
+          gestureEnabled={isCanonicalChatRoute && hasChatAccess && !isPuppySurface}
+          onGestureOpen={toggleHistoryDrawer}
           triggerRef={historyDrawerTriggerRef}
           fallbackFocusRef={historyDrawerFallbackRef}
           open={isHistoryDrawerOpen}
@@ -8520,6 +8529,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             */}
             {/* The same overlay drawer on every width keeps the transcript and
                 fixed navigation in place. */}
+            <NativeChatChrome kind="history" owner={renderedWorkspaceOwnerId}
+              pendingAttention={driveReviewsPending}
+              context={`${pathname}:${isVaultUnlocked}:${agentSurface}`}
+              // History and Close must be one presentation through the entire
+              // drawer lifecycle. The native History-only pilot cannot own
+              // the modal's Close action yet; retain the coherent web control
+              // rather than swap materials or bypass overlay isolation.
+              eligible={false}
+              onActivate={toggleHistoryDrawer} focusRef={historyDrawerFallbackRef} ref={historyChromeRef}
+              className="relative z-[540] flex h-11 w-11 shrink-0 items-center justify-center">
             <ShellActionSurface
               variant="icon"
               ref={historyDrawerFallbackRef}
@@ -8537,6 +8556,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               {driveReviewsPending > 0 && !isHistoryDrawerOpen && !isPuppySurface ?
                 <span aria-hidden="true" className="pointer-events-none absolute right-0 top-0 size-2 rounded-full bg-[color:var(--app-warning)]" /> : null}
             </ShellActionSurface>
+            </NativeChatChrome>
             <div
               data-agent-chat-header-region="identity"
               className="flex min-w-0 flex-1 items-center gap-3 overflow-x-clip"
@@ -8665,7 +8685,16 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 its spoken name through `accessibleLabel`, so hiding the visible
                 word removes nothing from a screen reader.
               */}
+              <NativeChatChrome kind="agent-surface" owner={renderedWorkspaceOwnerId}
+                context={`${pathname}:${isVaultUnlocked}:${agentSurface}`}
+                eligible={isCanonicalChatRoute && hasChatAccess && !isHistoryDrawerOpen}
+                value={agentSurface} onValueChange={(next) => {
+                  if (next === "puppy") enterPuppySurface();
+                  else setAgentSurface(next);
+                }} focusRef={agentSurfaceFocusRef}
+                className="flex h-11 w-[88px] shrink-0 items-center justify-center sm:w-[116px]">
               <SegmentedControl
+                selectedButtonRef={agentSurfaceFocusRef}
                 variant="compact"
                 size="sm"
                 ariaLabel="Agent"
@@ -8697,12 +8726,12 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 labelClassName="max-sm:hidden"
                 className="w-auto shrink-0"
               />
+              </NativeChatChrome>
               <ShellActionSurface
-                variant="icon"
+                variant="avatar"
                 data-testid="profile-open-button"
                 aria-label="Open Profile"
                 onClick={() => requestProfilePaneOpen("tap")}
-                className="!h-8 !w-8 shrink-0 !border-transparent !bg-[color:var(--app-accent)] p-0 !text-[color:var(--app-accent-fg)] !shadow-none hover:!bg-[color:var(--app-accent-hover)]"
               >
                 <Avatar className="h-8 w-8">
                   {userAvatarUrl ? (
@@ -8818,7 +8847,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 transcriptUserScrollRef.current = true;
               }}
               className={cn(
-                "h-full w-full overflow-y-auto px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
+                "h-full w-full touch-pan-y overflow-y-auto px-4 pt-5 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent sm:px-6",
                 "pb-[calc(var(--agent-chat-composer-bottom,5rem)+max(5.5rem,var(--agent-chat-composer-stack-height,0px)+1.75rem))] lg:px-8",
               )}
               tabIndex={0}
@@ -10069,8 +10098,8 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             </div>
           </div>
 
-          <form
-            onSubmit={handleSubmit}
+          <AgentDockPortal enabled={isCanonicalChatRoute} visible={!showVoiceBar && !isPuppySurface} suppressed={isPuppySurface}>
+          <div
             inert={isHistoryDrawerOpen}
             data-agent-chat-composer-form={
               isCanonicalChatRoute ? "root" : "embedded"
@@ -10079,8 +10108,9 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
               // CSS-only focus-within drives the padding shift in lockstep with
               // the native keyboard resize (no React state/rerender round-trip
               // in the path, which was the source of the visible lag on iOS).
-              "pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pt-3",
-              "bg-transparent pb-[var(--agent-chat-composer-bottom)] focus-within:pb-[var(--agent-chat-composer-focused-bottom)]",
+              isCanonicalChatRoute
+                ? "pointer-events-none relative w-full bg-transparent"
+                : "pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 pt-3 bg-transparent pb-[var(--agent-chat-composer-bottom)] focus-within:pb-[var(--agent-chat-composer-focused-bottom)]",
               // Puppy One has its own composer. Leaving One's on screen would
               // let a message meant for the on-device agent be sent to the
               // cloud one, which is exactly the confusion this mode prevents.
@@ -10088,7 +10118,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
             )}
           >
             {messagesBelow > 0 ? (
-              <div className="pointer-events-none mx-auto mb-2 flex w-full justify-center">
+              <div className={cn("pointer-events-none mx-auto mb-2 flex w-full justify-center", isCanonicalChatRoute && "absolute inset-x-0 bottom-full")}>
                 <button
                   type="button"
                   data-testid="agent-chat-messages-below"
@@ -10132,17 +10162,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                   void removeQueuedPrompt(id);
                 }}
               />
-              {voiceActive ? (
-                <div className="rounded-[22px] bg-foreground/[0.045] p-2 shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]">
-                  <AgentVoiceWaveInput
-                    status={voiceState}
-                    level={voiceLevel}
-                    disabled={isVoiceConnecting}
-                    onCancel={cancelConversationalVoice}
-                  />
-                </div>
-              ) : (
-                <>
+              {showVoiceBar && !isCanonicalChatRoute ? (
+                <AgentBar layout="slot" />
+              ) : null}
+              <form onSubmit={handleSubmit} hidden={showVoiceBar} inert={showVoiceBar}>
                   {activeDriveSearchSelection ? (
                     <div className="mb-2 flex min-w-0 items-center gap-2 rounded-[18px] bg-foreground/[0.045] px-3 py-1.5 text-sm" aria-label="Selected Drive file">
                       <FileText className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -10172,19 +10195,21 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                    * ("number 3 fopand" on a Galaxy S24 Ultra, 2026-09-22). The
                    * text box now stays the same element; only its size, the
                    * corner control and the labels change. */}
-                  <div
+                  <AgentBarSurface
+                    embedded={isCanonicalChatRoute}
                     ref={composerSurfaceRef}
                     data-testid={composerExpanded ? "agent-chat-composer-expanded" : "agent-chat-composer"}
                     className={cn(
                       composerExpanded
-                        ? "agent-chat-composer-surface relative mb-2 overflow-hidden rounded-[24px]"
-                        : "agent-chat-composer-surface flex min-h-[3.75rem] items-center gap-2 overflow-hidden rounded-[var(--app-input-radius)] px-2.5 pl-3.5",
+                        ? "agent-chat-composer-surface relative mb-2 block overflow-hidden rounded-[24px]"
+                        : "agent-chat-composer-surface agent-chat-composer-compact flex min-w-0 items-end gap-2 overflow-hidden",
+                      !isCanonicalChatRoute && "max-w-none",
                       composerExpanded
                         ? isCanonicalChatRoute
-                          ? "bottom-chrome-surface"
+                          ? ""
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)] ring-1 ring-inset ring-foreground/[0.045]"
                         : isCanonicalChatRoute
-                          ? "bottom-chrome-surface min-h-14 rounded-[var(--app-input-radius)]"
+                          ? ""
                           : "bg-foreground/[0.045] shadow-[0_18px_55px_-42px_rgba(0,0,0,0.55)]",
                     )}
                   >
@@ -10239,7 +10264,7 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                         className={
                           composerExpanded
                             ? "block h-[30dvh] w-full resize-none overscroll-contain overflow-y-auto bg-transparent px-4 pb-14 pr-32 pt-4 text-[16px] leading-6 text-foreground caret-[color:var(--app-accent)] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-60 sm:px-5 sm:pb-16 sm:pr-36 sm:pt-5 sm:text-sm break-words [overflow-wrap:anywhere] [word-break:break-word]"
-                                : "h-auto max-h-40 min-h-0 min-w-0 flex-1 resize-none overscroll-contain overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-0 bg-transparent px-0 py-3 text-[15px] leading-snug text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60 sm:max-h-44 sm:text-sm break-words [overflow-wrap:anywhere] [word-break:break-word]"
+                                : "agent-chat-composer-field block w-full min-w-0 resize-none overscroll-contain overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden border-0 bg-transparent text-[16px] text-foreground caret-[color:var(--app-accent)] outline-none shadow-none focus-visible:border-transparent focus-visible:ring-0 placeholder:text-muted-foreground/70 disabled:cursor-not-allowed disabled:opacity-60 break-words [overflow-wrap:anywhere] [word-break:break-word]"
                         }
                       />
                     </div>
@@ -10250,15 +10275,15 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                               : "flex shrink-0 items-center gap-1.5"
                           }
                         >
-                          <div className="flex items-center gap-1 rounded-full border border-foreground/[0.08] bg-foreground/[0.045] p-1">
+                          <div className="agent-chat-composer-actions flex items-center gap-1">
                             {composerActionRail}
                           </div>
                         </div>
-                  </div>
-                </>
-              )}
+                  </AgentBarSurface>
+                </form>
             </div>
-          </form>
+          </div>
+          </AgentDockPortal>
         </div>
         </section>
       </div>

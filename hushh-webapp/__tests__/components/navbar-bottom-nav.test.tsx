@@ -60,6 +60,13 @@ describe("Navbar bottom utilities", () => {
     notificationMock.pendingConsents = 0;
   });
 
+  it("retires route navigation while the owning shell hides it", () => {
+    const { rerender } = render(<Navbar shellNavigationHidden />);
+    expect(screen.queryByRole("radiogroup", { name: "Route navigation" })).toBeNull();
+    rerender(<Navbar shellNavigationHidden={false} />);
+    expect(screen.getByRole("radiogroup", { name: "Route navigation" })).toBeInTheDocument();
+  });
+
   it.each([
     ROUTES.ONE_HOME,
     ROUTES.GMAIL,
