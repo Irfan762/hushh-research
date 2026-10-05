@@ -427,7 +427,12 @@ async def test_a_draft_gone_from_gmail_is_honest_and_recorded_as_not_sent(ledger
 
 @pytest.mark.parametrize(
     "answer",
-    [httpx.Response(500, json={}), httpx.Response(200, json={}), httpx.ReadTimeout("slow")],
+    [
+        httpx.Response(500, json={}),
+        httpx.Response(200, json={}),
+        httpx.ReadTimeout("slow"),
+        httpx.WriteError("reset"),
+    ],
 )
 async def test_an_ambiguous_send_is_outcome_unknown_never_a_failure(ledger, answer):
     conn = ledger()
@@ -448,6 +453,27 @@ async def test_an_ambiguous_send_is_outcome_unknown_never_a_failure(ledger, answ
     assert _states(conn) == ["sending", "outcome_unknown"]
 
 
+@pytest.mark.parametrize("error", [httpx.ConnectError("refused"), httpx.ConnectTimeout("slow")])
+async def test_a_request_that_never_left_the_host_is_a_definite_non_send(ledger, error):
+    """Negative control: a write or read failure above stays outcome_unknown."""
+    conn = ledger()
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        raise error
+
+    with pytest.raises(GmailApiError) as caught:
+        await drafts.send_gmail_draft(
+            user_id=OWNER,
+            draft_id=DRAFT_ID,
+            gmail=GmailDouble(),
+            transport=httpx.MockTransport(handle),
+        )
+
+    assert caught.value.code == "GMAIL_PROVIDER_RETRYABLE"
+    # Failed, so the owner may ask again; outcome_unknown would block that forever.
+    assert _states(conn) == ["sending", "failed"]
+
+
 @pytest.mark.parametrize("prior", ["sent", "outcome_unknown", "sending"])
 async def test_a_second_send_of_the_same_draft_never_reaches_gmail(ledger, prior):
     ledger({"action_id": "earlier", "state": prior})
@@ -463,7 +489,8 @@ async def test_a_second_send_of_the_same_draft_never_reaches_gmail(ledger, prior
         sent = await drafts.send_gmail_draft(
             user_id=OWNER, draft_id=DRAFT_ID, gmail=GmailDouble(), transport=gmail.transport()
         )
-        assert sent == {"state": "outcome_unknown", "action_id": "earlier"}
+        # Distinct from this turn's own unknown outcome: nothing was asked now.
+        assert sent == {"state": "previous_unconfirmed", "action_id": "earlier"}
     assert gmail.requests == []
 
 

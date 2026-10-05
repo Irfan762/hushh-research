@@ -3,20 +3,25 @@
 These are the owner's own unsent words, so the boundary is narrower than mail's
 and in one place deliberately wider:
 
-* **Bodies never reach the model.** ``list_drafts`` reads headers and snippets
-  only and its model receipt is a count plus the latest draft's recipient and
-  subject. ``open_draft`` is a dispatch, like ``open_mail``: the surface fetches
-  the body through ``POST /api/one/voice/draft/open`` and nothing about it passes
-  through this module.
+* **No draft text reaches the model.** ``list_drafts`` reads headers and
+  snippets only, for the screen, and its model receipt is a count. A draft's To
+  and Subject can be a third party's words (a reply's "Re: <their subject>", a
+  display name the other side chose), so no address, subject or recipient name
+  goes into a receipt, a card sentence or a refusal. ``open_draft`` is a
+  dispatch, like ``open_mail``: the surface fetches the body through
+  ``POST /api/one/voice/draft/open`` and nothing about it passes through this
+  module.
 * **Positions, never ids.** Every tool takes the position the person named in
   the list One last showed. The server resolves it against the offer it minted,
   fenced to the Google account the ids were listed in, and refuses an inbox
   offer -- the drafts list and the mail list share one offer slot.
 * **A send is approved by voice and re-read twice.** ``send_draft`` reads the
-  draft when the card is prepared and again after the yes. The card names who
-  it goes to and what it is about; if the draft was edited, sent or deleted in
-  Gmail in between, nothing is sent. Only Gmail's own ``drafts.send`` delivers,
-  under the owner's Send switch and the compose grant that method requires.
+  draft when the card is prepared and again after the yes. The card names the
+  draft by its position in the list on screen; if the draft was edited, sent or
+  deleted in Gmail in between, nothing is sent. A draft with no To recipient is
+  refused. Only Gmail's own ``drafts.send`` delivers, under the owner's Send
+  switch and the compose grant that method requires, and an earlier send that
+  never confirmed is never repeated.
 
 Discarding a draft is not offered: it needs a Gmail permission this product
 only asks for explicitly.
@@ -27,9 +32,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
-from datetime import datetime, timedelta, timezone
 from typing import Any, Final, Literal
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import Field
 
@@ -58,12 +61,6 @@ MAIL_DRAFTS_SERVICE = "voice_mail_drafts"
 DRAFT_OPEN_DISPATCHED: Final = "draft_open_dispatched"
 DRAFT_SENT: Final = "draft_sent"
 DRAFT_SEND_UNCONFIRMED: Final = "draft_send_unconfirmed"
-
-# What the model and the card may name about a draft: the owner's own header
-# text, one line, bounded. A body never.
-_LABEL_MAX_CHARS = 80
-# The drafts service's label for a draft with no usable To header.
-_NO_RECIPIENT = "Unknown recipient"
 
 
 class _DraftsGateway:
@@ -103,22 +100,6 @@ class _DraftsGateway:
 def _drafts(ctx: ToolContext) -> Any:
     injected = ctx.services.get(MAIL_DRAFTS_SERVICE)
     return injected if injected is not None else _DraftsGateway(ctx.services.get("gmail"))
-
-
-def _label(value: Any) -> str:
-    raw = value if isinstance(value, str) else ""
-    cleaned = " ".join(raw.split())
-    return cleaned if len(cleaned) <= _LABEL_MAX_CHARS else cleaned[: _LABEL_MAX_CHARS - 1] + "…"
-
-
-def _recipient(to_label: Any) -> str:
-    label = _label(to_label)
-    return label if label and label != _NO_RECIPIENT else "no one yet"
-
-
-def _about(subject: Any) -> str:
-    label = _label(subject)
-    return f"about {label}" if label else "with no subject"
 
 
 def _unavailable(reason_code: str) -> Rejected:
@@ -191,48 +172,16 @@ def _read_refused(exc: GmailApiError, stage: str) -> Rejected:
     return Rejected(reason_code=reason, spoken_facts=[fact])
 
 
-def _owner_zone(name: str) -> ZoneInfo:
-    try:
-        return ZoneInfo(name or "UTC")
-    except (ZoneInfoNotFoundError, ValueError):
-        return ZoneInfo("UTC")
-
-
-def _saved_phrase(updated_at: Any, zone_name: str, now: datetime | None = None) -> str:
-    """When a draft was last saved, on the owner's calendar. Empty when unknown."""
-    if not isinstance(updated_at, str) or not updated_at:
-        return ""
-    try:
-        saved = datetime.fromisoformat(updated_at)
-    except ValueError:
-        return ""
-    if saved.tzinfo is None:
-        return ""
-    zone = _owner_zone(zone_name)
-    today = (now or datetime.now(timezone.utc)).astimezone(zone).date()
-    day = saved.astimezone(zone).date()
-    if day == today:
-        return "saved today"
-    if day == today - timedelta(days=1):
-        return "saved yesterday"
-    if today - timedelta(days=6) <= day < today:
-        return f"saved on {day.strftime('%A')}"
-    return f"saved on {day.day} {day.strftime('%b')}"
-
-
-def _list_facts(items: list[dict[str, Any]], has_more: bool, zone_name: str) -> list[str]:
-    count = len(items)
+def _list_facts(count: int, has_more: bool) -> list[str]:
+    """Counts only. A draft's To and Subject can be a third party's words -- a
+    reply's "Re: <their subject>", a display name the other side chose -- so
+    they stay on the screen and never reach the model."""
     if count == 0:
         return ["You don't have any drafts."]
-    latest = max(items, key=lambda item: str(item.get("updated_at") or ""))
-    saved = _saved_phrase(latest.get("updated_at"), zone_name)
-    detail = f"to {_recipient(latest.get('to'))} {_about(latest.get('subject'))}"
-    if saved:
-        detail += f", {saved}"
     line = (
-        f"You have 1 draft. It's {detail}."
+        "You have 1 draft. It's on your screen."
         if count == 1
-        else f"You have {count} drafts. The latest is {detail}."
+        else f"You have {count} drafts. They're on your screen."
     )
     if has_more:
         line += " There are more in Gmail than I listed."
@@ -313,7 +262,7 @@ async def _list_drafts(ctx: ToolContext, args: ListDraftsInput) -> ToolResult:
         coverage={"returned": len(items), "has_more": has_more},
         offer_revision=offer_revision,
         conversation_id=ctx.conversation_id,
-        spoken_facts=_list_facts(items, has_more, ctx.timezone),
+        spoken_facts=_list_facts(len(items), has_more),
     )
 
 
@@ -460,7 +409,7 @@ async def _prepare_send_draft(ctx: ToolContext, args: SendDraftInput) -> Prepare
     resolved = _resolve_offer(ctx, args.ordinal)
     if isinstance(resolved, Rejected):
         return resolved
-    offer, _position, draft_id = resolved
+    offer, position, draft_id = resolved
     # Readiness before the card, not at the yes: a card that can never be sent
     # is a promise followed by a refusal.
     not_ready = await _send_ready(ctx)
@@ -476,9 +425,21 @@ async def _prepare_send_draft(ctx: ToolContext, args: SendDraftInput) -> Prepare
             reason_code="draft_has_no_recipient",
             spoken_facts=["That draft has no recipient yet, so I can't send it."],
         )
+    if not draft.get("to_list"):
+        # Only Cc or Bcc: a card could name no one the owner would recognise as
+        # the person it goes to.
+        return Rejected(
+            reason_code="draft_no_to_recipient",
+            spoken_facts=[
+                "That draft has no To recipient, so I didn't send it. "
+                "Open it in Gmail to check who it goes to."
+            ],
+        )
     return Prepared(
-        # Read from Gmail now, not from the list: the card names what will go.
-        summary=f"send this draft to {_recipient(draft.get('to_label'))} {_about(draft.get('subject'))}",
+        # The card and the model read this sentence, and the pending row keeps
+        # it. A position is safe to say; the draft's To and Subject can be a
+        # third party's words, so they stay on the screen.
+        summary=f"send draft {position} in your list",
         snapshot={
             "offer_revision": offer.revision,
             "draft_version": _draft_version(ctx, draft),
@@ -562,6 +523,15 @@ async def _send_draft(ctx: ToolContext, args: SendDraftInput) -> ToolResult:
         )
     if sent.get("state") == "sent":
         return DraftSendResult(status=DRAFT_SENT, spoken_facts=["Sent."])
+    if sent.get("state") == "previous_unconfirmed":
+        # Gmail was not asked this turn: an earlier ask may have delivered it.
+        return Rejected(
+            reason_code="draft_prior_unconfirmed",
+            spoken_facts=[
+                "An earlier send of this draft didn't confirm, so I didn't send it again. "
+                "Check your Sent folder."
+            ],
+        )
     return DraftSendResult(
         status=DRAFT_SEND_UNCONFIRMED,
         spoken_facts=[
@@ -581,8 +551,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         description=(
             "Show the owner's Gmail drafts: who each is to, its subject, and how old "
             "it is. Use when they ask about their drafts. You learn only how many "
-            "there are and the latest one's recipient and subject; the list appears "
-            "on screen. Bodies are never read by the list."
+            "there are; the list appears on screen. Bodies are never read by the list."
         ),
         handler=_list_drafts,
     ),

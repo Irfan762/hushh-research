@@ -445,10 +445,13 @@ async def send_gmail_draft(
 ) -> dict[str, Any]:
     """Send one existing draft as Gmail holds it. Returns ``{"state", "action_id"}``.
 
-    ``state`` is ``sent`` or ``outcome_unknown``. An unknown outcome is never
+    ``state`` is ``sent``, ``outcome_unknown`` (this call asked Gmail and got no
+    verdict) or ``previous_unconfirmed`` (an earlier call is in flight or ended
+    without a verdict, so Gmail was not asked again). An unknown outcome is never
     retried here or by a later call: Gmail may have delivered it, and a second
-    send would be a duplicate the owner never approved. A definite refusal
-    raises ``GmailApiError`` and records that nothing was sent.
+    send would be a duplicate the owner never approved. A definite refusal --
+    including a request that never left this host -- raises ``GmailApiError``
+    and records that nothing was sent, so the owner may ask again.
     """
     draft_id = _validate_draft_id(draft_id)
     service = gmail or get_gmail_receipts_service()
@@ -466,8 +469,10 @@ async def send_gmail_draft(
     if prior == "sent":
         raise _error("GMAIL_DRAFT_ALREADY_SENT", "That draft was already sent.", 409)
     if prior is not None:
-        # An earlier attempt is in flight or ended without a verdict.
-        return {"state": "outcome_unknown", "action_id": action_id}
+        # An earlier attempt is in flight or ended without a verdict. Gmail is
+        # not asked again, and the caller can say so rather than report this
+        # turn's own ask as unconfirmed.
+        return {"state": "previous_unconfirmed", "action_id": action_id}
 
     async def unknown(error_code: str) -> dict[str, Any]:
         await ledger._set_outcome_unknown(action_id=action_id, error_code=error_code)
@@ -481,6 +486,15 @@ async def send_gmail_draft(
                     headers={"Authorization": f"Bearer {token}"},
                     json={"id": draft_id},
                 )
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        # No connection was made (a fresh client, so no pooled one), so the
+        # request never left this host: nothing was sent. Before the timeout
+        # clause below, because ConnectTimeout is also a TimeoutException.
+        await ledger._set_terminal(
+            action_id=action_id, state="failed", error_code="provider_connect"
+        )
+        logger.info("gmail.drafts.send_not_connected")
+        raise _retryable() from None
     except (TimeoutError, httpx.TimeoutException):
         return await unknown("provider_timeout")
     except httpx.TransportError:
