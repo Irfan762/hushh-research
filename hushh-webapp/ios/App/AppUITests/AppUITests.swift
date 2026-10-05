@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import XCTest
 
 final class AppUITests: XCTestCase {
@@ -22,6 +23,39 @@ final class AppUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         vaultUnlockSubmitted = false
+    }
+
+    func testLocalSessionVaultUnlockOnly() throws {
+        let app = XCUIApplication()
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["HUSHH_RUN_LOCAL_SESSION_SMOKE"] == "true",
+              [.runningForeground, .runningBackground, .runningBackgroundSuspended].contains(app.state)
+        else { throw XCTSkip("Requires the existing app session") }
+        app.activate()
+        let web = app.webViews.firstMatch
+        XCTAssertTrue(web.waitForExistence(timeout: 15), "Vault WebView unavailable")
+        let unlock = web.buttons["Unlock"].firstMatch
+        if unlock.exists {
+            let email = environment["HUSHH_UI_TEST_REVIEWER_EMAIL"] ?? ""
+            guard !email.isEmpty, web.staticTexts.matching(NSPredicate(format: "label == %@", email)).firstMatch.exists else {
+                XCTFail("The visible vault account does not match the canonical reviewer; unlock was not submitted")
+                return
+            }
+            guard attemptVaultPassphraseUnlock(app: app) else {
+                XCTFail("Vault entry could not be completed; unlock was not submitted")
+                return
+            }
+        }
+        let rejected = web.staticTexts.matching(NSPredicate(format: "label CONTAINS[c] %@", "That passphrase did not match")).firstMatch
+        let settled = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            !unlock.exists || rejected.exists
+        }, object: web)
+        XCTAssertEqual(XCTWaiter.wait(for: [settled], timeout: 30), .completed, "Vault unlock did not settle")
+        guard !rejected.exists, !unlock.exists else { XCTFail("Vault authentication rejected the complete entry"); return }
+        perfTapNav(app, label: "Chat")
+        let composer = web.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Message One")).firstMatch
+        XCTAssertTrue(composer.waitForExistence(timeout: 15) && composer.isHittable, "Protected Chat was not admitted")
+        print("VAULT_UNLOCK_VERIFIED protected_chat=true")
     }
 
     func testLocalSessionChatDrawerDoesNotReplaceThePage() throws {
@@ -1124,6 +1158,34 @@ final class AppUITests: XCTestCase {
         field.typeText(value)
     }
 
+    private func pasteSecureEntry(app: XCUIApplication, field: XCUIElement, value: String) -> Bool {
+        let pasteboard = UIPasteboard.general
+        // Short-lived device-local paste; credentials never enter test output.
+        pasteboard.setObjects([value as NSString], localOnly: true, expirationDate: Date().addingTimeInterval(30))
+        let generation = pasteboard.changeCount
+        defer {
+            // Do not clear a later user copy; only retire this owned entry.
+            if pasteboard.changeCount == generation { pasteboard.items = [] }
+        }
+        let ready = pasteboard.string == value
+        print("VAULT_PASTE_STAGE clipboard_ready=\(ready)")
+        guard ready else { return false }
+        field.press(forDuration: 1)
+        let choices = [app.menuItems["Paste"], app.buttons["Paste"]]
+        guard let paste = choices.first(where: { $0.waitForExistence(timeout: 2) && $0.isHittable }) else {
+            print("VAULT_PASTE_STAGE menu_ready=false")
+            return false
+        }
+        print("VAULT_PASTE_STAGE menu_ready=true")
+        paste.tap()
+        let permissions = [app.alerts.buttons["Allow Paste"], XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.buttons["Allow Paste"]]
+        if let allow = permissions.first(where: { $0.waitForExistence(timeout: 0.5) && $0.isHittable }) { allow.tap() }
+        let inserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            (field.value as? String)?.utf16.count == value.utf16.count
+        }, object: field)
+        return XCTWaiter.wait(for: [inserted], timeout: 3) == .completed
+    }
+
     @discardableResult
     private func attemptVaultPassphraseUnlock(app: XCUIApplication) -> Bool {
         guard !vaultUnlockSubmitted else {
@@ -1182,54 +1244,27 @@ final class AppUITests: XCTestCase {
             guard app.keyboards.firstMatch.waitForExistence(timeout: 5) else { return false }
             let existing = field.value as? String ?? ""
             if existing != field.placeholderValue && !existing.isEmpty {
-                // A tap may leave the caret inside an existing value.
-                // Select the entire entry rather than deleting a prefix.
-                field.press(forDuration: 1)
-                let selections = [app.menuItems["Select All"], app.buttons["Select All"]]
-                if let selectAll = selections.first(where: { $0.waitForExistence(timeout: 2) && $0.isHittable }) {
-                    selectAll.tap()
-                } else {
-                    // A selected single-line entry need not expose Select
-                    // All. Verify that its line is cleared before typing.
-                    field.tap(withNumberOfTaps: 3, numberOfTouches: 1)
-                }
-                field.typeText(XCUIKeyboardKey.delete.rawValue)
+                field.coordinate(withNormalizedOffset: CGVector(dx: 0.95, dy: 0.5)).tap()
+                let keys = [app.keyboards.keys["delete"], app.keyboards.keys["Delete"], app.keyboards.buttons["delete"], app.keyboards.buttons["Delete"]]
+                guard let delete = keys.first(where: { $0.exists && $0.isHittable }) else { return false }
+                delete.press(forDuration: 2)
             }
             let entryLength = { () -> Int? in
                 guard let value = field.value as? String else { return nil }
                 return value == field.placeholderValue ? 0 : value.utf16.count
             }
             let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                entryLength() == 0
+                entryLength() == 0 && unlockButtons.contains(where: { $0.exists && !$0.isEnabled })
             }, object: field)
             guard XCTWaiter.wait(for: [cleared], timeout: 3) == .completed else {
                 XCTFail("Vault secure entry could not be cleared; unlock was not submitted")
                 return false
             }
-            // WebKit's controlled secure input can lose focus during bulk
-            // typing. Acknowledge each insertion before advancing; never
-            // resend an uncertain character or submit an incomplete entry.
-            // Mask progression checks delivery only, not authentication.
-            var acknowledgedLength = 0
-            for character in passphrase {
-                guard field.isHittable, app.keyboards.firstMatch.exists else {
-                    XCTFail("Vault secure entry lost focus; unlock was not submitted")
-                    return false
-                }
-                let insertion = String(character)
-                field.typeText(insertion)
-                acknowledgedLength += insertion.utf16.count
-                let expectedLength = acknowledgedLength
-                let inserted = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
-                    entryLength() == expectedLength
-                }, object: field)
-                guard XCTWaiter.wait(for: [inserted], timeout: 3) == .completed else {
-                    let observed = entryLength()
-                    let reason = observed == nil ? "unknown" : observed == 0 ? "empty" : observed! < expectedLength ? "short" : "long"
-                    print("VAULT_INPUT_DELIVERY_UNACKNOWLEDGED reason=\(reason)")
-                    XCTFail("Vault secure entry insertion was not acknowledged; unlock was not submitted")
-                    return false
-                }
+            // One atomic native Paste, not paced keyboard injection. The
+            // iPhone keyboard injector dropped a symbol in a synthetic probe.
+            guard pasteSecureEntry(app: app, field: field, value: passphrase) else {
+                XCTFail("Vault secure entry insertion was not acknowledged; unlock was not submitted")
+                return false
             }
             // Submit once through the normal cryptographic unlock, then
             // require protected content and absence of the gate in the caller.
