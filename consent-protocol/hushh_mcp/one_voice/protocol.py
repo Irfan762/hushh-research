@@ -63,6 +63,13 @@ NOT_OK_STATUSES = frozenset(
         "draft_open_requested",
         "draft_open_unconfirmed",
         _DRAFT_SEND_UNCONFIRMED,
+        # A scheduled-mail cancel that did not cancel anything, and a scheduled
+        # send whose confirmation could not be recorded: none is a success.
+        "already_sent",
+        "already_sending",
+        "not_sent",
+        "send_unconfirmed",
+        "schedule_unconfirmed",
         LOCATION_UPDATES_PENDING,
         SOS_GRANTS_CREATED,
         RESET_STEP_ISSUED,
