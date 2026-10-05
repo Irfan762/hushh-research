@@ -1261,14 +1261,11 @@ export function AppTopShell({ className, model }: AppTopShellProps) {
                         ) : null}
 
                         <ShellActionSurface
-                          variant="icon"
+                          variant="avatar"
                           aria-label="Open Profile"
                           onClick={() => requestProfilePaneOpen("tap")}
-                          className="!h-11 !w-11 !border-transparent !bg-transparent p-0 !text-[color:var(--app-accent-fg)] !shadow-none hover:!bg-transparent"
                         >
-                          {/* Keep the photo visually lean inside the full
-                           * 44-point shell target; the image is not the hit box. */}
-                          <Avatar className="h-8 w-8 bg-[color:var(--app-accent)] transition-colors group-hover/shell-action:bg-[color:var(--app-accent-hover)]">
+                          <Avatar className="h-8 w-8">
                             {effectiveAvatarUrl ? (
                               <AvatarImage src={effectiveAvatarUrl} alt="" />
                             ) : null}

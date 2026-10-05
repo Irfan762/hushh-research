@@ -8688,11 +8688,10 @@ export function AgentChatWorkspace({ className }: AgentChatWorkspaceProps) {
                 className="w-auto shrink-0"
               />
               <ShellActionSurface
-                variant="icon"
+                variant="avatar"
                 data-testid="profile-open-button"
                 aria-label="Open Profile"
                 onClick={() => requestProfilePaneOpen("tap")}
-                className="!h-8 !w-8 shrink-0 !border-transparent !bg-[color:var(--app-accent)] p-0 !text-[color:var(--app-accent-fg)] !shadow-none hover:!bg-[color:var(--app-accent-hover)]"
               >
                 <Avatar className="h-8 w-8">
                   {userAvatarUrl ? (

@@ -28,9 +28,12 @@ another navigation stack, WebView, session, or information store.
 - [ProfileAvatarEditor](../components/profile/profile-avatar-editor.tsx) opens an
   in-place DOM photo preview with close and existing Photo options. The preview
   itself neither writes a photo nor opens a picker.
-  The shared top-shell Profile action retains a 32-point photo inside a
-  44-point touch target; increasing its hit area does not enlarge the image or
-  replace Profile with another native content container.
+  Both Chat and the ordinary top-shell Profile action use the shared
+  `ShellActionSurface` avatar variant: a 32-point photo inside a 44-point touch
+  target. Increasing its hit area does not enlarge the image or replace Profile
+  with another native content container. Physical acceptance checks both entry
+  points; source-derived Chromium/WebKit fixtures independently measure the
+  target and photo across 360–1280px widths.
 - [The global Search host](../components/kai/kai-command-bar-global.tsx) is mounted
   on Chat by [Providers](../app/providers.tsx). Native Search opens that existing
   palette; it is not an independent search route or native result engine.

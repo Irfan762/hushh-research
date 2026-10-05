@@ -412,6 +412,8 @@ final class AppUITests: XCTestCase {
 
         let profile = app.buttons["Open Profile"].firstMatch
         XCTAssertTrue(profile.exists && profile.isHittable)
+        XCTAssertGreaterThanOrEqual(profile.frame.width, 44)
+        XCTAssertGreaterThanOrEqual(profile.frame.height, 44)
         profile.tap()
         let close = app.buttons["Close Profile"].firstMatch
         XCTAssertTrue(close.waitForExistence(timeout: 10) && close.isHittable)
@@ -617,10 +619,14 @@ final class AppUITests: XCTestCase {
             try app.performAccessibilityAudit(for: [.contrast, .hitRegion, .sufficientElementDescription, .trait]) { issue in
                 guard let element = issue.element else { return false }
                 print("NATIVE_BACK_AUDIT_ISSUE identified=\(!element.identifier.isEmpty) overlaps_back=\(element.frame.intersects(back.frame)) type=\(issue.auditType.rawValue)")
-                let publicControls = ["Open Profile", "Add card", "Done", "Search cards", "Go back", "One.", "Chat", "One", "Connect", "Feed", "Search", "Top of screen", "Scroll to top", "Status bar", "Back", "Skip to main content"]
+                let publicControls = ["Open Profile", "Add card", "Done", "Search cards", "Go back", "One.", "Chat", "One", "Connect", "Feed", "Search", "Top of screen", "Scroll to top", "Status bar", "Back", "Skip to main content", "Notifications alt+T", "Notifications", "Wallet", "Hussh One", "Breadcrumb", "Main"]
                 let publicIndex = publicControls.firstIndex(of: element.label) ?? -1
                 print("NATIVE_AUDIT_GEOMETRY public_control=\(publicIndex) x=\(Int(element.frame.minX)) y=\(Int(element.frame.minY)) width=\(Int(element.frame.width)) height=\(Int(element.frame.height))")
                 print("NATIVE_AUDIT_ELEMENT type=\(element.elementType.rawValue) label_empty=\(element.label.isEmpty)")
+                // Classify only public accessibility vocabulary; never emit
+                // the label itself or the protected page's hierarchy.
+                let vocabulary = element.label.lowercased()
+                print("NATIVE_AUDIT_ROLE scroll=\(vocabulary.contains("scroll")) top=\(vocabulary.contains("top")) status=\(vocabulary.contains("status")) web=\(vocabulary.contains("web"))")
                 return !element.identifier.isEmpty && element.identifier != "top-shell-back" &&
                     !element.frame.intersects(back.frame)
             }
