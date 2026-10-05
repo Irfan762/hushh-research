@@ -595,3 +595,8 @@ tests/test_circle_chat.py
 tests/test_scheduled_mail_send_migration.py
 tests/services/test_owner_time.py
 tests/one_voice/test_mail_schedule.py
+
+# One Voice scheduled mail: send-once drain, its OIDC route and the UAT-only scheduler.
+tests/services/test_scheduled_mail_drain.py
+tests/test_scheduled_mail_drain_routes.py
+tests/test_scheduled_mail_scheduler_contract.py
