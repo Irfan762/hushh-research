@@ -479,10 +479,10 @@
         "gmail_mailbox_action_proposals"
       ],
       "primary_access_path": "One owner-approved Gmail delivery prepare and final-send services; reviewed Gmail mailbox changes (archive, labels, read state, trash) proposed in One's chat and executed on the owner's confirmation",
-      "retention_policy": "Prepared actions expire after ten minutes and are single-use. Required policy: retain terminal action metadata only for bounded delivery-state reconciliation, then compact it. A numeric terminal retention window and executable compaction process are not established by the current report-only registration. Mailbox-change proposals are unusable after ten minutes, deleted after execution, and purged (with failed ones) on the owner's next mailbox change.",
+      "retention_policy": "Prepared actions expire after ten minutes and are single-use. Required policy: retain terminal action metadata only for bounded delivery-state reconciliation, then compact it. A numeric terminal retention window and executable compaction process are not established by the current report-only registration. Mailbox-change proposals are unusable after ten minutes, deleted after execution, and purged (with failed ones) on the owner's next mailbox change. Scheduled sends (migration 275) wait until send_at, at most 30 days out, and stay sendable until send_at + 24 hours; the scheduled-mail drain sends a due row once, records a row past that window as failed (schedule_window_passed) and a row whose recipient disconnected as failed (recipient_disconnected), so the Feed keeps a lasting record of every unsent email, and clears payload_sealed and subject on every terminal state, with a bounded sweep of terminal scheduled rows at the start of each run. A voice cancel clears payload_sealed at once. Account reset deletes the owner's rows.",
       "deletion_behavior": "Cascade-delete with the account owner; expired prepared actions are marked expired before reuse. Terminal metadata compaction without email-content retention remains required policy, not verified current enforcement. Mailbox-change proposals cascade-delete with the actor profile and are bound to the Gmail account they were resolved in, so a disconnect or account switch makes them unusable.",
-      "trust_boundary": "Stores only action identifiers, user identifiers, HMACs of normalized envelopes and idempotency keys, recipient counts, lifecycle timestamps, Gmail message/thread identifiers, and safe error codes. It never stores recipient addresses, subject, body, OAuth tokens, vault credentials, PKM values, or One Email KYC mailbox information. Mailbox-change proposals store only Gmail message and label identifiers, the bound Google account subject, the action and lifecycle state; never subject, sender, body or tokens.",
-      "plaintext_posture": "short_lived_hmac_and_delivery_metadata_only",
+      "trust_boundary": "Stores only action identifiers, user identifiers, HMACs of normalized envelopes and idempotency keys, recipient counts, lifecycle timestamps, Gmail message/thread identifiers, and safe error codes for immediate, reply and voice draft sends; those rows never store recipient addresses, subject, body, OAuth tokens, vault credentials, PKM values, or One Email KYC mailbox information. Scheduled sends (migration 275) additionally store payload_sealed (AES-GCM under a key derived from the app signing key, with the owner and action bound as associated data; it holds the address, subject, body, the recipient's user id and the sending Google account subject, is opened only by the scheduled-mail drain at send time, and is cleared on cancel and on every terminal state) and two display-only plaintext columns, subject and recipient_display (the confirmed connection's name), shown in the owner's scheduled list on the owner's screen and never used as HMAC inputs. recipient_display may be spoken back to the owner by the Live model in the schedule and cancel confirmations, since it is the name the owner already said; subject and payload_sealed never reach the Live model. Every terminal scheduled row has payload_sealed and subject cleared; recipient_display stays for the owner's outcome notification. Mailbox-change proposals store only Gmail message and label identifiers, the bound Google account subject, the action and lifecycle state; never subject, sender, body or tokens.",
+      "plaintext_posture": "short_lived_hmac_and_delivery_metadata_with_sealed_scheduled_payload_and_owner_display_subject",
       "expected_row_growth": "low_per_user_action"
     },
     {
@@ -672,6 +672,97 @@
       "trust_boundary": "Backend stores only request metadata (owner and buyer references, slice domain, scope handle, label, price, status, timestamps). It never stores raw PKM values; a request grants no access on its own and only the safe-summary projection is ever shared after explicit owner approval.",
       "plaintext_posture": "metadata_only",
       "expected_row_growth": "medium_per_user_request"
+    },
+    {
+      "id": "pkm_packets",
+      "owner": "vault-pkm-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_packets"
+      ],
+      "primary_access_path": "One marketplace Owner tab: the owner creates, prices and lists packets (named bundles of their own PKM scope references) for sale; hussh.ai White Pages reads only the titles and prices of a verified owner's for-sale packets through the public listing lookup.",
+      "retention_policy": "Retained while the owner keeps the packet; deleting a packet removes its row.",
+      "deletion_behavior": "Delete every row for the owner on account reset and account deletion.",
+      "trust_boundary": "Stores packet titles, prices and PKM scope references ({domain, scopeHandle, label}) only. It never stores a PKM value; a sale moves data only through an owner-approved marketplace request sealed to the buyer's key.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
+    },
+    {
+      "id": "directory_listing_claims",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "directory_listing_claims"
+      ],
+      "primary_access_path": "hussh.ai White Pages 'Is this you?' claim: a signed-in, phone-verified One user claims a public-record listing id; an operator verifies it; the public listing lookup then shows the verified owner's for-sale packets.",
+      "retention_policy": "Active claims are retained while pending or verified; withdrawn and rejected claims are retained only for bounded operational review.",
+      "deletion_behavior": "Delete every row for the user on account reset and account deletion, returning the listing to unclaimed.",
+      "trust_boundary": "Stores the user reference, the public listing id and name, status and timestamps. The public lookup never returns a user id.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
+    },
+    {
+      "id": "pkm_packet_orders",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_packet_orders"
+      ],
+      "primary_access_path": "hussh.ai White Pages buy flow: a signed-in buyer pays hussh for one packet through Stripe Checkout; the signed Stripe webhook marks the order paid and files an owner-approved marketplace access request; denied, expired or orphaned requests are refunded by the packet-order reconcile.",
+      "retention_policy": "Retained while payment or refund is unsettled and for bounded financial and consent-audit review afterwards; snapshots the packet title and price paid.",
+      "deletion_behavior": "On account deletion, paid but undelivered orders move to refund_pending, are refunded in full by the reconcile, and the row is then deleted; all other rows (unpaid, settled, or delivered) are deleted, and an owner earning not yet transferred is forfeited.",
+      "trust_boundary": "Stores buyer and owner references, the public listing id, packet id and title, amounts, status and Stripe object ids. No card data (Stripe-hosted Checkout) and no PKM values.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "medium_per_user_request"
+    },
+    {
+      "id": "pkm_credits",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_credit_subscriptions",
+        "pkm_credit_ledger"
+      ],
+      "primary_access_path": "hussh.ai credits plans: a buyer subscribes monthly through Stripe Checkout; the signed webhook grants the plan's credits once per paid invoice (pkm_grant_credits, expiring the unused balance) and records plan status; buying a packet with credits spends from the ledger (pkm_spend_credits under a per-user advisory lock); refunds of credit-paid orders return credits.",
+      "retention_policy": "Subscription row retained while the plan exists; ledger rows are append-only and retained for the life of the account for balance and audit.",
+      "deletion_behavior": "On account deletion the ledger is deleted and the subscription row is deleted after its Stripe subscription id is moved to pkm_credit_subscription_cancellations for cancellation.",
+      "trust_boundary": "Stores user references, plan, Stripe customer and subscription ids, status, period end, and integer credit deltas with idempotency refs. No card data and no PKM values.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "medium_per_user_request"
+    },
+    {
+      "id": "pkm_credit_subscription_cancellations",
+      "owner": "iam-consent-governance",
+      "data_class": "workflow_state",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_credit_subscription_cancellations"
+      ],
+      "primary_access_path": "Account deletion moves a deleted subscriber's Stripe subscription id here; the scheduled work drain cancels it at Stripe and deletes the row.",
+      "retention_policy": "Transient: deleted as soon as the Stripe cancellation succeeds.",
+      "deletion_behavior": "Holds no user identity; rows are removed by the drain after cancellation.",
+      "trust_boundary": "Stripe subscription id and timestamp only; no user id.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_ttl_workflow"
+    },
+    {
+      "id": "pkm_owner_payout_accounts",
+      "owner": "iam-consent-governance",
+      "data_class": "personal_metadata",
+      "lifecycle_status": "current",
+      "exact_tables": [
+        "pkm_owner_payout_accounts"
+      ],
+      "primary_access_path": "One marketplace Owner tab payouts: a packet owner onboards to a Stripe Connect Express account; the work drain marks delivered orders' earnings due and transfers them (amount minus platform fee) once Stripe enables payouts.",
+      "retention_policy": "Retained while the owner keeps their account.",
+      "deletion_behavior": "Delete the row on account reset and deletion; the Stripe Express account itself is held by Stripe.",
+      "trust_boundary": "Stores the user reference, Stripe Connect account id and readiness flags only. Bank and identity details stay with Stripe.",
+      "plaintext_posture": "metadata_only",
+      "expected_row_growth": "low_per_user"
     },
     {
       "id": "information_marketplace_delivery",

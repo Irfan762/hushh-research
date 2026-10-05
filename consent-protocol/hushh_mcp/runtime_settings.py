@@ -133,6 +133,7 @@ _BACKEND_RUNTIME_ENV_MAP: dict[str, str] = {
     "hushh_tech_proxy_audience": "HUSSH_TECH_PROXY_AUDIENCE",
     "hushh_tech_trusted_proxy_service_accounts": ("HUSSH_TECH_TRUSTED_PROXY_SERVICE_ACCOUNTS"),
     "one_wallet_card_enabled": "ONE_WALLET_CARD_ENABLED",
+    "one_career_enabled": "ONE_CAREER_ENABLED",
     "wallet_pass_team_identifier": "WALLET_PASS_TEAM_IDENTIFIER",
     "wallet_pass_type_identifier": "WALLET_PASS_TYPE_IDENTIFIER",
     # Advisor directory base URL. Not a secret, so it travels in this config
@@ -177,6 +178,13 @@ _BACKEND_RUNTIME_ENV_MAP: dict[str, str] = {
     # so each lane turns it on deliberately (deploy-uat passes it, production
     # passes false). It also gates the HTTP send of a reply card.
     "one_voice_mail_reply_enabled": "ONE_VOICE_MAIL_REPLY_ENABLED",
+    # Scheduling an email for later, and listing/opening/sending Gmail drafts,
+    # by voice. OFF by default like reply; each is also its own kill switch.
+    "one_voice_mail_schedule_send_enabled": "ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED",
+    "one_voice_mail_drafts_enabled": "ONE_VOICE_MAIL_DRAFTS_ENABLED",
+    # The Cloud Scheduler drain that delivers scheduled mail. Its own key, so a
+    # lane can pause delivery without withdrawing scheduling, and vice versa.
+    "mail_scheduled_drain_enabled": "MAIL_SCHEDULED_DRAIN_ENABLED",
 }
 
 
@@ -460,6 +468,13 @@ def one_wallet_card_enabled() -> bool:
     off; while off every wallet-card route answers as if the feature did not
     exist and no card is ever resolved."""
     return _bool_from_value(_clean_env("ONE_WALLET_CARD_ENABLED"), default=False)
+
+
+def one_career_enabled() -> bool:
+    """Feature flag: the Career Agent's resume parsing route
+    (``/api/one/career/resume/parse``). Defaults off; while off the route answers
+    as if it did not exist."""
+    return _bool_from_value(_clean_env("ONE_CAREER_ENABLED"), default=False)
 
 
 def get_wallet_pass_settings() -> WalletPassSettings:
