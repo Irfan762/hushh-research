@@ -166,17 +166,24 @@ export function WalletCardFace({ summary, revealed, onToggleReveal, children, cl
             ))}
           </span>
           {onToggleReveal ? (
-            <button
-              type="button"
+            <span
+              role="button"
+              tabIndex={0}
               onClick={(e) => {
                 e.stopPropagation();
                 onToggleReveal();
               }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.stopPropagation();
+                  onToggleReveal();
+                }
+              }}
               aria-label={revealed ? "Hide card details" : "Show card details"}
-              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white transition-colors"
+              className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-white/70 hover:bg-white/10 hover:text-white transition-colors cursor-pointer"
             >
               {revealed ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-            </button>
+            </span>
           ) : (
             <span className="inline-flex size-6 shrink-0 items-center justify-center text-white/70">
               <Eye className="size-4" />
