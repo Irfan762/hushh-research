@@ -539,6 +539,7 @@ tests/test_registered_mcp_toolset.py
 # A review ledger outage reads as "review unavailable", never a declined approval;
 # OAuth sign-in admits metadata a real (streaming) transport has not yet read.
 tests/test_mcp_resume_receipt.py
+tests/test_one_run_errors.py
 tests/one_adk/test_mcp_oauth_connection.py
 # Returning to a chat restores its Activity rows and connect card from the turn's
 # own encrypted events, projecting only tool ids, outcome enums and opaque ids.
