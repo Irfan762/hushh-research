@@ -68,6 +68,7 @@ vi.mock("@/lib/services/wallet-service", async () => {
 });
 
 import { WalletWorkspace } from "@/components/wallet/wallet-workspace";
+import { stageReservedOfferPrefill } from "@/lib/pkm/reserved-offer";
 
 function makeCards(count: number) {
   return Array.from({ length: count }, (_, i) => ({
@@ -83,6 +84,55 @@ function makeCards(count: number) {
 }
 
 describe("WalletWorkspace at scale", () => {
+  it("links all three tabs to their panels and supports keyboard selection", async () => {
+    render(<WalletWorkspace />);
+    await screen.findByTestId("one-wallet-list");
+    for (const name of ["Cards", "Add", "Sharing"]) {
+      const tab = screen.getByRole("tab", { name });
+      const panel = document.getElementById(tab.getAttribute("aria-controls")!);
+      expect(panel).toHaveAttribute("aria-labelledby", tab.id);
+    }
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Cards" }), { key: "ArrowRight" });
+    expect(screen.getByRole("tab", { name: "Add" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("secure-card-add-form")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("tab", { name: "Add" }), { key: "Home" });
+    expect(screen.getByRole("tab", { name: "Cards" })).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keeps a draft across tabs, masks it on departure, and drops it on vault lock", async () => {
+    const workspace = render(<WalletWorkspace />);
+    await screen.findByTestId("one-wallet-list");
+    fireEvent.click(screen.getByRole("tab", { name: "Add" }));
+    fireEvent.change(screen.getByLabelText("Nickname"), { target: { value: "Travel" } });
+    fireEvent.change(screen.getByLabelText("CVV"), { target: { value: "123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Show CVV and PIN" }));
+    expect(screen.getByLabelText("CVV")).toHaveAttribute("type", "text");
+    fireEvent.click(screen.getByRole("tab", { name: "Cards" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Add" }));
+    expect(screen.getByLabelText("Nickname")).toHaveValue("Travel");
+    expect(screen.getByLabelText("CVV")).toHaveAttribute("type", "password");
+    vaultMock.locked = true;
+    workspace.rerender(<WalletWorkspace />);
+    await screen.findByTestId("one-wallet-locked");
+    expect(screen.queryByTestId("secure-card-add-form")).toBeNull();
+  });
+
+  it("rejects a reveal that completes after leaving Cards", async () => {
+    let finish!: (value: unknown) => void;
+    serviceMock.getCard.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    render(<WalletWorkspace />);
+    await screen.findByTestId("one-wallet-list");
+    fireEvent.click(screen.getByTestId("one-wallet-card-1000"));
+    fireEvent.click(screen.getByTestId("one-wallet-reveal-1000"));
+    fireEvent.click(screen.getByRole("tab", { name: "Add" }));
+    await act(async () => finish({
+      summary: makeCards(1)[0],
+      secrets: { pan: "4242424242421000", cvv: "123", pin: "", cardholderName: "Test" },
+    }));
+    fireEvent.click(screen.getByRole("tab", { name: "Cards" }));
+    expect(screen.queryByTestId("secure-card-reveal")).toBeNull();
+  });
+
   it("keeps post-mutation refresh outside Wallet outcome catches", () => {
     const source = readFileSync(
       join(process.cwd(), "components/wallet/wallet-workspace.tsx"),
@@ -128,6 +178,75 @@ describe("WalletWorkspace at scale", () => {
     expect(screen.getByText("Page 1 of 3")).toBeTruthy();
     fireEvent.click(screen.getByLabelText("Go to next page"));
     expect(navigationMock.replace).toHaveBeenCalledWith("/one/wallet?page=2", { scroll: false });
+  });
+
+  it("opens Add card with the nickname a chat offer handed over in memory", async () => {
+    stageReservedOfferPrefill({
+      ownerUserId: "user_1",
+      ownerFeature: "wallet",
+      prefill: { kind: "wallet_card", nickname: "Amex Gold" },
+    });
+    render(<WalletWorkspace />);
+    const nickname = (await screen.findByLabelText("Nickname")) as HTMLInputElement;
+    expect(nickname.value).toBe("Amex Gold");
+    // Only the label: every card detail is still the owner's to type here.
+    expect((screen.getByLabelText(/card number/i) as HTMLInputElement).value).toBe("");
+    expect(navigationMock.replace).not.toHaveBeenCalledWith(expect.stringMatching(/Amex/), expect.anything());
+  });
+
+  it("opens the list, not Add card, when no offer is waiting (negative control)", async () => {
+    render(<WalletWorkspace />);
+    await waitFor(() => expect(screen.getByTestId("one-wallet-list")).toBeTruthy());
+    expect(screen.queryByLabelText("Nickname")).toBeNull();
+  });
+
+  it.each([0, 1])("shows the introduction before a delayed request resolves with %i cards", async (count) => {
+    let finish!: (cards: ReturnType<typeof makeCards>) => void;
+    serviceMock.listCardSummaries.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    render(<WalletWorkspace />);
+
+    expect(screen.getByTestId("one-wallet-loading")).toHaveAttribute("aria-busy", "true");
+    const art = screen.getByTestId("one-wallet-empty-art").querySelector("img");
+    expect(art).toBeTruthy();
+    expect(screen.getByText("All your cards.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Opening your wallet…" })).toBeDisabled();
+    expect(screen.queryByTestId("one-wallet-empty")).toBeNull();
+
+    await waitFor(() => expect(serviceMock.listCardSummaries).toHaveBeenCalled());
+    await act(async () => { finish(makeCards(count)); });
+    expect(screen.queryByTestId("one-wallet-loading")).toBeNull();
+    if (count === 0) {
+      expect(screen.getByTestId("one-wallet-empty-art").querySelector("img")).toBe(art);
+      expect(screen.getByRole("button", { name: "Add a Card" })).toBeEnabled();
+    } else {
+      expect(screen.getByTestId("one-wallet-list")).toBeTruthy();
+      expect(screen.queryByTestId("one-wallet-empty")).toBeNull();
+    }
+  });
+
+  it("renders the Wallet hero and keeps its CTA wired to the existing add-card flow", async () => {
+    serviceMock.listCardSummaries.mockResolvedValue([]);
+    render(<WalletWorkspace />);
+
+    expect(await screen.findByTestId("one-wallet-empty")).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { level: 2, name: "All your cards. In one place." }),
+    ).toBeTruthy();
+    expect(screen.getByText("All your cards.")).toBeTruthy();
+    expect(screen.getByText("In one place.")).toBeTruthy();
+    expect(screen.getByTestId("one-wallet-empty-display-title").classList).toContain(
+      "ui-text-page-title",
+    );
+    expect(
+      screen.getByText("Cards you add are encrypted on this device and kept in your vault."),
+    ).toBeTruthy();
+    expect(screen.queryByText("Encrypted in your vault. Shared only with your consent.")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add a Card" }));
+    expect(await screen.findByTestId("secure-card-add-form")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByTestId("one-wallet-empty")).toBeTruthy();
   });
 
   it("renders the requested page from the URL", async () => {

@@ -1014,6 +1014,27 @@ describe("AG-UI Agent One client", () => {
     });
   });
 
+  it("sends the owner's Settings style choices in their own field, closed to the server schema", async () => {
+    await streamAgentChat({ vaultKey: TEST_VAULT_KEY,
+      userId: "user-1",
+      message: "Hi",
+      conversationId: "thread-1",
+      vaultOwnerToken: "owner-token",
+      pkmContext: "Private-agent PKM context (agent-safe-pkm/v1):",
+      communicationPreferences: {
+        preferred_name: "Kay\u0007",
+        tone: "loud" as never,
+        avoid_em_dashes: true,
+        owner_style_note: "x".repeat(281),
+      },
+      handlers: {},
+    });
+    const forwarded = mockTransport.runAgent.mock.calls[0]?.[0].forwardedProps;
+    // Control characters stripped; an unknown tone and an oversized note are dropped, never clipped.
+    expect(forwarded.communicationPreferences).toEqual({ preferred_name: "Kay", avoid_em_dashes: true });
+    expect(forwarded.pkmContext).not.toContain("Kay");
+  });
+
   it("carries a pending mail draft only on a turn that has one", async () => {
     const pendingEmailDraft = {
       to: "pat@example.com", cc: "", bcc: "", subject: "Details",
@@ -1188,6 +1209,7 @@ describe("AG-UI Agent One client", () => {
     expect(onMcpReview).toHaveBeenCalledTimes(1);
     expect(onToolWaiting).not.toHaveBeenCalled();
     const review = onMcpReview.mock.calls[0][0];
+    expect(review.activityIds).toEqual(["tool-1", "original"]);
     const approval = { connectorId: reference.connectorId, toolName: reference.toolName,
       directiveId: reference.directiveId, pendingHandle: reference.pendingHandle, receipt: "r".repeat(48) };
     await expect(review.resume({ ...approval, connectorId: "wrong_owner_connector" })).rejects.toThrow("does not match");

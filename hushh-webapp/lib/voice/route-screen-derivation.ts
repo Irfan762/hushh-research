@@ -260,8 +260,8 @@ export function deriveVoiceRouteScreen(
   ) {
     return { screen: "consents", subview: query.get("tab") || null };
   }
-  if (normalizedPath === ROUTES.ONE_KYC) {
-    return { screen: "one_kyc", subview: query.get("panel") || null };
+  if (normalizedPath === ROUTES.ONE_CAREER) {
+    return { screen: "one_career", subview: null };
   }
   if (normalizedPath === ROUTES.ONE_FEED) {
     return { screen: "one_feed", subview: null };
@@ -305,6 +305,12 @@ export function deriveVoiceRouteScreen(
   }
   if (normalizedPath === ROUTES.PKM_RECENT) {
     return { screen: "pkm_recent", subview: null };
+  }
+  if (normalizedPath === ROUTES.PKM_LOCATION) {
+    return { screen: "pkm_location", subview: null };
+  }
+  if (normalizedPath === ROUTES.PKM_LOCATION_DETAIL) {
+    return { screen: "pkm_location_detail", subview: null };
   }
   if (
     normalizedPath === ROUTES.CONNECTED_SYSTEMS ||

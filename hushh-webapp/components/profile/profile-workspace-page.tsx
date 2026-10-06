@@ -15,8 +15,6 @@ import {
   SpinnerGapIcon as Loader2,
   ArrowsClockwiseIcon as RefreshCw,
   UserCircleIcon as User,
-  ShieldCheck,
-  ScrollText,
 } from "@/components/icons";
 import {
   AccentRowIcon,
@@ -32,7 +30,6 @@ import {
   FingerprintProfileIcon,
   GmailAgentIcon,
   InboxRowIcon,
-  KeyRowIcon,
   LocationAgentIcon,
   MarketplaceAgentIcon,
   MemoryAgentIcon,
@@ -69,16 +66,22 @@ import {
   PkmDomainDetailPanel,
 } from "@/components/profile/pkm-data-manager";
 import { SharedWithYouGroup } from "@/components/profile/shared-with-you-group";
+import { SecretsListGroup } from "@/components/secrets/secrets-list-group";
 import {
   ProfileStackNavigator,
   type ProfileStackEntry,
 } from "@/components/profile/profile-stack-navigator";
 import { ProfileKaiPreferencesPanel } from "@/components/profile/profile-kai-preferences-panel";
+import { CommunicationPreferencesSection } from "@/components/profile/communication-preferences-section";
 import { GeminiLogo } from "@/components/brand/gemini-logo";
 import { GeminiRuntimeSettingsCard } from "@/components/connections/gemini-runtime-settings-card";
 import { VoicePreferencesPanel } from "@/components/profile/voice-preferences-panel";
 import { ConnectedSystemsPanel } from "@/components/profile/connected-systems-panel";
 import { buildProfileConnectorsStackEntry } from "@/components/profile/profile-connectors-section";
+import {
+  buildProfileLegalStackEntries,
+  ProfileLegalRows,
+} from "@/components/profile/profile-legal-section";
 import { isLocalCrmBuildEnabled } from "@/lib/connected-systems/crm-product-availability";
 import { ThemeToggleLean } from "@/components/theme-toggle";
 import {
@@ -503,11 +506,11 @@ function isPasskeyVaultMethod(method: VaultMethod | null): boolean {
 }
 
 const VAULT_INLINE_CONTROL_CLASS =
-  "inline-flex h-8 w-full min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium sm:w-auto sm:min-w-[7.5rem]";
+  "inline-flex min-h-11 min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium";
 const VAULT_INLINE_BADGE_CLASS =
-  "inline-flex h-8 w-full min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium sm:w-auto sm:min-w-[7.5rem]";
+  "inline-flex min-w-0 items-center justify-center whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium";
 const VAULT_INLINE_ACTIONS_CLASS =
-  "grid w-full min-w-0 grid-cols-2 items-center gap-2 sm:flex sm:w-auto sm:flex-wrap sm:justify-end";
+  "flex min-w-0 flex-wrap items-center gap-2 sm:justify-end";
 
 function vaultWrapperKey(
   wrapper: Pick<VaultWrapper, "method" | "wrapperId">,
@@ -535,16 +538,6 @@ function describePasskeyWrapper(wrapper: VaultWrapper): string {
   return parts.join(" / ");
 }
 
-function VaultComingSoonBadge() {
-  return (
-    <Badge
-      variant="secondary"
-      className="inline-flex h-8 items-center justify-center whitespace-nowrap rounded-full px-3 text-xs font-medium"
-    >
-      Coming soon
-    </Badge>
-  );
-}
 
 function profileRouteRequiresUnlockedVault(
   panel: ProfilePanel | null,
@@ -2193,12 +2186,6 @@ function ProfilePageContent({
     vaultMethod === "passphrase" &&
     quickMethodReadyOnCurrentDevice,
   );
-  const defaultUnlockDescription =
-    vaultMethod === "passphrase"
-      ? "Passphrase opens your vault by default."
-      : vaultMethod
-        ? `${readableMethod(vaultMethod)} opens your vault by default.`
-        : "Default unlock is not set.";
   const canEditKaiPreferences = Boolean(
     user?.uid && vaultAccess.hasVault && vaultAccess.canMutateSecureData,
   );
@@ -3332,6 +3319,7 @@ function ProfilePageContent({
         }
       />
       {isVaultUnlocked ? <SharedWithYouGroup vaultOwnerToken={vaultOwnerToken} /> : null}
+      {isVaultUnlocked ? <SecretsListGroup onUnlock={() => undefined} /> : null}
     </div>
   );
 
@@ -3604,6 +3592,12 @@ function ProfilePageContent({
           }
         />
       </SettingsGroup>
+      <CommunicationPreferencesSection
+        userId={user?.uid ?? null}
+        vaultKey={vaultKey}
+        vaultOwnerToken={vaultOwnerToken}
+        onRequestUnlock={() => requestVaultUnlock("profile_data")}
+      />
     </div>
   );
 
@@ -3864,7 +3858,6 @@ function ProfilePageContent({
                 icon={VaultRowIcon}
                 iconTone="capability"
                 title="Default unlock"
-                description={defaultUnlockDescription}
                 trailing={
                   <div
                     className={VAULT_INLINE_ACTIONS_CLASS}
@@ -3930,11 +3923,6 @@ function ProfilePageContent({
                   enrolledPasskeyWrappers.length > 0
                     ? `Add another ${readableQuickMethod(recommendedQuickMethod)}`
                     : `Add ${readableQuickMethod(recommendedQuickMethod)}`
-                }
-                description={
-                  isPasskeyVaultMethod(recommendedQuickMethod)
-                    ? "Save a passkey."
-                    : "Enable quick unlock."
                 }
                 disabled={switchingVaultMethod}
                 chevron
@@ -4015,22 +4003,12 @@ function ProfilePageContent({
                 icon={PassphraseRowIcon}
                 iconTone="capability"
                 title="Change passphrase"
-                description="Update vault protection."
                 disabled={switchingVaultMethod}
                 chevron
                 onClick={() => setPassphraseDialogOpen(true)}
               />
             ) : null}
 
-            <SettingsRow
-              icon={KeyRowIcon}
-              iconTone="capability"
-              title="BYOK and passkeys"
-              description="Additional key methods are being verified."
-              disabled
-              trailing={<VaultComingSoonBadge />}
-              stackTrailingOnMobile
-            />
           </>
         ) : null}
       </SettingsGroup>
@@ -4359,11 +4337,19 @@ function ProfilePageContent({
         updateView: updateProfileView,
       }),
     );
+  } else if (activePanel === "legal") {
+    // Public documents: no vault needed to read them.
+    profileStackEntries.push(
+      ...buildProfileLegalStackEntries({
+        detail: activeDetail,
+        updateView: updateProfileView,
+      }),
+    );
   } else if (!routeBlockedByVault && activePanel === "preferences") {
     profileStackEntries.push({
       key: "panel:preferences",
       title: PROFILE_LABELS.preferences,
-      description: "Theme and accent.",
+      description: "Theme, accent and how One writes.",
       content: preferencesContent,
     });
     if (activeDetail === "kai-preferences") {
@@ -4604,21 +4590,14 @@ function ProfilePageContent({
             </SettingsGroup>
 
             <SettingsGroup title="Legal" separatorInset>
-              <SettingsRow
-                icon={ShieldCheck}
-                iconTone="capability"
-                title="Privacy Policy"
-                testId="profile-legal-privacy-row"
-                chevron
-                onClick={() => router.push(ROUTES.PRIVACY)}
-              />
-              <SettingsRow
-                icon={ScrollText}
-                iconTone="capability"
-                title="Terms of Use"
-                testId="profile-legal-terms-row"
-                chevron
-                onClick={() => router.push(ROUTES.TERMS)}
+              {/* Read in place: Profile never leaves the pane for /terms. */}
+              <ProfileLegalRows
+                onOpen={(document) =>
+                  updateProfileView(
+                    { panel: "legal", detail: document },
+                    "push",
+                  )
+                }
               />
             </SettingsGroup>
 
@@ -4648,7 +4627,7 @@ function ProfilePageContent({
       as="div"
       width="reading"
       fitContent
-      className={cn("relative isolate pb-3", isPanePresentation && "profile-pane-page")}
+      className={cn("relative isolate", isPanePresentation ? "profile-pane-page" : "pb-3")}
       nativeTest={
         isPanePresentation
           ? undefined

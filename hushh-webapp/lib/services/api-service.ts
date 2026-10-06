@@ -253,6 +253,11 @@ export function normalizeNativeBackendUrl(raw: string): string {
   if (platform !== "android") {
     return trimmed;
   }
+  // Physical Android uses the same explicit ADB reverse transport as the
+  // native build config. Emulator rewriting would bypass the forwarded port.
+  if (process.env.NEXT_PUBLIC_ANDROID_LOCAL_BACKEND_MODE === "adb_reverse") {
+    return trimmed;
+  }
   if (backendHost === "localhost") {
     return trimmed.replace("localhost", "10.0.2.2");
   }
@@ -487,6 +492,7 @@ async function classifyVaultOwnerAuthFailure(
  */
 const WEB_FETCH_TIMEOUT_MS = 60_000;
 const KYC_SCAN_WEB_FETCH_TIMEOUT_MS = 95_000;
+const LIVE_GMAIL_RECEIPT_FETCH_TIMEOUT_MS = 80_000;
 
 /**
  * Keep the browser alive long enough to receive the KYC scan proxy's bounded
@@ -499,6 +505,14 @@ const LONG_DRIVE_SHARING_PATH =
 /** Above the connector proxy's 170 s budget for synchronous Drive work. */
 function isLongDriveSharingPath(path: string): boolean {
   return LONG_DRIVE_SHARING_PATH.test(path.split("?", 1)[0] ?? "");
+}
+
+function isLiveGmailReceiptPath(path: string): boolean {
+  const pathname = path.split("?", 1)[0] ?? "";
+  return (
+    pathname === "/api/kai/gmail/receipts/scan" ||
+    pathname === "/api/kai/gmail/receipts/detail"
+  );
 }
 
 /**
@@ -514,6 +528,7 @@ export function webFetchTimeoutMsForPath(path: string): number {
   const pathname = path.split("?", 1)[0];
   if (isLongDriveSharingPath(path)) return 180_000;
   if (pathname === "/api/account/delete") return ACCOUNT_DELETE_WEB_FETCH_TIMEOUT_MS;
+  if (isLiveGmailReceiptPath(path)) return LIVE_GMAIL_RECEIPT_FETCH_TIMEOUT_MS;
   return pathname === "/api/one/email/information-requests/scan"
     ? KYC_SCAN_WEB_FETCH_TIMEOUT_MS
     : WEB_FETCH_TIMEOUT_MS;
@@ -898,6 +913,8 @@ async function apiFetch(
       // natively as on the web (webFetchTimeoutMsForPath).
       const readTimeoutMs = isLongDriveSharingPath(path)
           ? 180_000
+          : isLiveGmailReceiptPath(path)
+            ? LIVE_GMAIL_RECEIPT_FETCH_TIMEOUT_MS
           : isLongRunningRoute
             ? 90_000
             : 60_000;

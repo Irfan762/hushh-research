@@ -1,8 +1,8 @@
 {
   "generated_at": "2026-09-20",
-  "total_routes": 123,
-  "native_required_routes": 103,
-  "excluded_routes": 20,
+  "total_routes": 125,
+  "native_required_routes": 104,
+  "excluded_routes": 21,
   "routes": [
     {
       "route": "/",
@@ -324,6 +324,19 @@
       "reason": "GAP, not a permanent exclusion. Calendar is a first-class One agent and should have a native surface; it does not have one yet. Excluding it hides that. Revisit before the next native release."
     },
     {
+      "route": "/one/career",
+      "classification": "native-required-functional",
+      "initialRoute": "/login?redirect=%2Fone%2Fcareer",
+      "expectedMarker": "native-route-one-career",
+      "expectedRoute": "/one/career",
+      "autoReviewerLogin": true,
+      "expectedAuth": "authenticated",
+      "allowedDataStates": [
+        "loaded",
+        "loading"
+      ]
+    },
+    {
       "route": "/one/connect",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fconnect",
@@ -574,18 +587,6 @@
       ]
     },
     {
-      "route": "/one/kyc",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fone%2Fkyc",
-      "expectedMarker": "native-route-one-kyc",
-      "expectedRoute": "/one/kyc",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded"
-      ]
-    },
-    {
       "route": "/one/location",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Flocation",
@@ -675,6 +676,34 @@
       ]
     },
     {
+      "route": "/one/pkm/location",
+      "classification": "native-required-functional",
+      "initialRoute": "/login?redirect=%2Fone%2Fpkm%2Flocation",
+      "expectedMarker": "native-route-pkm-location",
+      "expectedRoute": "/one/pkm/location",
+      "autoReviewerLogin": true,
+      "expectedAuth": "authenticated",
+      "allowedDataStates": [
+        "loaded",
+        "empty-valid",
+        "unavailable-valid"
+      ]
+    },
+    {
+      "route": "/one/pkm/location/detail",
+      "classification": "native-required-functional",
+      "initialRoute": "/login?redirect=%2Fone%2Fpkm%2Flocation%2Fdetail",
+      "expectedMarker": "native-route-pkm-location-detail",
+      "expectedRoute": "/one/pkm/location/detail",
+      "autoReviewerLogin": true,
+      "expectedAuth": "authenticated",
+      "allowedDataStates": [
+        "loaded",
+        "empty-valid",
+        "unavailable-valid"
+      ]
+    },
+    {
       "route": "/one/profile",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fprofile",
@@ -748,15 +777,8 @@
     },
     {
       "route": "/one/profile/connectors",
-      "classification": "native-required-functional",
-      "initialRoute": "/login?redirect=%2Fone%2Fprofile%2Fconnectors",
-      "expectedMarker": "native-route-profile",
-      "expectedRoute": "/one/profile/connectors",
-      "autoReviewerLogin": true,
-      "expectedAuth": "authenticated",
-      "allowedDataStates": [
-        "loaded"
-      ]
+      "classification": "excluded-compatibility-redirect",
+      "reason": "Compatibility redirect into Connectors in the Profile pane on /one. Connectors is a Profile section, so the pane carries the parity obligation, not this address."
     },
     {
       "route": "/one/profile/gmail",
@@ -1113,8 +1135,8 @@
       "route": "/one/setup/email",
       "classification": "native-required-functional",
       "initialRoute": "/login?redirect=%2Fone%2Fsetup%2Femail",
-      "expectedMarker": "native-route-one-kyc",
-      "expectedRoute": "/one/kyc",
+      "expectedMarker": "native-route-one-setup-email",
+      "expectedRoute": "/one/setup/email",
       "autoReviewerLogin": true,
       "expectedAuth": "authenticated",
       "allowedDataStates": [

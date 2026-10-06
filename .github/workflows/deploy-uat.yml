@@ -17,6 +17,11 @@ on:
         description: "Exact green main SHA to deploy (blank defaults to latest origin/main)"
         required: false
         type: string
+      run_live_model_checks:
+        description: "Opt in to paid candidate Gemini/Vertex readiness and synthetic PKM evaluation"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   # write: this workflow tags a healthy release as "last known good"
@@ -362,6 +367,7 @@ jobs:
             --frontend-base-sha "${{ steps.predeploy-state.outputs.frontend_sha }}" \
             --deploy-backend "${{ steps.scope.outputs.deploy_backend }}" \
             --deploy-frontend "${{ steps.scope.outputs.deploy_frontend }}" \
+            --run-live-model-checks "${{ inputs.run_live_model_checks && 'true' || 'false' }}" \
             --github-output "$GITHUB_OUTPUT" \
             --json-output /tmp/uat-verification-plan.json
 
@@ -574,6 +580,10 @@ jobs:
             --advisors-api-base-url "${{ vars.ADVISORS_API_BASE_URL || 'https://brokercheck.35.253.255.106.sslip.io' }}" \
             --insurance-agents-api-base-url "${{ vars.INSURANCE_AGENTS_API_BASE_URL || 'https://insurance-agents.34.61.69.175.sslip.io' }}" \
             --one-places-directory-enabled "${{ vars.ONE_PLACES_DIRECTORY_ENABLED_UAT || 'true' }}" \
+            --one-voice-mail-reply-enabled "${{ vars.ONE_VOICE_MAIL_REPLY_ENABLED_UAT || 'true' }}" \
+            --one-voice-mail-schedule-send-enabled "${{ vars.ONE_VOICE_MAIL_SCHEDULE_SEND_ENABLED_UAT || 'true' }}" \
+            --one-voice-mail-drafts-enabled "${{ vars.ONE_VOICE_MAIL_DRAFTS_ENABLED_UAT || 'true' }}" \
+            --mail-scheduled-drain-enabled "${{ vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT || 'true' }}" \
             > /tmp/uat-runtime-secret-sync.json
 
           "${{ env.PROTOCOL_PYTHON }}" scripts/ops/sync_frontend_runtime_secrets.py \
@@ -809,12 +819,44 @@ jobs:
           fi
           echo "tombstone_count=${tombstone_count}" >> "$GITHUB_OUTPUT"
 
+          # A curated connector whose registry row no longer equals its manifest is
+          # hidden by the runtime and fails sign-in closed (Notion and Attio on UAT).
+          # Report it here, where the database is already reachable. Report only: an
+          # unrelated deploy is not blocked, and applying a row stays an operator step.
+          if [ "${{ vars.CURATED_MCP_CONNECTORS_UAT }}" = "true" ]; then
+            if (cd consent-protocol && "${{ env.PROTOCOL_PYTHON }}" \
+                scripts/ops/provision_curated_connector.py verify --env uat) \
+                > /tmp/uat-curated-registry-verify.json 2>/tmp/uat-curated-registry-verify.err; then
+              python3 - <<'PY'
+          import json
+          import os
+
+          report = json.load(open("/tmp/uat-curated-registry-verify.json"))
+          lines = ["### Curated connector registry (UAT)", ""]
+          for name, item in sorted(report["connectors"].items()):
+              fields = ", ".join(item.get("fields", [])) or "-"
+              lines.append(f"- {name}: {item['status']} ({fields})")
+              if item["status"] == "drift":
+                  print(
+                      f"::warning title=Curated connector registry drift::{name} differs from its "
+                      f"manifest in: {fields}. It is hidden until re-applied: "
+                      f"python3 scripts/ops/provision_curated_connector.py apply {name} "
+                      "--env uat --operator <you>"
+                  )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
+            else
+              echo "::warning title=Curated connector registry check::could not run (see log)"
+              cat /tmp/uat-curated-registry-verify.err || true
+            fi
+          fi
+
           BOOTSTRAP_FOCUS_PROFILE=uat bash scripts/env/bootstrap_profiles.sh --strict
           bash scripts/env/use_profile.sh uat
 
           if [ "${{ steps.verification-plan.outputs.run_pkm_upgrade_gate }}" = "true" ]; then
             PKM_UPGRADE_PROTECTED_UAT=1 \
-            PKM_UPGRADE_STRUCTURE_AGENT_EVAL_DEFERRED=1 \
             PKM_UPGRADE_RUNTIME_AUDIT_DEFERRED=1 \
               ./scripts/ci/pkm-upgrade-gate.sh
           fi
@@ -833,6 +875,36 @@ jobs:
             fi
           done
 
+      - name: Resolve curated connector secrets
+        id: curated-secrets
+        if: steps.scope.outputs.deploy_backend == 'true'
+        shell: bash
+        env:
+          CURATED_CONNECTORS_ENABLED: ${{ vars.CURATED_MCP_CONNECTORS_UAT }}
+          SECRETS_PROJECT: ${{ env.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          names=""
+          if [ "${CURATED_CONNECTORS_ENABLED}" = "true" ]; then
+            names="$("${{ env.PROTOCOL_PYTHON }}" scripts/ci/curated_connector_secrets.py)"
+            # Every other secret is skipped silently when missing; a connector
+            # whose secret is absent would ship a green deploy that cannot connect.
+            # Check for an enabled latest version (a bare secret with no value
+            # would pass a plain existence check) and keep gcloud's own error.
+            for secret in ${names//+/ }; do
+              if ! state="$(gcloud secrets versions describe latest --secret="${secret}" \
+                  --project="${SECRETS_PROJECT}" --format='value(state)' 2>&1)"; then
+                echo "::error::Curated connector secret ${secret} is required by a manifest in consent-protocol/config/curated_connectors but could not be read in ${SECRETS_PROJECT}: ${state}. Provision it (scripts/ops/provision_curated_connector.py) or turn CURATED_MCP_CONNECTORS_UAT off." >&2
+                exit 1
+              fi
+              if [ "${state}" != "ENABLED" ]; then
+                echo "::error::Curated connector secret ${secret} has no enabled latest version in ${SECRETS_PROJECT} (state: ${state})." >&2
+                exit 1
+              fi
+            done
+          fi
+          echo "names=${names}" >> "$GITHUB_OUTPUT"
+
       - name: Deploy backend using Cloud Build
         id: deploy-backend
         if: steps.scope.outputs.deploy_backend == 'true'
@@ -843,15 +915,16 @@ jobs:
           SUBSTITUTIONS="_BACKEND_SERVICE=${{ env.BACKEND_SERVICE }}##_REGION=${{ env.GCP_REGION }}##_CLOUDSQL_INSTANCES=${{ env.UAT_CLOUDSQL_INSTANCE }}##_PLAID_CLIENT_ID_SECRET=PLAID_CLIENT_ID##_PLAID_SECRET_SECRET=PLAID_SECRET##_PLAID_ACCESS_TOKEN_KEY_SECRET=PLAID_ACCESS_TOKEN_KEY##_FINNHUB_API_KEY_SECRET=FINNHUB_API_KEY##_PMP_API_KEY_SECRET=PMP_API_KEY##_NEWSAPI_KEY_SECRET=NEWSAPI_KEY##_GMAIL_OAUTH_CLIENT_ID_SECRET=GMAIL_OAUTH_CLIENT_ID##_GMAIL_OAUTH_CLIENT_SECRET_SECRET=GMAIL_OAUTH_CLIENT_SECRET##_GMAIL_OAUTH_REDIRECT_URI_SECRET=GMAIL_OAUTH_REDIRECT_URI##_GMAIL_OAUTH_TOKEN_KEY_SECRET=GMAIL_OAUTH_TOKEN_KEY##_GOOGLE_OAUTH_CLIENT_ID_SECRET=GOOGLE_OAUTH_CLIENT_ID##_GOOGLE_OAUTH_CLIENT_SECRET_SECRET=GOOGLE_OAUTH_CLIENT_SECRET##_GOOGLE_OAUTH_REDIRECT_URI_SECRET=GOOGLE_OAUTH_REDIRECT_URI##_GOOGLE_OAUTH_TOKEN_KEY_SECRET=GOOGLE_OAUTH_TOKEN_KEY##_OPENAI_API_KEY_SECRET=OPENAI_API_KEY##_GOOGLE_MAPS_API_KEY_SECRET=GOOGLE_MAPS_API_KEY##_HUSHH_DEVELOPER_TOKEN_SECRET=HUSHH_DEVELOPER_TOKEN##_HUSHH_TECH_LAUNCH_PEPPER_SECRET=HUSSH_TECH_LAUNCH_PEPPER##_RATE_LIMIT_STORAGE_URI_SECRET=RATE_LIMIT_STORAGE_URI##_HUSHH_UAT_PHONE_TEST_NUMBERS_SECRET=HUSHH_UAT_PHONE_TEST_NUMBERS##_HUSHH_UAT_PHONE_TEST_CODE_SECRET=HUSHH_UAT_PHONE_TEST_CODE##_REVIEWER_UID_SECRET=REVIEWER_UID##_REVIEWER_VAULT_PASSPHRASE_SECRET=REVIEWER_VAULT_PASSPHRASE##_RIA_INTELLIGENCE_VERIFY_BASE_URL_SECRET=RIA_INTELLIGENCE_VERIFY_BASE_URL##_ONE_EMAIL_WATCH_RENEW_TOKEN_SECRET=ONE_EMAIL_WATCH_RENEW_TOKEN##_ONE_EMAIL_ADDRESS=one@hushh.ai##_ONE_EMAIL_DELEGATED_USER=one@hushh.ai##_ONE_EMAIL_PUBSUB_TOPIC=projects/hushh-pda/topics/one-email-kyc-uat##_ONE_EMAIL_WEBHOOK_AUDIENCE=https://consent-protocol-f2gsa4kfsq-uc.a.run.app/api/one/email/webhook##_ONE_EMAIL_WEBHOOK_SERVICE_ACCOUNT_EMAIL=one-email-pubsub-push@hushh-pda.iam.gserviceaccount.com##_ONE_EMAIL_WEBHOOK_AUTH_ENABLED=true##_ONE_EMAIL_WATCH_RENEW_AUTH_ENABLED=true##_ONE_EMAIL_KYC_DEFAULT_SCOPE=attr.identity.*##_ONE_EMAIL_KYC_STRICT_CLIENT_ZK_ENABLED=true##_ONE_WALLET_CARD_ENABLED=true##_HUSSH_GEMINI_TEXT_MODEL=gemini-3.6-flash##_ONE_VOICE_LIVE_ENABLED=true##_VERTEX_LIVE_MODEL_ID=gemini-live-2.5-flash-native-audio##_VERTEX_LIVE_LOCATION=us-central1##_WALLET_PASS_PROVIDER=service##_WALLET_API_KEY_SECRET=WALLET_API_KEY##_APP_REVIEW_MODE=true##_CONSENT_WEB_FALLBACK_ENABLED=false##_CONSENT_SSE_ENABLED=false##_DB_POOL_MIN_SIZE=1##_DB_POOL_MAX_SIZE=4##_DB_SQLALCHEMY_POOL_SIZE=3##_DB_SQLALCHEMY_MAX_OVERFLOW=0##_CLOUD_RUN_MIN_INSTANCES=2##_CLOUD_RUN_MAX_INSTANCES=5##_CLOUD_RUN_CPU=2##_CLOUD_RUN_CONCURRENCY=20##_CLOUD_RUN_NO_TRAFFIC=true##_IMAGE_TAG=uat-${{ steps.resolve-sha.outputs.sha }}##_DEPLOY_ENV=uat##_DEPLOY_SOURCE=deploy-uat##_DEPLOY_SHA=${{ steps.resolve-sha.outputs.sha }}##_GITHUB_RUN_ID=${{ github.run_id }}"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_RUNTIME_SERVICE_ACCOUNT=${{ env.RUNTIME_SERVICE_ACCOUNT }}"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_CONSENT_API_PUBLIC_ORIGIN=${{ env.CONSENT_API_PUBLIC_ORIGIN }}"
+          SUBSTITUTIONS="${SUBSTITUTIONS}##_DIRECT_MESSAGE_ENCRYPTION_KEY_V1_SECRET=DIRECT_MESSAGE_ENCRYPTION_KEY_V1"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_GOOGLE_DRIVE_OAUTH_CLIENT_ID_SECRET=GOOGLE_DRIVE_OAUTH_CLIENT_ID##_GOOGLE_DRIVE_OAUTH_CLIENT_SECRET_SECRET=GOOGLE_DRIVE_OAUTH_CLIENT_SECRET##_GOOGLE_DRIVE_PICKER_API_KEY_SECRET=GOOGLE_DRIVE_PICKER_API_KEY##_EXTERNAL_CONNECTOR_CREDENTIAL_KEY_SECRET=EXTERNAL_CONNECTOR_CREDENTIAL_KEY##_DRIVE_DOCUMENT_KEY_V1_SECRET=DRIVE_DOCUMENT_KEY_V1##_DRIVE_SHARING_KEY_V1_SECRET=DRIVE_SHARING_KEY_V1"
+          # Curated connector OAuth client secrets are derived from the checked-in
+          # manifests by the "Resolve curated connector secrets" step; empty (the
+          # rollout is off) keeps them all absent.
+          SUBSTITUTIONS="${SUBSTITUTIONS}##_CURATED_CONNECTOR_SECRETS=${{ steps.curated-secrets.outputs.names }}"
           # Keep credentials bound after the rollout switch turns off so existing
           # paid-required requests can finish Checkout and webhook settlement.
           # Set the UAT variable only after test-mode secret versions are ready.
           SUBSTITUTIONS="${SUBSTITUTIONS}##_DRIVE_REQUEST_PAYMENTS_ENABLED=${{ vars.DRIVE_REQUEST_PAYMENTS_UAT_ENABLED || 'false' }}##_STRIPE_SECRET_KEY_SECRET=STRIPE_SECRET_KEY##_STRIPE_WEBHOOK_SECRET_SECRET=STRIPE_WEBHOOK_SECRET"
-          # HubSpot's OAuth app secrets are bound only while the curated-connector
-          # rollout is on, so a UAT deploy never references a secret that has not
-          # been provisioned yet.
-          SUBSTITUTIONS="${SUBSTITUTIONS}##_HUBSPOT_OAUTH_CLIENT_ID_SECRET=${{ vars.CURATED_MCP_CONNECTORS_UAT == 'true' && 'HUBSPOT_OAUTH_CLIENT_ID' || '' }}##_HUBSPOT_OAUTH_CLIENT_SECRET_SECRET=${{ vars.CURATED_MCP_CONNECTORS_UAT == 'true' && 'HUBSPOT_OAUTH_CLIENT_SECRET' || '' }}"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_ACCOUNT_DELETION_CLEANUP_AUDIENCE=${{ env.CONSENT_API_PUBLIC_ORIGIN }}##_ACCOUNT_DELETION_CLEANUP_SERVICE_ACCOUNT_EMAIL=${{ env.ACCOUNT_DELETION_SCHEDULER_SERVICE_ACCOUNT_ID }}@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUTH_ENABLED=true##_GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_AUDIENCE=${{ env.CONSENT_API_PUBLIC_ORIGIN }}##_GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SERVICE_ACCOUNT_EMAIL=${{ env.GMAIL_PERSONAL_INFORMATION_REQUEST_MONITOR_SCHEDULER_SERVICE_ACCOUNT_ID }}@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com"
           SUBSTITUTIONS="${SUBSTITUTIONS}##_DRIVE_WORK_DRAIN_ENABLED=true##_DRIVE_WORK_DRAIN_SCHEDULER_PROJECT_ID=${{ env.GCP_PROJECT_ID }}##_DRIVE_WORK_DRAIN_SCHEDULER_SERVICE_ACCOUNT_EMAIL=drive-work-drain-sched@${{ env.GCP_PROJECT_ID }}.iam.gserviceaccount.com##_DRIVE_WORK_DRAIN_SCHEDULER_AUDIENCE=${{ env.CONSENT_API_PUBLIC_ORIGIN }}"
@@ -1932,7 +2005,8 @@ jobs:
               },
               "candidate_pkm_evaluator": {
                   "required": int(os.environ.get("PKM_EVALUATOR_RUNS") or "0") != 0,
-                  "outcome": os.environ.get("PKM_EVALUATOR_OUTCOME", ""),
+                  "outcome": (os.environ.get("PKM_EVALUATOR_OUTCOME") or "not_run")
+                  if int(os.environ.get("PKM_EVALUATOR_RUNS") or "0") != 0 else "skipped",
                   "advisory": True,
                   "warning": os.environ.get("PKM_EVALUATOR_OUTCOME") == "failure",
               },
@@ -2280,6 +2354,81 @@ jobs:
             --file deploy/account-deletion/remove_release_fence.sql \
             | tee /tmp/uat-account-deletion-fence-removal.log
           echo "activated=true" >> "$GITHUB_OUTPUT"
+
+      # Delivers One Voice scheduled mail. UAT only: production pins
+      # MAIL_SCHEDULED_DRAIN_ENABLED to false and has no job. The route answers
+      # 404 unless the drain flag reached this revision's runtime config.
+      # The same repository variable is the job's kill switch: anything but
+      # 'true' pauses the job (never creates it); 'true' creates or updates it
+      # and resumes a paused job, so a manual pause lasts until the next deploy.
+      # Runs on every healthy release, frontend-only included, so flipping the
+      # variable takes effect on the next deploy of any kind.
+      - name: Activate scheduled mail drain
+        id: activate-scheduled-mail-drain
+        if: steps.classify-uat-release.outputs.release_failed == 'false'
+        shell: bash
+        env:
+          BACKEND_URL: ${{ env.CONSENT_API_PUBLIC_ORIGIN }}
+          OIDC_AUDIENCE: ${{ env.CONSENT_API_PUBLIC_ORIGIN }}
+          PROJECT_ID: ${{ env.GCP_PROJECT_ID }}
+          SCHEDULER_LOCATION: ${{ env.GCP_REGION }}
+          SCHEDULER_SERVICE_ACCOUNT_NAME: mail-scheduled-send
+          JOB_NAME: mail-scheduled-send-uat
+          BATCH_LIMIT: "50"
+          MAIL_SCHEDULED_DRAIN_ENABLED: ${{ vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT || 'true' }}
+        run: |
+          set -euo pipefail
+          bash deploy/gmail/setup_scheduled_mail_scheduler.sh \
+            | tee /tmp/uat-scheduled-mail-scheduler-setup.log
+
+          if [[ "${MAIL_SCHEDULED_DRAIN_ENABLED}" != "true" ]]; then
+            if gcloud scheduler jobs describe "${JOB_NAME}" \
+              --project="${PROJECT_ID}" \
+              --location="${SCHEDULER_LOCATION}" \
+              --format='value(state)' > /tmp/uat-scheduled-mail-scheduler-state.txt 2>/dev/null \
+              && [[ "$(cat /tmp/uat-scheduled-mail-scheduler-state.txt)" != "PAUSED" ]]; then
+              echo "Scheduled mail drain kill switch did not pause ${JOB_NAME}" >&2
+              exit 1
+            fi
+            echo "Scheduled mail drain disabled by vars.MAIL_SCHEDULED_DRAIN_ENABLED_UAT"
+            exit 0
+          fi
+
+          gcloud scheduler jobs describe "${JOB_NAME}" \
+            --project="${PROJECT_ID}" \
+            --location="${SCHEDULER_LOCATION}" \
+            --format=json > /tmp/uat-scheduled-mail-scheduler-config.json
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          job = json.loads(
+              Path('/tmp/uat-scheduled-mail-scheduler-config.json').read_text(
+                  encoding='utf-8'
+              )
+          )
+          target = job.get('httpTarget') or {}
+          oidc = target.get('oidcToken') or {}
+          expected_uri = (
+              'https://api.uat.hushh.ai/api/one/email/scheduled/drain?limit=50'
+          )
+          expected_service_account_email = (
+              f"{os.environ['SCHEDULER_SERVICE_ACCOUNT_NAME']}@"
+              f"{os.environ['PROJECT_ID']}.iam.gserviceaccount.com"
+          )
+          checks = {
+              'enabled': job.get('state') == 'ENABLED',
+              'schedule': job.get('schedule') == '* * * * *',
+              'method': target.get('httpMethod') == 'POST',
+              'uri': target.get('uri') == expected_uri,
+              'service_account': oidc.get('serviceAccountEmail')
+              == expected_service_account_email,
+              'audience': oidc.get('audience') == 'https://api.uat.hushh.ai',
+          }
+          if not all(checks.values()):
+              raise SystemExit('Scheduled mail drain scheduler configuration drifted')
+          PY
 
       - name: Activate personal Gmail monitor
         id: activate-personal-gmail-monitor
@@ -2661,7 +2810,7 @@ jobs:
             echo "- Verification plan: \`${{ steps.verification-plan.outputs.reason }}\`"
             echo "- Verification lanes: \`${{ steps.verification-plan.outputs.lanes }}\`"
             echo "- PKM evaluator runs: \`${{ steps.verification-plan.outputs.pkm_evaluator_runs }}\`"
-            echo "- Candidate PKM evaluator outcome (advisory): \`${{ steps.verify-candidate-pkm-evaluator.outputs.outcome }}\`"
+            echo "- Candidate PKM evaluator outcome (advisory): \`${{ steps.verify-candidate-pkm-evaluator.outputs.outcome || (steps.verification-plan.outputs.pkm_evaluator_runs == '0' && 'skipped' || 'not_run') }}\`"
             echo "- PKM upgrade gate required: \`${{ steps.verification-plan.outputs.run_pkm_upgrade_gate }}\`"
             echo "- Reviewer BYOK required: \`${{ steps.verification-plan.outputs.run_reviewer_byok }}\`"
             echo "- Backend deployed SHA before run: \`${{ steps.predeploy-state.outputs.backend_sha || 'unknown' }}\`"

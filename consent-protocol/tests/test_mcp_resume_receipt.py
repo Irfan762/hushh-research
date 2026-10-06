@@ -1,3 +1,4 @@
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -158,6 +159,31 @@ async def test_chat_admission_scrubs_receipt_and_requires_vault_authority(
     assert run.state == {}
 
 
+async def test_chat_state_keeps_owner_name_as_an_expiring_reference(monkeypatch, owner_chat_key):
+    from starlette.requests import Request
+
+    from api.routes.one import agent_chat
+    from hushh_mcp.one_adk.agent_tree import STATE_OWNER_DISPLAY_NAME
+    from hushh_mcp.one_adk.request_secrets import resolve_request_secret
+    from tests.test_agui_turn_timing import _input
+
+    monkeypatch.setattr(
+        agent_chat,
+        "require_vault_owner_token",
+        AsyncMock(return_value={"user_id": "owner", "token": "synthetic"}),
+    )
+    monkeypatch.setattr(
+        agent_chat, "_owner_display_name_for_turn", AsyncMock(return_value="Akshat Kumar")
+    )
+    request = Request({"type": "http", "headers": [(b"authorization", b"Bearer synthetic")]})
+
+    state = await agent_chat._extract_state(request, _input())
+
+    assert state[STATE_OWNER_DISPLAY_NAME].startswith("one_secret_ref:")
+    assert "Akshat Kumar" not in str(state)
+    assert resolve_request_secret(state[STATE_OWNER_DISPLAY_NAME]) == "Akshat Kumar"
+
+
 @pytest.mark.parametrize("unlocked", [True, False])
 async def test_chat_configuration_admission_requires_unlock_and_scrubs_input(
     monkeypatch, unlocked, owner_chat_key
@@ -193,6 +219,7 @@ async def test_chat_configuration_admission_requires_unlock_and_scrubs_input(
     assert run.forwarded_props == {}
 
 
+@pytest.mark.usefixtures("shared_pending_store")
 async def test_first_call_uses_native_confirmation_without_executing(monkeypatch):
     from datetime import UTC, datetime, timedelta
 
@@ -322,3 +349,93 @@ async def test_review_ledger_outage_is_reported_as_review_unavailable(monkeypatc
     context.state["temp:one_execution_surface"] = "voice"
     with pytest.raises(ActionDirectiveAuthorityError):
         await approval.review_or_resume_call(context, binding, "write", "revision", {})
+
+
+async def test_unstorable_review_shows_no_card_and_dispatches_nothing(monkeypatch):
+    """A card that could never be confirmed is not shown (nothing was sent)."""
+    from datetime import UTC, datetime, timedelta
+
+    from google.adk.agents.context import Context
+    from google.adk.agents.invocation_context import InvocationContext
+    from google.adk.sessions import InMemorySessionService, Session
+
+    from hushh_mcp.one_adk.governed_mcp_toolset import McpConnectionBinding
+    from hushh_mcp.one_adk.mcp_pending_call import PendingCallStorageError
+
+    context = Context(
+        InvocationContext(
+            session_service=InMemorySessionService(),
+            invocation_id="turn",
+            session=Session(
+                id="thread",
+                user_id="owner",
+                app_name="hussh_one",
+                state={
+                    "hussh:user_id": "owner",
+                    "hussh:conversation_id": "thread",
+                    "temp:one_execution_surface": "typed_chat",
+                },
+            ),
+        ),
+        function_call_id="call",
+    )
+    issued = SimpleNamespace(
+        directive_id="dir_" + "a" * 32, expires_at=datetime.now(UTC) + timedelta(minutes=5)
+    )
+    monkeypatch.setattr(approval.McpCallApproval, "issue", AsyncMock(return_value=issued))
+    monkeypatch.setattr(
+        approval,
+        "capture_pending_call",
+        AsyncMock(
+            side_effect=PendingCallStorageError("Connector review is temporarily unavailable.")
+        ),
+    )
+    binding = McpConnectionBinding("owner", "custom-1", 1, 1, "https://example.com/mcp")
+    result = await approval.review_or_resume_call(
+        context, binding, "search", "revision", {"q": "PRIVATE_ARGUMENT"}
+    )
+    assert result == {
+        "status": "unavailable",
+        "error": "MCP_REVIEW_UNAVAILABLE",
+        "retryable": False,
+    }
+    assert "call" not in context.actions.requested_tool_confirmations
+
+
+async def test_supersede_is_scoped_to_owner_conversation_and_the_mcp_action():
+    store = SimpleNamespace(cancel_unconfirmed_adk_chat=AsyncMock())
+    await approval.supersede_unanswered_reviews("owner", "thread", store=store)
+    store.cancel_unconfirmed_adk_chat.assert_awaited_once_with(
+        user_id="owner", session_id="thread", action_id=approval.MCP_ACTION_ID
+    )
+
+
+@pytest.mark.parametrize("owner,thread", [("", "thread"), ("owner", "")])
+async def test_supersede_without_an_exact_scope_touches_nothing(owner, thread):
+    store = SimpleNamespace(cancel_unconfirmed_adk_chat=AsyncMock())
+    await approval.supersede_unanswered_reviews(owner, thread, store=store)
+    store.cancel_unconfirmed_adk_chat.assert_not_awaited()
+
+
+async def test_supersede_fails_quietly(caplog):
+    failing = SimpleNamespace(
+        cancel_unconfirmed_adk_chat=AsyncMock(side_effect=ActionDirectiveAuthorityError("secret"))
+    )
+    with caplog.at_level("WARNING"):
+        await approval.supersede_unanswered_reviews("owner", "thread", store=failing)
+    assert "secret" not in caplog.text and "owner" not in caplog.text
+
+
+async def test_supersede_is_never_abandoned_on_a_timeout():
+    # A cancel left queued behind a busy database would run after the new turn
+    # issued its review and disarm it. The turn therefore waits for the cancel.
+    finished = []
+
+    async def slow(**_):
+        await asyncio.sleep(0.05)
+        finished.append(True)
+
+    await approval.supersede_unanswered_reviews(
+        "owner", "thread", store=SimpleNamespace(cancel_unconfirmed_adk_chat=slow)
+    )
+    assert finished == [True]

@@ -30,7 +30,7 @@ class _Cipher:
         return "decrypted text"
 
 
-def _service(cipher=None):
+def _service(cipher=None, feed_notifier=None):
     # No engine deliberately exercises the service's lightweight unit seam;
     # production paths use one Cloud SQL transaction/graph lock.
     return DirectMessagesService(
@@ -38,6 +38,7 @@ def _service(cipher=None):
         cipher=cipher or _Cipher(),
         event_notifier=lambda *_args, **_kwargs: None,
         push_notifier=lambda *_args, **_kwargs: None,
+        feed_notifier=feed_notifier or (lambda *_args, **_kwargs: None),
     )
 
 
@@ -51,6 +52,7 @@ def _conversation(can_send=True):
         "peer_person_ref": "33333333-3333-4333-8333-333333333333",
         "peer_display_name": "Bob",
         "peer_photo_url": None,
+        "viewer_display_name": "Alice",
         "can_send": can_send,
     }
 
@@ -144,7 +146,11 @@ def test_send_requires_current_accepted_connection_and_never_reaches_insert(monk
 
 def test_send_encrypts_content_and_returns_a_participant_safe_projection(monkeypatch):
     cipher = _Cipher()
-    service = _service(cipher)
+    feed_events = []
+    service = _service(
+        cipher,
+        feed_notifier=lambda recipient, **event: feed_events.append((recipient, event)),
+    )
     calls: list[tuple[str, dict]] = []
     monkeypatch.setattr(service, "_require_active_connection", lambda *_args: "connection-id")
     monkeypatch.setattr(service, "_conversation_by_pair", lambda *_args: _conversation())
@@ -169,6 +175,16 @@ def test_send_encrypts_content_and_returns_a_participant_safe_projection(monkeyp
     assert result["message"]["senderIsViewer"] is True
     assert "senderUserId" not in result["message"]
     assert "_peerUserId" not in result["conversation"]
+    assert feed_events == [
+        (
+            "bob",
+            {
+                "actor_label": "Alice",
+                "conversation_id": _CONVERSATION_ID,
+                "message_id": _MESSAGE_ID,
+            },
+        )
+    ]
 
 
 def test_history_is_readable_but_reported_read_only_after_disconnect(monkeypatch):

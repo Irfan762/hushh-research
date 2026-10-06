@@ -1449,6 +1449,7 @@
         "route.one_feed",
         "route.one_location",
         "route.one_pkm",
+        "route.one_pkm_location_home",
         "route.voice_settings",
         "wallet.add",
         "wallet.list",
@@ -1508,6 +1509,49 @@
       },
       "trust_boundary": "none",
       "native_surface_id": null
+    },
+    {
+      "route_pattern": "/one/career",
+      "page_file": "app/one/career/page.tsx",
+      "route_mode": "standard",
+      "orchestration_class": "context_only",
+      "instruction_id": "route.one.career",
+      "context_policy": "minimal",
+      "voice_playbook": {
+        "playbook_id": "route.one.career",
+        "purpose": "Help the person understand and use the career screen through its generated controls.",
+        "screen": "one_career",
+        "entry_cue": "",
+        "proactivity": "ambient",
+        "primary_action_id": null,
+        "happy_path_action_ids": [],
+        "required_inputs": [],
+        "recoveries": {
+          "blocked": "Explain the current guard and retain the goal.",
+          "cancelled": "Respect the cancellation and retain a safe next step.",
+          "failed": "Acknowledge the failure without claiming completion.",
+          "timeout": "Retain the goal and offer one safe retry.",
+          "callback_error": "Return to the verified callback recovery path without claiming success.",
+          "route_mismatch": "Use the verified current route and its generated actions only."
+        },
+        "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+        "next_route": "/one/career",
+        "return_policy": "stay",
+        "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+      },
+      "interaction_layer_policy": {
+        "allowed_families": []
+      },
+      "canonical_screen": "one_career",
+      "voice_contract_file": null,
+      "action_ids": [],
+      "action_coverage": "none",
+      "delegation_policy": {
+        "mode": "no_delegation",
+        "allowed_delegate_agent_ids": []
+      },
+      "trust_boundary": "none",
+      "native_surface_id": "native-route-one-career"
     },
     {
       "route_pattern": "/one/connect",
@@ -1868,6 +1912,7 @@
       "canonical_screen": "gmail",
       "voice_contract_file": "app/one/gmail/page.voice-action-contract.json",
       "action_ids": [
+        "route.one_gmail_kyc",
         "route.profile_receipts"
       ],
       "action_coverage": "inherited",
@@ -2777,56 +2822,6 @@
       "native_surface_id": "native-route-kai-portfolio-sources"
     },
     {
-      "route_pattern": "/one/kyc",
-      "page_file": "app/one/kyc/page.tsx",
-      "route_mode": "standard",
-      "orchestration_class": "interactive",
-      "instruction_id": "route.one.kyc",
-      "context_policy": "publish",
-      "voice_playbook": {
-        "playbook_id": "route.one.kyc",
-        "purpose": "Help the person understand and use the kyc screen through its generated controls.",
-        "screen": "one_kyc",
-        "entry_cue": "You can say “Open KYC” to use the primary control on this screen.",
-        "proactivity": "on_entry",
-        "primary_action_id": "route.one_kyc",
-        "happy_path_action_ids": [
-          "route.one_kyc"
-        ],
-        "required_inputs": [],
-        "recoveries": {
-          "blocked": "Explain the current guard and retain the goal.",
-          "cancelled": "Respect the cancellation and retain a safe next step.",
-          "failed": "Acknowledge the failure without claiming completion.",
-          "timeout": "Retain the goal and offer one safe retry.",
-          "callback_error": "Return to the verified callback recovery path without claiming success.",
-          "route_mismatch": "Use the verified current route and its generated actions only."
-        },
-        "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
-        "next_route": "/one/kyc",
-        "return_policy": "stay",
-        "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
-      },
-      "interaction_layer_policy": {
-        "allowed_families": []
-      },
-      "canonical_screen": "one_kyc",
-      "voice_contract_file": "app/one/kyc/page.voice-action-contract.json",
-      "action_ids": [
-        "kyc.draft.request_redraft",
-        "route.one_kyc"
-      ],
-      "action_coverage": "inherited",
-      "delegation_policy": {
-        "mode": "one_action_gate",
-        "allowed_delegate_agent_ids": [
-          "agent_kyc"
-        ]
-      },
-      "trust_boundary": "vault",
-      "native_surface_id": "native-route-one-kyc"
-    },
-    {
       "route_pattern": "/one/location",
       "page_file": "app/one/location/page.tsx",
       "route_mode": "standard",
@@ -3343,6 +3338,100 @@
       "native_surface_id": "native-route-pkm"
     },
     {
+      "route_pattern": "/one/pkm/location",
+      "page_file": "app/one/pkm/location/page.tsx",
+      "route_mode": "standard",
+      "orchestration_class": "interactive",
+      "instruction_id": "route.one.pkm.location",
+      "context_policy": "publish",
+      "voice_playbook": {
+        "playbook_id": "route.one.pkm.location",
+        "purpose": "Help the person read saved places and visit details directly in Location memory.",
+        "screen": "pkm_location",
+        "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
+        "proactivity": "on_entry",
+        "primary_action_id": "route.one_pkm_location_home",
+        "happy_path_action_ids": [
+          "route.one_pkm_location_home"
+        ],
+        "required_inputs": [],
+        "recoveries": {
+          "blocked": "Explain the current guard and retain the goal.",
+          "cancelled": "Respect the cancellation and retain a safe next step.",
+          "failed": "Acknowledge the failure without claiming completion.",
+          "timeout": "Retain the goal and offer one safe retry.",
+          "callback_error": "Return to the verified callback recovery path without claiming success.",
+          "route_mismatch": "Use the verified current route and its generated actions only."
+        },
+        "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+        "next_route": "/one/pkm/location",
+        "return_policy": "stay",
+        "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+      },
+      "interaction_layer_policy": {
+        "allowed_families": []
+      },
+      "canonical_screen": "pkm_location",
+      "voice_contract_file": null,
+      "action_ids": [
+        "route.one_pkm_location_home"
+      ],
+      "action_coverage": "inherited",
+      "delegation_policy": {
+        "mode": "one_action_gate",
+        "allowed_delegate_agent_ids": []
+      },
+      "trust_boundary": "consent",
+      "native_surface_id": "native-route-pkm-location"
+    },
+    {
+      "route_pattern": "/one/pkm/location/detail",
+      "page_file": "app/one/pkm/location/detail/page.tsx",
+      "route_mode": "standard",
+      "orchestration_class": "interactive",
+      "instruction_id": "route.one.pkm.location.detail",
+      "context_policy": "publish",
+      "voice_playbook": {
+        "playbook_id": "route.one.pkm.location.detail",
+        "purpose": "Help the person manage a selected Location memory detail through its verified controls.",
+        "screen": "pkm_location_detail",
+        "entry_cue": "You can say “Open Memory” to return to the Memory home from this list.",
+        "proactivity": "on_entry",
+        "primary_action_id": "route.one_pkm_location_home",
+        "happy_path_action_ids": [
+          "route.one_pkm_location_home"
+        ],
+        "required_inputs": [],
+        "recoveries": {
+          "blocked": "Explain the current guard and retain the goal.",
+          "cancelled": "Respect the cancellation and retain a safe next step.",
+          "failed": "Acknowledge the failure without claiming completion.",
+          "timeout": "Retain the goal and offer one safe retry.",
+          "callback_error": "Return to the verified callback recovery path without claiming success.",
+          "route_mismatch": "Use the verified current route and its generated actions only."
+        },
+        "completion_boundary": "Completion is shown only after the correlated browser settlement succeeds.",
+        "next_route": "/one/pkm/location/detail",
+        "return_policy": "stay",
+        "out_of_scope_behavior": "Answer naturally, ask at most one clarifying question, and never invent a control."
+      },
+      "interaction_layer_policy": {
+        "allowed_families": []
+      },
+      "canonical_screen": "pkm_location_detail",
+      "voice_contract_file": null,
+      "action_ids": [
+        "route.one_pkm_location_home"
+      ],
+      "action_coverage": "inherited",
+      "delegation_policy": {
+        "mode": "one_action_gate",
+        "allowed_delegate_agent_ids": []
+      },
+      "trust_boundary": "consent",
+      "native_surface_id": "native-route-pkm-location-detail"
+    },
+    {
       "route_pattern": "/one/pkm/recent",
       "page_file": "app/one/pkm/recent/page.tsx",
       "route_mode": "standard",
@@ -3711,10 +3800,10 @@
     {
       "route_pattern": "/one/profile/connectors",
       "page_file": "app/one/profile/connectors/page.tsx",
-      "route_mode": "standard",
-      "orchestration_class": "context_only",
+      "route_mode": "redirect",
+      "orchestration_class": "transitional",
       "instruction_id": "route.profile.connectors",
-      "context_policy": "minimal",
+      "context_policy": "suppress",
       "voice_playbook": {
         "playbook_id": "route.profile.connectors",
         "purpose": "Help the person view and manage available Google Workspace connectors and finance connections for the private agent.",
@@ -3745,11 +3834,11 @@
       "action_ids": [],
       "action_coverage": "none",
       "delegation_policy": {
-        "mode": "no_delegation",
+        "mode": "block_delegation",
         "allowed_delegate_agent_ids": []
       },
       "trust_boundary": "none",
-      "native_surface_id": "native-route-profile"
+      "native_surface_id": null
     },
     {
       "route_pattern": "/one/profile/connectors/oauth/return",
@@ -5338,7 +5427,7 @@
         "allowed_delegate_agent_ids": []
       },
       "trust_boundary": "auth",
-      "native_surface_id": "native-route-one-kyc"
+      "native_surface_id": "native-route-one-setup-email"
     },
     {
       "route_pattern": "/one/setup/finance",
@@ -5887,10 +5976,10 @@
     {
       "route_pattern": "/privacy",
       "page_file": "app/privacy/page.tsx",
-      "route_mode": "hidden",
-      "orchestration_class": "transitional",
+      "route_mode": "standard",
+      "orchestration_class": "context_only",
       "instruction_id": "route.privacy.policy",
-      "context_policy": "suppress",
+      "context_policy": "minimal",
       "voice_playbook": {
         "playbook_id": "route.privacy.policy",
         "purpose": "Help the person read the Privacy Policy screen through its generated controls.",
@@ -6761,10 +6850,10 @@
     {
       "route_pattern": "/terms",
       "page_file": "app/terms/page.tsx",
-      "route_mode": "hidden",
-      "orchestration_class": "transitional",
+      "route_mode": "standard",
+      "orchestration_class": "context_only",
       "instruction_id": "route.terms.of.use",
-      "context_policy": "suppress",
+      "context_policy": "minimal",
       "voice_playbook": {
         "playbook_id": "route.terms.of.use",
         "purpose": "Help the person read the Terms of Use screen through its generated controls.",

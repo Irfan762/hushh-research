@@ -6,7 +6,7 @@
  * and are encrypted in the browser under the vault key before leaving it.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, Eye, EyeOff } from "@/components/icons";
 
 import { FlowActionGroup } from "@/components/app-ui/flow-actions";
@@ -38,12 +38,24 @@ export interface SecureCardAddFormProps {
   onSubmit: (card: WalletCardInput) => Promise<void>;
   onCancel?: () => void;
   compact?: boolean;
+  /** Mask entered details when a mounted draft is in an inactive tab. */
+  active?: boolean;
+  /**
+   * A nickname handed over by a chat offer ("Add Amex Gold to Wallet"). Only
+   * the label: the owner types every card detail here, on this screen.
+   */
+  initialNickname?: string;
+  /**
+   * A card number the owner already kept in Secrets and chose to file here.
+   * Decrypted from the vault by the host, never passed through a URL.
+   */
+  initialPan?: string;
 }
 
-export function SecureCardAddForm({ onSubmit, onCancel, compact }: SecureCardAddFormProps) {
-  const [nickname, setNickname] = useState("");
+export function SecureCardAddForm({ onSubmit, onCancel, compact, active = true, initialNickname, initialPan }: SecureCardAddFormProps) {
+  const [nickname, setNickname] = useState(initialNickname ?? "");
   const [cardholderName, setCardholderName] = useState("");
-  const [pan, setPan] = useState("");
+  const [pan, setPan] = useState(initialPan ?? "");
   const [cvv, setCvv] = useState("");
   const [pin, setPin] = useState("");
   const [expiry, setExpiry] = useState("");
@@ -52,6 +64,9 @@ export function SecureCardAddForm({ onSubmit, onCancel, compact }: SecureCardAdd
   const [errors, setErrors] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!active) setRevealSecrets(false);
+  }, [active]);
 
   const brand = useMemo(() => detectBrand(pan), [pan]);
 

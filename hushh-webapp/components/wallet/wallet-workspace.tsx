@@ -25,20 +25,23 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from "react";
+import Image from "next/image";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 
 import {
   AppPageContentRegion,
-  AppPageHeaderRegion,
   AppPageShell,
 } from "@/components/app-ui/app-page-shell";
 import { FlowActionGroup } from "@/components/app-ui/flow-actions";
 import { NativeTestBeacon } from "@/components/app-ui/native-test-beacon";
 import { PageHeader } from "@/components/app-ui/page-sections";
 import { PaginatedListFooter } from "@/components/app-ui/paginated-list-footer";
-import { TYPOGRAPHY_CLASSNAMES } from "@/components/app-ui/typography";
+import {
+  PageTitle,
+  PageSubtitle,
+  TYPOGRAPHY_CLASSNAMES,
+} from "@/components/app-ui/typography";
 import { Lock, Plus, Search } from "@/components/icons";
-import { WalletAgentIcon } from "@/components/icons/agents";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -54,11 +57,15 @@ import { Input } from "@/components/ui/input";
 import { VaultUnlockDialog } from "@/components/vault/vault-unlock-dialog";
 import { cardNetworkLabel } from "@/components/wallet/card-network-mark";
 import { SecureCardAddForm } from "@/components/wallet/secure-card-add-form";
+import { clearSecretOffer, peekSecretOffer } from "@/lib/pkm/secret-offer-handoff";
+import { SecretsVaultService } from "@/lib/pkm/secrets-vault-service";
 import { SecureCardReveal } from "@/components/wallet/secure-card-reveal";
 import { WalletCardStack } from "@/components/wallet/wallet-card-stack";
 import { useAuth } from "@/hooks/use-auth";
 import { prefersReducedMotion } from "@/lib/morphy-ux/gsap";
 import { morphyToast } from "@/lib/morphy-ux/morphy";
+import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
+import { SwipeViews } from "@/lib/morphy-ux/ui/swipe-views";
 import { trackEvent } from "@/lib/observability/client";
 import {
   WalletService,
@@ -72,11 +79,18 @@ import {
   focusedCardIdOf,
   walletViewReducer,
 } from "@/lib/wallet/wallet-view-state";
+import { takeReservedOfferPrefill } from "@/lib/pkm/reserved-offer";
 
 const WALLET_PAGE_SIZE = 10;
+const WALLET_TABS = [
+  { value: "cards", label: "Cards" },
+  { value: "add", label: "Add" },
+  { value: "sharing", label: "Sharing" },
+];
+type WalletTab = "cards" | "add" | "sharing";
 
 /** One column for header and content, so both share a start line. */
-const WALLET_COLUMN = "mx-auto w-full max-w-[26.5rem]";
+const WALLET_COLUMN = "mx-auto w-full max-w-[820px] space-y-1.5 sm:space-y-3.5";
 
 const CARD_SLOT_RADIUS = { borderRadius: `calc(100cqw * ${CARD_CORNER_RADIUS_RATIO})` };
 
@@ -116,6 +130,65 @@ function StateMessage({ title, body }: { title: string; body: string }) {
   );
 }
 
+function WalletIntroduction({ onConnect, loading }: { onConnect: () => void; loading: boolean }) {
+  return (
+    <section
+      className="flex w-full flex-col items-center pt-12 text-center lg:pt-2"
+      aria-labelledby="one-wallet-empty-title"
+      data-testid={loading ? "one-wallet-loading" : "one-wallet-empty"}
+      aria-busy={loading}
+    >
+      <div
+        className="relative aspect-[698/894] w-[min(70vw,19rem)] lg:h-[clamp(10rem,calc(100svh-33rem),19rem)] lg:w-auto"
+        aria-hidden="true"
+        data-testid="one-wallet-empty-art"
+      >
+        <span className="pointer-events-none absolute inset-[9%] rounded-full bg-white/90 blur-3xl dark:bg-white/80" />
+        <span className="pointer-events-none absolute inset-[20%] rounded-full bg-[color:var(--app-accent-surface)] blur-3xl" />
+        <div className="absolute inset-0 overflow-hidden">
+          <Image
+            src="/wallet/wallet-cards-hero.png"
+            alt=""
+            width={1214}
+            height={1295}
+            sizes="(max-width: 434px) 70vw, 304px"
+            className="absolute left-[-38.25%] top-[-22.82%] h-auto w-[173.93%] max-w-none"
+            priority
+          />
+        </div>
+      </div>
+
+      <h2 id="one-wallet-empty-title" className="sr-only">
+        All your cards. In one place.
+      </h2>
+      <PageTitle
+        as="p"
+        aria-hidden="true"
+        className="mt-8 max-w-[20rem] text-balance lg:mt-6 lg:max-w-none lg:whitespace-nowrap"
+        data-testid="one-wallet-empty-display-title"
+      >
+        <span className="block lg:inline">All your cards.</span>{" "}
+        <span className="block lg:inline">In one place.</span>
+      </PageTitle>
+      <PageSubtitle className="mt-4 max-w-[20rem] text-balance lg:mt-3">
+        Cards you add are encrypted on this device and kept in your vault.
+      </PageSubtitle>
+      <div className="mx-auto mt-7 w-full max-w-[244px] lg:mt-5">
+        <Button
+          size="prominent"
+          className="w-full"
+          onClick={onConnect}
+          disabled={loading}
+          data-testid="one-wallet-empty-action"
+        >
+          {loading ? "Opening your wallet…" : "Add a Card"}
+        </Button>
+        {loading ? <span className="sr-only" role="status">Opening your wallet…</span> : null}
+      </div>
+    </section>
+  );
+}
+
 export function WalletWorkspace() {
   const { user, loading: authLoading } = useAuth();
   const renderedOwnerId = user?.uid ?? null;
@@ -138,10 +211,41 @@ export function WalletWorkspace() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [view, dispatch] = useReducer(walletViewReducer, INITIAL_WALLET_VIEW);
+  const [tab, setTab] = useState<WalletTab>("cards");
+  const [addDraftOpen, setAddDraftOpen] = useState(false);
+  const ready = view.kind === "list" || view.kind === "add" || view.kind === "reveal";
+  const activeTab = view.kind === "add" ? "add" : tab;
   const [cards, setCards] = useState<WalletCardSummary[]>([]);
   const [busyCardId, setBusyCardId] = useState<string | null>(null);
   const [removeTarget, setRemoveTarget] = useState<WalletCardSummary | null>(null);
   const [unlockOpen, setUnlockOpen] = useState(false);
+  // A chat offer ("Add Amex Gold to Wallet") hands over the nickname in memory
+  // (lib/pkm/reserved-offer.ts); the owner enters the card here, as always.
+  const [offerNickname, setOfferNickname] = useState<string | null>(null);
+  // A card kept in Secrets that the owner chose to file here, decrypted from
+  // the vault on this device. Memory only; cleared on save or cancel.
+  const [filing, setFiling] = useState<{ secretId: string; pan: string } | null>(null);
+  useEffect(() => {
+    if (view.kind === "add") setAddDraftOpen(true);
+    if (!ready) {
+      setAddDraftOpen(false);
+      setTab("cards");
+      setFiling(null);
+      setOfferNickname(null);
+    }
+  }, [ready, view.kind]);
+
+  const selectTab = (value: string) => {
+    if (!ready || value === activeTab || !WALLET_TABS.some((option) => option.value === value)) return;
+    // Drop revealed values and reject an in-flight reveal when leaving Cards.
+    dispatch({ type: "unfocus" });
+    if (value === "add") {
+      dispatch({ type: "open_add" });
+    } else {
+      dispatch({ type: "close_add" });
+    }
+    setTab(value as WalletTab);
+  };
   const stackRef = useRef<HTMLDivElement | null>(null);
   const detailsId = useId();
   // Search and page live in the URL (same shape as Consent Center's list), so a
@@ -219,6 +323,41 @@ export function WalletWorkspace() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  useEffect(() => {
+    if (!renderedOwnerId || view.kind !== "list") return;
+    const staged = takeReservedOfferPrefill({
+      ownerUserId: renderedOwnerId,
+      ownerFeature: "wallet",
+      kind: "wallet_card",
+    });
+    if (!staged) return;
+    setOfferNickname(staged.nickname);
+    dispatch({ type: "open_add" });
+  }, [renderedOwnerId, view.kind]);
+  // "Add this card to Wallet" from a Secrets card: open the add form with the
+  // number decrypted from the vault. The owner still commits it here.
+  useEffect(() => {
+    if (view.kind !== "list" || filing) return;
+    const offer = peekSecretOffer({ ownerUserId: user?.uid, fileTo: "wallet" });
+    const context = vaultContext();
+    if (!offer || !context) return;
+    let active = true;
+    void SecretsVaultService.revealSecret({ ...context, secretId: offer.secretId })
+      .then((value) => {
+        if (!active) return;
+        if (!value) {
+          clearSecretOffer();
+          return;
+        }
+        setFiling({ secretId: offer.secretId, pan: value });
+        dispatch({ type: "open_add" });
+      })
+      .catch(() => clearSecretOffer());
+    return () => {
+      active = false;
+    };
+  }, [filing, user?.uid, vaultContext, view.kind]);
 
   const focusedCardId = focusedCardIdOf(view);
   const focusedCard = focusedCardId
@@ -313,10 +452,10 @@ export function WalletWorkspace() {
     }
   };
 
-  const hasCards = view.kind === "list" && cards.length > 0;
+  const hasCards = ready && cards.length > 0;
   const showSearch = hasCards && !focusedCardId && cards.length > WALLET_PAGE_SIZE;
 
-  const headerAction = focusedCardId ? (
+  const headerAction = activeTab !== "cards" ? null : focusedCardId ? (
     <Button
       variant="secondary"
       size="compact"
@@ -342,38 +481,37 @@ export function WalletWorkspace() {
     : "";
 
   return (
-    <AppPageShell as="div" width="reading">
-      <AppPageHeaderRegion>
-        <div className={WALLET_COLUMN}>
-          <PageHeader
-            // Centred in the same 44px line as the header action, so the two
-            // share one centre line at every width.
-            title={
-              <span className="flex min-h-11 items-center" data-slot="wallet-heading-line">
-                Wallet
-              </span>
-            }
-            description="Encrypted in your vault. Shared only with your consent."
-            descriptionFullWidth
-            actionsInlineMobile
-            // The slot keeps its 44px height with or without an action, so
-            // the header never changes height when the cards arrive.
-            actions={
-              <span className="flex h-11 items-center" data-slot="wallet-header-action">
-                {headerAction}
-              </span>
-            }
-          />
-        </div>
-      </AppPageHeaderRegion>
-
-      <AppPageContentRegion>
+    <AppPageShell
+      as="div"
+      width="agent"
+      fitContent
+      className="relative isolate [--app-page-content-bottom-gap:0px]"
+    >
+      <AppPageContentRegion className="min-w-0 space-y-4 overflow-x-hidden">
         <div
-          className={cn(WALLET_COLUMN, "flex flex-col gap-6")}
+          className={WALLET_COLUMN}
+          data-wallet-hub
           data-testid="one-wallet-workspace"
           data-view={view.kind}
           onKeyDown={onKeyDown}
         >
+          <PageHeader
+            title={
+              <span className="block" data-slot="wallet-heading-line">
+                Wallet
+              </span>
+            }
+            actionsInlineMobile
+            titleRole="agent"
+            className="[&>div:first-child]:!gap-2.5 [&_[data-slot=page-header-actions]]:!self-center [&_[data-slot=page-header-row]]:!items-center"
+            // Match Location's 31px switch + 4px gap + 18px status row.
+            // Reserve it even without an action so loading never shifts tabs.
+            actions={
+              <span className="flex h-[53px] items-center" data-slot="wallet-header-action">
+                {headerAction}
+              </span>
+            }
+          />
           <NativeTestBeacon
             routeId="/one/wallet"
             marker="native-route-one-wallet"
@@ -393,17 +531,38 @@ export function WalletWorkspace() {
             }
           />
 
+          <TopShellTabs
+            tabSet={{
+              id: "wallet",
+              label: "Wallet",
+              queryParam: "view",
+              activeValue: activeTab,
+              tabs: WALLET_TABS.map((option) => ({ ...option, href: pathname })),
+            }}
+            onValueChange={selectTab}
+            disabled={!ready}
+          />
+          <div className="-mx-[var(--page-inline-gutter-standard)]">
+          <SwipeViews
+            disabled={!ready}
+            options={WALLET_TABS}
+            tabSetId="wallet"
+            activeValue={activeTab}
+            onSelectionChange={selectTab}
+            viewportMinHeight="fill"
+            heightMode="active"
+            holdHeightDuringTransition={false}
+          >
+          <div className="space-y-3.5 px-[var(--page-inline-gutter-standard)]">
           {view.kind === "disabled" ? (
             <p className={TYPOGRAPHY_CLASSNAMES.helperText}>Wallet is not available here yet.</p>
           ) : null}
 
-          {view.kind === "loading" ? (
-            <div aria-busy="true" data-testid="one-wallet-loading">
-              <CardSlot variant="placeholder" />
-              <span className="sr-only" role="status">
-                Opening your wallet…
-              </span>
-            </div>
+          {view.kind === "loading" || (ready && cards.length === 0) ? (
+            <WalletIntroduction
+              loading={view.kind === "loading"}
+              onConnect={() => dispatch({ type: "open_add" })}
+            />
           ) : null}
 
           {view.kind === "locked" ? (
@@ -435,25 +594,6 @@ export function WalletWorkspace() {
             </div>
           ) : null}
 
-          {view.kind === "list" && cards.length === 0 ? (
-            <div className="flex flex-col items-center gap-6" data-testid="one-wallet-empty">
-              <CardSlot variant="outline">
-                <WalletAgentIcon size={40} aria-hidden="true" />
-              </CardSlot>
-              <StateMessage
-                title="No cards yet"
-                body="Cards you add are encrypted on this device and kept in your vault."
-              />
-              <Button
-                size="prominent"
-                className="w-full"
-                onClick={() => dispatch({ type: "open_add" })}
-              >
-                Add a card
-              </Button>
-            </div>
-          ) : null}
-
           {showSearch ? (
             <div className="relative">
               <Search
@@ -477,7 +617,7 @@ export function WalletWorkspace() {
             </p>
           ) : null}
 
-          {(view.kind === "list" || view.kind === "reveal") && pageCards.length > 0 ? (
+          {ready && pageCards.length > 0 ? (
             <WalletCardStack
               ref={stackRef}
               cards={pageCards}
@@ -548,9 +688,15 @@ export function WalletWorkspace() {
             />
           ) : null}
 
-          {view.kind === "add" ? (
-            <div className="motion-step-enter">
+          </div>
+          <div className="space-y-3.5 px-[var(--page-inline-gutter-standard)]">
+          {ready && (addDraftOpen || view.kind === "add") ? (
+            <div>
               <SecureCardAddForm
+                key={`${renderedOwnerId}:${filing?.secretId ?? "new"}`}
+                active={activeTab === "add"}
+                initialNickname={offerNickname ?? undefined}
+                initialPan={filing?.pan}
                 onSubmit={async (card) => {
                   const context = vaultContext();
                   if (!context) throw new Error("Unlock your vault to save a card.");
@@ -570,12 +716,31 @@ export function WalletWorkspace() {
                     }
                     throw error;
                   }
+                  setAddDraftOpen(false);
+                  setTab("cards");
+                  setOfferNickname(null);
+                  if (filing) {
+                    clearSecretOffer();
+                    void SecretsVaultService.markFiled({ ...context, secretId: filing.secretId, filedTo: "wallet" }).catch(() => undefined);
+                    setFiling(null);
+                  }
                   await refresh();
                 }}
-                onCancel={() => dispatch({ type: "close_add" })}
+                onCancel={() => {
+                  setAddDraftOpen(false);
+                  setTab("cards");
+                  setOfferNickname(null);
+                  clearSecretOffer();
+                  setFiling(null);
+                  dispatch({ type: "close_add" });
+                }}
               />
             </div>
           ) : null}
+          </div>
+          <div className="space-y-3.5 px-[var(--page-inline-gutter-standard)]" data-testid="one-wallet-sharing" />
+          </SwipeViews>
+          </div>
         </div>
 
         <AlertDialog

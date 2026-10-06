@@ -5,6 +5,7 @@ import {
   NOT_SUCCESS_STATUSES,
   type ServerFrame,
   type ToolResultFrame,
+  type ToolResultPublic,
 } from "@/lib/one-voice/protocol";
 import {
   SOS_CLOSED_UNVERIFIED_FACT,
@@ -454,6 +455,347 @@ describe("reduceVoiceSession: answer ownership", () => {
     expect(state.pendingAction?.resolvedStatus).toBe("executed");
     expect(state.lastResult).toBeNull();
   });
+
+  // Rows the server offered under a revision: the list "the second one" and
+  // "reply to it" are spoken about.
+  const OFFERED_MAIL: ToolResultPublic = {
+    status: "ok",
+    spoken_facts: ["I read your 2 newest messages."],
+    items: [
+      { source_ref: "mail:1", subject: "Q3 deck", sender: "Priya" },
+      { source_ref: "mail:2", subject: "March invoice", sender: "Acme" },
+    ],
+    coverage: { unit: "messages", returned: 2, scope: "newest" },
+    offer_revision: 7,
+    conversation_id: "11111111-2222-4333-8444-555555555555",
+  };
+
+  it("keeps an offered mail list on screen across the next question until that question answers", () => {
+    // Regression: the new input cleared the slot, so a spoken "open the second
+    // one" arrived with no list left on screen to open.
+    const read = run(
+      [
+        server({ type: "transcript.input", text: "What's in my inbox?", final: true, turn_id: "read" }),
+        server(toolResult({ call_id: "read-call", tool: "read_mail", turn_id: "read", status: "ok", result_public: OFFERED_MAIL })),
+      ],
+      connected(),
+    );
+    expect(read.lastResult).toBe(OFFERED_MAIL);
+
+    const asked = run(
+      [server({ type: "transcript.input", text: "Open the second one", final: true, turn_id: "open" })],
+      read,
+    );
+    expect(asked.activeInputTurnId).toBe("open");
+    expect(asked.lastResult).toBe(OFFERED_MAIL);
+
+    // Opening dispatches; it does not answer. It joins the timeline but never
+    // takes the slot from the list it opens a row of.
+    const dispatched = run(
+      [
+        server(toolResult({
+          call_id: "open-call",
+          tool: "open_mail",
+          turn_id: "open",
+          status: "mail_open_dispatched",
+          result_public: {
+            status: "mail_open_dispatched",
+            spoken_facts: ["Opening it."],
+            ordinal: 2,
+            offer_revision: 7,
+            conversation_id: "11111111-2222-4333-8444-555555555555",
+          },
+        })),
+      ],
+      asked,
+    );
+    expect(dispatched.toolTimeline.at(-1)?.result?.status).toBe("mail_open_dispatched");
+    expect(dispatched.lastResult).toBe(OFFERED_MAIL);
+
+    // Still the list while the next question is being answered...
+    const next = run(
+      [
+        server({ type: "turn", state: "model_end", turn_id: "open" }),
+        server({ type: "transcript.input", text: "What is my name?", final: true, turn_id: "name" }),
+      ],
+      dispatched,
+    );
+    expect(next.activeInputTurnId).toBe("name");
+    expect(next.lastResult).toBe(OFFERED_MAIL);
+
+    // ...until that question's own answer takes the slot.
+    const answered = run(
+      [server(toolResult({ call_id: "name-call", tool: "get_profile", turn_id: "name", status: "ok", result_public: { status: "ok", display_name: "Ankit" } }))],
+      next,
+    );
+    expect(answered.lastResult?.display_name).toBe("Ankit");
+  });
+
+  it("keeps a drafts list or a scheduled list on screen while a position in it is acted on", () => {
+    const conversation = "11111111-2222-4333-8444-555555555555";
+    const drafts: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 2 drafts."],
+      items: [
+        { source_ref: "draft:1", to: "Priya", subject: "Diwali plans" },
+        { source_ref: "draft:2", to: "Arjun", subject: "Rent" },
+      ],
+      coverage: { returned: 2, has_more: false },
+      offer_revision: 8,
+      conversation_id: conversation,
+    };
+    const scheduled: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 1 scheduled email."],
+      items: [
+        {
+          source_ref: "scheduled:1",
+          to: "Priya",
+          subject: "Diwali plans",
+          send_at: "2026-10-06T03:30:00+00:00",
+          send_at_label: "Tomorrow, 9:00 AM IST",
+        },
+      ],
+      coverage: { returned: 1, next_send_at: "2026-10-06T03:30:00+00:00" },
+      offer_revision: 9,
+      conversation_id: conversation,
+    };
+    for (const [tool, result] of [
+      ["list_drafts", drafts],
+      ["list_scheduled_mail", scheduled],
+    ] as const) {
+      const shown = run(
+        [
+          server({ type: "transcript.input", text: "Show them", final: true, turn_id: "a" }),
+          server(toolResult({ call_id: "a-call", tool, turn_id: "a", status: "ok", result_public: result })),
+          server({ type: "transcript.input", text: "The second one", final: true, turn_id: "b" }),
+        ],
+        connected(),
+      );
+      expect(shown.lastResult, tool).toBe(result);
+    }
+
+    // Opening a draft dispatches; like a mail open it never takes the slot.
+    const dispatched = run(
+      [
+        server({ type: "transcript.input", text: "Show my drafts", final: true, turn_id: "d" }),
+        server(toolResult({ call_id: "d-call", tool: "list_drafts", turn_id: "d", status: "ok", result_public: drafts })),
+        server({ type: "transcript.input", text: "Open the second one", final: true, turn_id: "o" }),
+        server(toolResult({
+          call_id: "o-call",
+          tool: "open_draft",
+          turn_id: "o",
+          status: "draft_open_dispatched",
+          result_public: {
+            status: "draft_open_dispatched",
+            spoken_facts: ["Opening it."],
+            ordinal: 2,
+            offer_revision: 8,
+            conversation_id: conversation,
+          },
+        })),
+      ],
+      connected(),
+    );
+    expect(dispatched.toolTimeline.at(-1)?.result?.status).toBe("draft_open_dispatched");
+    expect(dispatched.lastResult).toBe(drafts);
+  });
+
+  it("keeps the list on screen while a send or cancel card about a position in it waits, then yields to the result", () => {
+    // Regression: the confirmation result took the answer slot, so the drafts
+    // list vanished the moment the send card appeared and "send draft 2" was
+    // approved with nothing on screen saying which draft 2 was.
+    const conversation = "11111111-2222-4333-8444-555555555555";
+    const drafts: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 2 drafts."],
+      items: [
+        { source_ref: "draft:1", to: "Priya", subject: "Diwali plans" },
+        { source_ref: "draft:2", to: "Arjun", subject: "Rent" },
+      ],
+      coverage: { returned: 2, has_more: false },
+      offer_revision: 8,
+      conversation_id: conversation,
+    };
+    const scheduled: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 1 scheduled email."],
+      items: [
+        {
+          source_ref: "scheduled:1",
+          to: "Priya",
+          subject: "Diwali plans",
+          send_at: "2026-10-06T03:30:00+00:00",
+          send_at_label: "Tomorrow, 9:00 AM IST",
+        },
+      ],
+      coverage: { returned: 1, next_send_at: "2026-10-06T03:30:00+00:00" },
+      offer_revision: 9,
+      conversation_id: conversation,
+    };
+    const cases = [
+      ["list_drafts", drafts, "send_draft", "draft_sent"],
+      ["list_scheduled_mail", scheduled, "cancel_scheduled_mail", "cancelled"],
+    ] as const;
+    for (const [listTool, list, cardTool, finalStatus] of cases) {
+      const pendingId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      const card = run(
+        [
+          server({ type: "transcript.input", text: "Show them", final: true, turn_id: "a" }),
+          server(toolResult({ call_id: "a-call", tool: listTool, turn_id: "a", status: "ok", result_public: list })),
+          server({ type: "turn", state: "model_end", turn_id: "a" }),
+          server({ type: "transcript.input", text: "The second one", final: true, turn_id: "b" }),
+          server(
+            pendingActionFrame({
+              pending_action_id: pendingId,
+              tool: cardTool,
+              gateway_action_id: "email.chat.turn",
+              summary: "send draft 2 in your list now",
+              args: { ordinal: 2 },
+              entities: [],
+              receipt_token: null,
+              turn_id: "b",
+            }),
+          ),
+          server(
+            toolResult({
+              call_id: "b-call",
+              tool: cardTool,
+              turn_id: "b",
+              status: "confirmation_required",
+              ok: false,
+              result_public: {
+                status: "confirmation_required",
+                needs: "confirmation",
+                pending_action_id: pendingId,
+                spoken_facts: ["Send draft 2 in your list now?"],
+              },
+            }),
+          ),
+        ],
+        connected(),
+      );
+      expect(card.pendingAction?.resolvedStatus, cardTool).toBeNull();
+      // The card waits with the list it is about still in the answer slot.
+      expect(card.lastResult, cardTool).toBe(list);
+
+      const yes = run(
+        [
+          server({ type: "turn", state: "model_end", turn_id: "b" }),
+          server({ type: "transcript.input", text: "Yes", final: true, turn_id: "c" }),
+        ],
+        card,
+      );
+      expect(yes.lastResult, cardTool).toBe(list);
+
+      // The resolution is a real result: the list gives way to it.
+      const finalResult = { status: finalStatus, spoken_facts: ["Done."] };
+      const resolved = run(
+        [
+          server({
+            type: "pending_action.resolved",
+            pending_action_id: pendingId,
+            status: "executed",
+            result_public: finalResult,
+          }),
+        ],
+        yes,
+      );
+      expect(resolved.lastResult, cardTool).not.toBe(list);
+      expect(resolved.pendingAction?.resolvedResult, cardTool).toEqual(finalResult);
+      const answered = run(
+        [server(toolResult({ call_id: "c-call", tool: cardTool, turn_id: "c", status: finalStatus, result_public: finalResult }))],
+        resolved,
+      );
+      expect(answered.lastResult, cardTool).toEqual(finalResult);
+    }
+
+    // Negative control: a card over a result with no offered rows still takes
+    // the slot, exactly as before.
+    const people: ToolResultPublic = {
+      status: "ok",
+      spoken_facts: ["You have 1 connection."],
+      connected: [{ user_id: "u-1", display_name: "Priya" }],
+    };
+    const confirmation: ToolResultPublic = {
+      status: "confirmation_required",
+      needs: "confirmation",
+      spoken_facts: ["Share with Priya?"],
+    };
+    const replaced = run(
+      [
+        server({ type: "transcript.input", text: "Who do I know?", final: true, turn_id: "p" }),
+        server(toolResult({ call_id: "p-call", tool: "list_people", turn_id: "p", status: "ok", result_public: people })),
+        server(toolResult({ call_id: "s-call", tool: "share_with", turn_id: "p", status: "confirmation_required", ok: false, result_public: confirmation })),
+      ],
+      connected(),
+    );
+    expect(replaced.lastResult).toBe(confirmation);
+  });
+
+  it("an older confirmation cannot clear a newer offered answer, even after a card refresh", () => {
+    for (const tool of ["read_mail", "list_drafts", "list_scheduled_mail"]) {
+      const card = pendingActionFrame({ origin_turn_id: "old", turn_id: "old" });
+      const newerList = { ...OFFERED_MAIL, offer_revision: 8 };
+      const receipt = { status: "deleted", spoken_facts: ["Deleted."] };
+      const shown = run([
+        server({ type: "transcript.input", turn_id: "old", text: "Delete the first item", final: true }),
+        server(toolResult({ call_id: "old-list", tool, turn_id: "old", result_public: OFFERED_MAIL })),
+        server(card),
+        server({ type: "transcript.input", turn_id: "new", text: "Show the latest list", final: true }),
+        server(toolResult({ call_id: "new-list", tool, turn_id: "new", result_public: newerList })),
+        server({ type: "turn", turn_id: "new", state: "model_end" }),
+      ], connected());
+
+      for (const refreshCard of [false, true]) {
+        const refreshed = refreshCard
+          ? run([server({ ...card, turn_id: undefined })], shown)
+          : shown;
+        const resolved = run([server({
+          type: "pending_action.resolved",
+          pending_action_id: card.pending_action_id,
+          status: "executed",
+          result_public: receipt,
+        })], refreshed);
+        expect(resolved.lastResult, tool).toBe(newerList);
+        expect(resolved.pendingAction?.resolvedResult).toBe(receipt);
+        const late = run([server(toolResult({
+          call_id: "old-action", tool: card.tool, turn_id: "old",
+          pending_action_id: card.pending_action_id, result_public: receipt,
+        }))], resolved);
+        expect(late.lastResult, tool).toBe(newerList);
+      }
+    }
+  });
+
+  it("still gives the slot to a new question when the result has no offered rows to act on", () => {
+    const { offer_revision: _revision, ...unbound } = OFFERED_MAIL;
+    void _revision;
+    const cases: Array<[string, string, ToolResultPublic]> = [
+      [
+        "people",
+        "list_people",
+        { status: "ok", spoken_facts: ["You have 1 connection."], connected: [{ user_id: "u-1", display_name: "Priya" }] },
+      ],
+      ["an empty read", "read_mail", { ...OFFERED_MAIL, items: [] }],
+      ["rows with no offer to resolve a position against", "read_mail", unbound],
+    ];
+    for (const [label, tool, result] of cases) {
+      const shown = run(
+        [
+          server({ type: "transcript.input", text: "First", final: true, turn_id: "a" }),
+          server(toolResult({ call_id: "a-call", tool, turn_id: "a", status: "ok", result_public: result })),
+        ],
+        connected(),
+      );
+      expect(shown.lastResult, label).toBe(result);
+      const asked = run(
+        [server({ type: "transcript.input", text: "Second", final: true, turn_id: "b" })],
+        shown,
+      );
+      expect(asked.lastResult, label).toBeNull();
+    }
+  });
 });
 
 describe("reduceVoiceSession: transcript", () => {
@@ -653,6 +995,84 @@ describe("reduceVoiceSession: tools and success", () => {
     expect(NOT_SUCCESS_STATUSES.has("confirmation_waiting")).toBe(true);
     expect(toolResultTone("confirmation_waiting", true)).toBe("failure");
     expect(selectSuccessReceipt(waiting)).toBeNull();
+  });
+
+  it("pending_action_exists is a refusal: another card is still waiting, nothing ran", () => {
+    const blocked = run(
+      [
+        server(
+          toolResult({
+            tool: "add_all_connections",
+            status: "pending_action_exists",
+            result_public: {
+              status: "pending_action_exists",
+              spoken_facts: ["Answer the card that's already up first."],
+            },
+          }),
+        ),
+      ],
+      connected(),
+    );
+    expect(NOT_SUCCESS_STATUSES.has("pending_action_exists")).toBe(true);
+    expect(isSuccessStatus("pending_action_exists")).toBe(false);
+    expect(toolResultTone("pending_action_exists", true)).not.toBe("success");
+    expect(selectSuccessReceipt(blocked)).toBeNull();
+  });
+
+  it("a scheduled-mail cancel that cancelled nothing, or an unconfirmed send, is never Done", () => {
+    // Regression: these resolved `executed` (the cancel ran and answered), and
+    // send_unconfirmed / schedule_unconfirmed were not in the shared set, so the
+    // panel showed a green Done for a cancel that cancelled nothing.
+    for (const status of [
+      "send_unconfirmed",
+      "schedule_unconfirmed",
+      "already_sent",
+      "already_sending",
+      "not_sent",
+    ]) {
+      expect(NOT_SUCCESS_STATUSES.has(status), status).toBe(true);
+      expect(isSuccessStatus(status), status).toBe(false);
+      // Not a failure either: nothing went wrong, nothing was cancelled.
+      expect(toolResultTone(status, true), status).toBe("neutral");
+      expect(toolResultTone(status, false), status).toBe("neutral");
+      const card = pendingActionFrame({
+        pending_action_id: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+        tool: "cancel_scheduled_mail",
+      });
+      const executed = run(
+        [
+          server(card),
+          server({
+            type: "pending_action.resolved",
+            pending_action_id: card.pending_action_id,
+            status: "executed",
+            result_public: { status, spoken_facts: ["Nothing to cancel."] },
+          }),
+        ],
+        connected(),
+      );
+      expect(selectSuccessReceipt(executed), status).toBeNull();
+    }
+    // Negative control: a real cancel still reads as done.
+    expect(toolResultTone("cancelled", true)).toBe("success");
+    expect(isSuccessStatus("cancelled")).toBe(true);
+  });
+
+  it("circle batch adds succeed only when someone was added", () => {
+    // none_added (add_circle_members) and the add_all_connections refusals add
+    // nobody; a success tone would tell the person their circle grew.
+    for (const status of [
+      "none_added",
+      "no_one_to_add",
+      "not_enough_room",
+      "not_added",
+    ]) {
+      expect(isSuccessStatus(status), status).toBe(false);
+      expect(toolResultTone(status, true), status).toBe("neutral");
+    }
+    // Negative control: a real add still reads as done.
+    expect(toolResultTone("added", true)).toBe("success");
+    expect(toolResultTone("partially_added", true)).toBe("success");
   });
 
   it("device Location switch tones: on/off succeed, already_* are neutral, pending and rejected fail", () => {
@@ -1082,6 +1502,20 @@ describe("reduceVoiceSession: tools and success", () => {
     );
     expect(informational.phase).toBe("listening");
     expect(informational.error?.recoverable).toBe(true);
+    // The relay survives a voice storage blip on a tap or cancel and keeps
+    // the session open, so the client must not strand it in "error".
+    const storage = run(
+      [
+        server({
+          type: "error",
+          code: "storage_unavailable",
+          message: "That didn't go through. Please try again.",
+        }),
+      ],
+      base,
+    );
+    expect(storage.phase).toBe("listening");
+    expect(storage.error?.recoverable).toBe(true);
     const fatal = run(
       [
         server({

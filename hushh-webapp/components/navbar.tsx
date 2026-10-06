@@ -4,7 +4,7 @@
 "use client";
 
 import React, { useEffect, useMemo, type CSSProperties } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   Compass as PhosphorCompass,
   Search as MagnifyingGlass,
@@ -54,6 +54,10 @@ import {
 import { resolveAgentNavigationContextForPath } from "@/lib/navigation/agent-sections";
 import { openKaiCommandBar } from "@/lib/navigation/kai-command-bar-events";
 import { useInteractionIntents } from "@/lib/interaction/interaction-intent-coordinator";
+import { useNativeControlAppearance } from "@/lib/capacitor/native-control-appearance";
+import { useNativeNavigation, NATIVE_NAVIGATION_TABS, type NativeNavigationTab } from "@/lib/capacitor/native-navigation";
+import { useSessionChromeSuppressed } from "@/lib/auth/use-session-chrome-suppression";
+import { useVoiceSurfaceMetadata } from "@/lib/voice/voice-surface-metadata";
 
 function FilledSquaresFourIcon(props: PhosphorIconProps) {
   return <SquaresFour {...props} weight="fill" />;
@@ -229,10 +233,14 @@ export const Navbar = ({
   layout?: "fixed" | "slot";
 }) => {
   const pathname = usePathname();
+  const searchParams = useSearchParams();
   const router = useRouter();
   const interactionIntents = useInteractionIntents();
   const { isAuthenticated } = useAuth();
   const { isVaultUnlocked } = useVault();
+  const sessionChromeSuppressed = useSessionChromeSuppressed();
+  const surface = useVoiceSurfaceMetadata();
+  const nativeAppearance = useNativeControlAppearance();
   const pendingConsents = useConsentPendingSummaryCount();
   const feedUnreadCount = useFeedUnreadCount();
   const pillRef = React.useRef<HTMLDivElement | null>(null);
@@ -404,6 +412,7 @@ export const Navbar = ({
   const routeActiveNav = resolveBottomNavActiveKey(
     normalizedPathname,
     bottomNavScope,
+    searchParams,
   );
   const optimisticNav = useMemo(() => {
     const pendingTarget = [...interactionIntents]
@@ -415,40 +424,17 @@ export const Navbar = ({
           intent.target,
       )?.target;
     if (!pendingTarget) return null;
-    return (
-      navOptions.find((option) => {
-        const action = resolveBottomNavAction(
-          option.value as AppBottomNavKey,
-          resolveBottomNavSpecialistOptionKeys(bottomNavScope).includes(
-            option.value as AppBottomNavKey,
-          )
-            ? bottomNavScope
-            : "one",
-        );
-        return action.type === "route" && action.href === pendingTarget;
-      })?.value ?? null
+    const target = new URL(pendingTarget, "https://app.invalid");
+    const pendingKey = resolveBottomNavActiveKey(
+      target.pathname,
+      bottomNavScope,
+      target.searchParams,
     );
+    return navOptions.some((option) => option.value === pendingKey)
+      ? pendingKey
+      : null;
   }, [bottomNavScope, interactionIntents, navOptions]);
   const activeNav = (optimisticNav ?? routeActiveNav) as AppBottomNavKey;
-
-  if (shellNavigationHidden || hideNavbar) {
-    return null;
-  }
-
-  if (useOnboardingChrome) {
-    return null;
-  }
-
-  if (!isAuthenticated) {
-    // On the signed-out onboarding flow the theme control is infused INSIDE the
-    // agent bar (see agent-bar.tsx), so no separate top/bottom toggle renders
-    // here. Keeping the hero completely clean.
-    return null;
-  }
-
-  if (navOptions.length === 0) {
-    return null;
-  }
 
   const navigateTo = (value: string) => {
     if (busyOperations["portfolio_save"]) {
@@ -502,6 +488,24 @@ export const Navbar = ({
     }
   };
 
+  const nativeNavigation = useNativeNavigation({
+    enabled: layout === "slot" && nativeAppearance !== null,
+    visible: isAuthenticated && isVaultUnlocked && !useOnboardingChrome &&
+      !hideNavbar && !shellNavigationHidden && !sessionChromeSuppressed &&
+      !surface?.interactionLayer?.blocksUnderlyingActions,
+    selected: NATIVE_NAVIGATION_TABS.includes(activeNav as NativeNavigationTab)
+      ? activeNav as NativeNavigationTab : "dashboard",
+    feedAttention: (pendingConsents ?? 0) > 0 || (feedUnreadCount ?? 0) > 0,
+    appearance: nativeAppearance?.appearance ?? "light",
+    accentHex: nativeAppearance?.accentHex ?? "",
+    foregroundHex: nativeAppearance?.foregroundHex ?? "",
+    onSelect: navigateTo,
+  });
+
+  if (shellNavigationHidden || hideNavbar || useOnboardingChrome || !isAuthenticated || navOptions.length === 0) {
+    return null;
+  }
+
   return (
     <nav
       data-app-bottom-nav
@@ -547,7 +551,14 @@ export const Navbar = ({
           )}
           ref={pillRef}
         >
-          <div className="w-full min-w-0 pointer-events-auto">
+          {nativeNavigation.ready ? (
+            <div
+              aria-hidden="true"
+              data-native-navigation-reservation
+              className="w-full pointer-events-none"
+              style={{ height: nativeNavigation.height }}
+            />
+          ) : <div className="w-full min-w-0 pointer-events-auto">
             <SegmentedPill
               size="default"
               layout="stacked"
@@ -565,7 +576,7 @@ export const Navbar = ({
                 "[&_[data-segment-indicator]]:bg-transparent [&_[data-segment-indicator]]:shadow-none [&_[data-segment-indicator]]:backdrop-blur-none",
               )}
             />
-          </div>
+          </div>}
         </div>
       </div>
     </nav>

@@ -17,12 +17,18 @@ describe("private-agent chat shell contract", () => {
 
     expect(workspace).not.toContain("<DriveBackgroundSearches");
   });
-  it("exposes connections from chat history in the shared drawer", () => {
+  // Connectors is a Profile section (founder, 2026-10-02): every chat entry
+  // opens it in the Profile pane over the chat, never in a drawer of its own,
+  // and the chat lends the pane its draft saver for sign-ins that leave.
+  it("opens Connectors from chat in the Profile pane, never in its own drawer", () => {
     const workspace = read("components/agent/agent-chat-workspace.tsx");
-    expect(workspace).toContain('setDrawerMode("connections")');
     expect(workspace).toContain("<AgentConnectionsDrawer");
-    expect(workspace).toContain("<ConnectorsPanel");
-    expect(workspace).toContain('onBack={() => setDrawerMode("chats")}');
+    expect(workspace).toContain("connections={null}");
+    expect(workspace).not.toContain("<ConnectorsPanel");
+    expect(workspace).not.toContain('setDrawerMode("connections")');
+    expect(workspace).toContain("openProfilePane(");
+    expect(workspace).toContain("profileConnectorsLocation(");
+    expect(workspace).toContain("registerChatConnectorRecoveryHost(");
   });
   it("keeps the connector manager bounded, scrollable, and on the shared modal scrim", () => {
     const drawer = read("components/agent/agent-connections-drawer.tsx");
@@ -55,7 +61,7 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('"motion-step-enter flex w-full items-start gap-2"');
     expect(workspace).not.toContain("animate-in fade-in slide-in-from-bottom-1");
     expect(workspace).toContain('"agent-chat-composer"');
-    expect(workspace).toContain("bottom-chrome-surface min-h-14 rounded-[var(--app-input-radius)]");
+    expect(workspace).toContain("agent-chat-composer-compact");
     // Persistent desktop column (2026-09-29): one solid chat-scoped surface
     // beside the conversation, separated by a hairline, never glass.
     expect(history).toContain('"border-r border-[color:var(--one-chat-divider)] bg-[color:var(--one-chat-sidebar)]"');
@@ -79,14 +85,14 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("<AgentQueuedStack");
     expect(read("components/agent/agent-queued-stack.tsx")).toContain("agent-chat-prompt-queue");
     // Queued text reaches the running turn only through enqueuePrompt, which
-    // the card-number guard calls; an edit is screened the same way.
+    // the secret guard calls; an edit is screened the same way.
     const edit = workspace.slice(
       workspace.indexOf("const editQueuedPrompt = async"),
       workspace.indexOf("const removeQueuedPrompt = async"),
     );
-    expect(edit).toContain("detectLikelyPan(text)");
-    expect(edit).toContain("enqueueGuardedTurn({ typedText: text");
-    expect(edit.indexOf("detectLikelyPan(text)")).toBeLessThan(edit.indexOf("reclaimQueuedPrompt(id)"));
+    expect(edit).toContain("containsSecretSpan(text)");
+    expect(edit).toContain("keepSecretsFromTurn([text])");
+    expect(edit.indexOf("containsSecretSpan(text)")).toBeLessThan(edit.indexOf("reclaimQueuedPrompt(id)"));
     expect(workspace.match(/queue\.offer\(/g)).toHaveLength(1);
     expect(workspace).toContain("enqueueCalendarDirective");
     // Calendar and reviewed Gmail changes share one serialized runner.
@@ -109,16 +115,14 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("agent-chat-composer-expanded-textarea");
     expect(workspace).toContain("overflow-y-auto");
     expect(workspace).toContain("agent-chat-composer-surface");
-    expect(workspace).toContain("px-0 py-3");
+    expect(workspace).toContain("agent-chat-composer-field");
     expect(workspace).not.toContain("<Sparkles className=\"h-3.5 w-3.5\" />");
-    expect(workspace).toContain("rounded-[var(--app-input-radius)]");
     expect(workspace).not.toContain("agent-chat-composer\"\n                      className=\"flex min-h-16 items-end gap-2 rounded-2xl border");
     expect(workspace).toContain('"flex shrink-0 items-center gap-1.5"');
     // One text box serves both sizes: two separate ones were swapped when a
     // long draft auto-expanded and keystrokes in that frame were lost.
     expect(workspace.match(/ref=\{composerTextareaRef\}/g) ?? []).toHaveLength(1);
-    expect(workspace).toContain("max-h-40");
-    expect(workspace).toContain("sm:max-h-44");
+    expect(read("app/globals.css")).toContain("max-height: min(10rem, 24dvh)");
     // The transcript's bottom band follows the composer's measured height.
     expect(workspace).toContain("--agent-chat-composer-stack-height");
     expect(workspace).toContain("h-[30dvh]");
@@ -150,8 +154,8 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("collapseComposer");
     expect(workspace).toContain("combineAttachmentAndComposerText");
     expect(workspace).toContain("await submitComposerText()");
-    expect(workspace).toContain("redactLikelyPans");
-    expect(workspace).toContain("const submittedText");
+    expect(workspace).toContain("keepSecretsFromTurn");
+    expect(workspace).toContain("const [submittedText");
     expect(workspace).toContain('source: "agent_chat_auto_capture"');
     expect(workspace).toContain("captureEligiblePkmFactsInBackground({");
     expect(workspace).toContain("beforeEffect: guard.assertCurrent");
@@ -199,6 +203,19 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain("return input.statusText || IDLE_AGENT_SUBTITLE;");
     expect(workspace).toContain("<ChatAgentSubtitle text={chatHeaderSubtitle({");
     expect(workspace).not.toContain('title={statusText || undefined}');
+  });
+
+  it("keeps the active-agent mark visible in the compact chat header", () => {
+    const workspace = read("components/agent/agent-chat-workspace.tsx");
+    const brandTileStart = workspace.indexOf('data-agent-chat-brand-tile');
+    const brandTile = workspace.slice(brandTileStart, brandTileStart + 700);
+
+    expect(brandTileStart).toBeGreaterThan(0);
+    expect(brandTile).toContain("<HushhMark");
+    expect(brandTile).toContain('className="grid h-8 w-8 shrink-0 place-items-center sm:h-9 sm:w-9"');
+    expect(brandTile).toContain('className="h-7 w-7 items-center justify-center overflow-visible"');
+    expect(brandTile).toContain('imageClassName="!h-[23px] !w-[23px]"');
+    expect(brandTile).not.toContain("max-sm:hidden");
   });
 
   it("keeps One's cloud model picker out of the Puppy One surface", () => {
@@ -289,7 +306,16 @@ describe("private-agent chat shell contract", () => {
     expect(workspace).toContain('data-agent-chat-route={isCanonicalChatRoute ? "root" : "embedded"}');
     expect(workspace).toContain("onKaiBottomChromeScroll(scrollTop)");
     expect(shell).toContain("agentBarHidden?: boolean");
-    expect(shell).toContain("!model.agentBarHidden || Boolean(command?.active) || voiceActive");
+    expect(shell).not.toContain("const agentBarVisible = !model.agentBarHidden");
+    expect(shell).toContain("<AgentDockVoiceBoundary>");
+    expect(workspace).toContain("<AgentDockPortal enabled={isCanonicalChatRoute}");
+    expect(workspace).toContain('<AgentBar layout="slot" />');
+    expect(workspace).toContain("<AgentBarSurface");
+    expect(workspace).not.toContain("<AgentVoiceWaveInput");
+    // A command result can outlive capture. Never measure the hidden editor;
+    // its visibility change must trigger sizing when that result is dismissed.
+    expect(workspace).toContain("if (!textarea || showVoiceBar) return;");
+    expect(workspace).toContain("[agentDockHost, composerExpanded, input, setComposerExpanded, showVoiceBar]");
     expect(providers).toContain("pathname === ROUTES.HOME");
     expect(providers).toContain("agentBarHidden:");
   });

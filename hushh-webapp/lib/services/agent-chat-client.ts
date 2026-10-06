@@ -1,4 +1,5 @@
 import { ApiService } from "@/lib/services/api-service";
+import { assertNoUnguardedSecrets } from "@/lib/pkm/secret-span-guard";
 import { serverNow } from "@/lib/agent/server-clock";
 import { projectCustomConnectorTurnConfigurations, type CustomConnectorConfiguration } from "@/lib/connections/custom-connector-schema";
 import { nativeStreamFetch } from "@/lib/services/native-sse-fetch";
@@ -51,6 +52,7 @@ import {
   parseAgentToolResultExperience,
   type AgentStructuredExperience,
 } from "@/lib/agent/agui-structured-experiences";
+import { ownerStyleRequestField, type OwnerStyleSettings } from "@/lib/agent/owner-style-settings";
 
 export type AgentChatMessage = {
   id: string;
@@ -215,6 +217,8 @@ export type AgentChatStreamHandlers = {
   /** Ephemeral native review: never append its references or receipt to history/debug events. */
   onMcpReview?: (review: {
     reference: McpCallReviewReference;
+    /** Opaque live Activity ids for the native call and its confirmation step. */
+    activityIds?: readonly string[];
     conversationId: string;
     /** Derived chat key header value; the review reads this owner's sealed conversation. */
     chatKey: string;
@@ -740,6 +744,11 @@ const SERVER_TOOL_PRESENTATION: Record<
     message: "Updating your preferred model.",
     activity: "Updating your model",
   },
+  propose_style_settings: {
+    label: "Writing style",
+    message: "Preparing a writing style change for you to review in Settings.",
+    activity: "Preparing a style change",
+  },
   calendar_summary: {
     label: "Google Calendar",
     message: "Summarizing your calendar.",
@@ -1151,6 +1160,11 @@ export async function streamAgentChat(input: {
   vaultKey: string;
   loadConnectorConfigurations?: () => Promise<CustomConnectorConfiguration[]>;
   pkmContext?: string;
+  /**
+   * The owner's Settings style choices (reserved `identity.communication_preferences`),
+   * sent apart from `pkmContext` so One reads them as standing style, never as recalled data.
+   */
+  communicationPreferences?: OwnerStyleSettings;
   personSelectionHandle?: string;
   /** Opaque owner-selected KYC workflow; Gmail content stays server-side. */
   gmailInformationRequestWorkflowId?: string;
@@ -1182,7 +1196,13 @@ export async function streamAgentChat(input: {
    */
   detached: boolean;
 }> {
+  // Last line before the wire. The composer already kept every secret in
+  // Secrets and left only its placeholder (lib/pkm/secret-span-guard.ts);
+  // a turn that still carries a raw one is refused before any request exists.
+  assertNoUnguardedSecrets([input.message, ...(input.attachments ?? []).map((attachment) => attachment.text)]);
   const timezone = resolveBrowserTimeZone();
+  // Closed to the server's schema here, so a stale branch never refuses the turn.
+  const communicationPreferences = ownerStyleRequestField(input.communicationPreferences);
   const threadId = input.conversationId || crypto.randomUUID();
   const handlers = input.handlers ?? {};
   const mcpOwner = snapshotValidatedAuthSessionOwner();
@@ -1330,7 +1350,11 @@ export async function streamAgentChat(input: {
   let reactionShown = false;
   const toolArgs = new Map<string, Record<string, unknown>>();
   const interruptsByToolCall = new Map<string, string>();
-  const mcpReviews = new Map<string, McpCallReviewReference>();
+  const mcpReviews = new Map<string, {
+    reference: McpCallReviewReference;
+    /** The original MCP call plus the native confirmation activity, if present. */
+    activityIds: readonly string[];
+  }>();
   // The server streams each native confirmation's projected arguments. A
   // MESSAGES_SNAPSHOT can already hold the same call, and the AG-UI client then
   // appends the streamed delta onto the snapshot's copy, which no longer parses.
@@ -1392,6 +1416,7 @@ export async function streamAgentChat(input: {
               timezone,
               turnLocation,
               pkmContext: input.pkmContext,
+              communicationPreferences,
               personSelectionHandle: input.personSelectionHandle,
               gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
               ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
@@ -1467,7 +1492,18 @@ export async function streamAgentChat(input: {
         }
         const review = parseMcpCallReview(nativeArgs);
         if (review) {
-          mcpReviews.set(event.toolCallId, review);
+          const original = asRecord(nativeArgs.originalFunctionCall);
+          const originalCallId = typeof original?.id === "string" &&
+            original.id.length > 0 && original.id.length <= 256
+            ? original.id
+            : null;
+          mcpReviews.set(event.toolCallId, {
+            reference: review,
+            activityIds: Array.from(new Set([
+              event.toolCallId,
+              ...(originalCallId ? [originalCallId] : []),
+            ])),
+          });
           // Publish only after RUN_FINISHED supplies the native interrupt id.
           // Neither pending handles nor private review details enter generic diagnostics.
           return;
@@ -1791,33 +1827,34 @@ export async function streamAgentChat(input: {
         for (const interrupt of params.interrupts) {
           if (interrupt.toolCallId) interruptsByToolCall.set(interrupt.toolCallId, interrupt.id);
         }
-        for (const [callId, reference] of mcpReviews) {
+        for (const [callId, review] of mcpReviews) {
           const interruptId = interruptsByToolCall.get(callId);
           if (!interruptId || publishedMcpReviews.has(callId)) continue;
           publishedMcpReviews.add(callId);
           let attempted = false;
           handlers.onMcpReview?.({
-            reference,
+            reference: review.reference,
+            activityIds: review.activityIds,
             conversationId: threadId,
             chatKey,
             isCurrent: mcpSessionCurrent,
             loadConfiguration: input.loadConnectorConfigurations ? async () => {
               const projection = await connectorProjection();
-              const configuration = projection.mcpConfigurations?.find(item => item.connectorId === reference.connectorId);
-              if (reference.connectorId.startsWith("custom_") && !configuration) {
+              const configuration = projection.mcpConfigurations?.find(item => item.connectorId === review.reference.connectorId);
+              if (review.reference.connectorId.startsWith("custom_") && !configuration) {
                 throw new Error("This connector was removed. Prepare a new request.");
               }
               return configuration;
             } : undefined,
             resume: async (approval, signal) => {
-              if (attempted || signal?.aborted || !mcpSessionCurrent() || Date.parse(reference.expiresAt) <= serverNow()) {
+              if (attempted || signal?.aborted || !mcpSessionCurrent() || Date.parse(review.reference.expiresAt) <= serverNow()) {
                 throw new Error("This connector review expired or was already used.");
               }
               if (approval && (
-                approval.directiveId !== reference.directiveId ||
-                approval.connectorId !== reference.connectorId ||
-                approval.toolName !== reference.toolName ||
-                approval.pendingHandle !== reference.pendingHandle ||
+                approval.directiveId !== review.reference.directiveId ||
+                approval.connectorId !== review.reference.connectorId ||
+                approval.toolName !== review.reference.toolName ||
+                approval.pendingHandle !== review.reference.pendingHandle ||
                 !/^[A-Za-z0-9_-]{32,128}$/.test(approval.receipt)
               )) throw new Error("This confirmation does not match the connector review.");
               // A lost acknowledgement must not cause an automatic second mutation.
@@ -1830,7 +1867,7 @@ export async function streamAgentChat(input: {
                   tools, context: [],
                   forwardedProps: {
                     ...await connectorProjection(),
-                    timezone, turnLocation, pkmContext: input.pkmContext,
+                    timezone, turnLocation, pkmContext: input.pkmContext, communicationPreferences,
                     personSelectionHandle: input.personSelectionHandle,
                     gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
                     ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
@@ -1927,6 +1964,7 @@ export async function streamAgentChat(input: {
         timezone,
         turnLocation,
         pkmContext: input.pkmContext,
+        communicationPreferences,
         personSelectionHandle: input.personSelectionHandle,
         gmailInformationRequestWorkflowId: input.gmailInformationRequestWorkflowId,
         ...(input.driveSearchSelection ? { driveSearchSelection: input.driveSearchSelection } : {}),
@@ -2066,11 +2104,14 @@ export function createQueuedInputPorts(getVaultOwnerToken: () => string | null):
   const base = (conversationId: string) =>
     `/api/one/agent-chat/runs/${encodeURIComponent(conversationId)}`;
   return {
-    enqueue: async (conversationId, clientMessageId, text) =>
-      parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
+    enqueue: async (conversationId, clientMessageId, text) => {
+      // The same last line as streamAgentChat: a raw secret never leaves.
+      assertNoUnguardedSecrets([text]);
+      return parseQueuedInputStatus((await call(`${base(conversationId)}/queue`, {
         method: "POST",
         body: JSON.stringify({ client_message_id: clientMessageId, text }),
-      })).status),
+      })).status);
+    },
     withdraw: async (conversationId, clientMessageId) =>
       parseQueuedInputStatus((await call(
         `${base(conversationId)}/queue/${encodeURIComponent(clientMessageId)}`,

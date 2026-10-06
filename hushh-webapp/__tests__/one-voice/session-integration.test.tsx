@@ -131,6 +131,7 @@ class FakePlayback {
   fenced: string[] = [];
   closed = false;
   private listeners = new Set<(speaking: boolean) => void>();
+  private playbackStartedListeners = new Set<(turnId: string) => void>();
   enqueue(pcm16: Uint8Array, turnId: string) {
     this.enqueued.push({ bytes: pcm16.byteLength, turnId });
     return true;
@@ -144,6 +145,10 @@ class FakePlayback {
   onSpeakingChanged(callback: (speaking: boolean) => void) {
     this.listeners.add(callback);
     return () => this.listeners.delete(callback);
+  }
+  onPlaybackStarted(callback: (turnId: string) => void) {
+    this.playbackStartedListeners.add(callback);
+    return () => this.playbackStartedListeners.delete(callback);
   }
   speak(speaking: boolean) {
     for (const listener of this.listeners) listener(speaking);
@@ -292,6 +297,41 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     });
     expect(harness.leases).toBe(1);
     expect(mounted.capture.started).toBe(1);
+  });
+
+  it("puts the open mail row on the wire, and reports a finished Send as its delivery ref and action id only", async () => {
+    const { server } = await startSession(mount());
+    const conversationId = server.frames("auth")[0]!.conversation_id;
+    await waitFor(() => expect(server.frames("app_context")).toHaveLength(1));
+    // Omitted, not null, while no row is open: the relay refuses unknown keys.
+    expect(server.frames("app_context")[0]).not.toHaveProperty("active_mail_ordinal");
+    expect(server.frames("app_context")[0]).not.toHaveProperty("active_mail_offer_revision");
+
+    await act(async () => {
+      controller!.setActiveMail!({ ordinal: 2, offerRevision: 7, conversationId });
+    });
+    await waitFor(() => expect(server.frames("app_context")).toHaveLength(2));
+    expect(server.frames("app_context")[1]).toMatchObject({
+      screen_id: "one_location",
+      route: "/one/location",
+      active_mail_ordinal: 2,
+      active_mail_offer_revision: 7,
+    });
+
+    const deliveryRef = "Zr4mQ8vX2kLp9TnB_wYc7H-E";
+    const actionId = "6f1c2b9a-3d4e-4f5a-8b6c-7d8e9f0a1b2c";
+    await act(async () => {
+      controller!.reportMailDelivery!(deliveryRef, actionId);
+    });
+    // No outcome travels: the relay re-reads the send action itself, and an
+    // extra key such as a status would get the frame refused.
+    expect(server.frames("mail_delivery.result")).toStrictEqual([
+      {
+        type: "mail_delivery.result",
+        delivery_ref: deliveryRef,
+        action_id: actionId,
+      },
+    ]);
   });
 
   it("streams captured frames as audio and plays audio frames per turn; interrupt fences", async () => {
@@ -689,6 +729,39 @@ describe("VoiceSessionProvider with a scripted relay", () => {
     });
     expect(harness.navigate).toHaveBeenCalledTimes(1);
     window.history.replaceState(null, "", "/");
+  });
+
+  it("starts the generic executor once when a screen ignores a pending directive", async () => {
+    const directives = await import("@/lib/one-voice/directives");
+    type Outcome = Awaited<ReturnType<typeof directives.executeDirective>>;
+    let complete!: (outcome: Outcome) => void;
+    const pending = new Promise<Outcome>((resolve) => { complete = resolve; });
+    const execute = vi.spyOn(directives, "executeDirective").mockReturnValue(pending);
+    const mounted = await startSession(mount({
+      effects: { onDirective: (_id, _kind, _payload, settle) => settle("ignored") },
+    }));
+    vi.useFakeTimers();
+    try {
+      await act(async () => {
+        mounted.server.push({
+          type: "ui_directive", directive_id: "single-takeover", kind: "navigate",
+          payload: { gateway_action_id: "location.open_settings" },
+        });
+      });
+      expect(execute).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(40); });
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(mounted.server.frames("ui.settled")).toHaveLength(0);
+      await act(async () => { complete({ handled: true, status: "opened" }); });
+      expect(mounted.server.frames("ui.settled")).toEqual([
+        { type: "ui.settled", directive_id: "single-takeover", status: "opened" },
+      ]);
+    } finally {
+      await act(async () => { complete({ handled: true, status: "failed" }); });
+      mounted.unmount();
+      vi.useRealTimers();
+      execute.mockRestore();
+    }
   });
 
   it("a screen that owns request_os_permission settles it; a screen that ignores navigate hands it to the executor", async () => {

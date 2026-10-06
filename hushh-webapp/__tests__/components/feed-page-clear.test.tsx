@@ -88,6 +88,7 @@ vi.mock("@/lib/cache/cache-sync-service", () => ({
 
 vi.mock("@/lib/services/cache-service", () => ({
   CACHE_KEYS: { FEED_LIST: (userId: string) => `feed:${userId}` },
+  CACHE_TTL: { MEDIUM: 5 * 60 * 1000 },
 }));
 
 vi.mock("@/lib/services/feed-service", () => ({
@@ -100,6 +101,14 @@ vi.mock("@/lib/feed/feed-events", () => ({
 
 vi.mock("@/lib/feed/use-feed-live-refresh", () => ({
   useFeedLiveRefresh: vi.fn(),
+}));
+
+vi.mock("@/lib/feed/use-feed-briefing", () => ({
+  useFeedBriefing: () => ({
+    upcomingEvents: [],
+    pendingKyc: null,
+    needsReplyCount: 0,
+  }),
 }));
 
 vi.mock("@/lib/feed/use-feed-actionables", () => ({
@@ -311,6 +320,43 @@ describe("Feed history interactions", () => {
     expect(mocks.routerPush).toHaveBeenCalledExactlyOnceWith(
       "/one/location?section=shared",
     );
+  });
+
+  it("refreshes the displayed details when the server updates an existing notification", async () => {
+    mocks.useRealFeedRow = true;
+    mocks.data.items = [
+      {
+        ...mocks.data.items[0],
+        source_domain: "location",
+        event_type: "location_share_created",
+        actor_label: "Ankit",
+        metadata: {
+          feed_audience: "recipient",
+          counterpart_label: "Ankit",
+          duration_hours: 2,
+        },
+      },
+    ];
+    const view = await renderAfterAutomaticRead();
+    expect(
+      screen.getByText("Shared location with you for 2 hours"),
+    ).toBeInTheDocument();
+
+    mocks.data = {
+      ...mocks.data,
+      items: [
+        {
+          ...mocks.data.items[0],
+          metadata: { ...mocks.data.items[0].metadata, duration_hours: 3 },
+        },
+      ],
+    };
+    await act(async () => view.rerender(<FeedPage />));
+
+    expect(
+      screen.getByText("Shared location with you for 3 hours"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Shared location with you for 2 hours")).toBeNull();
   });
 
   it("retires an unsafe legacy timestamp watermark without hiding a later id", async () => {

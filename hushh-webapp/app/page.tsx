@@ -59,7 +59,7 @@ function HomeContent() {
     user && isVaultUnlocked && !hasExplicitRedirect,
   );
 
-  // Debug helper uses the same invitation-only entry as a shared link.
+  // Debug helper opens the public introduction with the One invitation context.
   useEffect(() => {
     if (process.env.NODE_ENV === "production") return;
     if (typeof window === "undefined") return;
@@ -73,19 +73,6 @@ function HomeContent() {
       delete (window as any).resetOnboardingMarketing;
     };
   }, [router]);
-
-  useEffect(() => {
-    if (loading || user || sessionVerificationRequired || isOneInvitation)
-      return;
-    replace(loginUrl);
-  }, [
-    isOneInvitation,
-    loading,
-    loginUrl,
-    replace,
-    sessionVerificationRequired,
-    user,
-  ]);
 
   useEffect(() => {
     if (loading || sessionVerificationRequired || !user?.uid) {
@@ -155,8 +142,13 @@ function HomeContent() {
     user?.uid,
   ]);
 
-  if (loading || (!user && !isOneInvitation && !sessionVerificationRequired)) {
-    return <HushhLoader variant="fullscreen" label="Preparing welcome…" />;
+  if (loading) {
+    return (
+      <HushhLoader
+        stage="session"
+        label="Preparing welcome…"
+      />
+    );
   }
 
   if (sessionVerificationRequired) {
@@ -181,7 +173,7 @@ function HomeContent() {
       );
     }
     if (!authenticatedRootReady && !canRenderAuthenticatedChatImmediately) {
-      return <HushhLoader variant="fullscreen" label="Opening chat…" />;
+      return <HushhLoader stage="workspace" label="Opening chat…" />;
     }
     return (
       <>
@@ -195,7 +187,7 @@ function HomeContent() {
           <PhoneMandateGuard>
             <Suspense
               fallback={
-                <HushhLoader variant="fullscreen" label="Loading chat…" />
+                <HushhLoader stage="workspace" label="Loading chat…" />
               }
             >
               <AgentChatWorkspace />
@@ -206,28 +198,24 @@ function HomeContent() {
     );
   }
 
-  if (isOneInvitation) {
-    return (
+  return (
       <>
         <NativeTestBeacon
           routeId="/"
           marker="native-route-home"
-          authState={user ? "authenticated" : "anonymous"}
+          authState="anonymous"
           dataState="loaded"
         />
         <IntroStep onLogin={() => router.push(loginUrl)} />
       </>
-    );
-  }
-
-  return null;
+  );
 }
 
 export default function Home() {
   return (
     <>
       <JsonLd data={buildFaqGraph(HOME_FAQ)} />
-      <Suspense fallback={null}>
+      <Suspense fallback={<HushhLoader stage="session" label="Preparing welcome…" />}>
         <HomeContent />
       </Suspense>
     </>

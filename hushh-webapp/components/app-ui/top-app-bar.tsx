@@ -29,7 +29,6 @@ import {
   UserRound,
 } from "@/components/icons";
 import {
-  ArrowLeftIcon as ArrowLeft,
   CaretDownIcon as ChevronDown,
   CaretRightIcon as ChevronRight,
   CheckIcon as Check,
@@ -42,6 +41,7 @@ import {
   APP_SHELL_FRAME_CLASSNAME,
   APP_SHELL_FRAME_STYLE,
 } from "@/components/app-ui/app-page-shell";
+import { HushhMark } from "@/lib/morphy-ux/ui/hushh-mark";
 import { Icon } from "@/lib/morphy-ux/ui";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
@@ -87,6 +87,7 @@ import { morphyToast } from "@/lib/morphy-ux/morphy";
 import type { TopShellRouteModel } from "@/components/app-ui/top-shell-metrics";
 import { TopShellTabs } from "@/components/app-ui/top-shell-tabs";
 import { AmbientChromeMask } from "@/components/app-ui/ambient-chrome-mask";
+import { NativeShellBack } from "@/components/app-ui/native-shell-back";
 import { usePersonaState } from "@/lib/persona/persona-context";
 import { useKaiSession } from "@/lib/stores/kai-session-store";
 import type { Persona } from "@/lib/services/ria-service";
@@ -1072,28 +1073,24 @@ export function AppTopShell({ className, model }: AppTopShellProps) {
                     // 44 px target reaches toward the screen edge. Centred in
                     // its box it read 30 px in, while the avatar opposite
                     // sits at 16 (Galaxy S24 Ultra, 2026-09-22).
-                    <div className="pointer-events-auto -ml-3.5 flex h-11 w-11 items-center justify-center">
-                      <ShellActionSurface
-                        variant="icon"
-                        aria-label={topShellBreadcrumb.backLabel ?? "Go back"}
-                        onClick={handleTopShellBack}
-                        className="!border-transparent !bg-transparent !text-[color:var(--app-accent-deep)] !shadow-none hover:!bg-transparent active:!scale-100"
-                      >
-                        <ArrowLeft className="h-5 w-5" />
-                      </ShellActionSurface>
-                    </div>
+                    <NativeShellBack
+                      label={topShellBreadcrumb.backLabel ?? "Go back"}
+                      onBack={handleTopShellBack}
+                      owner={user?.uid ?? null}
+                      context={`${normalizedPathname}?${searchParams.toString()}`}
+                      eligible={isAuthenticated && isVaultUnlocked && !showVaultUnlockAction}
+                    />
                   ) : showOneHomeBrand ? (
                     <div
                       data-testid="top-app-bar-one-brand"
                       aria-label="One."
                       className="top-shell-ambient-ink pointer-events-none flex h-11 min-w-[92px] items-center justify-start gap-2 overflow-visible text-current"
                     >
-                      <span
+                      <HushhMark
                         aria-hidden
-                        className="hushh-brand-mark flex h-7 w-7 shrink-0 items-center justify-center overflow-visible text-[23px] leading-none"
-                      >
-                        🤫
-                      </span>
+                        className="h-7 w-7 items-center justify-center overflow-visible"
+                        imageClassName="!h-[23px] !w-[23px]"
+                      />
                       <span
                         aria-hidden
                         className="whitespace-nowrap text-[20px] font-semibold leading-none tracking-[-0.035em] text-current"
@@ -1264,10 +1261,9 @@ export function AppTopShell({ className, model }: AppTopShellProps) {
                         ) : null}
 
                         <ShellActionSurface
-                          variant="icon"
+                          variant="avatar"
                           aria-label="Open Profile"
                           onClick={() => requestProfilePaneOpen("tap")}
-                          className="!h-8 !w-8 !border-transparent !bg-[color:var(--app-accent)] p-0 !text-[color:var(--app-accent-fg)] !shadow-none hover:!bg-[color:var(--app-accent-hover)]"
                         >
                           <Avatar className="h-8 w-8">
                             {effectiveAvatarUrl ? (

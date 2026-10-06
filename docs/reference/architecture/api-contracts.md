@@ -541,6 +541,115 @@ still an authenticated write and follows the normal Firebase auth dependency.
 | GET | `/api/one/models/preference` | Firebase Bearer | Return the authenticated person's selected/effective model and the currently selectable catalog; a missing or busy preference read falls back to the deployment model. |
 | PUT | `/api/one/models/preference` | Firebase Bearer | Set or clear the authenticated person's model choice after catalog validation. |
 
+### Kai Gmail receipt read-through
+
+The supported receipt path is a stateless backend read-through over the
+authenticated owner's existing encrypted Gmail connection. It does not revive
+the retired receipt worker and does not write `kai_gmail_receipts` or
+`kai_receipt_memory_artifacts`. Both live routes require a Firebase bearer and
+`X-Hushh-Consent: Bearer <VAULT_OWNER>` for the same requested owner. The
+backend refreshes the existing `gmail.readonly` credential when necessary,
+captures the exact Gmail account/grant binding, and rechecks both vault access
+and that binding before returning information.
+
+| Method | Path | Auth | Description |
+| ------ | ---- | ---- | ----------- |
+| POST | `/api/kai/gmail/receipts/scan` | Firebase + `VAULT_OWNER` | Body `{user_id,page?,per_page?,cursor?}` with `page<=50` and `per_page<=6`. Search a bounded receipt-like Gmail page, fetch bounded content only for those candidates, run at most two manifest-owned Email receipt extractors concurrently, and return normalized live items plus honest page coverage. Receipt scans use owner-scoped expiring task leases; timeout, cancellation, and caller disconnect release the lane without changing Gmail connection state. A successful empty provider page is `200` with `items:[]`; provider, authorization, malformed-response, timeout, and extraction failures remain typed non-empty errors. |
+| POST | `/api/kai/gmail/receipts/detail` | Firebase + `VAULT_OWNER` | Body `{user_id,source_id}`. Verify the signed owner/account-bound source handle, re-fetch only that Gmail message, and return its current normalized item plus an optional bounded object labelled `email_excerpt` / `Email preview`; it is never represented as a full invoice. |
+| GET | `/api/kai/gmail/receipts/{user_id}` | Firebase + `VAULT_OWNER` | Compatibility read of owner-scoped legacy receipt rows only. The table remains read-only and is not a dependency or write target for live scan results. |
+
+Each live item carries stable `source_id`, `source_kind="gmail_live"`, Gmail
+message/thread IDs, nullable verified `merchant_name` and `merchant_domain`,
+sender evidence, nullable `order_id`, `amount`, and `currency`, receipt/email
+date, subject, preview, `classification_confidence`, and backend-authored
+`event_type` (`purchase`, `fulfillment`, `refund`, `cancellation`, or
+`unknown`). Unknown merchants and missing amounts remain visible with null
+fields. Raw Gmail messages remain distinct; exact merchant/order fulfillment
+grouping is presentation-only, while refunds and cancellations stay separate.
+An explicit paid/total value may precede `Paid` as well as follow a total label.
+Currency preserves a bare `$` as `$` rather than inferring USD; explicit currency
+codes remain authoritative. The receipt UI renders the preserved symbol directly.
+Automatic receipt scanning continues after matches through every available page
+within a fifty-page/six-candidate-per-page bound (300 messages), publishing each page
+incrementally. Reaching that bound is not proof of mailbox exhaustion.
+Receipt-only signed `next_cursor` continuations bind owner/account, page size,
+query and a fixed 365-day `window_start`/`window_end`. Send that cursor in the
+next scan body; it expires after two hours and never grants access by itself.
+Existing owner/vault/Gmail checks still apply to every request. Continuations
+perform one provider listing, not replay of earlier pages, and stay in the
+receipt-only memory cache/retry state. No legacy receipt storage is written.
+
+Accepted live items carry `category` (Shopping, Food, Travel, Transport,
+Software & Subscriptions, Cloud & Infra, Bills, Uncategorized) and
+`category_confidence`. Transitional clients may still send the former
+Subscription/Other values while an in-memory scan remains open. Uncategorized
+means a proven receipt without evidence for a more specific category. Only the dedicated receipt
+extractor assigns this field, with confidence >=0.85 and a verbatim 8–240
+character quote validated against its supplied subject/snippet/body excerpt.
+The quote stays inside extraction validation and is never logged. A bounded,
+URL-free subset may be returned only by the selected receipt detail route as
+`source_evidence`; scan rows do not expose it. Weak keywords, advertising and
+footer text do not establish a category.
+Presentation resolves verified merchant, then reliable category, then `Receipt`;
+the compact main row shows merchant/category and amount only. Other without a merchant is
+displayed as Receipt. Category icons never create merchant identities or enable
+order grouping. Local search uses all loaded rows; UI pagination has ten rows
+per page and does not scan Gmail. Missing totals display — in lists and Not
+available in details, never an invented zero.
+
+Receipt-only enrichment includes nullable `document_kind`, `transaction_date`
+(verbatim document date, distinct from Gmail received time), and `identifiers`
+(`kind`: order/invoice/receipt/pnr/payment, `value`). The dedicated extractor
+must quote source evidence for each field. Merchant precedence is explicit
+document brand, verified domain mapping, then corroborated sender display name;
+unverified domains never become logo URLs. Technical senders are not merchants.
+Presentation groups only same-owner, same-merchant records sharing a strong
+typed identifier, rejects conflicting order IDs even through a shared reference,
+and excludes refund/cancellation events. The representative is invoice/receipt/
+payment confirmation before order confirmation, booking, then fulfillment.
+Identifiers are unioned for display; source records remain unchanged and detail
+retrieval uses the representative's signed source ID.
+
+The same dedicated extractor keeps lifecycle and attention as separate axes.
+`status` may be paid, overdue, refunded, cancelled, trial, delivered,
+payment_failed, suspended, or renewal_due. `recurrence` is recurring, one_time,
+or unknown. `attention_state` is none, needs_attention, coming_up, or
+needs_review with a bounded reason, optional exact date and explicit
+`attention_is_prediction`. Non-none attention and non-unknown recurrence require
+exact source quotes; predictions are allowed only for quote-backed recurring
+renewal evidence and are labelled in presentation. The browser never derives
+these semantics from email text.
+
+Receipt MIME fallback supplements incomplete plain text with sanitized HTML.
+When no total candidate exists, at most one explicitly named invoice/receipt PDF
+per candidate may be read through the same Gmail authority/client/response budget.
+It is capped at 512 KiB with two receipt-only workers and an eight-second optional
+deadline. Existing ClamAV safety checks and the isolated document parser are
+reused without indexing or persistence. An unavailable scanner, invalid/encrypted
+PDF or parser timeout leaves the original receipt intact with missing fields.
+The model still establishes receipt evidence; a filename is not classification.
+PDF-derived passages are never labelled as the email preview. Scan coverage,
+owner/vault gates, total deadline and legacy read-only protections are unchanged.
+
+The scan response uses `returned_count`, `has_more`, and a `coverage` object
+(`listed_count`, `candidate_count`, `matched_count`, bounded page information,
+query scope, aggregate `rejection_counts`, and aggregate `evidence_counts`).
+Those counts expose only fixed receipt-signal categories—never sender, subject,
+message/order identifiers, amounts, or content. `has_more` becomes false at the
+fifty-page API bound; `reached_limit` then records that Gmail reported a provider
+remainder. It does not claim a mailbox-wide total from one bounded page.
+Both responses are private and no-store. Request bodies keep source handles out
+of URL/access-log paths, and application logs must contain neither tokens nor
+email content, sender/owner identifiers, order IDs, or amounts. The old
+`POST /api/kai/gmail/sync` remains retired; the existing Start Receipt Sync
+control invokes this bounded scan and stays on the landing view.
+
+The Email receipt extractor is the single semantic authority. Deterministic
+code discovers candidates and validates exact evidence references but cannot
+replace the agent's receipt, merchant, order, total, currency, or event choice.
+The browser and native clients do not provide a second production extraction
+path or a fallback around the backend contract.
+
 ### One Email KYC
 
 One mailbox intake is One-led and approval-gated. KYC workspace routes require
@@ -558,7 +667,7 @@ HTML; Gmail send uses multipart/alternative while preserving the plain-text
 fallback and original-thread reply headers. The
 `agent_kyc.approved_disclosure_formatter.v1` contract owns the render model;
 the vault-unlocked browser executes it against decrypted scoped exports. The
-maintained architecture reference is [One Email KYC](./one-email-kyc.md).
+legacy mailbox-KYC architecture has been retired.
 
 Inbound user resolution uses exact verified sender evidence. The resolver binds
 an actionable request only to the `From` sender when that sender matches a
@@ -619,9 +728,11 @@ fields, call prepare, then make a separate final Send email click.
 | Method | Path                     | Auth                     | Description                                                                                                                                                          |
 | ------ | ------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/api/one/email/draft`   | Firebase + `VAULT_OWNER` | Produce only `{to, cc, bcc, subject, body, missing_details}` from the current explicit instruction; never sends or persists a draft.                                 |
-| POST   | `/api/one/email/prepare` | Firebase + `VAULT_OWNER` | Normalize the visible envelope, including an optional sanitized `html_body` paired with its plain-text `body`, and create/reuse a ten-minute HMAC-bound confirmation action; does not call Gmail. A selected Gmail information-request `source_workflow_id` instead derives recipient, subject, and reply thread server-side and ignores caller envelope fields. |
-| POST   | `/api/one/email/send`    | Firebase + `VAULT_OWNER` | Atomically consume one unchanged prepared action and send RFC MIME as Gmail user `me`; the optional safe HTML representation is emitted as multipart/alternative, while timeout or missing message ID is reported as an unknown outcome, not retried. A selected `source_workflow_id` revalidates the original source before delivery. |
+| POST   | `/api/one/email/prepare` | Firebase + `VAULT_OWNER` | Normalize the visible envelope, including an optional sanitized `html_body` paired with its plain-text `body`, and create/reuse a ten-minute HMAC-bound confirmation action; does not call Gmail. A selected Gmail information-request `source_workflow_id`, or a One Voice reply's opaque `source_mail_ref` (mutually exclusive; no attachment; gated by `ONE_VOICE_MAIL_REPLY_ENABLED`), instead derives recipient, subject, and reply thread server-side from the original message and ignores caller envelope fields. |
+| POST   | `/api/one/email/send`    | Firebase + `VAULT_OWNER` | Atomically consume one unchanged prepared action and send RFC MIME as Gmail user `me`; the optional safe HTML representation is emitted as multipart/alternative, while timeout or missing message ID is reported as an unknown outcome, not retried. A selected `source_workflow_id` or `source_mail_ref` revalidates the original source before delivery; a reply whose returned thread differs from the original is an unknown outcome. |
 | POST   | `/api/one/email/mailbox/execute` | Firebase + `VAULT_OWNER` | Apply one reviewed mailbox change (`archive`, `add_label`, `remove_label`, `mark_read`, `mark_unread`, `trash`) from its ten-minute, single-use `gmod_` proposal. The body is only `proposal_id`; message and label IDs, the action and the bound Gmail account come from the server. Needs `gmail.modify`; a changed Gmail account fails closed. Trash is Gmail's recoverable Trash, never permanent deletion. |
+| POST   | `/api/one/email/scheduled/drain?limit=50` | Google OIDC pinned to the per-environment `mail-scheduled-send@` service account and API audience (`MAIL_SCHEDULED_DRAIN_ENABLED`; 404 when off) | Claim due voice-scheduled sends (`state='scheduled'`, `send_at <= NOW()`) with `SKIP LOCKED`, re-check the recipient connection and the sending Google account, record every refusal (including rows past `send_at + 24h`) as `failed` with a reason so the Feed keeps it, arm `scheduled -> prepared` and send through the unchanged `execute()`; never re-sends an `outcome_unknown`; returns action ids and states only (the `cancelled` and `expired` keys are always empty). Called every minute by Cloud Scheduler (UAT). |
+| POST   | `/api/one/voice/draft/open` | Firebase + `VAULT_OWNER` | Resolve a voice drafts-list position against the conversation's current drafts offer (`mailbox: drafts`, fresh revision) and return that draft's text (To, Cc, the owner's own Bcc, subject and body) for the screen only; 409 for a superseded or expired offer, 410 `DRAFT_GONE` when Gmail no longer has it. Gated by `ONE_VOICE_MAIL_DRAFTS_ENABLED`. |
 
 The current product and security flow is [Owner-Approved Gmail Email](../one/gmail-owner-approved-email.md).
 
@@ -781,6 +892,14 @@ service boundary and expose `senderIsViewer`, never a peer's raw user id. Push
 and realtime payloads contain no message content. Stable `403` failures are
 `DIRECT_MESSAGE_CONNECTION_REQUIRED`, `DIRECT_MESSAGE_BLOCKED`, and
 `DIRECT_MESSAGE_SENDER_FORBIDDEN`; malformed/self/empty requests are `422`.
+
+Each newly received Direct Message also creates one recipient-only Feed row.
+That row contains only the opaque source message id; it never stores a body,
+envelope, sender id, or preview. During the authenticated recipient's Feed
+read, the service verifies the recipient relationship again, decrypts the
+source in memory, and returns a whitespace-normalized preview capped at 256
+characters. The source message's delete path removes that derived Feed row,
+and push/SSE payloads remain metadata-only.
 
 ### One Location Agent
 
@@ -952,6 +1071,7 @@ RIA relationship bundle note:
 | POST   | `/api/pkm/delete-domain`                                                 | Delete a PKM domain with an owner-confirmed `PkmMutationPlanV2`, current sharing-impact check, and expected content revision                          |
 | GET    | `/api/pkm/device-sync/{user_id}`                                         | List metadata-only upsert/delete events after a monotonic cursor; trusted devices fetch ciphertext through the domain snapshot contract               |
 | GET    | `/api/pkm/metadata/{user_id}`                                            | Get PKM metadata for UI                                                                                                                               |
+| POST   | `/api/pkm/commits/lookup`                                                | Owner-scoped: whether each of the caller's own writes `{domain, plan_id}` already committed, in order. The commit id is derived from the token's user; the answer is `{exists, data_version}` only. The resumable save job asks this when a write's response was lost. |
 | POST   | `/api/pkm/memory/proposals`                                              | Produce an owner-local PKM preview. `memory_profile` is optional: `general` remains the compatibility default and `kyc_identity_v1` performs one constrained KYC fact-extraction pass. Preview cards may include canonical field IDs, confidence, source disposition, and value-free retrieval hints; they never contain server-stored PKM values. |
 | POST   | `/api/pkm/domains/{domain}/scope-exposure`                               | Set a top-level PKM section posture: private or consent-required                                                                                      |
 | POST   | `/api/pkm/domains/{domain}/public-profile-projection`                    | Vault-owner publishes a client-generated public-profile projection independent of encrypted consent posture                                           |
@@ -2227,6 +2347,39 @@ or rejoining starts a new history window.
 | GET | `/api/one/circles/{circle}/chat/keys/{key}` | Owner-only vault-encrypted historical key backup, only for an accessible current-generation message; active/rotated keys, never revoked keys |
 | POST | `/api/one/circles/{circle}/chat/read` | Visible sequence watermark; atomically marks recipient messages and derived Feed rows read |
 | PUT | `/api/one/circles/{circle}/chat/preferences` | `muted` disables queued system pushes while preserving chat and Feed |
+| PUT | `/api/one/circles/{circle}/photo` | Current owner of an active ordinary circle saves/removes a normalized PNG/JPEG/WebP data URL; bounded private overview response |
+
+Transcript pages deduplicate identity photos in `senders` and cap their combined
+UTF-8 size at 2 MB, falling back to initials without dropping messages. The
+optional paired `receiptAfter` / `receiptThrough` range refreshes sender-only
+receipt metadata for the loaded window even when no new messages arrive.
+New messages persist the original non-sender recipient count; legacy audiences
+remain unknown. Blue double checks mean every original recipient acknowledged
+the message. Partial reads and unknown/empty audiences remain sent. Removed
+accounts cannot shrink the denominator. Receipt doorbells reach only senders
+whose current membership generation still authorizes that message.
+
+Chat and Members share a retained conversation: switching panes preserves
+drafts and uncertain retries. Sender avatars/names, automatically loaded inline
+images, an attachment preview and an in-app viewer use shared UI primitives.
+Visible foreground thumbnails own their decrypted blobs and revoke URLs when
+hidden or access is lost; downloads have two scheduler slots. Native physical
+requests remain awaited after logical cancellation. Open owned dialogs block
+read acknowledgements, as do unresolved incoming decryption failures, including
+after the rendered 300-message window trims older rows.
+
+Circle photos reuse the 256px profile picker but mutate the circle identity.
+The API verifies and decodes a single PNG, JPEG or WebP frame up to 512 by 512
+pixels and 300 KiB (410,000 encoded characters), bounds the request to 430,000
+bytes and never echoes rejected
+input. Private list/detail/overview projections carry the photo; public invite
+previews do not. Photo doorbells refresh circle state without creating Feed
+activity. List projections cap their combined photo bytes at 2 MB and retain
+all circles with a fallback icon; single-circle overview returns the full photo.
+Soft deletion clears the photo; account lifecycle erasure removes the
+owned circle. Photos are private circle metadata, separate from encrypted chat
+attachments. This bounded photo action remains separate from reviewed rename
+commands and their immutable command bindings.
 
 The new chat wire uses camelCase directly on all surfaces. Clients encrypt a
 fresh AES-256-GCM content key per message, wrap it to every recipient using the
@@ -2246,7 +2399,7 @@ work, with catch-up on resume. Busy doorbells coalesce at a 250 ms cadence with
 one trailing refresh; gaps beyond five pages continue immediately. Automatic
 state/message/wait/read budgets are 1,200 per minute per authenticated owner
 (four sessions at four refreshes per second, plus manual headroom). Sending
-retains 30/minute and 1,000/day; image downloads retain 30/minute. These are
+retains 30/minute and 1,000/day; automatic image downloads allow 120/minute. These are
 bounded budgets, not an unlimited throughput or global latency guarantee.
 Native waits stay awaited after a pause because Capacitor cannot cancel the
 underlying request. Read doorbells expose only `readChanged` metadata and
@@ -2262,7 +2415,7 @@ recipient read receipt. Leaving suppresses old unread Feed activity and pushes;
 deleting a Circle erases its message/image store. Reset/full-account cleanup
 also erases authored messages and recipient-owned wraps/preferences.
 
-Migration `265_circle_chat.sql`, its rollback, the release manifest and UAT
+Migrations `265_circle_chat.sql` and `266_circle_chat_presentation.sql`, their rollbacks, the release manifest and UAT
 schema contract travel together. Deploy the migration before the updated
 backend, then the web/native bundle. The rollback removes chat and its derived
 Feed projections; restoring erased history requires a database backup.
@@ -2315,11 +2468,25 @@ a nonexistent anchor; the parity document is now the canonical definition.
 
 ### Connect directory request budgets
 
-Directory browsing (empty or whitespace query) and nonempty searches each have a
-500-per-day budget per caller. Both modes share the 60-per-minute ceiling. The
-existing visibility rules and 50-profile page bound are unchanged. Idle Connect
-repair polls refresh connections without issuing another directory search; graph
-changes, foreground refreshes and explicit actions still refresh the directory.
+Directory browsing (empty or whitespace query) and nonempty searches have
+separate daily budgets per caller: 3,000 per day for browsing and 500 per day for
+search. Both modes share the 60-per-minute ceiling. The existing visibility rules
+and 50-profile page bound are unchanged. Browsing pages the list the person
+already sees and is not a lookup by email or phone, so it carries the larger
+budget; it has to outlast a foregrounded client that refreshes the list on a timer
+(two pages a minute is 2,880 a day).
+
+Idle Connect repair polls refresh connections without issuing another directory
+search. Passive triggers (window focus, reconnect, returning to the app) reread the
+directory only when its last read is more than two minutes old; graph changes,
+mutations and explicit actions always refresh it. The client keeps the last
+browse first page for the session, paints it on a revisit, and keeps it on screen
+when a refresh is refused (HTTP 429), so people already shown are never replaced
+by an error. The People list is never padded with the person's own connections:
+it lists people they are not yet connected to. With nothing saved, a refused read
+shows a neutral "taking a moment" row and is retried quietly with growing pauses;
+there is no retry button for a rate limit. Only a real failure shows an
+unavailable row with a retry action.
 
 ### Connect directory mutual connections
 
