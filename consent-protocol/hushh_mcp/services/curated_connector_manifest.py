@@ -81,6 +81,7 @@ _OAUTH_KEYS = frozenset(
         "authorizeUrl",
         "tokenUrl",
         "registrationUrl",
+        "revocationUrl",
         "scopes",
         "tokenEndpointAuth",
         "clientIdEnv",
@@ -110,6 +111,10 @@ class CuratedConnectorManifest:
     tool_allowlist: tuple[str, ...]
     free_read_tools: frozenset[str]
     redirect_uris: dict[str, tuple[str, ...]]
+    # RFC 7009 token revocation, only where the provider advertises one. Not part of
+    # `pin()`: it is read from the reviewed manifest at disconnect, never from the
+    # operator-writable registry row.
+    revocation_url: str | None = None
 
     @property
     def is_public_client(self) -> bool:
@@ -297,6 +302,10 @@ def parse_manifest(raw: Any) -> CuratedConnectorManifest:
             "A confidential client must not declare oauth.registrationUrl."
         )
 
+    revocation_url: str | None = _text(oauth.get("revocationUrl")) or None
+    if revocation_url is not None:
+        revocation_url = _https(revocation_url, "oauth.revocationUrl")
+
     tools = raw.get("tools")
     if not isinstance(tools, dict):
         raise CuratedConnectorManifestError("tools block is required.")
@@ -341,6 +350,7 @@ def parse_manifest(raw: Any) -> CuratedConnectorManifest:
         tool_allowlist=allowlist,
         free_read_tools=frozenset(free_read),
         redirect_uris=redirect_uris,
+        revocation_url=revocation_url,
     )
 
 
@@ -451,6 +461,48 @@ def _load_all() -> tuple[dict[str, CuratedConnectorManifest], dict[str, str]]:
             continue
         manifests[manifest.connector_id] = manifest
     return manifests, errors
+
+
+def registry_row_drift(manifest: CuratedConnectorManifest, row: Any, environment: str) -> list[str]:
+    """Names of the fields in which a live registry row stops matching its manifest.
+
+    The runtime serves a curated connector only while its row equals the reviewed
+    manifest (`ExternalConnectorCuratedOAuth._configuration`); any difference
+    hides the connector and fails sign-in closed. This reports the same
+    differences, per environment and ahead of time, so a manifest change that was
+    merged but never re-applied is noticed at deploy instead of by a person whose
+    connector disappeared. Field names only: values are never read back out.
+    """
+    if row is None:
+        return ["missing"]
+    drift: list[str] = []
+    policy = getattr(row, "capability_policy", None) or {}
+    for name, ok in (
+        ("is_active", bool(getattr(row, "is_active", False))),
+        ("owner_user_id", getattr(row, "owner_user_id", "unset") is None),
+        ("auth_style", getattr(row, "auth_style", None) == "oauth"),
+        ("transport_kind", getattr(row, "transport_kind", None) == "mcp"),
+        ("capability_policy.chat", policy.get("chat") == "reviewed"),
+    ):
+        if not ok:
+            drift.append(name)
+    pinned = (
+        ("mcp_endpoint", manifest.mcp_endpoint),
+        ("oauth_authorize_url", manifest.authorize_url),
+        ("oauth_token_url", manifest.token_url),
+        ("oauth_scopes", manifest.scopes),
+        ("oauth_client_id_env", manifest.client_id_env),
+        ("oauth_client_secret_env", manifest.client_secret_env),
+    )
+    for name, expected in pinned:
+        if getattr(row, name, object()) != expected:
+            drift.append(name)
+    expected_redirects = manifest.redirect_uris.get(environment)
+    if expected_redirects is None:
+        drift.append("registered_redirect_uris")
+    elif tuple(getattr(row, "registered_redirect_uris", None) or ()) != expected_redirects:
+        drift.append("registered_redirect_uris")
+    return drift
 
 
 def manifest_errors() -> dict[str, str]:
