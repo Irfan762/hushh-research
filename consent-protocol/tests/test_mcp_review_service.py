@@ -420,7 +420,9 @@ async def test_refused_pending_review_logs_a_reason_and_no_private_value(
         with pytest.raises(ActionDirectiveAuthorityError) as refused:
             await module.confirm_review(**h.request, directive_id=directive, confirmed=True)
     assert refused.value.reason == reason
-    assert [r.getMessage() for r in caplog.records] == [f"one.mcp_review_refused reason={reason}"]
+    assert [r.getMessage() for r in caplog.records] == [
+        f"one.mcp_review_refused reason={reason.replace('_', '.')}"
+    ]
     for private in ("synthetic query", "changed-private-value", h.handle, directive, "owner"):
         assert private not in caplog.text
 

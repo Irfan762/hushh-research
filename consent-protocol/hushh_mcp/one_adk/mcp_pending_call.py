@@ -56,7 +56,10 @@ def review_refusal(reason: str, message: str) -> ActionDirectiveAuthorityError:
     argument, token, email or provider text. The status, body and the checks
     that raise are unchanged; the code is only a log field and an attribute.
     """
-    logger.warning("one.mcp_review_refused reason=%s", reason)
+    # Dotted, not snake_case: the log redactor masks any 24-128 character token of
+    # letters, digits, `_` and `-` as a possible identifier, which would hide the very
+    # reason this line exists to give. The attribute below keeps the code unchanged.
+    logger.warning("one.mcp_review_refused reason=%s", reason.replace("_", "."))
     error = ActionDirectiveAuthorityError(message)
     error.reason = reason
     return error

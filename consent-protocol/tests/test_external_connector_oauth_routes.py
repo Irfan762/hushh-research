@@ -1431,5 +1431,5 @@ async def test_review_409_with_a_known_reason_is_not_logged_twice(caplog):
             await routes._mcp_review_response(refuse)
     assert refused.value.status_code == 409
     assert [r.getMessage() for r in caplog.records] == [
-        "one.mcp_review_refused reason=pending_handle_missing"
+        "one.mcp_review_refused reason=pending.handle.missing"
     ]

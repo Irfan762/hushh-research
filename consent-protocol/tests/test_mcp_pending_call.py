@@ -242,7 +242,7 @@ async def test_missing_pending_record_logs_a_reason_and_nothing_private(
             )
     assert str(refused.value) == "Connector review expired. Review again."
     assert refused.value.reason == "pending_handle_missing"
-    assert _refusal_logs(caplog) == ["one.mcp_review_refused reason=pending_handle_missing"]
+    assert _refusal_logs(caplog) == ["one.mcp_review_refused reason=pending.handle.missing"]
     assert handle not in caplog.text and "private-argument-value" not in caplog.text
 
 
@@ -261,7 +261,7 @@ async def test_pending_binding_mismatch_logs_its_reason(caplog, owner, thread, a
     with caplog.at_level(logging.WARNING, logger=mcp_pending_call.logger.name):
         with pytest.raises(ActionDirectiveAuthorityError):
             await restore_pending_call(Session(id=thread, user_id=owner, app_name=app), handle)
-    assert _refusal_logs(caplog) == [f"one.mcp_review_refused reason={reason}"]
+    assert _refusal_logs(caplog) == [f"one.mcp_review_refused reason={reason.replace('_', '.')}"]
     assert "private-argument-value" not in caplog.text and handle not in caplog.text
 
 
@@ -272,4 +272,4 @@ async def test_unreadable_pending_record_logs_its_reason(caplog, monkeypatch):
         with pytest.raises(ActionDirectiveAuthorityError) as refused:
             await pending_call_details(session(), handle)
     assert refused.value.reason == "pending_record_unreadable"
-    assert _refusal_logs(caplog) == ["one.mcp_review_refused reason=pending_record_unreadable"]
+    assert _refusal_logs(caplog) == ["one.mcp_review_refused reason=pending.record.unreadable"]
