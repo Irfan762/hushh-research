@@ -1,6 +1,11 @@
 {
   "contract_name": "uat_integrated_schema",
-  "expected_migration_version": 281,  "migration_version_policy": "exact",  "required_functions": [    "block_gmail_receipt_cache_writes",    "project_calendar_mail_feed",    "ensure_drive_share_management_context",
+  "expected_migration_version": 281,
+  "migration_version_policy": "exact",
+  "required_functions": [
+    "block_gmail_receipt_cache_writes",
+    "project_calendar_mail_feed",
+    "ensure_drive_share_management_context",
     "invalidate_selected_drive_documents",
     "resolve_feed_counterpart_user_id",
     "populate_feed_counterpart_identity",
