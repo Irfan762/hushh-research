@@ -728,9 +728,11 @@ fields, call prepare, then make a separate final Send email click.
 | Method | Path                     | Auth                     | Description                                                                                                                                                          |
 | ------ | ------------------------ | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | POST   | `/api/one/email/draft`   | Firebase + `VAULT_OWNER` | Produce only `{to, cc, bcc, subject, body, missing_details}` from the current explicit instruction; never sends or persists a draft.                                 |
-| POST   | `/api/one/email/prepare` | Firebase + `VAULT_OWNER` | Normalize the visible envelope, including an optional sanitized `html_body` paired with its plain-text `body`, and create/reuse a ten-minute HMAC-bound confirmation action; does not call Gmail. A selected Gmail information-request `source_workflow_id` instead derives recipient, subject, and reply thread server-side and ignores caller envelope fields. |
-| POST   | `/api/one/email/send`    | Firebase + `VAULT_OWNER` | Atomically consume one unchanged prepared action and send RFC MIME as Gmail user `me`; the optional safe HTML representation is emitted as multipart/alternative, while timeout or missing message ID is reported as an unknown outcome, not retried. A selected `source_workflow_id` revalidates the original source before delivery. |
+| POST   | `/api/one/email/prepare` | Firebase + `VAULT_OWNER` | Normalize the visible envelope, including an optional sanitized `html_body` paired with its plain-text `body`, and create/reuse a ten-minute HMAC-bound confirmation action; does not call Gmail. A selected Gmail information-request `source_workflow_id`, or a One Voice reply's opaque `source_mail_ref` (mutually exclusive; no attachment; gated by `ONE_VOICE_MAIL_REPLY_ENABLED`), instead derives recipient, subject, and reply thread server-side from the original message and ignores caller envelope fields. |
+| POST   | `/api/one/email/send`    | Firebase + `VAULT_OWNER` | Atomically consume one unchanged prepared action and send RFC MIME as Gmail user `me`; the optional safe HTML representation is emitted as multipart/alternative, while timeout or missing message ID is reported as an unknown outcome, not retried. A selected `source_workflow_id` or `source_mail_ref` revalidates the original source before delivery; a reply whose returned thread differs from the original is an unknown outcome. |
 | POST   | `/api/one/email/mailbox/execute` | Firebase + `VAULT_OWNER` | Apply one reviewed mailbox change (`archive`, `add_label`, `remove_label`, `mark_read`, `mark_unread`, `trash`) from its ten-minute, single-use `gmod_` proposal. The body is only `proposal_id`; message and label IDs, the action and the bound Gmail account come from the server. Needs `gmail.modify`; a changed Gmail account fails closed. Trash is Gmail's recoverable Trash, never permanent deletion. |
+| POST   | `/api/one/email/scheduled/drain?limit=50` | Google OIDC pinned to the per-environment `mail-scheduled-send@` service account and API audience (`MAIL_SCHEDULED_DRAIN_ENABLED`; 404 when off) | Claim due voice-scheduled sends (`state='scheduled'`, `send_at <= NOW()`) with `SKIP LOCKED`, re-check the recipient connection and the sending Google account, record every refusal (including rows past `send_at + 24h`) as `failed` with a reason so the Feed keeps it, arm `scheduled -> prepared` and send through the unchanged `execute()`; never re-sends an `outcome_unknown`; returns action ids and states only (the `cancelled` and `expired` keys are always empty). Called every minute by Cloud Scheduler (UAT). |
+| POST   | `/api/one/voice/draft/open` | Firebase + `VAULT_OWNER` | Resolve a voice drafts-list position against the conversation's current drafts offer (`mailbox: drafts`, fresh revision) and return that draft's text (To, Cc, the owner's own Bcc, subject and body) for the screen only; 409 for a superseded or expired offer, 410 `DRAFT_GONE` when Gmail no longer has it. Gated by `ONE_VOICE_MAIL_DRAFTS_ENABLED`. |
 
 The current product and security flow is [Owner-Approved Gmail Email](../one/gmail-owner-approved-email.md).
 
@@ -890,6 +892,14 @@ service boundary and expose `senderIsViewer`, never a peer's raw user id. Push
 and realtime payloads contain no message content. Stable `403` failures are
 `DIRECT_MESSAGE_CONNECTION_REQUIRED`, `DIRECT_MESSAGE_BLOCKED`, and
 `DIRECT_MESSAGE_SENDER_FORBIDDEN`; malformed/self/empty requests are `422`.
+
+Each newly received Direct Message also creates one recipient-only Feed row.
+That row contains only the opaque source message id; it never stores a body,
+envelope, sender id, or preview. During the authenticated recipient's Feed
+read, the service verifies the recipient relationship again, decrypts the
+source in memory, and returns a whitespace-normalized preview capped at 256
+characters. The source message's delete path removes that derived Feed row,
+and push/SSE payloads remain metadata-only.
 
 ### One Location Agent
 
@@ -1061,6 +1071,7 @@ RIA relationship bundle note:
 | POST   | `/api/pkm/delete-domain`                                                 | Delete a PKM domain with an owner-confirmed `PkmMutationPlanV2`, current sharing-impact check, and expected content revision                          |
 | GET    | `/api/pkm/device-sync/{user_id}`                                         | List metadata-only upsert/delete events after a monotonic cursor; trusted devices fetch ciphertext through the domain snapshot contract               |
 | GET    | `/api/pkm/metadata/{user_id}`                                            | Get PKM metadata for UI                                                                                                                               |
+| POST   | `/api/pkm/commits/lookup`                                                | Owner-scoped: whether each of the caller's own writes `{domain, plan_id}` already committed, in order. The commit id is derived from the token's user; the answer is `{exists, data_version}` only. The resumable save job asks this when a write's response was lost. |
 | POST   | `/api/pkm/memory/proposals`                                              | Produce an owner-local PKM preview. `memory_profile` is optional: `general` remains the compatibility default and `kyc_identity_v1` performs one constrained KYC fact-extraction pass. Preview cards may include canonical field IDs, confidence, source disposition, and value-free retrieval hints; they never contain server-stored PKM values. |
 | POST   | `/api/pkm/domains/{domain}/scope-exposure`                               | Set a top-level PKM section posture: private or consent-required                                                                                      |
 | POST   | `/api/pkm/domains/{domain}/public-profile-projection`                    | Vault-owner publishes a client-generated public-profile projection independent of encrypted consent posture                                           |

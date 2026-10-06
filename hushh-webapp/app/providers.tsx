@@ -45,7 +45,6 @@ import { resolveAppRouteLayout } from "@/lib/navigation/app-route-layout";
 import { AppTopShell } from "@/components/app-ui/top-app-bar";
 import { AppEdgeBackGesture } from "@/components/app-ui/app-edge-back-gesture";
 import { AppProfileEdgeGesture } from "@/components/app-ui/app-profile-edge-gesture";
-import { AppChatHistoryEdgeGesture } from "@/components/app-ui/app-chat-history-edge-gesture";
 import { ProfilePane } from "@/components/app-ui/profile-pane";
 import { TopShellRouteSwipe } from "@/components/app-ui/top-shell-route-swipe";
 import { AgentRuntimeStateProvider } from "@/lib/agent/agent-runtime-context";
@@ -59,6 +58,7 @@ import { FoundationPublicAmbient } from "@/components/app-ui/foundation-public-a
 import { AgentOwnerGate } from "@/components/agent/agent-owner-gate";
 import { OneVoiceReadinessProvider } from "@/lib/one-voice/readiness";
 import { AppBottomShell } from "@/components/app-ui/app-bottom-shell";
+import { AgentDockProvider } from "@/components/agent/agent-dock";
 import { AmbientChromeController } from "@/components/app-ui/ambient-chrome-mask";
 import { resolveRiaRouteTabSet } from "@/lib/navigation/top-shell-tabs";
 import { Toaster } from "@/components/ui/sonner";
@@ -74,6 +74,7 @@ import { OnboardingJourneyGuard } from "@/components/onboarding/onboarding-journ
 import { KaiCommandBarGlobal } from "@/components/kai/kai-command-bar-global";
 import { useScrollReset } from "@/lib/navigation/use-scroll-reset";
 import { Capacitor } from "@capacitor/core";
+import { useNativeNavigationInstalled } from "@/lib/capacitor/native-navigation";
 import { ObservabilityRouteObserver } from "@/components/observability/route-observer";
 import {
   resetKaiBottomChromeVisibility,
@@ -106,6 +107,7 @@ import { AgentConsentContinuationNotifier } from "@/components/agent/agent-conse
 import { AgentFeedAttentionNotifier } from "@/components/agent/agent-feed-attention-notifier";
 import { RenderPerfProbe } from "@/components/app-ui/render-perf-probe";
 import { RenderPerfProfiler } from "@/components/app-ui/render-perf-profiler";
+import { BootRouteCommitted } from "@/components/app-ui/boot-surface";
 import {
   acknowledgeInternalAppNavigation,
   consumePendingInternalAppNavigation,
@@ -397,18 +399,21 @@ function AppShellFrame({ children }: ProvidersProps) {
     effectiveHideCommandBar || foundationVoiceOnlyChrome;
   // RIA and Foundation both use a persistent-but-pinned lower utility. Keep
   // the scroll-hide driver for ordinary signed-in navigation only.
-  const pinnedBottomChrome = isRiaRoute(pathname) || foundationVoiceOnlyChrome;
+  const nativeNavigationInstalled = useNativeNavigationInstalled();
+  // Native tabs and the web voice slot stay pinned together; no per-frame bridge traffic.
+  const pinnedBottomChrome = isRiaRoute(pathname) || foundationVoiceOnlyChrome || nativeNavigationInstalled;
   // Stable identity: AppShellFrame re-renders on every pathname and query
   // change, and a fresh model object each time re-rendered the whole bottom
   // chrome (navbar, agent bar, masks) on every tab switch.
   const bottomShellModel = useMemo(
     () => ({
       navigationHidden: hideBottomNavigation,
-      // The canonical Chat route already exposes its text composer. Keep the
-      // idle voice launcher out of that route's visual hierarchy while allowing
-      // an active command to remain visible and cancellable.
+      // Chat uses the retained Agent Dock; Messages owns its composer. Neither
+      // also shows the idle global voice launcher. Active commands remain cancellable.
       agentBarHidden:
-        isAuthenticated && !authLoading && pathname === ROUTES.HOME,
+        isAuthenticated &&
+        !authLoading &&
+        (pathname === ROUTES.HOME || pathname === ROUTES.ONE_MESSAGES),
       hidden: bottomChromeHidden,
     }),
     [
@@ -632,10 +637,15 @@ function AppShellFrame({ children }: ProvidersProps) {
             <AgentRuntimeStateProvider>
               <OneVoiceReadinessProvider>
                 <AgentOwnerGate>
+                  <AgentDockProvider>
                   <SiriOneVoiceHandoff />
                   <SiriOneRequestHandoff />
                   <SiriOneActionHandoff />
                   <SiriOneEntityIndexPublisher />
+                  {/* Proof for the boot surface that the route tree has
+                      committed: after it, an empty set of guard claims means
+                      there is nothing left to wait for. */}
+                  <BootRouteCommitted />
                   <NativeTestRouter />
                   <NativeTestBootstrap />
                   <NativeTestRouteStatus />
@@ -660,7 +670,6 @@ function AppShellFrame({ children }: ProvidersProps) {
                   {!hidesPersistentChrome ? <AgentVoiceEdgeGlow /> : null}
                   {!hidesPersistentChrome ? <AppEdgeBackGesture /> : null}
                   <AppProfileEdgeGesture enabled={profilePaneEnabled} />
-                  <AppChatHistoryEdgeGesture enabled={isCanonicalChatRoute} />
                   <AppBottomShell model={bottomShellModel} />
                   <ProfilePane
                     open={profilePaneOpen}
@@ -688,7 +697,9 @@ function AppShellFrame({ children }: ProvidersProps) {
                       {!hidesPersistentChrome && !isCanonicalChatRoute ? (
                         <AppTopShell model={topShellModel} />
                       ) : null}
-                      {!hidesPersistentChrome && !effectiveHideCommandBar && !isCanonicalChatRoute ? (
+                      {/* Search is requested from bottom navigation even on
+                          Chat; the closed palette adds no idle shell chrome. */}
+                      {!hidesPersistentChrome && !effectiveHideCommandBar ? (
                         <KaiCommandBarGlobal />
                       ) : null}
                       <Suspense
@@ -801,6 +812,7 @@ function AppShellFrame({ children }: ProvidersProps) {
                       </Suspense>
                     </div>
                   </ContactInvitationSessionProvider>
+                  </AgentDockProvider>
                 </AgentOwnerGate>
               </OneVoiceReadinessProvider>
               {/*

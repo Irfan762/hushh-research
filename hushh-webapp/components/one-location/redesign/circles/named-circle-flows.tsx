@@ -688,7 +688,6 @@ export function CreateCircleFlow({
           onFocus={() => setNameFocused(true)}
           onBlur={() => {
             setNameFocused(false);
-            if (nameMissing) setNameRequirementActive(true);
           }}
           onChange={(event) => {
             const next = event.target.value;
@@ -2416,6 +2415,7 @@ export function CircleDetailFlow({
                   <div className={CIRCLE_SHEET_BODY_CLASSNAME}>
                     <FlowActionGroup
                       stacked
+                      separateSecondary={false}
                       secondary={
                         <div className={CIRCLE_SHEET_CTA_CLASSNAME}>
                           <Button

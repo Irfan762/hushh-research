@@ -79,6 +79,9 @@ const NEUTRAL_STATUSES = new Set<string>([
   "sos_partially_stopped",
   // The emergency roster is at its limit; nobody was added.
   "roster_full",
+  // add_circle_members: every requested person was refused or already in; no
+  // one was added, so the batch must not read as done.
+  "none_added",
   "step_order",
   "recipient_key_missing",
   "recipient_not_ready",
@@ -115,6 +118,22 @@ export type ToolResultTone = "success" | "neutral" | "failure" | "pending";
  */
 const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_requested"]);
 
+/**
+ * Outcomes that are neither done nor failed, whatever the frame's `ok` says.
+ * Nothing went wrong, and what the person asked for either did not happen (a
+ * cancel that found the email already sent, being sent, or never sent) or
+ * cannot be confirmed (Gmail may or may not have sent it). Never "Done".
+ */
+export const NEUTRAL_OUTCOME_STATUSES = new Set<string>([
+  "draft_open_unconfirmed",
+  "draft_send_unconfirmed",
+  "send_unconfirmed",
+  "schedule_unconfirmed",
+  "already_sent",
+  "already_sending",
+  "not_sent",
+]);
+
 /** An armed-but-unsent outcome: neither success nor failure yet. */
 /**
  * Statuses that ask the surface to do something rather than report an outcome.
@@ -122,7 +141,40 @@ const PENDING_STATUSES = new Set<string>([SOS_GRANTS_CREATED, "draft_open_reques
  * They carry nothing of their own to show, and the surface they act on is the
  * result already displayed.
  */
-export const DISPATCH_ONLY_STATUSES = new Set<string>(["mail_open_dispatched"]);
+export const DISPATCH_ONLY_STATUSES = new Set<string>([
+  "mail_open_dispatched",
+  "draft_open_dispatched",
+]);
+
+/**
+ * A mail list the person can still act on by position: rows the server
+ * offered under a revision ("open the second one", "reply to it").
+ *
+ * It keeps the answer slot across a new question until that question produces
+ * a result of its own. Clearing it the moment the person spoke took away the
+ * very list their words were about, so a spoken open arrived with nothing left
+ * on screen to open.
+ */
+export function keepsAnswerSlotAcrossInput(result: ToolResultPublic | null): boolean {
+  return (
+    result !== null &&
+    typeof result.offer_revision === "number" &&
+    Array.isArray(result.items) &&
+    result.items.length > 0
+  );
+}
+
+/**
+ * A proposal whose UI is the pending card. It answers nothing yet, so it does
+ * not take the answer slot from an offered list: "send the second draft" and
+ * "cancel the first one" are approved while the list they name stays on screen.
+ */
+function isConfirmationHandoff(result: ToolResultPublic): boolean {
+  return (
+    String(result.status || "").trim() === "confirmation_required" ||
+    result.needs === "confirmation"
+  );
+}
 
 /**
  * A navigation the app was asked to make. It is not a success (it stays in
@@ -147,9 +199,10 @@ export function toolResultTone(
   // An armed Save My Soul is "sending your position", whatever `ok` says: the
   // relay sends it with ok:false because nothing has been delivered yet.
   if (isPendingStatus(value)) return "pending";
-  // The review card may already be visible after a lost acknowledgement.
-  // This says nothing about a send, so avoid both success and failure claims.
-  if (value === "draft_open_unconfirmed") return "neutral";
+  // The review card may already be visible after a lost acknowledgement, a
+  // send may or may not have gone out, a cancel may have found nothing left to
+  // cancel: avoid both success and failure claims.
+  if (NEUTRAL_OUTCOME_STATUSES.has(value)) return "neutral";
   if (NAVIGATION_DISPATCH_STATUSES.has(value)) {
     return ok === false ? "failure" : "neutral";
   }
@@ -340,6 +393,9 @@ const INFORMATIONAL_ERROR_CODES = new Set<string>([
   // The tap's proof failed verification (expired, revoked, other account);
   // the card stays pending and a fresh tap can still complete it.
   "firebase_proof_invalid",
+  // Voice storage could not record a tap or cancel; the relay keeps the
+  // session up and the card stays as it was, so the person can try again.
+  "storage_unavailable",
 ]);
 
 function summarizeArgs(
@@ -635,7 +691,10 @@ function reduceServerFrame(
           : state.fencedTurnIds,
         // A new question owns the visible answer slot. Older tool receipts
         // remain in the timeline and any pending action still settles by ID.
-        lastResult: newInput ? null : state.lastResult,
+        lastResult:
+          newInput && !keepsAnswerSlotAcrossInput(state.lastResult)
+            ? null
+            : state.lastResult,
         toolTimeline: newInput
           ? state.toolTimeline.map((item) => item.tool === "open_screen" ? { ...item, navigationSuperseded: true } : item)
           : state.toolTimeline,
@@ -802,7 +861,8 @@ function reduceServerFrame(
         // list that made "second" mean anything. It still joins the timeline, so
         // it is observable; it just does not become the thing on screen.
         lastResult: DISPATCH_ONLY_STATUSES.has(String(result.status || "").trim()) ||
-          !belongsToCurrentInput
+          !belongsToCurrentInput ||
+          (isConfirmationHandoff(result) && keepsAnswerSlotAcrossInput(state.lastResult))
           ? state.lastResult
           : result,
         pendingAction:
@@ -839,6 +899,12 @@ function reduceServerFrame(
           ? entities.slice(0, MAX_ENTITIES)
           : [],
         receiptToken: receipt_token || null,
+        offeredResult:
+          state.pendingAction?.pending_action_id === row.pending_action_id
+            ? state.pendingAction.offeredResult
+            : keepsAnswerSlotAcrossInput(state.lastResult)
+              ? state.lastResult ?? undefined
+              : undefined,
         resolvedStatus: null,
         resolvedResult: null,
       };
@@ -870,6 +936,12 @@ function reduceServerFrame(
       const awaitingDevice = isPendingStatus(frame.result_public?.status);
       return {
         ...state,
+        // Only the list kept beside this exact card yields to its result. A
+        // newer answer or a resolution with no result stays on screen.
+        lastResult:
+          frame.result_public && state.lastResult === current!.offeredResult
+            ? null
+            : state.lastResult,
         idleDeadlineAt: null,
         phase:
           state.activeInputTurnId

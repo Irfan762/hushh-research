@@ -2,6 +2,65 @@ import XCTest
 @testable import App
 
 final class NativeSupportTests: XCTestCase {
+    func testNativeControlAppearanceRejectsMalformedProjectionAndDecodesCSSAlphaLast() {
+        let theme = HushhNativeControlAppearance(appearance: "dark", accentHex: "#123", foregroundHex: "#44556680")
+        XCTAssertEqual(theme?.style, .dark)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        XCTAssertTrue(theme!.foreground.getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(r, 68.0 / 255, accuracy: 0.001)
+        XCTAssertEqual(a, 128.0 / 255, accuracy: 0.001)
+        XCTAssertTrue(theme!.accent.getRed(&r, green: &g, blue: &b, alpha: &a))
+        XCTAssertEqual(b, 51.0 / 255, accuracy: 0.001)
+        for bad in ["#123junk", "#123456\n", "#１２３", "red", "var(--app-accent)", "#12", "#123456789", "#gggggg"] {
+            XCTAssertNil(HushhNativeControlAppearance(appearance: "dark", accentHex: bad, foregroundHex: "#445566"))
+            XCTAssertNil(HushhNativeControlAppearance(appearance: "light", accentHex: "#123456", foregroundHex: bad))
+        }
+        XCTAssertNil(HushhNativeControlAppearance(appearance: "system", accentHex: "#123456", foregroundHex: "#445566"))
+        XCTAssertNil(HushhNativeControlAppearance(appearance: "light", accentHex: nil, foregroundHex: "#445566"))
+    }
+    func testNativeChromeLeaseRejectsStaleOwnerDocumentAndDuplicateChoices() {
+        var state = HushhNativeChromeState()
+        let first = HushhNativeChromeState.Identity(document: "a", ownerEpoch: "owner-a", revision: 1)
+        XCTAssertTrue(state.prepare(first))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true)) // prepared is not interactive
+        XCTAssertTrue(state.activate(first))
+        let otherControl = HushhNativeChromeState.Identity(document: "a", ownerEpoch: "owner-a", revision: 1,
+                                                          controlId: "chat-agent-surface")
+        XCTAssertFalse(state.activate(otherControl))
+        XCTAssertFalse(state.confirm(otherControl, sequence: 1, latestSequence: 1, allowed: true))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: false)) // privacy/overlay guard
+        XCTAssertTrue(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true))
+        XCTAssertFalse(state.confirm(first, sequence: 1, latestSequence: 1, allowed: true))
+        let next = HushhNativeChromeState.Identity(document: "a", ownerEpoch: "owner-b", revision: 2)
+        XCTAssertTrue(state.prepare(next))
+        XCTAssertFalse(state.activate(first))
+        XCTAssertTrue(state.activate(next))
+        XCTAssertFalse(state.retire(.init(document: "a", ownerEpoch: "owner-a", revision: 100), targetRevision: 1))
+        XCTAssertEqual(state.phase, "active") // old failure cannot remove a replacement
+        XCTAssertFalse(state.confirm(first, sequence: 2, latestSequence: 2, allowed: true))
+        XCTAssertTrue(state.retire(.init(document: "a", ownerEpoch: "owner-b", revision: 3)))
+        XCTAssertFalse(state.prepare(next)) // late uncertain preparation cannot resurrect a retired view
+        XCTAssertTrue(state.prepare(.init(document: "b", ownerEpoch: "owner-b", revision: 1)))
+        XCTAssertFalse(state.prepare(.init(document: "a", ownerEpoch: "owner-a", revision: 99)))
+        state.invalidate()
+        XCTAssertFalse(state.activate(next))
+    }
+
+    func testNativeNavigationRejectsStaleUnknownAndRetiredDocumentStates() {
+        var state = HushhNativeNavigationState()
+        XCTAssertTrue(state.apply(document: "first", revision: 1, visible: true, selected: "chat"))
+        XCTAssertTrue(state.acceptsTap("dashboard", appIsActive: true, shielded: false, keyboardVisible: false))
+        XCTAssertTrue(state.apply(document: "first", revision: 3, visible: false, selected: "feed"))
+        XCTAssertFalse(state.apply(document: "first", revision: 2, visible: true, selected: "chat"))
+        XCTAssertFalse(state.apply(document: "first", revision: 4, visible: true, selected: "arbitrary-route"))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: false, keyboardVisible: false))
+        state.retireDocument()
+        XCTAssertFalse(state.apply(document: "first", revision: 5, visible: true, selected: "chat"))
+        XCTAssertTrue(state.apply(document: "second", revision: 1, visible: true, selected: "dashboard"))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: false, shielded: false, keyboardVisible: false))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: true, keyboardVisible: false))
+        XCTAssertFalse(state.acceptsTap("chat", appIsActive: true, shielded: false, keyboardVisible: true))
+    }
     func testGoogleReauthenticationAcceptsEachStageExactlyOnce() {
         let fence = GoogleIdentityReauthenticationFence(expectedUserID: "a", now: 100)
         XCTAssertEqual(fence.claim(phase: 1, userID: "a", sameSession: true, now: 101), .ignored)

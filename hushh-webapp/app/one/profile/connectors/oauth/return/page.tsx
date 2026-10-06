@@ -3,9 +3,9 @@
 import { Suspense, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { useRouter } from "next/navigation";
+import { Loader2Icon } from "@/components/icons";
 
-import { ROUTES } from "@/lib/navigation/routes";
-import { buildProfileConnectorsPaneHref } from "@/lib/navigation/profile-pane";
+import { buildConnectorSignInReturnHref } from "@/lib/navigation/profile-pane";
 import { ExternalConnectorService } from "@/lib/services/external-connector-service";
 import { useVault } from "@/lib/vault/vault-context";
 import { useAuth } from "@/hooks/use-auth";
@@ -14,6 +14,11 @@ import {
   notifyDrivePopup,
   readDrivePopupAttempt,
 } from "@/lib/profile/drive-oauth-popup";
+import {
+  isCuratedPopupReturn,
+  notifyCuratedPopup,
+  readCuratedPopupAttempt,
+} from "@/lib/profile/curated-connector-popup";
 import {
   markDriveChatRecoveryReturned,
   readDriveChatRecoveryHandoff,
@@ -102,7 +107,101 @@ function DrivePopupReturn() {
       .catch(() => finish("failed"));
   }, [loading, user]);
   return (
-    <div className="flex min-h-[50vh] flex-col items-center justify-center gap-4 px-6 text-center">
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 text-center">
+      {finished ? null : <Loader2Icon className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden />}
+      <p role="status" className="text-sm text-muted-foreground">
+        {message}
+      </p>
+      {finished ? (
+        <Button className="min-h-11" onClick={() => window.close()}>
+          Close window
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+// A curated connector (Notion, HubSpot, Attio, ...) signs in through the same
+// in-session popup as Drive. The popup has no vault key: it finishes with the
+// Firebase identity against the attempt the opener's vault-authorized start
+// created, then reports a redacted outcome and closes.
+function CuratedPopupReturn() {
+  const { user, loading } = useAuth();
+  const details = useRef<{
+    code: string | null;
+    state: string | null;
+    cancelled: boolean;
+  } | null>(null);
+  const started = useRef(false);
+  const ownerGeneration = useRef(0);
+  useLayoutEffect(() => {
+    const generation = ownerGeneration.current + 1;
+    ownerGeneration.current = generation;
+    started.current = false;
+    return () => {
+      ownerGeneration.current = generation + 1;
+      started.current = false;
+    };
+  }, [user?.uid]);
+  const [message, setMessage] = useState("Finishing connection…");
+  const [finished, setFinished] = useState(false);
+  useEffect(() => {
+    if (!details.current) {
+      const search = new URL(window.location.href).searchParams;
+      details.current = {
+        code: search.get("code"),
+        state: search.get("state"),
+        cancelled: search.has("error"),
+      };
+      // Do not retain provider codes/state in navigation history or outgoing referrers.
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+    if (loading || started.current) return;
+    started.current = true;
+    const generation = ownerGeneration.current;
+    const attempt = readCuratedPopupAttempt();
+    const { code, state, cancelled } = details.current;
+    const finish = (outcome: "succeeded" | "failed" | "cancelled") => {
+      if (ownerGeneration.current !== generation) return;
+      if (attempt) notifyCuratedPopup(attempt, outcome);
+      details.current = null;
+      setMessage(
+        outcome === "succeeded"
+          ? "Connection saved. Return to chat."
+          : "Connection was not completed. Return to chat and try again.",
+      );
+      setFinished(true);
+      window.close();
+    };
+    if (!attempt || !code || !state || cancelled || !user) {
+      finish(cancelled ? "cancelled" : "failed");
+      return;
+    }
+    void user
+      .getIdToken()
+      .then((idToken) => {
+        if (ownerGeneration.current !== generation) return null;
+        return ExternalConnectorService.completeWebOAuth({
+          idToken,
+          code,
+          state,
+          attemptId: attempt.attemptId,
+        });
+      })
+      .then((result) => {
+        if (result)
+          finish(
+            result.connectorId === attempt.connectorId &&
+              ["verifying", "connected"].includes(result.status)
+              ? "succeeded"
+              : "failed",
+          );
+      })
+      .catch(() => finish("failed"));
+  }, [loading, user]);
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 text-center">
+      {finished ? null : <Loader2Icon className="size-5 animate-spin text-muted-foreground motion-reduce:animate-none" aria-hidden />}
       <p role="status" className="text-sm text-muted-foreground">
         {message}
       </p>
@@ -118,7 +217,7 @@ function DrivePopupReturn() {
 function ConnectorOAuthReturnRouter() {
   const captured = useRef(false);
   const [customPhase, setCustomPhase] = useState<"fresh" | "running" | "saved" | "failed" | "cancelled">("fresh");
-  const [popup, setPopup] = useState<boolean | null>(null);
+  const [popup, setPopup] = useState<"drive" | "curated" | false | null>(null);
   const [fullPageDetails, setFullPageDetails] = useState<{
     code: string | null;
     state: string | null;
@@ -134,8 +233,13 @@ function ConnectorOAuthReturnRouter() {
     if (captured.current) return;
     captured.current = true;
     const search = new URL(window.location.href).searchParams;
-    const isPopup = isDrivePopupReturn(search.get("state"));
-    if (!isPopup) {
+    // Popup returns are routed before any vault guard: the popup has no vault key.
+    const popupKind = isDrivePopupReturn(search.get("state"))
+      ? "drive"
+      : isCuratedPopupReturn(search.get("state"))
+        ? "curated"
+        : false;
+    if (!popupKind) {
       const handoff = readDriveChatRecoveryHandoff();
       if (handoff?.reason === "web_full_page" && handoff.returnTo !== "connector_settings") {
         markDriveChatRecoveryReturned({
@@ -158,9 +262,10 @@ function ConnectorOAuthReturnRouter() {
       // signed state only in this mounted component, never in browser history.
       window.history.replaceState(null, "", window.location.pathname);
     }
-    setPopup(isPopup);
+    setPopup(popupKind);
   }, []);
   if (popup === null || (popup === false && !fullPageDetails)) return null;
+  if (popup === "curated") return <CuratedPopupReturn />;
   return popup ? (
     <DrivePopupReturn />
   ) : (
@@ -181,11 +286,12 @@ function CustomConnectorOAuthReturnContent({ details, phase, onPhase }: { phase:
   const { user } = useAuth();
   const { vaultKey, vaultOwnerToken, ownerTokenStatus } = useVault();
   const router = useRouter();
-  // A sign-in started from Profile returns to Connectors inside the Profile
-  // pane; one started from chat returns to the chat's Connectors sheet.
-  const returnHref = details.returnTo === "connector_settings"
-    ? buildProfileConnectorsPaneHref() : `${ROUTES.HOME}?panel=connectors`;
-  const returnLabel = details.returnTo === "connector_settings" ? "Connectors" : "Chat";
+  // Every sign-in returns to Connectors in the Profile pane: over One when it
+  // started in Profile, over the chat when it started there.
+  const returnHref = buildConnectorSignInReturnHref(
+    details.returnTo === "connector_settings" ? "connector_settings" : "chat",
+  );
+  const returnLabel = "Connectors";
   const started = useRef(false);
   const mounted = useRef(true);
   const [message, setMessage] = useState("Finishing connection…");
@@ -284,11 +390,12 @@ function ConnectorOAuthReturnContent({ details }: {
 
     const { code, state, cancelled } = details;
 
-    // Connectors live in the chat sidebar's "MCP connections" panel now, not
-    // a dedicated route -- landing on `?panel=connectors` is what reopens it.
-    const returnHref = details.returnTo === "connector_settings"
-      ? ROUTES.PROFILE_CONNECTORS
-      : `${ROUTES.HOME}?panel=connectors`;
+    // Connectors is a Profile section, not a page: the return opens it in the
+    // Profile pane. The pane address is used directly so the native bundle,
+    // which has no server to redirect /one/profile/connectors, lands there too.
+    const returnHref = buildConnectorSignInReturnHref(
+      details.returnTo === "connector_settings" ? "connector_settings" : "chat",
+    );
 
     if (cancelled) {
       setMessage("That connection was not completed.");

@@ -3085,38 +3085,6 @@ export default function ConnectPageClient() {
                         </div>
                       ) : (
                         <div className="space-y-3 sm:space-y-4">
-                          {tab === "people" ? (
-                            <LivingConnections
-                              key={user?.uid ?? "signed-out"}
-                              currentUserId={user?.uid ?? null}
-                              circlesState={circlesState}
-                              ownerName={user?.displayName || "You"}
-                              ownerPhotoUrl={user?.photoURL ?? null}
-                              connections={sortedConnections}
-                              totalCount={connectionsTotalCount}
-                              loading={
-                                !connectionsRefreshError &&
-                                (!connectionsLoaded ||
-                                  connectionsRefreshingFirstPage) &&
-                                sortedConnections.length === 0
-                              }
-                              error={connectionsRefreshError}
-                              onFindPeople={() => {
-                                searchInputRef.current?.scrollIntoView({
-                                  behavior: "smooth",
-                                  block: "center",
-                                });
-                                searchInputRef.current?.focus({
-                                  preventScroll: true,
-                                });
-                              }}
-                              onCreateCircle={() => setCreateCircleDialogOpen(true)}
-                              onRetry={handleRefreshConnections}
-                              onRetryCircles={() =>
-                                setCircleRefreshToken((value) => value + 1)
-                              }
-                            />
-                          ) : null}
                           <SettingsGroup
                             className="rounded-[var(--app-card-radius-standard)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-3 sm:p-4"
                             titleControl={
@@ -3913,8 +3881,23 @@ export default function ConnectPageClient() {
                     </div>
                     <div
                       data-connect-surface="circles"
-                      className={CONNECT_SWIPE_PANE_INSET_CLASSNAME}
+                      className={cn(CONNECT_SWIPE_PANE_INSET_CLASSNAME, "space-y-3 sm:space-y-4")}
                     >
+                      <LivingConnections
+                        key={user?.uid ?? "signed-out"}
+                        currentUserId={user?.uid ?? null}
+                        circlesState={circlesState}
+                        ownerName={user?.displayName || "You"}
+                        ownerPhotoUrl={user?.photoURL ?? null}
+                        connections={sortedConnections}
+                        totalCount={connectionsTotalCount}
+                        loading={!connectionsRefreshError && (!connectionsLoaded || connectionsRefreshingFirstPage) && sortedConnections.length === 0}
+                        error={connectionsRefreshError}
+                        onFindPeople={() => { setTab("people"); commitSurface("all"); }}
+                        onCreateCircle={() => setCreateCircleDialogOpen(true)}
+                        onRetry={handleRefreshConnections}
+                        onRetryCircles={() => setCircleRefreshToken(value => value + 1)}
+                      />
                       <ConnectCirclesTab
                         createDialogOpen={createCircleDialogOpen}
                         onCreateDialogOpenChange={setCreateCircleDialogOpen}

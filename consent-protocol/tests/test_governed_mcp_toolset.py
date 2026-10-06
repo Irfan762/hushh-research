@@ -1,6 +1,7 @@
 """The shared ADK adapter never treats discovery as execution authority."""
 
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -17,6 +18,7 @@ from hushh_mcp.one_adk.governed_mcp_toolset import (
     ResolvedMcpConnection,
     native_registration_admitted,
     resolve_registered_connection,
+    validated_mcp_arguments,
 )
 from hushh_mcp.services.external_mcp_client import ExternalMcpError
 from hushh_mcp.services.mcp_public_http import create_bounded_mcp_http_client
@@ -1711,6 +1713,10 @@ async def test_curated_allowlist_change_retires_a_running_toolset_without_reconn
 async def test_curated_oauth_without_an_allowlist_leaves_the_catalog_unrestricted(
     registry_harness, monkeypatch
 ):
+    # A connector with no manifest falls back to its row (narrowing only).
+    from hushh_mcp.one_adk import governed_mcp_toolset as module
+
+    monkeypatch.setattr(module, "get_manifest", lambda _connector_id: None)
     row = dict(
         status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
     )
@@ -1723,6 +1729,9 @@ async def test_curated_oauth_without_an_allowlist_leaves_the_catalog_unrestricte
 
 
 async def test_curated_oauth_empty_allowlist_admits_no_tools(registry_harness, monkeypatch):
+    from hushh_mcp.one_adk import governed_mcp_toolset as module
+
+    monkeypatch.setattr(module, "get_manifest", lambda _connector_id: None)
     row = dict(
         status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
     )
@@ -1736,6 +1745,26 @@ async def test_curated_oauth_empty_allowlist_admits_no_tools(registry_harness, m
     resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
     assert resolved.catalog_policy is not None
     assert resolved.catalog_policy([{"name": "search_crm_objects"}]) == []
+
+
+async def test_a_manifest_allowlist_wins_over_an_edited_registry_row(registry_harness, monkeypatch):
+    """The row is operator-writable; only the reviewed manifest decides which
+    tools chat may offer, so neither an emptied nor a widened row changes it."""
+    row = dict(
+        status="connected", connection_generation=1, credential_version=1, verified_policy_hash=None
+    )
+    definition, _, _ = _wire_curated(
+        registry_harness, monkeypatch, row=row, credential={"accessToken": "synthetic-token"}
+    )
+    from hushh_mcp.services.external_connector_curated_oauth import curated_policy_hash
+
+    catalog = [{"name": "search_crm_objects"}, {"name": "create_landing_page"}]
+    for edited in ([], ["create_landing_page", "search_crm_objects"]):
+        definition.capability_policy = {"version": 1, "chat": "reviewed", "tools": edited}
+        row["verified_policy_hash"] = curated_policy_hash(definition)
+        resolved = await resolve_registered_connection(registry_harness.context, "hubspot")
+        assert resolved.catalog_policy is not None
+        assert resolved.catalog_policy(catalog) == [{"name": "search_crm_objects"}]
 
 
 # --- per-step MCP budget knob ------------------------------------------------
@@ -1954,3 +1983,60 @@ def test_free_read_ids_must_be_a_frozenset_of_strings(bad):
             review_policy="reviewed_writes",
             free_read_tool_ids=bad,  # type: ignore[arg-type]
         )
+
+
+DRAFT7_TOOL_SCHEMA = {
+    "type": "object",
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+        "code": {"type": "string"},
+        # Draft-07 ignores keywords beside a $ref; 2020-12 applies them. The
+        # provider's declared dialect decides, so "xyz" is valid here.
+        "alias": {"$ref": "#/properties/code", "maxLength": 1},
+    },
+    "required": ["code"],
+    "additionalProperties": False,
+}
+
+
+async def test_draft7_tool_is_offered_conservatively_and_validated_in_its_own_dialect(native_ok):
+    """A zod-style server (Attio) declares draft-07: its tools are admitted, the model
+    sees a copy with no dialect marker or pointer reference, and arguments are checked
+    against the provider's exact schema under the dialect it declared."""
+    schema = DRAFT7_TOOL_SCHEMA
+    toolset, approve, _ = _policy_toolset(
+        "credentialed",
+        [SimpleNamespace(name="find", inputSchema=schema, annotations=None, description="d")],
+    )
+    try:
+        tool = (await toolset.get_tools(SimpleNamespace(user_id="owner")))[0]
+        # The model-facing declaration is conservative...
+        declared = tool._get_declaration().model_dump(exclude_none=True, by_alias=True)
+        text = json.dumps(declared)
+        assert "$schema" not in text and "$ref" not in text
+        # A keyword beside a $ref narrows the target, so the copy keeps both, conjunctively.
+        assert declared["parametersJsonSchema"]["properties"]["alias"] == {
+            "allOf": [{"type": "string"}],
+            "maxLength": 1,
+        }
+        # ...while the authoritative schema is the provider's, untouched.
+        assert tool.descriptor["inputSchema"] == schema
+        assert tool.provider_schema == schema
+        # Valid under draft-07 (sibling of $ref ignored), so the call goes through.
+        result = await tool.run_async(
+            args={"code": "abc", "alias": "xyz"}, tool_context=_owner_context()
+        )
+        assert result["status"] == "ok"
+        native_ok.assert_awaited_once()
+        # A genuinely invalid call is still refused before dispatch.
+        refused = await tool.run_async(args={"alias": "x"}, tool_context=_owner_context())
+        assert refused["error"] == "MCP_ARGUMENTS_INVALID"
+        native_ok.assert_awaited_once()
+    finally:
+        await toolset.close()
+
+
+def test_arguments_for_an_undeclared_dialect_fail_closed():
+    with pytest.raises(ExternalMcpError) as caught:
+        validated_mcp_arguments({"type": "object", "$schema": "https://unknown.invalid/s"}, {})
+    assert caught.value.code == "MCP_SCHEMA_INVALID"

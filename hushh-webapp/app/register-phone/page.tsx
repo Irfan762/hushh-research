@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/
 
 import { SessionVerificationRecovery } from "@/components/auth/session-verification-recovery";
 import { HushhLoader } from "@/components/app-ui/hushh-loader";
+import { HushhMark } from "@/lib/morphy-ux/ui/hushh-mark";
 import { NativeRouteMarker } from "@/components/app-ui/native-route-marker";
 import { PhoneVerificationFlow } from "@/components/auth/phone-verification-flow";
 import { OneArcIllustration } from "@/components/onboarding/OneArcIllustration";
@@ -339,7 +340,7 @@ export function PhoneMandatePageContent() {
   // redirect at the top of this component sends them to /login.
   if (!user) {
     return (
-      <HushhLoader label="Loading phone verification..." variant="fullscreen" />
+      <HushhLoader stage="phone" label="Loading phone verification..." />
     );
   }
 
@@ -354,7 +355,7 @@ export function PhoneMandatePageContent() {
 
   if (shouldBypassLocalPhoneMandate) {
     return (
-      <HushhLoader label="Continuing local session..." variant="fullscreen" />
+      <HushhLoader stage="phone" label="Continuing local session..." />
     );
   }
 
@@ -368,7 +369,7 @@ export function PhoneMandatePageContent() {
   }
 
   if (admission?.userId !== user.uid || admission.status !== "ready") {
-    return <HushhLoader label="Checking phone requirement..." variant="fullscreen" />;
+    return <HushhLoader stage="phone" label="Checking phone requirement..." />;
   }
 
   const shell = (
@@ -429,11 +430,15 @@ export function PhoneMandatePageContent() {
         <div className={cn("flex w-full flex-none flex-col items-center gap-5 px-2 text-center", styles.flowStack)}>
           <div className={cn("flex w-full flex-col items-center gap-3", styles.flowHeading)}>
             {verificationStep === "code" ? (
-              <span role="img" aria-label="Hushh" className={styles.codeIcon}>🤫</span>
+              <span className={styles.codeIcon}>
+                <HushhMark alt="Hussh" className={styles.codeMark} />
+              </span>
             ) : (
               <div className={styles.existingBurst}><OneArcIllustration /></div>
             )}
-            <span className={styles.hushhVisual} aria-hidden="true">🤫</span>
+            <span className={styles.hushhVisual} aria-hidden="true">
+              <HushhMark className={styles.hushhVisualMark} />
+            </span>
 
             <h1
               role="heading"
@@ -511,7 +516,7 @@ export function PhoneMandatePageContent() {
 
 export default function RegisterPhonePage() {
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<HushhLoader stage="phone" label="Loading phone verification..." />}>
       <PhoneMandatePageContent />
     </Suspense>
   );

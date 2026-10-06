@@ -18,12 +18,11 @@ import { GmailVerificationOnboarding } from "@/components/gmail/gmail-verificati
 import { GmailReceiptOnboardingHero } from "@/components/gmail/gmail-receipt-onboarding-hero";
 import {
   GmailWorkspaceNavigation,
+  GmailWorkspacePanels,
   type GmailWorkspace,
 } from "@/components/gmail/gmail-workspace-navigation";
-import {
-  MailOverview,
-  MailConnectedAccount,
-} from "@/components/gmail/mail-overview";
+import { MailKycConnectEntry } from "@/components/gmail/mail-kyc-connect-entry";
+import { MailOverview, MailConnectedAccount } from "@/components/gmail/mail-overview";
 import { SetupCompletionFooter } from "@/components/onboarding/setup/setup-completion-footer";
 import { SurfaceInset, SurfaceStack } from "@/components/app-ui/surfaces";
 import { Badge } from "@/components/ui/badge";
@@ -1360,7 +1359,7 @@ export default function GmailReceiptsPage({
             ? "Connected to your Mail"
             : hasStoredReceipts
               ? "Saved receipts are still available here."
-              : "Connect Mail to set up receipts and KYC requests.",
+              : undefined,
     [
       connectorState,
       gmail.status?.google_email,
@@ -1526,11 +1525,12 @@ export default function GmailReceiptsPage({
             },
           ]
         : [];
-      const title =
-        isConnected && workspace === "kyc" ? "KYC" : "Mail overview";
+      const title = workspace === "kyc" ? "KYC" : "Mail overview";
       const purpose =
-        isConnected && workspace === "kyc"
-          ? "This workspace helps you import KYC details, monitor new requests, and review every reply before sending."
+        workspace === "kyc"
+          ? isConnected
+            ? "This workspace helps you import KYC details, monitor new requests, and review every reply before sending."
+            : "Connect Gmail here to find KYC requests and manage the identity details used in replies."
           : "This workspace lets you choose receipts, KYC monitoring, or One Chat mail help.";
       const activeControl =
         controls.find((control) => control.id === activeVoiceControlId) ||
@@ -1543,10 +1543,7 @@ export default function GmailReceiptsPage({
           purpose,
           sections: [
             {
-              id:
-                isConnected && workspace === "kyc"
-                  ? "kyc_requests"
-                  : "gmail_overview",
+              id: workspace === "kyc" ? "kyc_requests" : "gmail_overview",
               title,
               purpose,
             },
@@ -1959,6 +1956,307 @@ export default function GmailReceiptsPage({
     }
   }, [loadReceipts, page]);
 
+  // Workspace status belongs inside the pager too: a disconnected or loading
+  // pane must follow the same gesture and inactive-action boundary.
+  const mailStatusPanel = (
+    <SurfaceInset
+      className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
+    >
+      {loadingStatus ? (
+        <div
+          aria-busy="true"
+          aria-label="Checking your Gmail status"
+          className="space-y-3"
+        >
+          <div className="space-y-1">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              Gmail
+            </p>
+            <h2 className="text-lg font-semibold tracking-tight text-foreground">
+              {oauthCompletionPending
+                ? "Finishing Gmail connection"
+                : "Checking your Gmail status"}
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              {oauthCompletionPending
+                ? "Your Gmail page is ready. Inbox details and receipts will appear here in the background."
+                : "Your inbox and receipts will appear here as they are ready."}
+            </p>
+          </div>
+          <div aria-hidden="true" className="space-y-2 pt-1">
+            <Skeleton className="h-3 w-16" />
+            <Skeleton className="h-4 w-full max-w-md" />
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1 space-y-1.5">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
+              Status
+            </p>
+            <h2 className="text-lg font-semibold tracking-tight text-foreground">
+              {statusSummary.title}
+            </h2>
+            {statusSummary.detail &&
+            (!isConnected || !statusSummary.detail.startsWith("Connected to")) ? (
+              <p className="break-words text-sm text-muted-foreground">
+                {statusSummary.detail}
+              </p>
+            ) : null}
+            {statusSummary.helper ? (
+              <p className="break-words text-xs text-muted-foreground">
+                {statusSummary.helper}
+              </p>
+            ) : null}
+          </div>
+          {shouldShowReceiptCount ? (
+            <Badge variant="secondary" className="shrink-0">
+              {total} receipt{total === 1 ? "" : "s"}
+            </Badge>
+          ) : null}
+        </div>
+      )}
+
+      {receiptSyncInProgress && !isPassiveBackfillState ? (
+        <p className="text-xs text-muted-foreground">
+          Scanning Mail for receipts. Your list will refresh here when it
+          finishes.
+        </p>
+      ) : null}
+      {hasStaleBackgroundSync ? (
+        <p className="text-xs text-amber-600">
+          Mail is still running in the background. This status may lag behind for
+          a bit.
+        </p>
+      ) : null}
+      {!isConnected && !loadingStatus ? (
+        <div className="flex flex-col items-center justify-center gap-2 pt-2 sm:flex-row">
+          <Button
+            onClick={() => void handleConnectGmail()}
+            disabled={gmailActionBusy !== null}
+            className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base shadow-lg"
+            data-voice-control-id="open_gmail_connector"
+            data-voice-action-id={
+              journeyVariant === "onboarding" ? "setup.connect_gmail" : undefined
+            }
+            data-voice-label={primaryActionLabel}
+            data-voice-purpose="starts Mail connection or reconnection from this receipts page."
+          >
+            {primaryActionLabel}
+          </Button>
+          {gmail.statusError ? (
+            <Button
+              variant="none"
+              effect="fade"
+              onClick={() =>
+                void refreshGmailStatus({
+                  force: true,
+                  reconcile: false,
+                })
+              }
+              disabled={gmailActionBusy !== null || loadingStatus}
+              className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base"
+              data-voice-control-id="retry_gmail_status"
+              data-voice-label="Retry Mail status"
+              data-voice-purpose="rechecks the Mail connection without opening Google consent."
+            >
+              <RefreshCw className="mr-2 h-4 w-4" />
+              Retry Mail status
+            </Button>
+          ) : null}
+          {connectGmailHelper ? (
+            <p className="w-full text-center text-xs text-muted-foreground sm:basis-full">
+              {connectGmailHelper}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </SurfaceInset>
+  );
+
+  const receiptsPanel = (
+    <div className="space-y-4">
+      {journeyVariant === "workspace" && !isConnected ? mailStatusPanel : null}
+      {journeyVariant === "workspace" && isConnected ? (
+        <GmailReceiptOnboardingHero
+          onStartReceiptSync={() => void handleSyncNow()}
+          progressPercent={progressPercent}
+          statusMessage={receiptSyncInlineFeedback?.message}
+          statusTone={receiptSyncInlineFeedback?.tone}
+          syncAvailable={receiptSyncAvailable}
+          syncing={receiptSyncInProgress}
+        />
+      ) : null}
+
+      {/* Keep the governed preview/save pipeline intact while the generic
+        summary card is intentionally absent from this landing view. */}
+      {SHOW_RECEIPT_MEMORY_SUMMARY_ON_LANDING &&
+      isConnected &&
+      receiptsWorkspaceActive ? (
+        <SurfaceInset className="space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold tracking-tight text-foreground">
+              Shopping summary
+            </h2>
+            <p className="text-sm text-muted-foreground">
+              Generated from your receipts for your private memory.
+            </p>
+          </div>
+          {receiptMemoryLoading && !receiptMemoryArtifact ? (
+            <div className="flex items-center gap-2.5 text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Creating summary…
+            </div>
+          ) : null}
+          {receiptMemoryArtifact ? (
+            <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
+              {
+                receiptMemoryArtifact.candidate_pkm_payload.receipts_memory
+                  .readable_summary.text
+              }
+            </p>
+          ) : null}
+          {!canBuildReceiptMemoryPreview ? (
+            <p className="text-xs text-muted-foreground">
+              Sync receipts first to create a shopping summary.
+            </p>
+          ) : null}
+          {receiptMemoryArtifact && receiptMemorySaveState !== "saved" ? (
+            <Button
+              type="button"
+              onClick={() => void persistReceiptMemory(receiptMemoryArtifact)}
+              disabled={receiptMemorySaveState === "saving"}
+            >
+              {receiptMemorySaveState === "saving"
+                ? "Saving summary…"
+                : "Save shopping summary"}
+            </Button>
+          ) : null}
+          {receiptMemoryMessage && receiptMemorySaveState !== "saving" ? (
+            <p className="text-xs text-muted-foreground">
+              {receiptMemoryMessage}
+            </p>
+          ) : null}
+        </SurfaceInset>
+      ) : null}
+
+      {receiptsWorkspaceActive && (isConnected || receipts.length > 0) ? (
+        <section
+          aria-labelledby="recent-receipts-title"
+          className="space-y-3"
+          data-testid="recent-receipts"
+        >
+          <SectionHeader
+            id="recent-receipts-title"
+            testId="recent-receipts-header"
+            title="Recent receipts"
+          />
+
+          {isConnected && !hasSealedReceiptAccess && !loadingStatus ? (
+            <SurfaceInset className="flex flex-col items-start gap-3 px-4 py-4 text-sm text-muted-foreground">
+              <div className="flex items-center gap-2 text-foreground">
+                <Lock className="h-4 w-4" />
+                Set up or open your private vault to view synced receipts.
+              </div>
+              <Button onClick={requestVaultUnlock}>Set up vault</Button>
+            </SurfaceInset>
+          ) : null}
+
+          {showReceiptPlaceholders ? <ReceiptListSkeleton /> : null}
+
+          {isConnected &&
+          hasSealedReceiptAccess &&
+          receiptListError &&
+          receipts.length === 0 &&
+          !loadingReceipts ? (
+            <SurfaceInset className="flex flex-col items-start gap-3 px-4 py-4 text-sm">
+              <p className="text-muted-foreground">
+                Couldn’t finish scanning your receipts.
+              </p>
+              <Button
+                variant="none"
+                effect="fade"
+                onClick={() => void loadReceipts(receiptListRetryPage)}
+              >
+                Try again
+              </Button>
+            </SurfaceInset>
+          ) : null}
+
+          {isConnected &&
+          hasSealedReceiptAccess &&
+          !loadingReceipts &&
+          !showReceiptPlaceholders &&
+          !receiptListError &&
+          receipts.length === 0 &&
+          !hasMore &&
+          !loadingStatus ? (
+            <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
+              {receiptScanReachedLimit
+                ? `No receipts were found within the ${RECEIPT_SCAN_MAX_PAGES} Mail pages checked.`
+                : gmail.syncRun?.synced_count
+                  ? "Your receipts are still finishing up. Please try again in a moment."
+                  : "No receipts are available for this account yet."}
+            </SurfaceInset>
+          ) : null}
+
+          {isConnected &&
+          hasSealedReceiptAccess &&
+          receiptListError &&
+          receipts.length > 0 &&
+          !loadingReceipts ? (
+            <SurfaceInset className="flex items-center justify-between gap-3 px-4 py-3 text-xs">
+              <p className="text-muted-foreground">
+                Couldn’t finish scanning your receipts.
+              </p>
+              <Button
+                variant="none"
+                effect="fade"
+                size="sm"
+                onClick={() => void loadReceipts(receiptListRetryPage)}
+              >
+                Try again
+              </Button>
+            </SurfaceInset>
+          ) : null}
+
+          {hasSealedReceiptAccess && receipts.length > 0 ? (
+            <GmailRecentReceipts
+              accountKey={
+                gmail.status?.google_sub || gmail.status?.google_email || null
+              }
+              loadReceiptDetail={loadReceiptDetail}
+              onReceiptDetailLoaded={handleReceiptDetailLoaded}
+              receipts={receipts}
+            />
+          ) : null}
+
+          {hasSealedReceiptAccess && hasMore ? (
+            <div className="flex justify-center pt-2">
+              <Button
+                variant="none"
+                effect="fade"
+                onClick={() => void handleLoadMore()}
+                disabled={loadingReceipts}
+                data-voice-control-id="load_older_receipts"
+                data-voice-label={
+                  receipts.length > 0
+                    ? "Load older receipts"
+                    : "Check older Mail"
+                }
+                data-voice-purpose="checks the next bounded Mail receipt page."
+              >
+                {receipts.length > 0
+                  ? "Load older receipts"
+                  : "Check older Mail"}
+              </Button>
+            </div>
+          ) : null}
+        </section>
+      ) : null}
+    </div>
+  );
+
   return (
     <AppPageShell
       as="div"
@@ -2057,134 +2355,7 @@ export default function GmailReceiptsPage({
             />
           ) : null}
 
-          {journeyVariant === "workspace" &&
-          isConnected &&
-          workspace === "overview" ? (
-            <MailConnectedAccount
-              busy={gmailActionBusy !== null || loadingStatus}
-              onReconnect={() => void handleConnectGmail()}
-              onDisconnect={() => setShowDisconnectConfirm(true)}
-            />
-          ) : null}
-
-          {journeyVariant === "onboarding" || !isConnected ? (
-            <SurfaceInset
-              className={`space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5 ${statusToneClassName}`}
-            >
-              {loadingStatus ? (
-                <div
-                  aria-busy="true"
-                  aria-label="Checking your Gmail status"
-                  className="space-y-3"
-                >
-                  <div className="space-y-1">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                      Gmail
-                    </p>
-                    <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                      {oauthCompletionPending
-                        ? "Finishing Gmail connection"
-                        : "Checking your Gmail status"}
-                    </h2>
-                    <p className="text-sm text-muted-foreground">
-                      {oauthCompletionPending
-                        ? "Your Gmail page is ready. Inbox details and receipts will appear here in the background."
-                        : "Your inbox and receipts will appear here as they are ready."}
-                    </p>
-                  </div>
-                  <div aria-hidden="true" className="space-y-2 pt-1">
-                    <Skeleton className="h-3 w-16" />
-                    <Skeleton className="h-4 w-full max-w-md" />
-                  </div>
-                </div>
-              ) : (
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-muted-foreground">
-                      Status
-                    </p>
-                    <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                      {statusSummary.title}
-                    </h2>
-                    {statusSummary.detail &&
-                    (!isConnected ||
-                      !statusSummary.detail.startsWith("Connected to")) ? (
-                      <p className="break-words text-sm text-muted-foreground">
-                        {statusSummary.detail}
-                      </p>
-                    ) : null}
-                    {statusSummary.helper ? (
-                      <p className="break-words text-xs text-muted-foreground">
-                        {statusSummary.helper}
-                      </p>
-                    ) : null}
-                  </div>
-                  {shouldShowReceiptCount ? (
-                    <Badge variant="secondary" className="shrink-0">
-                      {total} receipt{total === 1 ? "" : "s"}
-                    </Badge>
-                  ) : null}
-                </div>
-              )}
-
-              {receiptSyncInProgress && !isPassiveBackfillState ? (
-                <p className="text-xs text-muted-foreground">
-                  Scanning Mail for receipts. Your list will refresh here when
-                  it finishes.
-                </p>
-              ) : null}
-              {hasStaleBackgroundSync ? (
-                <p className="text-xs text-amber-600">
-                  Mail is still running in the background. This status may lag
-                  behind for a bit.
-                </p>
-              ) : null}
-              {!isConnected && !loadingStatus ? (
-                <div className="flex flex-col items-center justify-center gap-2 pt-2 sm:flex-row">
-                  <Button
-                    onClick={() => void handleConnectGmail()}
-                    disabled={gmailActionBusy !== null}
-                    className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base shadow-lg"
-                    data-voice-control-id="open_gmail_connector"
-                    data-voice-action-id={
-                      journeyVariant === "onboarding"
-                        ? "setup.connect_gmail"
-                        : undefined
-                    }
-                    data-voice-label="Connect Mail"
-                    data-voice-purpose="starts Mail connection or reconnection from this receipts page."
-                  >
-                    Connect Mail
-                  </Button>
-                  {gmail.statusError ? (
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      onClick={() =>
-                        void refreshGmailStatus({
-                          force: true,
-                          reconcile: false,
-                        })
-                      }
-                      disabled={gmailActionBusy !== null || loadingStatus}
-                      className="h-12 w-full max-w-[244px] justify-center px-8 text-center text-base"
-                      data-voice-control-id="retry_gmail_status"
-                      data-voice-label="Retry Mail status"
-                      data-voice-purpose="rechecks the Mail connection without opening Google consent."
-                    >
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      Retry Mail status
-                    </Button>
-                  ) : null}
-                  {connectGmailHelper ? (
-                    <p className="w-full text-center text-xs text-muted-foreground sm:basis-full">
-                      {connectGmailHelper}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </SurfaceInset>
-          ) : null}
+          {journeyVariant === "onboarding" ? mailStatusPanel : null}
 
           {journeyVariant === "onboarding" && onFinishSetup && onSkipSetup ? (
             <SetupCompletionFooter
@@ -2211,239 +2382,93 @@ export default function GmailReceiptsPage({
             />
           ) : null}
 
-          {/* Stable Tab Content Container with Min-Height & Smooth Fade Transition */}
-          <div className="min-h-[340px] w-full space-y-4 transition-opacity duration-150 animate-in fade-in">
-            {isConnected && workspace === "overview" ? (
-              <MailOverview
-                fetching={overviewReceiptsFetching}
-                receiptIssue={overviewReceiptIssue}
-                receiptCount={receiptListReady ? total : undefined}
-                receiptDetail={overviewReceiptDetail}
-                receiptUpdated={resolveGmailLastUpdatedLabel(
-                  gmail.status,
-                  gmail.syncRun,
-                )}
-                onOpenChat={handleOpenOneChat}
-              />
-            ) : null}
+          {journeyVariant === "workspace" ? (
+            <GmailWorkspacePanels
+              value={workspace}
+              onValueChange={setWorkspace}
+              panels={{
+                overview: (
+                  <>
+                    {!isConnected ? mailStatusPanel : null}
+                    {isConnected ? (
+                      <MailConnectedAccount
+                        busy={gmailActionBusy !== null || loadingStatus}
+                        onReconnect={() => void handleConnectGmail()}
+                        onDisconnect={() => setShowDisconnectConfirm(true)}
+                      />
+                    ) : null}
+                    {isConnected ? (
+                      <MailOverview
+                        fetching={overviewReceiptsFetching}
+                        receiptIssue={overviewReceiptIssue}
+                        receiptCount={receiptListReady ? total : undefined}
+                        receiptDetail={overviewReceiptDetail}
+                        receiptUpdated={resolveGmailLastUpdatedLabel(
+                          gmail.status,
+                          gmail.syncRun,
+                        )}
+                        onOpenChat={handleOpenOneChat}
+                      />
+                    ) : null}
+                  </>
+                ),
+                kyc: (
+                  <>
+                    {!isConnected && (loadingStatus || gmail.statusError) ? mailStatusPanel : null}
+                    {!isConnected && !loadingStatus && !gmail.statusError ? (
+                      <MailKycConnectEntry
+                        busy={gmailActionBusy !== null}
+                        onConnect={() => void handleConnectGmail()}
+                      />
+                    ) : null}
 
-            {isConnected &&
-            (kycVisitedOwner === user?.uid || workspace === "kyc") ? (
-              <div
-                hidden={workspace !== "kyc"}
-                key={`${user?.uid ?? "guest"}:${Boolean(vaultKey && vaultOwnerToken)}`}
-              >
-                <GmailVerificationOnboarding
-                  userId={user?.uid || null}
-                  vaultKey={vaultKey}
-                  vaultOwnerToken={vaultOwnerToken}
-                  onRequestVaultUnlock={requestVaultUnlock}
-                  deferred={verificationDeferred}
-                  onDeferredChange={setVerificationDeferred}
-                  details={verificationDraft}
-                  onDetailsChange={setVerificationDraft}
-                >
-                  <GmailInformationRequestsSection
-                    active={workspace === "kyc"}
-                    userId={user?.uid || null}
-                    vaultKey={vaultKey}
-                    vaultOwnerToken={vaultOwnerToken}
-                    isConnected
-                    idTokenProvider={user?.getIdToken ? idTokenProvider : null}
-                    onRequestVaultUnlock={requestVaultUnlock}
-                    onEnableGmailSend={handleEnableGmailSend}
-                  />
-                </GmailVerificationOnboarding>
-              </div>
-            ) : null}
+                    {isConnected &&
+                    (kycVisitedOwner === user?.uid || workspace === "kyc") ? (
+                      <div
+                        key={`${user?.uid ?? "guest"}:${Boolean(vaultKey && vaultOwnerToken)}`}
+                      >
+                        <GmailVerificationOnboarding
+                          userId={user?.uid || null}
+                          vaultKey={vaultKey}
+                          vaultOwnerToken={vaultOwnerToken}
+                          onRequestVaultUnlock={requestVaultUnlock}
+                          deferred={verificationDeferred}
+                          onDeferredChange={setVerificationDeferred}
+                          details={verificationDraft}
+                          onDetailsChange={setVerificationDraft}
+                        >
+                          <GmailInformationRequestsSection
+                            active={workspace === "kyc"}
+                            userId={user?.uid || null}
+                            vaultKey={vaultKey}
+                            vaultOwnerToken={vaultOwnerToken}
+                            isConnected
+                            idTokenProvider={
+                              user?.getIdToken ? idTokenProvider : null
+                            }
+                            onRequestVaultUnlock={requestVaultUnlock}
+                            onEnableGmailSend={handleEnableGmailSend}
+                          />
+                        </GmailVerificationOnboarding>
+                      </div>
+                    ) : null}
 
-            {journeyVariant === "workspace" &&
-            workspace === "receipts" &&
-            isConnected ? (
-              <GmailReceiptOnboardingHero
-                onStartReceiptSync={() => void handleSyncNow()}
-                progressPercent={progressPercent}
-                statusMessage={receiptSyncInlineFeedback?.message}
-                statusTone={receiptSyncInlineFeedback?.tone}
-                syncAvailable={receiptSyncAvailable}
-                syncing={receiptSyncInProgress}
-              />
-            ) : null}
-
-            {/* Keep the governed preview/save pipeline intact while the generic
-              summary card is intentionally absent from this landing view. */}
-            {SHOW_RECEIPT_MEMORY_SUMMARY_ON_LANDING &&
-            isConnected &&
-            receiptsWorkspaceActive ? (
-              <SurfaceInset className="space-y-4 border px-4 py-4 text-sm sm:px-5 sm:py-5">
-                <div className="space-y-1">
-                  <h2 className="text-lg font-semibold tracking-tight text-foreground">
-                    Shopping summary
-                  </h2>
-                  <p className="text-sm text-muted-foreground">
-                    Generated from your receipts for your private memory.
-                  </p>
-                </div>
-                {receiptMemoryLoading && !receiptMemoryArtifact ? (
-                  <div className="flex items-center gap-2.5 text-muted-foreground">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Creating summary…
-                  </div>
-                ) : null}
-                {receiptMemoryArtifact ? (
-                  <p className="whitespace-pre-wrap text-sm leading-6 text-foreground">
-                    {
-                      receiptMemoryArtifact.candidate_pkm_payload
-                        .receipts_memory.readable_summary.text
-                    }
-                  </p>
-                ) : null}
-                {!canBuildReceiptMemoryPreview ? (
-                  <p className="text-xs text-muted-foreground">
-                    Sync receipts first to create a shopping summary.
-                  </p>
-                ) : null}
-                {receiptMemoryArtifact && receiptMemorySaveState !== "saved" ? (
-                  <Button
-                    type="button"
-                    onClick={() =>
-                      void persistReceiptMemory(receiptMemoryArtifact)
-                    }
-                    disabled={receiptMemorySaveState === "saving"}
-                  >
-                    {receiptMemorySaveState === "saving"
-                      ? "Saving summary…"
-                      : "Save shopping summary"}
-                  </Button>
-                ) : null}
-                {receiptMemoryMessage && receiptMemorySaveState !== "saving" ? (
-                  <p className="text-xs text-muted-foreground">
-                    {receiptMemoryMessage}
-                  </p>
-                ) : null}
-              </SurfaceInset>
-            ) : null}
-
-            {receiptsWorkspaceActive && (isConnected || receipts.length > 0) ? (
-              <section
-                aria-labelledby="recent-receipts-title"
-                className="space-y-3"
-                data-testid="recent-receipts"
-              >
-                <SectionHeader
-                  id="recent-receipts-title"
-                  testId="recent-receipts-header"
-                  title="Recent receipts"
-                />
-
-                {isConnected && !hasSealedReceiptAccess && !loadingStatus ? (
-                  <SurfaceInset className="flex flex-col items-start gap-3 px-4 py-4 text-sm text-muted-foreground">
-                    <div className="flex items-center gap-2 text-foreground">
-                      <Lock className="h-4 w-4" />
-                      Set up or open your private vault to view synced receipts.
-                    </div>
-                    <Button onClick={requestVaultUnlock}>Set up vault</Button>
-                  </SurfaceInset>
-                ) : null}
-
-                {showReceiptPlaceholders ? <ReceiptListSkeleton /> : null}
-
-                {isConnected &&
-                hasSealedReceiptAccess &&
-                receiptListError &&
-                receipts.length === 0 &&
-                !loadingReceipts ? (
-                  <SurfaceInset className="flex flex-col items-start gap-3 px-4 py-4 text-sm">
-                    <p className="text-muted-foreground">
-                      Couldn’t finish scanning your receipts.
-                    </p>
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      onClick={() => void loadReceipts(receiptListRetryPage)}
-                    >
-                      Try again
-                    </Button>
-                  </SurfaceInset>
-                ) : null}
-
-                {isConnected &&
-                hasSealedReceiptAccess &&
-                receiptListError &&
-                receipts.length > 0 &&
-                !loadingReceipts ? (
-                  <SurfaceInset className="flex items-center justify-between gap-3 px-4 py-3 text-xs">
-                    <p className="text-muted-foreground">
-                      Couldn’t finish scanning your receipts.
-                    </p>
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      size="sm"
-                      onClick={() => {
-                        const retryPage = receiptListRetryPage;
-                        void loadReceipts(retryPage);
-                      }}
-                    >
-                      Try again
-                    </Button>
-                  </SurfaceInset>
-                ) : null}
-
-                {isConnected &&
-                hasSealedReceiptAccess &&
-                !loadingReceipts &&
-                !showReceiptPlaceholders &&
-                !receiptListError &&
-                receipts.length === 0 &&
-                !hasMore &&
-                !loadingStatus ? (
-                  <SurfaceInset className="px-4 py-4 text-sm text-muted-foreground">
-                    {receiptScanReachedLimit
-                      ? `No receipts were found within the ${RECEIPT_SCAN_MAX_PAGES} Mail pages checked.`
-                      : gmail.syncRun?.synced_count
-                        ? "Your receipts are still finishing up. Please try again in a moment."
-                        : "No receipts are available for this account yet."}
-                  </SurfaceInset>
-                ) : null}
-
-                {hasSealedReceiptAccess && receipts.length > 0 ? (
-                  <GmailRecentReceipts
-                    accountKey={
-                      gmail.status?.google_sub ||
-                      gmail.status?.google_email ||
-                      null
-                    }
-                    loadReceiptDetail={loadReceiptDetail}
-                    onReceiptDetailLoaded={handleReceiptDetailLoaded}
-                    receipts={receipts}
-                  />
-                ) : null}
-
-                {hasSealedReceiptAccess && hasMore ? (
-                  <div className="flex justify-center pt-2">
-                    <Button
-                      variant="none"
-                      effect="fade"
-                      onClick={() => void handleLoadMore()}
-                      disabled={loadingReceipts}
-                      data-voice-control-id="load_older_receipts"
-                      data-voice-label={
-                        receipts.length > 0
-                          ? "Load older receipts"
-                          : "Check older Mail"
-                      }
-                      data-voice-purpose="checks the next bounded Mail receipt page."
-                    >
-                      {receipts.length > 0
-                        ? "Load older receipts"
-                        : "Check older Mail"}
-                    </Button>
-                  </div>
-                ) : null}
-              </section>
-            ) : null}
-          </div>
+                    {isConnected &&
+                    kycVisitedOwner !== user?.uid &&
+                    workspace !== "kyc" ? (
+                      <Skeleton
+                        aria-label="Loading KYC"
+                        className="h-32 w-full"
+                      />
+                    ) : null}
+                  </>
+                ),
+                receipts: receiptsPanel,
+              }}
+            />
+          ) : (
+            receiptsPanel
+          )}
         </SurfaceStack>
       </AppPageContentRegion>
 

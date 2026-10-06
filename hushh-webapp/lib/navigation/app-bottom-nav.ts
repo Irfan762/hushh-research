@@ -5,6 +5,7 @@ import {
 } from "@/lib/consent/consent-sheet-route";
 import { activeKaiRouteTabFromPath } from "@/lib/navigation/kai-route-tabs";
 import { activeRiaRouteTabFromPath } from "@/lib/navigation/ria-route-tabs";
+import { isKaiCommandBarOpen } from "@/lib/navigation/search-route";
 
 export type SharedBottomNavKey =
   | "dashboard"
@@ -124,7 +125,7 @@ export function resolveOneNavSlot(
     return "gmail";
   }
   if (
-    normalizedPathname === ROUTES.PKM ||
+    isBottomNavRoute(normalizedPathname, ROUTES.PKM) ||
     normalizedPathname === ROUTES.LEGACY_PKM ||
     normalizedPathname === ROUTES.PROFILE ||
     normalizedPathname === ROUTES.PROFILE_PKM ||
@@ -236,7 +237,9 @@ export function resolveRiaActiveNav(
 export function resolveBottomNavActiveKey(
   pathname: string | null | undefined,
   _scope: AppBottomNavScope,
+  searchParams: { get(name: string): string | null } | null = null,
 ): AppBottomNavKey {
+  if (isKaiCommandBarOpen(searchParams)) return "search";
   const normalizedPathname = normalizeBottomNavPathname(pathname);
   if (
     normalizedPathname === ROUTES.HOME ||

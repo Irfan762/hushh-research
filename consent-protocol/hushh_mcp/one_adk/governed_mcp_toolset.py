@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -27,8 +28,8 @@ from google.adk.tools.mcp_tool.mcp_session_manager import (
 )
 from google.adk.tools.mcp_tool.mcp_tool import _RESERVED_TOOL_NAMES, McpTool
 from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
-from jsonschema import Draft202012Validator
 from mcp.types import CallToolResult, Tool
+from referencing.exceptions import Unresolvable
 
 from hushh_mcp.adk_bridge.delegation import validate_first_party_owner_token
 from hushh_mcp.consent.audit_logger import get_audit_logger
@@ -36,6 +37,7 @@ from hushh_mcp.one_adk.request_secrets import resolve_request_secret
 from hushh_mcp.runtime_settings import get_core_security_settings
 from hushh_mcp.services.action_directive_ledger import ActionDirectiveAuthorityError
 from hushh_mcp.services.connector_feature_admission import connector_feature_enabled
+from hushh_mcp.services.curated_connector_manifest import get_manifest
 from hushh_mcp.services.external_connector_credentials_service import (
     ExternalConnectorCredentialError,
     get_external_connector_credentials_service,
@@ -56,6 +58,8 @@ from hushh_mcp.services.external_mcp_client import (
     _http_status_from_error,
     _list_session_tools,
     _normalize_and_cap,
+    model_facing_schema,
+    schema_validator,
 )
 from hushh_mcp.services.mcp_public_http import create_bounded_mcp_http_client, validate_mcp_endpoint
 
@@ -196,15 +200,20 @@ def native_registration_admitted(connector: Any, owner: str) -> bool:
 
 
 def _curated_tool_allowlist(connector: Any) -> CatalogPolicy | None:
-    """The registry row's tool allowlist, if it declares one.
+    """The exact set of tools chat may offer for this connector.
 
-    A declared list is exact (an empty list admits no tools). No list means the
-    operator did not restrict the server's catalog; review still applies.
+    The reviewed manifest decides, never the operator-writable registry row: an
+    edited row can neither widen the list nor free a tool. A connector without a
+    manifest falls back to the row's own list (narrowing only, review still applies).
     """
-    allowed = (getattr(connector, "capability_policy", None) or {}).get("tools")
-    if not isinstance(allowed, list):
-        return None
-    names = frozenset(item for item in allowed if isinstance(item, str))
+    manifest = get_manifest(getattr(connector, "connector_id", ""))
+    if manifest is not None:
+        names = frozenset(manifest.tool_allowlist)
+    else:
+        allowed = (getattr(connector, "capability_policy", None) or {}).get("tools")
+        if not isinstance(allowed, list):
+            return None
+        names = frozenset(item for item in allowed if isinstance(item, str))
 
     def admitted(catalog: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [item for item in catalog if item.get("name") in names]
@@ -430,7 +439,14 @@ def validated_mcp_arguments(schema: dict, args: Any) -> dict[str, Any]:
         raise ExternalMcpError(
             "Invalid call arguments.", code="MCP_ARGUMENTS_INVALID", status_code=422
         ) from None
-    if not Draft202012Validator(schema).is_valid(arguments):
+    # Never validates under a guessed dialect, and never fetches a reference.
+    try:
+        valid = schema_validator(schema).is_valid(arguments)
+    except (RecursionError, Unresolvable, ArithmeticError, re.error):
+        # A reference that does not resolve inside the schema, or a schema that
+        # recurses without end: refused as a schema problem, not a crash.
+        raise ExternalMcpError("Unsupported connector schema.", code="MCP_SCHEMA_INVALID") from None
+    if not valid:
         raise ExternalMcpError(
             "Invalid call arguments.", code="MCP_ARGUMENTS_INVALID", status_code=422
         )
@@ -668,8 +684,13 @@ class GovernedMcpToolset(McpToolset):
 
 class _GovernedMcpTool(McpTool):
     def __init__(self, *, toolset, descriptor, revision, epoch, provider_schema=None):
+        # The model sees a conservative copy of the schema; this object's own
+        # `descriptor` and `provider_schema` keep the provider's exact schema,
+        # which is what every argument is validated against.
+        declared = deepcopy(descriptor)
+        declared["inputSchema"] = model_facing_schema(descriptor["inputSchema"])
         super().__init__(
-            mcp_tool=Tool.model_validate(descriptor),
+            mcp_tool=Tool.model_validate(declared),
             mcp_session_manager=toolset._mcp_session_manager,
             header_provider=toolset._current_headers,
         )

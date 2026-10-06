@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import Literal
 
 import pytest
+from google.genai import types as genai_types
 
 from hushh_mcp.one_voice import protocol
 from hushh_mcp.one_voice.config import OneVoiceLiveConfig
+from hushh_mcp.one_voice.conversations import ConversationStorageError
 from hushh_mcp.one_voice.live_client import LiveEvent, translate_message
+from hushh_mcp.one_voice.pending_actions import PendingActionStorageError
 from hushh_mcp.one_voice.session import (
     AuthResult,
     SessionClosed,
@@ -267,20 +271,27 @@ async def test_invalid_token_closes_without_provider(monkeypatch):
     assert not hasattr(fake, "live_config")
 
 
-async def test_ready_then_end_records_close():
+async def test_ready_then_end_records_close(caplog):
     conversations = MemoryConversationStore()
     transport = FakeTransport([AUTH, {"type": "end"}])
     fake = FakeLive([LiveEvent(kind="setup_complete")])
-    await _run(_session(transport, fake, conversations=conversations))
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await _run(_session(transport, fake, conversations=conversations))
     ready = transport.frames("session.ready")[0]
     assert ready["conversation_id"] == CONV and ready["resumed"] is False
     assert ready["output_mime_type"] == "audio/pcm;rate=24000"
+    assert ready["client_perf"] is True
     assert transport.closed == (protocol.CLOSE_ENDED, "ended")
     assert conversations.closes == [(1000, "ended", True)]
     assert (
         "system_instruction" in fake.live_config
         and "resolve_person" in fake.live_config["system_instruction"]
     )
+    perf_logs = [
+        record.message for record in caplog.records if "one_voice.session_perf" in record.message
+    ]
+    assert len(perf_logs) == 1 and "user_input_turns=0" in perf_logs[0]
+    assert "per_user_input=" not in perf_logs[0]
 
 
 # --- audio + transcripts ---------------------------------------------------
@@ -296,6 +307,140 @@ async def test_audio_is_forwarded_and_oversized_frames_dropped():
     await _run(session)
     assert fake.audio_in == ["AAAA"]
     assert session.dropped_audio_frames == 1
+
+
+def test_perf_frame_accepts_only_bounded_content_free_measurements():
+    frame = protocol.parse_client_frame(
+        json.dumps(
+            {
+                "type": "perf",
+                "metric": "audio_receive_to_audible",
+                "duration_ms": 120_000,
+                "turn_id": "abcdef123456",
+            }
+        )
+    )
+    assert isinstance(frame, protocol.PerfFrame)
+    for invalid in (
+        {"metric": "transcript", "duration_ms": 100},
+        {"metric": "endpointing_client", "duration_ms": 120_001},
+        {"metric": "endpointing_client", "duration_ms": True},
+        {"metric": "endpointing_client", "duration_ms": 100, "turn_id": "private words"},
+        {"metric": "endpointing_client", "duration_ms": 100, "route": "/private"},
+    ):
+        with pytest.raises(protocol.FrameError):
+            protocol.parse_client_frame(json.dumps({"type": "perf", **invalid}))
+
+
+async def test_perf_frame_is_logged_without_extending_idle_or_reaching_provider(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    before = session.last_activity
+    frame = protocol.parse_client_frame(
+        '{"type":"perf","metric":"endpointing_client","duration_ms":840,"turn_id":"abcdef123456"}'
+    )
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_client_frame(frame)
+        await session._send(protocol.turn("model_start", turn_id="abcdef123456"))
+        await session._handle_client_frame(frame)
+    assert session.last_activity == before
+    assert fake.audio_in == [] and fake.events_sent == []
+    assert "turn=none metric=endpointing_client ms=840" in caplog.text
+    assert "turn=abcdef123456 metric=endpointing_client ms=840" in caplog.text
+
+
+def test_pinned_sdk_activity_end_markers_translate_without_inferred_fields():
+    activity = genai_types.LiveServerMessage(
+        voice_activity=genai_types.VoiceActivity(
+            voice_activity_type=genai_types.VoiceActivityType.ACTIVITY_END
+        )
+    )
+    signal = genai_types.LiveServerMessage(
+        voice_activity_detection_signal=genai_types.VoiceActivityDetectionSignal(
+            vad_signal_type=genai_types.VadSignalType.VAD_SIGNAL_TYPE_EOS
+        )
+    )
+    assert [(event.kind, event.activity_source) for event in translate_message(activity)] == [
+        ("activity_end", "voice_activity")
+    ]
+    assert [(event.kind, event.activity_source) for event in translate_message(signal)] == [
+        ("activity_end", "vad_signal")
+    ]
+
+
+async def test_eos_and_final_transcript_in_one_provider_message_are_correlated(caplog):
+    message = genai_types.LiveServerMessage(
+        voice_activity_detection_signal=genai_types.VoiceActivityDetectionSignal(
+            vad_signal_type=genai_types.VadSignalType.VAD_SIGNAL_TYPE_EOS
+        ),
+        server_content=genai_types.LiveServerContent(
+            input_transcription=genai_types.Transcription(text="private input", finished=True)
+        ),
+    )
+    events = translate_message(message)
+    assert [event.kind for event in events] == ["activity_end", "input_transcript"]
+    assert events[0].same_message_input_transcript is True
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        for event in events:
+            await session._handle_live_event(event)
+    assert "phase=provider_activity_end_to_transcript source=vad_signal ms=0" in caplog.text
+    assert "private input" not in caplog.text
+
+
+async def test_provider_activity_end_to_transcript_and_turn_counts_have_no_content(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    session.clock = lambda: 100.0
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_live_event(
+            LiveEvent(kind="activity_start", activity_source="voice_activity")
+        )
+        await session._handle_live_event(
+            LiveEvent(kind="activity_end", activity_source="voice_activity")
+        )
+        session.clock = lambda: 100.84
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="private spoken words", finished=True)
+        )
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        session._log_session_perf()
+    assert session._counters["user_input_turns"] == 1
+    assert session._counters["provider_turns"] == 2
+    assert "phase=provider_activity_end_to_transcript source=voice_activity ms=840" in caplog.text
+    assert "provider_turns_per_user_input=2.00" in caplog.text
+    assert "private spoken words" not in caplog.text
+
+
+async def test_late_provider_end_is_not_assigned_to_the_next_transcript(caplog):
+    transport, fake = FakeTransport(), FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    with caplog.at_level(logging.INFO, logger="hushh_mcp.one_voice.session"):
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="first input", finished=True)
+        )
+        await session._handle_live_event(LiveEvent(kind="turn_complete"))
+        await session._handle_live_event(
+            LiveEvent(kind="activity_end", activity_source="vad_signal")
+        )
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text="second input", finished=True)
+        )
+    assert "phase=provider_activity_end_to_transcript" not in caplog.text
 
 
 async def test_provider_audio_and_transcripts_reach_the_client():
@@ -518,6 +663,40 @@ async def test_ui_settled_tells_the_model_which_screen_it_was_about():
     }
 
 
+async def test_a_draft_open_is_a_directive_that_names_a_row_not_a_draft():
+    """ "Open the second draft" reaches the surface as which row, from which offer,
+    in which conversation -- the surface fetches the draft itself -- and its
+    settle reaches the model as an open_draft outcome."""
+    from hushh_mcp.one_voice.tools.mail_drafts import DraftOpenDispatched
+
+    transport = FakeTransport()
+    fake = FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Open the second"))
+    await session._emit_side_effects(
+        ToolCallOutcome(
+            result=DraftOpenDispatched(
+                ordinal=2, offer_revision=4, conversation_id=CONV, spoken_facts=["Opening it."]
+            )
+        ),
+        origin_turn_id=session.turn.turn_id,
+    )
+    directive = transport.frames("ui_directive")[-1]
+    assert directive["kind"] == "open_draft"
+    assert directive["payload"] == {"ordinal": 2, "offer_revision": 4, "conversation_id": CONV}
+    await session._handle_client_frame(
+        protocol.UiSettledFrame(
+            type="ui.settled", directive_id=directive["directive_id"], status="opened"
+        )
+    )
+    event = json.loads(fake.events_sent[-1].removeprefix("[ONE_EVENT] "))
+    assert (event["status"], event["directive_kind"]) == ("opened", "open_draft")
+
+
 async def test_superseded_confirmation_is_cancelled_before_it_can_be_relisted():
     transport = FakeTransport()
     fake = FakeLive([])
@@ -626,6 +805,222 @@ async def test_new_spoken_input_does_not_reuse_a_model_continuation_turn():
     next_input = transport.frames("transcript.input")[-1]["turn_id"]
     assert next_input not in {first_input, continuation_turn}
     assert session._origin_is_stale(continuation_turn) is True
+
+
+async def _relay_on_live():
+    transport = FakeTransport()
+    fake = FakeLive([])
+    session = _session(transport, fake)
+    await session._open_conversation(
+        AuthResult(user_id=USER, vault_owner_token="HCT:token", firebase_id_token=None)  # noqa: S106 - synthetic test authority
+    )
+    session.live = fake
+    return session, transport, fake
+
+
+async def _say(session, *pieces: str) -> None:
+    """One spoken input as Live transcribes it: pieces, the last one final."""
+    for index, piece in enumerate(pieces):
+        await session._handle_live_event(
+            LiveEvent(kind="input_transcript", text=piece, finished=index == len(pieces) - 1)
+        )
+
+
+async def _speak_and_end(session, *chunks: str) -> None:
+    for chunk in chunks:
+        await session._handle_live_event(LiveEvent(kind="audio", audio_b64=chunk))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+
+
+def _echo_call(call_id: str) -> LiveEvent:
+    return LiveEvent(
+        kind="tool_call",
+        function_calls=[{"id": call_id, "name": "echo", "args": {"text": "hi"}}],
+    )
+
+
+async def test_every_question_in_a_spoken_conversation_is_answered():
+    """UAT 2026-10-05 (session 8ad16cff): after One finished speaking an answer,
+    the reply to the next spoken question was dropped, every other question.
+    The question fenced the idle turn opened by turn_complete, Live's reply
+    landed in that fenced turn, and model_end carried the idle turn's id, so
+    the pill stayed on "Understanding" with nothing left to end it."""
+    session, transport, _fake = await _relay_on_live()
+    questions = []
+    for chunk in ("QUFB", "QkJC", "Q0ND", "RERE"):
+        await _say(session, "And what", " about this?")
+        questions.append(transport.frames("transcript.input")[-1]["turn_id"])
+        await _speak_and_end(session, chunk)
+
+    assert len(set(questions)) == 4
+    assert [frame["turn_id"] for frame in transport.frames("audio")] == questions
+    ends = [frame["turn_id"] for frame in transport.frames("turn") if frame["state"] == "model_end"]
+    assert ends == questions
+    understood = [
+        frame["turn_id"] for frame in transport.frames("state") if frame["state"] == "understanding"
+    ]
+    assert understood == questions
+
+
+async def test_a_question_live_reports_after_its_interruption_is_answered():
+    """Barge-in: Live can report `interrupted` before the new transcript."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Tell me about the weekend")
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QUFB"))
+    await session._handle_live_event(LiveEvent(kind="interrupted"))
+    await _say(session, "Actually, just Saturday")
+    barge_in = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+
+    assert transport.frames("audio")[-1]["turn_id"] == barge_in
+    assert transport.frames("turn")[-1] == {
+        "type": "turn",
+        "state": "model_end",
+        "turn_id": barge_in,
+    }
+
+
+async def test_a_question_waits_behind_the_reply_a_tool_result_still_owes():
+    """Live may close a tool-call turn and speak about the result in a fresh
+    one. A question asked before that reply starts must not take the turn the
+    reply will use (ed068703f): the reply is fenced, then the question is
+    answered under its own id."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await _say(session, "And one more thing")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QUFB")
+    await _speak_and_end(session, "QkJC")
+
+    assert fake.tool_responses[0]["response"].get("status") != "superseded"
+    assert [frame["turn_id"] for frame in transport.frames("audio")] == [question]
+    assert transport.frames("turn")[-1]["turn_id"] == question
+
+
+async def test_an_answer_carried_with_its_transcript_is_heard_under_its_question():
+    """Live can carry the end of the input transcript and the first answer
+    chunk in one server message. The relay must see the person's words first,
+    or that chunk is attributed to the turn before they spoke."""
+    message = genai_types.LiveServerMessage(
+        server_content=genai_types.LiveServerContent(
+            input_transcription=genai_types.Transcription(text="Second question", finished=True),
+            model_turn=genai_types.Content(
+                parts=[
+                    genai_types.Part(
+                        inline_data=genai_types.Blob(data=b"BBB", mime_type="audio/pcm")
+                    )
+                ]
+            ),
+        )
+    )
+    events = translate_message(message)
+    assert [event.kind for event in events] == ["input_transcript", "audio"]
+
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    for event in events:
+        await session._handle_live_event(event)
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "Q0ND")
+
+    assert [frame["turn_id"] for frame in transport.frames("audio")][1:] == [question, question]
+    assert transport.frames("turn")[-1] == {
+        "type": "turn",
+        "state": "model_end",
+        "turn_id": question,
+    }
+
+
+async def test_a_question_asked_after_an_answer_can_use_a_tool():
+    """The muted turn also refused the next question's tool call as stale."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    await _say(session, "Now look something up")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await session._handle_live_event(_echo_call("c2"))
+
+    assert fake.tool_responses[-1]["response"].get("status") != "superseded"
+    assert transport.frames("tool.result")[-1]["turn_id"] == question
+
+
+async def test_a_reply_live_never_speaks_holds_back_one_question_at_most():
+    """If Live answers the next question instead of speaking about a tool
+    result, that one question is held and muted; the question after it must
+    not be."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await _say(session, "Second question")
+    await _speak_and_end(session, "QUFB")
+    await _say(session, "Third question")
+    latest = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+
+    assert transport.frames("audio")[-1]["turn_id"] == latest
+    assert transport.frames("turn")[-1] == {"type": "turn", "state": "model_end", "turn_id": latest}
+
+
+def _heard(transport) -> list[tuple[str, str]]:
+    return [(frame["data"], frame["turn_id"]) for frame in transport.frames("audio")]
+
+
+async def test_speaking_over_a_reply_keeps_the_rest_of_it_out_of_the_new_answer():
+    """Barge-in while Live speaks about a tool result: the rest of that reply,
+    and anything it proposes, must not be presented as the new question's
+    answer (an abandoned request would come back as its card)."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "Look something up")
+    await session._handle_live_event(_echo_call("c1"))
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QUFB"))
+    await _say(session, "Wait, never mind")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await session._handle_live_event(LiveEvent(kind="audio", audio_b64="QkJC"))
+    await session._handle_live_event(LiveEvent(kind="interrupted"))
+    await _speak_and_end(session, "Q0ND")
+
+    heard = _heard(transport)
+    assert heard[0][0] == "QUFB" and heard[0][1] != question
+    assert "QkJC" not in [data for data, _turn in heard]
+    assert heard[-1] == ("Q0ND", question)
+
+
+async def test_a_spoken_question_does_not_take_a_typed_question_s_answer():
+    """A typed question that took the idle turn owns it: a spoken question
+    right after it waits, and the typed question's answer is not its answer."""
+    session, transport, _fake = await _relay_on_live()
+    await _say(session, "First question")
+    await _speak_and_end(session, "QUFB")
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Ask for a location"))
+    await _say(session, "What time is it")
+    spoken = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+    await _speak_and_end(session, "Q0ND")
+
+    assert [data for data, _turn in _heard(transport)] == ["QUFB", "Q0ND"]
+    assert _heard(transport)[-1] == ("Q0ND", spoken)
+
+
+async def test_a_question_right_after_an_app_event_waits_for_its_reply():
+    """An [ONE_EVENT] closes a turn of its own, so Live owes it a reply; a
+    question asked before that reply must not receive it as its answer."""
+    session, transport, fake = await _relay_on_live()
+    await _say(session, "Open my settings")
+    await _speak_and_end(session, "QUFB")
+    await session._inject_event({"kind": "ui_settled", "status": "opened"})
+    await _say(session, "And my profile?")
+    question = transport.frames("transcript.input")[-1]["turn_id"]
+    await _speak_and_end(session, "QkJC")
+    await _speak_and_end(session, "Q0ND")
+
+    assert fake.events_sent
+    assert [data for data, _turn in _heard(transport)] == ["QUFB", "Q0ND"]
+    assert _heard(transport)[-1] == ("Q0ND", question)
 
 
 async def test_new_input_still_supersedes_a_delayed_continuation_card():
@@ -1355,6 +1750,13 @@ async def test_repeated_voice_proposal_reuses_the_open_card_on_the_current_turn(
     assert len(transport.frames("pending_action")) == 2
     assert _responses(fake, "ask")[-1]["card_shown"] is True
     assert pending.rows[card].status == "pending"
+    assert session._counters["user_input_turns"] == 2
+    assert session._counters["provider_turns"] == 1
+    assert session._counters["tool_calls"] == 3
+    assert session._counters["pending_created"] == 1
+    assert session._counters["pending_reused"] == 2
+    assert session._counters.get("pending_cancelled", 0) == 0
+    assert session._counters.get("confirmations_completed", 0) == 0
 
 
 async def test_card_shown_after_a_refused_yes_tells_the_model_without_confirming():
@@ -1624,6 +2026,7 @@ async def test_model_confirmed_voice_action_retires_its_card_without_relisting()
     assert transport.frames("pending_action.resolved")[-1]["status"] == "executed"
     assert transport.frames("tool.result")[-1]["result_public"]["status"] == "pending"
     assert pending.rows[card["pending_action_id"]].status == "executed"
+    assert session._counters["confirmations_completed"] == 1
 
 
 async def test_legacy_pending_without_turn_owner_only_settles_exact_card():
@@ -2787,3 +3190,231 @@ def test_a_genuinely_corrupt_stored_context_is_dropped_and_never_trusted():
     assert restore_context(EntityContext, {"people": "not-a-mapping"}).people == {}
     assert restore_context(EntityContext, "not-a-dict-at-all").people == {}
     assert restore_context(EntityContext, None).people == {}
+
+
+# --- a storage outage never ends a healthy session ----------------------------
+#
+# Each test below ends the session with the client's own `end` frame and asserts
+# it closed (1000, "ended"). Before the storage guards, every one of these
+# failures escaped the pump TaskGroup and closed the socket with 4013.
+
+
+class FailingPendingStore(MemoryPendingStore):
+    """The memory store, with the named methods unreachable."""
+
+    def __init__(self, *failing: str) -> None:
+        super().__init__()
+        self.failing = set(failing)
+
+    def _check(self, name: str) -> None:
+        if name in self.failing:
+            raise PendingActionStorageError(f"{name} unavailable")
+
+    async def mark_shown(self, **kwargs):
+        self._check("mark_shown")
+        return await super().mark_shown(**kwargs)
+
+    async def confirm(self, **kwargs):
+        self._check("confirm")
+        return await super().confirm(**kwargs)
+
+    async def cancel(self, **kwargs):
+        self._check("cancel")
+        return await super().cancel(**kwargs)
+
+
+class FailingConversationStore(MemoryConversationStore):
+    def __init__(self, *failing: str) -> None:
+        super().__init__()
+        self.failing = set(failing)
+
+    def _check(self, name: str) -> None:
+        if name in self.failing:
+            raise ConversationStorageError(f"{name} unavailable")
+
+    async def save_resumption_handle(self, **kwargs):
+        self._check("save_resumption_handle")
+        return await super().save_resumption_handle(**kwargs)
+
+    async def save_entity_context(self, **kwargs):
+        self._check("save_entity_context")
+        return await super().save_entity_context(**kwargs)
+
+
+class QueuedLive(FakeLive):
+    """A provider the test feeds one event at a time, after client frames."""
+
+    def __init__(self) -> None:
+        super().__init__([])
+        self.queue: asyncio.Queue[LiveEvent] = asyncio.Queue()
+
+    def emit(self, event: LiveEvent) -> None:
+        self.queue.put_nowait(event)
+
+    async def events(self):
+        while True:
+            yield await self.queue.get()
+
+
+async def _until(condition, timeout: float = 2.0) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not condition():
+        if asyncio.get_running_loop().time() > deadline:
+            pytest.fail("condition not reached")
+        await asyncio.sleep(0.01)
+
+
+async def _start_live(*, pending=None, conversations=None):
+    transport = FakeTransport([AUTH])
+    live = QueuedLive()
+    session = _session(transport, live, pending=pending, conversations=conversations)
+    task = asyncio.create_task(session.run())
+    await _until(lambda: transport.frames("state"))
+    return session, transport, live, task
+
+
+async def _end_cleanly(session, transport, task) -> None:
+    # Still open after the failure, and the next client frame is still served.
+    assert transport.closed is None
+    transport.push({"type": "ping"})
+    await _until(lambda: transport.frames("pong"))
+    transport.push({"type": "end"})
+    await asyncio.wait_for(task, 3)
+    assert transport.closed == (protocol.CLOSE_ENDED, "ended")
+    assert session._counters.get("storage_failures", 0) >= 1
+
+
+async def _voice_row(pending: MemoryPendingStore, *, tool="ask", tier="voice"):
+    gateway = {"ask": "location.send_request", "delete_thing": "location.delete_circle"}[tool]
+    args = {"person": {"user_id": "u-priya"}} if tool == "ask" else {"thing_id": "t1"}
+    row, receipt = await pending.create(
+        user_id=USER,
+        conversation_id=CONV,
+        tool_name=tool,
+        gateway_action_id=gateway,
+        tier=tier,
+        args=args,
+        summary="the open card",
+    )
+    return row, receipt
+
+
+async def test_unrecordable_card_shown_keeps_the_session_and_the_card_unshown():
+    pending = FailingPendingStore("mark_shown")
+    row, _ = await _voice_row(pending)
+    session, transport, live, task = await _start_live(pending=pending)
+
+    transport.push({"type": "pending_action.shown", "pending_action_id": row.id})
+    await _until(lambda: session._counters.get("storage_failures"))
+    # The provider is still heard, and a spoken yes is still fenced: the card
+    # was never recorded as shown, so voice cannot confirm it.
+    live.emit(
+        LiveEvent(
+            kind="tool_call",
+            function_calls=[
+                {
+                    "id": "c1",
+                    "name": "confirm_pending_action",
+                    "args": {"pending_action_id": row.id},
+                }
+            ],
+        )
+    )
+    await _until(lambda: live.tool_responses)
+    assert live.tool_responses[0]["response"]["status"] == "card_not_shown"
+    assert pending.rows[row.id].shown_at is None
+    assert pending.rows[row.id].status == "pending"
+    await _end_cleanly(session, transport, task)
+
+
+async def test_unsaved_resumption_handle_keeps_the_session_listening():
+    conversations = FailingConversationStore("save_resumption_handle")
+    session, transport, live, task = await _start_live(conversations=conversations)
+
+    live.emit(LiveEvent(kind="resumption", resumption_handle="h-1", resumable=True))
+    live.emit(
+        LiveEvent(
+            kind="tool_call", function_calls=[{"id": "c1", "name": "echo", "args": {"text": "hi"}}]
+        )
+    )
+    await _until(lambda: live.tool_responses)
+    assert live.tool_responses[0]["response"]["status"] == "ok"
+    assert conversations.handles == []
+    await _end_cleanly(session, transport, task)
+
+
+async def test_unsaved_entity_context_still_answers_the_model_and_the_client():
+    conversations = FailingConversationStore("save_entity_context")
+    session, transport, live, task = await _start_live(conversations=conversations)
+
+    live.emit(
+        LiveEvent(
+            kind="tool_call", function_calls=[{"id": "c1", "name": "echo", "args": {"text": "hi"}}]
+        )
+    )
+    await _until(lambda: live.tool_responses)
+    assert live.tool_responses[0]["id"] == "c1"
+    assert live.tool_responses[0]["response"]["status"] == "ok"
+    result = transport.frames("tool.result")[-1]
+    assert result["ok"] is True and result["result_public"]["echoed"] == "hi"
+    assert conversations.entity_saves == []
+    await _end_cleanly(session, transport, task)
+
+
+@pytest.mark.parametrize("operation", ["confirm", "cancel"])
+async def test_unreachable_store_on_a_tap_answers_storage_unavailable_and_keeps_the_card(
+    operation,
+):
+    pending = FailingPendingStore(operation)
+    row, receipt = await _voice_row(pending, tool="delete_thing", tier="tap")
+    session, transport, live, task = await _start_live(pending=pending)
+
+    if operation == "confirm":
+        transport.push(
+            {"type": "confirm_action", "pending_action_id": row.id, "receipt_token": receipt}
+        )
+    else:
+        transport.push({"type": "cancel_action", "pending_action_id": row.id})
+    await _until(lambda: transport.frames("error"))
+    assert transport.frames("error")[-1]["code"] == "storage_unavailable"
+    # Nothing happened to the card, and nothing claims it did.
+    assert pending.rows[row.id].status == "pending"
+    assert transport.frames("pending_action.resolved") == []
+    assert live.events_sent == []
+    await _end_cleanly(session, transport, task)
+
+
+async def test_a_different_proposal_rebinds_the_open_card_to_the_current_turn():
+    """The model proposes something else while a card is open: it gets that
+    card back, no new card reaches the client, and a tap on the open card now
+    answers the turn the model is about to ask in."""
+    session, transport, fake, pending = await _voice_card_session()
+    await _model_calls(session, "c1", "ask", {"person": {"user_id": "u-priya"}})
+    first = transport.frames("pending_action")[-1]
+    card = first["pending_action_id"]
+    # Only a card the person has actually seen holds back a different action.
+    await session._handle_client_frame(
+        protocol.PendingShownFrame(type="pending_action.shown", pending_action_id=card)
+    )
+
+    await session._handle_live_event(LiveEvent(kind="turn_complete"))
+    await session._handle_client_frame(protocol.TextFrame(type="text", text="Delete the thing"))
+    later_turn = session.turn.turn_id
+    assert later_turn != first["turn_id"]
+    await _model_calls(session, "c2", "delete_thing", {"thing_id": "t1"})
+
+    blocked = _responses(fake, "delete_thing")[-1]
+    assert blocked["status"] == "pending_action_exists"
+    assert blocked["pending_action_id"] == card
+    assert len(transport.frames("pending_action")) == 1
+    assert transport.frames("pending_action.resolved") == []
+    assert [r.id for r in pending.rows.values()] == [card]
+    assert pending.rows[card].status == "pending"
+    assert session._pending_turn_ids[card] == later_turn
+
+    await session._confirm_by_tap(
+        protocol.ConfirmActionFrame(type="confirm_action", pending_action_id=card)
+    )
+    assert pending.rows[card].status == "executed"
+    result = transport.frames("tool.result")[-1]
+    assert result["pending_action_id"] == card and result["turn_id"] == later_turn

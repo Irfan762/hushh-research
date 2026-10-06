@@ -200,7 +200,7 @@ function renderScreen(mode: Mode, variant: Variant): string {
   const toggle = `<div role="radiogroup" data-testid="agent-toggle" aria-label="${escapeHtml(SRC.toggle.ariaLabel)}"
              class="${SRC.toggle.containerClass} w-auto shrink-0">${segments}</div>`;
   const profile = `<button type="button" data-testid="profile-open-button" aria-label="Open Profile"
-             class="inline-flex items-center justify-center rounded-full ${SRC.header.profileClass}"></button>`;
+             class="inline-flex shrink-0 items-center justify-center rounded-full ${SRC.header.profileClass}"><span data-testid="profile-photo" class="${SRC.header.profilePhotoClass}"></span></button>`;
   // Rendered in the shipped source order, so the toggle's anchor is whatever
   // the product anchors it to.
   const actions = SRC.header.actionOrder
@@ -567,6 +567,13 @@ test.describe("Agent Chat: which agent is answering", () => {
       page,
     }) => {
       await openFixture(page, SHIPPED, width);
+
+      const profileTarget = await box(page, "profile-open-button");
+      const profilePhoto = await box(page, "profile-photo");
+      expect(profileTarget.width).toBeGreaterThanOrEqual(44);
+      expect(profileTarget.height).toBeGreaterThanOrEqual(44);
+      expect(profilePhoto.width).toBe(32);
+      expect(profilePhoto.height).toBe(32);
 
       const before = {
         toggle: await box(page, "agent-toggle"),

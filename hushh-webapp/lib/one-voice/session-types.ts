@@ -6,7 +6,7 @@
  * chips come from `tool.result ok:true` / `pending_action.resolved executed`.
  */
 
-import type { OpenedMailMessage } from "@/lib/one-voice/mail-open";
+import type { OpenedDraft, OpenedMailMessage } from "@/lib/one-voice/mail-open";
 import type {
   CandidatePublic,
   EntityCardPayload,
@@ -52,6 +52,8 @@ export type PendingActionView = PendingActionPublic & {
   requiresTap: boolean;
   entities: EntityCardPayload[];
   receiptToken: string | null;
+  /** Transient display association only; never action or send authority. */
+  offeredResult?: ToolResultPublic;
   resolvedStatus: "executed" | "failed" | "cancelled" | "expired" | "not_pending" | null;
   resolvedResult: ToolResultPublic | null;
 };
@@ -193,6 +195,16 @@ export type VoiceSessionController = {
     offerRevision: number;
     conversationId: string;
   }) => Promise<OpenedMailMessage>;
+  /**
+   * Open the owner's draft at a position in a drafts list One offered. The same
+   * binding and resolver shape as `openMail`, against `/draft/open`; optional so
+   * a surface without drafts keeps its rows plain.
+   */
+  openDraft?: (input: {
+    ordinal: number;
+    offerRevision: number;
+    conversationId: string;
+  }) => Promise<OpenedDraft>;
   cancelPending: () => void;
   chooseCandidate: (id: string | null) => void;
   /**
@@ -202,6 +214,20 @@ export type VoiceSessionController = {
   clearView: () => void;
   /** Report a client step outcome (publish, permission, share sheet). */
   reportClientStep: (stepId: string, status: "ok" | "failed", payload?: Record<string, unknown>) => void;
+  /**
+   * Tell the relay which mail row is open on screen, or that none is. The
+   * position and the offer revision only, never a message id: it is a hint for
+   * "reply to this" that the relay honors only while that offer is current.
+   * It rides on every app_context until cleared.
+   */
+  setActiveMail?: (
+    hint: { ordinal: number; offerRevision: number; conversationId: string } | null,
+  ) => void;
+  /**
+   * A review card's Send finished: its delivery ref and the send action it
+   * used. Carries no outcome on purpose; the relay re-reads the send action.
+   */
+  reportMailDelivery?: (deliveryRef: string, actionId: string) => void;
 };
 
 /** Screen hooks subscribe to tool results and directives by tool name/kind. */

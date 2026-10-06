@@ -1,6 +1,7 @@
 "use client";
 
-import { memo, startTransition, useEffect, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useRef, useState } from "react";
+import { ProfilePaneDrag } from "@/components/app-ui/profile-pane-drag";
 
 import {
   ArrowLeftIcon as ArrowLeft,
@@ -40,6 +41,8 @@ const PROFILE_DETAIL_TITLES: Record<string, string> = {
   "trusted-devices": "Trusted devices",
   "gmail-connection": "Connection",
   "gmail-actions": "Actions",
+  terms: "Terms of Use",
+  privacy: "Privacy Policy",
 };
 
 /** Rows in the Profile home's "Your settings" group, for the shell. */
@@ -150,6 +153,9 @@ type ProfilePaneProps = {
  * right-side presentation used by the shell and native edge gesture.
  */
 export const ProfilePane = memo(function ProfilePane({ open, onOpenChange }: ProfilePaneProps) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const attachPanel = useCallback((node: HTMLDivElement | null) => { panelRef.current = node; }, []);
+  const scrimRef = useRef<HTMLDivElement>(null);
   const { isVaultUnlocked } = useVault();
   const pathname = usePathname() || "/";
   const searchParams = useSearchParams();
@@ -186,7 +192,9 @@ export const ProfilePane = memo(function ProfilePane({ open, onOpenChange }: Pro
                   ? "Security & privacy"
                   : location.panel === "referrals"
                     ? "Invite friends"
-                    : "Help & feedback"
+                    : location.panel === "legal"
+                      ? "Legal"
+                      : "Help & feedback"
       : "Profile";
   // A detail is named for what it is ("Trusted devices"), matching its entry
   // in the Profile stack; it used to read "Profile detail" for all of them.
@@ -207,10 +215,13 @@ export const ProfilePane = memo(function ProfilePane({ open, onOpenChange }: Pro
         side="right"
         showCloseButton={false}
         contentDragDismiss={false}
+        contentRef={attachPanel}
+        overlayRef={scrimRef}
         className="w-full max-w-none transform-gpu gap-0 overflow-hidden p-0 data-[state=open]:will-change-transform data-[state=closed]:will-change-transform sm:w-[min(92vw,560px)] sm:max-w-[560px]"
         aria-label="Profile"
         data-testid="profile-pane"
       >
+        <ProfilePaneDrag open={open} panelRef={panelRef} scrimRef={scrimRef} onClose={() => onOpenChange(false)} />
         <SheetHeader className="shrink-0 border-b border-border/60 pb-4 pl-[max(var(--page-inline-gutter-standard),calc(1rem+env(safe-area-inset-left)))] pr-[max(5rem,calc(var(--page-inline-gutter-standard)+4rem))] pt-[calc(1rem+env(safe-area-inset-top))] text-left">
           <div className="flex min-w-0 items-center gap-2">
             {canGoBack ? (

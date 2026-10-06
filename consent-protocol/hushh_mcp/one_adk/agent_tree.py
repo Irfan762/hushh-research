@@ -134,6 +134,7 @@ from hushh_mcp.one_adk.finance_market_tools import (
 from hushh_mcp.one_adk.follow_up_suggestions import follow_up_instruction, suggest_follow_ups
 from hushh_mcp.one_adk.message_reactions import react_to_message, reaction_instruction
 from hushh_mcp.one_adk.one_persona import build_one_persona_grounding
+from hushh_mcp.one_adk.owner_style import owner_style_instruction, propose_style_settings
 from hushh_mcp.one_adk.pending_email_draft import pending_email_draft_instruction
 from hushh_mcp.one_adk.queued_input import club_queued_input
 from hushh_mcp.one_adk.registered_mcp_toolset import (
@@ -471,12 +472,12 @@ ONE_IDENTITY_INSTRUCTION: str = (
     "specialist. When a selected Gmail information-request context is present, use "
     "open_gmail_information_request_reply instead; it is the only tool that may open "
     "that thread's source-bound reply.\n"
-    "- Calendar: your connected Google Calendar. For calendar summaries, event "
-    "lookups, availability, or free slots, use the Calendar tools. For scheduling, rescheduling, "
-    "or cancellation, collect a title, time-zone-qualified start and end, and any "
-    "attendees. When asked to find a time, use free slots within the person's stated "
-    "window and duration; never invent work hours or claim invitee availability. Never "
-    "guess missing details or an event id. If the proposal reports a conflict, name the "
+    "- Calendar: your connected Google Calendar. For summaries, lookups or availability, "
+    "use Calendar tools. Proposing, ask missing title, date, zone, start/end/duration, guests; "
+    "reuse supplied details. Never invent; 'at 8pm' is not today. Resolve relative dates with "
+    "get_current_time. Rescheduling needs event id/times; preserve title/attendees. Cancellation "
+    "needs event id. Find slots in stated window/duration; never invent work hours, availability, "
+    "or ids. If a proposal conflicts, name the "
     "returned event and let the person choose the explicit schedule-anyway card. A mutation tool creates "
     "a review card only; tell the person it will run only after they press its explicit "
     "confirmation control. If Calendar asks for a connection or permission, direct the "
@@ -998,6 +999,9 @@ def _compose_one_runtime_instruction(context: Any) -> str:
     # A push tap about one feed update: grounded only in that item, no tools.
     consent_continuation_block += feed_attention_instruction(state_getter)
     pending_draft_instruction = pending_email_draft_instruction(state_getter)
+    # The owner's Settings choices: a trusted style channel, separate from the
+    # recalled-memory packet above, rendered only from server templates.
+    style_instruction = owner_style_instruction(state_getter)
     voice_context = state_getter(STATE_VOICE_CONTEXT) if callable(state_getter) else None
     if not isinstance(voice_context, dict):
         return (
@@ -1006,6 +1010,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
             + selected_drive_instruction
             + pkm_instruction
             + owner_identity_instruction
+            + style_instruction
             + gmail_information_request_instruction
             + consent_continuation_block
             + pending_draft_instruction
@@ -1192,6 +1197,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
             + screen_state_instruction
             + pkm_instruction
             + owner_identity_instruction
+            + style_instruction
             + gmail_information_request_instruction
             + consent_continuation_block
             + pending_draft_instruction
@@ -1221,6 +1227,7 @@ def _compose_one_runtime_instruction(context: Any) -> str:
         + screen_state_instruction
         + pkm_instruction
         + owner_identity_instruction
+        + style_instruction
         + gmail_information_request_instruction
         + consent_continuation_block
         + pending_draft_instruction
@@ -2437,6 +2444,7 @@ def _one_roster_tools(
         propose_drive_bulk_share,
         propose_drive_share,
         set_preferred_model,
+        propose_style_settings,
         list_pending_connection_requests,
         get_current_time,
         get_my_location,

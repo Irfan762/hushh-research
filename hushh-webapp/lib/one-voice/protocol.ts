@@ -39,6 +39,14 @@ export type AppContextFrame = {
    * reads through the authorized circle service, never authority.
    */
   active_circle_id?: string | null;
+  /**
+   * The mail row open on screen: its position in a server offer and that
+   * offer's revision, so "reply to this" resolves server-side. Never a message
+   * id. Sent both together or not at all; the relay honors them only while
+   * that offer is still its current one.
+   */
+  active_mail_ordinal?: number;
+  active_mail_offer_revision?: number;
 };
 export type PendingShownFrame = { type: "pending_action.shown"; pending_action_id: string };
 export type ConfirmActionFrame = {
@@ -66,12 +74,32 @@ export type ClientStepResultFrame = {
   status: "ok" | "failed";
   payload?: Record<string, unknown>;
 };
+/**
+ * A review card's Send finished. Names the send action and the session-issued
+ * delivery ref only: there is no status, because the relay re-reads the send
+ * action server-side and a client cannot report a send that did not happen.
+ */
+export type MailDeliveryResultFrame = {
+  type: "mail_delivery.result";
+  delivery_ref: string;
+  action_id: string;
+};
 export type UiSettledFrame = {
   type: "ui.settled";
   directive_id: string;
   status?: "opened" | "failed" | "ignored";
 };
 export type InterruptFrame = { type: "interrupt" };
+/** Optional, content-free device timing. The relay validates the same bounds. */
+export type PerfFrame = {
+  type: "perf";
+  metric:
+    | "endpointing_client"
+    | "audio_receive_to_audible"
+    | "capture_callback_to_socket_enqueue";
+  duration_ms: number;
+  turn_id?: string;
+};
 export type PingFrame = { type: "ping" };
 export type EndFrame = { type: "end" };
 
@@ -85,8 +113,10 @@ export type ClientFrame =
   | CancelActionFrame
   | CandidateChooseFrame
   | ClientStepResultFrame
+  | MailDeliveryResultFrame
   | UiSettledFrame
   | InterruptFrame
+  | PerfFrame
   | PingFrame
   | EndFrame;
 
@@ -155,6 +185,8 @@ export type ToolResultPublic = {
 export type SessionReadyFrame = {
   type: "session.ready";
   protocol_version: typeof ONE_VOICE_PROTOCOL_VERSION;
+  /** New relays opt in to optional client perf frames; old relays omit this. */
+  client_perf?: boolean;
   session_id: string;
   conversation_id: string;
   model: string;
@@ -164,6 +196,12 @@ export type SessionReadyFrame = {
   pending_actions: PendingActionPublic[];
   setup_progress: Record<string, unknown> | null;
   output_mime_type: typeof OUTPUT_MIME;
+  /**
+   * Additive client capabilities this relay accepts ("active_mail",
+   * "mail_delivery"). Absent on an older relay, which refuses those keys and
+   * frames outright, so the client sends them only when they are listed.
+   */
+  features?: string[];
 };
 export type AudioOutFrame = {
   type: "audio";
@@ -236,7 +274,9 @@ export type UiDirectiveKind =
   | "open_share_sheet"
   | "focus_pending_action"
   /** Open the original message at a position already on screen. */
-  | "open_mail";
+  | "open_mail"
+  /** Open the owner's draft at a position in a drafts list already on screen. */
+  | "open_draft";
 export type UiDirectiveFrame = {
   type: "ui_directive";
   turn_id?: string;
@@ -374,6 +414,16 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   // A dispatch asks the surface to do something; it reports no outcome, so it
   // must never render as a success even if it reaches a card.
   "mail_open_dispatched",
+  "draft_open_dispatched",
+  // Gmail may or may not have sent the draft; never shown as "Sent".
+  "draft_send_unconfirmed",
+  // A scheduled-mail cancel that cancelled nothing, and a scheduled send whose
+  // confirmation could not be recorded (mirrors the relay's NOT_OK_STATUSES).
+  "send_unconfirmed",
+  "schedule_unconfirmed",
+  "already_sent",
+  "already_sending",
+  "not_sent",
   "draft_open_requested",
   "draft_not_opened",
   "draft_open_unconfirmed",
@@ -390,4 +440,7 @@ export const NOT_SUCCESS_STATUSES = new Set<string>([
   "setup_required",
   // The same voice proposal is already waiting for an answer; nothing ran.
   "confirmation_waiting",
+  // A different voice action is already waiting for an answer; this proposal
+  // was refused and nothing was written.
+  "pending_action_exists",
 ]);

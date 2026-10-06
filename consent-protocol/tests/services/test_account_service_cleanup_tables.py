@@ -177,6 +177,12 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
     assert result["details"]["marketplace_delivery_envelopes"] is True
     assert result["details"]["marketplace_access_requests"] is True
     assert result["details"]["marketplace_recipient_keys"] is True
+    assert result["details"]["pkm_packets"] is True
+    assert result["details"]["pkm_packet_orders"] is True
+    assert result["details"]["pkm_credit_ledger"] is True
+    assert result["details"]["pkm_credit_subscriptions"] is True
+    assert result["details"]["pkm_owner_payout_accounts"] is True
+    assert result["details"]["directory_listing_claims"] is True
     assert result["details"]["marketplace_opportunity_signals"] is True
     assert result["details"]["one_referral_relationships"] is True
     assert result["details"]["one_referral_attributions"] is True
@@ -224,6 +230,12 @@ async def test_full_account_deletion_covers_account_owned_tables(monkeypatch):
         "DELETE FROM marketplace_delivery_envelopes",
         "DELETE FROM marketplace_access_requests",
         "DELETE FROM marketplace_recipient_keys",
+        "DELETE FROM pkm_packets",
+        "DELETE FROM pkm_packet_orders",
+        "DELETE FROM pkm_credit_ledger",
+        "DELETE FROM pkm_credit_subscriptions",
+        "DELETE FROM pkm_owner_payout_accounts",
+        "DELETE FROM directory_listing_claims",
         "DELETE FROM marketplace_opportunity_signals",
         "DELETE FROM one_referral_risk_reviews",
         "DELETE FROM one_referral_events",
@@ -829,6 +841,9 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
     assert result["details"]["pwm_documents"] is True
     assert result["details"]["fabric_subscription_grants"] is True
     assert result["details"]["marketplace_access_requests"] is True
+    # A reset keeps vault_keys, so the send ledger's ON DELETE CASCADE never
+    # fires: a scheduled email must be deleted here or it sends after the reset.
+    assert result["details"]["gmail_owner_send_actions"] is True
 
     first_sql = str(conn.execute.call_args_list[0].args[0])
     assert "pg_advisory_xact_lock" in first_sql
@@ -839,6 +854,7 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
     # Personal data is cleared.
     cleared_fragments = [
         "DELETE FROM kai_gmail_receipts",
+        "DELETE FROM gmail_owner_send_actions WHERE user_id = :user_id",
         "DELETE FROM one_kyc_workflows",
         "DELETE FROM pkm_events",
         "DELETE FROM pkm_blobs",
@@ -851,6 +867,12 @@ async def test_reset_account_clears_data_but_keeps_account_spine(monkeypatch):
         "DELETE FROM marketplace_delivery_envelopes",
         "DELETE FROM marketplace_access_requests",
         "DELETE FROM marketplace_recipient_keys",
+        "DELETE FROM pkm_packets",
+        "DELETE FROM pkm_packet_orders",
+        "DELETE FROM pkm_credit_ledger",
+        "DELETE FROM pkm_credit_subscriptions",
+        "DELETE FROM pkm_owner_payout_accounts",
+        "DELETE FROM directory_listing_claims",
         "DELETE FROM marketplace_opportunity_signals",
         "DELETE FROM trusted_device_challenges",
         "DELETE FROM trusted_device_authorizations",
