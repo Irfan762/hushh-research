@@ -11,6 +11,7 @@ tests/test_configure_external_mcp_connector.py
 tests/services/test_external_connector_curated_oauth.py
 tests/services/test_external_connector_oauth_dispatch.py
 tests/services/test_curated_connector_manifest.py
+tests/services/test_curated_registry_drift.py
 tests/test_uat_connector_rollout_contract.py
 tests/services/test_external_connector_registry_ownership.py
 tests/services/test_external_connector_dev_overlay.py
