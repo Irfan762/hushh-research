@@ -31,6 +31,7 @@ export interface WalletCardStackProps {
   revealed?: { pan: string; cardholderName: string } | null;
   detailsId: string;
   onSelect: (cardId: string) => void;
+  onToggleReveal?: (cardId: string) => void;
 }
 
 const CARD_MOTION =
@@ -43,7 +44,7 @@ function cardLabel(card: WalletCardSummary): string {
 }
 
 export const WalletCardStack = forwardRef<HTMLDivElement, WalletCardStackProps>(
-  function WalletCardStack({ cards, focusedCardId, revealed, detailsId, onSelect }, ref) {
+  function WalletCardStack({ cards, focusedCardId, revealed, detailsId, onSelect, onToggleReveal }, ref) {
     const focusedIndex = focusedCardId
       ? cards.findIndex((card) => card.cardId === focusedCardId)
       : -1;
@@ -96,7 +97,11 @@ export const WalletCardStack = forwardRef<HTMLDivElement, WalletCardStackProps>(
                   onClick={() => onSelect(card.cardId)}
                   className="block w-full rounded-[3.72cqw] text-left outline-none focus-visible:ring-[3px] focus-visible:ring-[color:var(--app-focus-ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
-                  <WalletCardFace summary={card} revealed={isFocused ? revealed : null}>
+                  <WalletCardFace
+                    summary={card}
+                    revealed={isFocused ? revealed : null}
+                    onToggleReveal={isFocused && onToggleReveal ? () => onToggleReveal(card.cardId) : undefined}
+                  >
                     <MaterialRipple variant="none" effect="fill" />
                   </WalletCardFace>
                 </button>

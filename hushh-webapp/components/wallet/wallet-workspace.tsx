@@ -39,6 +39,7 @@ import { PaginatedListFooter } from "@/components/app-ui/paginated-list-footer";
 import { TYPOGRAPHY_CLASSNAMES } from "@/components/app-ui/typography";
 import { Lock, Plus, Search } from "@/components/icons";
 import { WalletAgentIcon } from "@/components/icons/agents";
+import { CreditCard, Copy, Share2, MoreVertical } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
