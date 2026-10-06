@@ -221,6 +221,9 @@ class McpTurnResources:
         self._closed = False
         self._toolsets: dict[McpConnectionBinding, GovernedMcpToolset] = {}
         self._catalog_views: list[Any] = []
+        # Connectors that could not be reached earlier in this turn, so every
+        # later model step reuses the answer instead of waiting on them again.
+        self.unavailable_connectors: dict[str, str] = {}
 
     def vault_catalog(self, owner_id: str) -> list[tuple[str, str]]:
         if self._closed or owner_id != self._owner:
@@ -355,6 +358,7 @@ class McpTurnResources:
     async def close(self) -> None:
         self._closed = True
         self._configurations.clear()
+        self.unavailable_connectors.clear()
         views, self._catalog_views = self._catalog_views, []
         for view in views:
             view.clear_invocation_catalog()
