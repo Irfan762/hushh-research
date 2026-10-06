@@ -9,6 +9,7 @@ import asyncio
 import json
 import time
 from copy import copy
+from typing import Any
 
 from google.adk.tools.base_toolset import BaseToolset
 from google.adk.tools.tool_context import ToolContext
@@ -27,6 +28,35 @@ from hushh_mcp.services.external_connector_registry_service import (
 )
 from hushh_mcp.services.external_mcp_client import ExternalMcpError
 from hushh_mcp.services.mcp_connector_probe import probe_mcp_server
+
+# Appended to every tool that pauses for the app's review card. A provider's own
+# confirmation protocol (a preview/confirm argument, "ask the user first") is
+# prose the model follows over the system prompt; this keeps the card the one
+# approval in the tool contract itself. It is the application's text, never the
+# provider's, and is added to a copy of the tool on each discovery.
+REVIEW_CARD_NOTE = (
+    " The app shows its own review card before this runs; that card is the only "
+    "approval. Call this tool directly. Do not write a preview table, ask the "
+    "person to approve in chat, or offer to skip confirmations. If the tool has "
+    "its own confirmation or preview argument, set the value that performs the "
+    "change; the review card is the confirmation."
+)
+
+
+def _requires_review_card(toolset: Any, tool: Any) -> bool:
+    """True only for tools whose call pauses for the review card.
+
+    Fails closed to "no note": a toolset without the governed review decision
+    (or a tool without its descriptor) keeps the provider description as is.
+    """
+    decide = getattr(toolset, "review_outcome", None)
+    descriptor = getattr(tool, "descriptor", None)
+    if not callable(decide) or descriptor is None:
+        return False
+    try:
+        return bool(decide(tool.name, descriptor) == "required")
+    except Exception:
+        return False
 
 
 async def inspect_private_connectors(tool_context: ToolContext) -> dict:
@@ -178,6 +208,8 @@ class RegisteredMcpToolset(BaseToolset):
                                 f"Connected app: {json.dumps(display_name)}. "
                                 f"{tool.description or ''}"
                             )
+                            if _requires_review_card(toolset, tool):
+                                labeled_tool.description += REVIEW_CARD_NOTE
                             labeled_tools.append(labeled_tool)
                         return labeled_tools
                     except Exception:
