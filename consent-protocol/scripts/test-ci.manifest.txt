@@ -527,6 +527,9 @@ tests/test_one_output_privacy.py
 # named, delimited document and history restores it as a chip, not message text.
 tests/test_one_text_attachments.py
 tests/test_governed_mcp_toolset.py
+tests/test_external_mcp_schema_dialects.py
+tests/test_external_mcp_client_failure_logging.py
+tests/test_external_mcp_schema_evaluation_budget.py
 tests/test_one_turn_location.py
 # Owner standing style: closed schema, template-only prompt section, no authority.
 tests/test_one_owner_style.py
