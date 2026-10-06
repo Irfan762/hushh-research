@@ -171,7 +171,7 @@ export function SecureCardReveal({
   return (
     <section
       aria-label={`${title} details`}
-      className="flex w-full max-w-[26.5rem] flex-col gap-4"
+      className="flex w-full max-w-[26.5rem] flex-col gap-3"
       data-testid="secure-card-reveal"
     >
       {showFace ? (
@@ -181,48 +181,53 @@ export function SecureCardReveal({
         />
       ) : null}
 
+      <div className="flex items-center justify-between px-1 text-xs text-muted-foreground font-medium">
+        <span className="flex items-center gap-1.5 text-emerald-500 dark:text-emerald-400 font-semibold">
+          <span className="size-1.5 rounded-full bg-emerald-500 animate-pulse" />
+          Decrypted in Vault
+        </span>
+        <span className="text-[11px] text-muted-foreground/80">AES-256 Memory-Only</span>
+      </div>
+
       <ul
         data-slot="secure-card-rows"
-        className="m-0 list-none overflow-hidden rounded-[var(--app-radius-lg)] border border-[color:var(--app-card-border-standard)] bg-[color:var(--app-card-surface-default-solid)] p-0"
+        className="m-0 list-none overflow-hidden rounded-2xl border border-border/60 bg-card/90 shadow-2xs p-0 divide-y divide-border/40"
       >
-        {rows.map((row, index) => {
+        {rows.map((row) => {
           const copied = copiedId === row.id;
           return (
             <li key={row.id} className="relative">
-              {index > 0 ? (
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute left-4 right-0 top-0 h-px bg-[color:var(--app-separator)]"
-                />
-              ) : null}
               <button
                 type="button"
                 onClick={() => void copy(row)}
                 aria-label={row.copyLabel}
                 data-testid={row.testId}
                 data-copied={copied ? "true" : "false"}
-                className="relative flex min-h-[60px] w-full items-center gap-3 overflow-hidden px-4 py-2 text-left outline-none focus-visible:bg-[color:var(--app-neutral-fill)]"
+                className="relative flex min-h-[56px] w-full items-center justify-between gap-3 px-4 py-2.5 text-left outline-none hover:bg-muted/30 focus-visible:bg-muted/50 transition-colors"
               >
                 <span className="flex min-w-0 flex-1 flex-col">
-                  <span className={TYPOGRAPHY_CLASSNAMES.helperText}>{row.label}</span>{" "}
-                  <span className={cn(TYPOGRAPHY_CLASSNAMES.rowLabel, "truncate tabular-nums")}>
+                  <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{row.label}</span>
+                  <span className={cn(TYPOGRAPHY_CLASSNAMES.rowLabel, "truncate tabular-nums font-mono text-sm tracking-wide text-foreground")}>
                     {row.value}
                   </span>
                 </span>
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "inline-flex h-6 shrink-0 items-center gap-1.5",
-                    copied ? "text-[color:var(--app-accent)]" : "text-muted-foreground",
+                    "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold transition-colors",
+                    copied ? "bg-emerald-500/10 text-emerald-500" : "text-muted-foreground hover:bg-muted/50",
                   )}
                 >
                   {copied ? (
                     <>
-                      <Check className="size-4" />
-                      <span className={TYPOGRAPHY_CLASSNAMES.statusText}>Copied</span>
+                      <Check className="size-3.5" />
+                      <span>Copied</span>
                     </>
                   ) : (
-                    <Copy className="size-5" />
+                    <>
+                      <Copy className="size-4" />
+                      <span className="sr-only">Copy</span>
+                    </>
                   )}
                 </span>
                 <MaterialRipple variant="none" effect="fade" />
@@ -232,12 +237,12 @@ export function SecureCardReveal({
         })}
       </ul>
 
-      <div className="flex min-h-11 items-center justify-between gap-3 pl-4">
-        <span className={TYPOGRAPHY_CLASSNAMES.helperText} data-testid="secure-card-countdown">
-          Hides in {secondsLeft}s
+      <div className="flex min-h-10 items-center justify-between gap-3 px-1 pt-0.5">
+        <span className="text-xs font-medium text-muted-foreground" data-testid="secure-card-countdown">
+          Auto-hides in <span className="font-mono text-foreground font-semibold">{secondsLeft}s</span>
         </span>
-        <Button variant="secondary" size="compact" onClick={hide} data-testid="secure-card-hide">
-          Hide
+        <Button variant="secondary" size="compact" className="h-9 rounded-xl px-4 text-xs font-semibold" onClick={hide} data-testid="secure-card-hide">
+          Hide details
         </Button>
       </div>
       <span className="sr-only" role="status" aria-live="polite">

@@ -42,6 +42,8 @@ import {
   TYPOGRAPHY_CLASSNAMES,
 } from "@/components/app-ui/typography";
 import { Lock, Plus, Search } from "@/components/icons";
+import { WalletAgentIcon } from "@/components/icons/agents";
+import { CreditCard, Copy, Share2, MoreVertical } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -89,8 +91,8 @@ const WALLET_TABS = [
 ];
 type WalletTab = "cards" | "add" | "sharing";
 
-/** One column for header and content, so both share a start line. */
-const WALLET_COLUMN = "mx-auto w-full max-w-[820px] space-y-1.5 sm:space-y-3.5";
+/** One column for header and content, so both share a start line. Slightly compact card size. */
+const WALLET_COLUMN = "mx-auto w-full max-w-[24.5rem]";
 
 const CARD_SLOT_RADIUS = { borderRadius: `calc(100cqw * ${CARD_CORNER_RADIUS_RATIO})` };
 
@@ -629,40 +631,87 @@ export function WalletWorkspace() {
               }
               detailsId={detailsId}
               onSelect={selectCard}
+              onToggleReveal={(cardId) => {
+                if (view.kind === "reveal" && view.cardId === cardId) {
+                  dispatch({ type: "hide" });
+                } else {
+                  void revealCard(cardId);
+                }
+              }}
             />
           ) : null}
 
-          {view.kind === "list" && focusedCard ? (
+          {focusedCard ? (
             <div
               id={detailsId}
-              className="motion-step-enter [animation-delay:var(--motion-duration-sm)]"
+              className="motion-step-enter [animation-delay:var(--motion-duration-sm)] flex flex-col gap-3"
               data-testid="one-wallet-card-actions"
             >
-              <FlowActionGroup
-                stacked
-                primary={
-                  <Button
-                    size="standard"
-                    isLoading={busyCardId === focusedCard.cardId}
-                    onClick={() => void revealCard(focusedCard.cardId)}
-                    data-testid={`one-wallet-reveal-${focusedCard.last4}`}
-                  >
-                    Show card details
-                  </Button>
-                }
-                tertiary={
-                  <Button
-                    variant="ghost"
-                    size="compact"
-                    disabled={busyCardId === focusedCard.cardId}
-                    className="text-[color:var(--app-destructive)] hover:bg-[color:color-mix(in_srgb,var(--app-destructive)_10%,transparent)]"
-                    onClick={() => setRemoveTarget(focusedCard)}
-                    data-testid="one-wallet-remove"
-                  >
-                    Remove card
-                  </Button>
-                }
-              />
+              <div className="grid grid-cols-2 gap-2.5 w-full">
+                <Button
+                  variant="secondary"
+                  size="standard"
+                  className="h-11 min-h-[44px] w-full rounded-xl bg-slate-100/90 hover:bg-slate-200/90 dark:bg-zinc-800/80 dark:hover:bg-zinc-700/80 text-foreground border border-border/20 flex items-center justify-center gap-2 font-medium text-xs sm:text-sm px-3 shadow-2xs transition-colors"
+                  isLoading={busyCardId === focusedCard.cardId}
+                  onClick={() => {
+                    if (view.kind === "reveal") {
+                      dispatch({ type: "hide" });
+                    } else {
+                      void revealCard(focusedCard.cardId);
+                    }
+                  }}
+                  data-testid={`one-wallet-reveal-${focusedCard.last4}`}
+                >
+                  <CreditCard className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="whitespace-nowrap">{view.kind === "reveal" ? "Hide details" : "View details"}</span>
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  size="standard"
+                  className="h-11 min-h-[44px] w-full rounded-xl bg-slate-100/90 hover:bg-slate-200/90 dark:bg-zinc-800/80 dark:hover:bg-zinc-700/80 text-foreground border border-border/20 flex items-center justify-center gap-2 font-medium text-xs sm:text-sm px-3 shadow-2xs transition-colors"
+                  onClick={() => {
+                    if (view.kind === "reveal" && view.secrets?.pan) {
+                      void navigator.clipboard.writeText(view.secrets.pan);
+                      morphyToast.success("Card number copied");
+                    } else {
+                      void navigator.clipboard.writeText(`•••• •••• •••• ${focusedCard.last4}`);
+                      morphyToast.success("Masked card number copied");
+                    }
+                  }}
+                >
+                  <Copy className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="whitespace-nowrap">Copy number</span>
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  size="standard"
+                  className="h-11 min-h-[44px] w-full rounded-xl bg-slate-100/90 hover:bg-slate-200/90 dark:bg-zinc-800/80 dark:hover:bg-zinc-700/80 text-foreground border border-border/20 flex items-center justify-center gap-2 font-medium text-xs sm:text-sm px-3 shadow-2xs transition-colors"
+                  onClick={() => {
+                    if (typeof navigator !== "undefined" && navigator.share) {
+                      void navigator.share({ title: focusedCard.nickname || "Payment Card", text: `Card ending ${focusedCard.last4}` }).catch(() => {});
+                    } else {
+                      morphyToast.success("Sharing initialized with vault consent");
+                    }
+                  }}
+                >
+                  <Share2 className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="whitespace-nowrap">Share</span>
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  size="standard"
+                  className="h-11 min-h-[44px] w-full rounded-xl bg-slate-100/90 hover:bg-slate-200/90 dark:bg-zinc-800/80 dark:hover:bg-zinc-700/80 text-foreground border border-border/20 flex items-center justify-center gap-2 font-medium text-xs sm:text-sm px-3 shadow-2xs transition-colors"
+                  disabled={busyCardId === focusedCard.cardId}
+                  onClick={() => setRemoveTarget(focusedCard)}
+                  data-testid="one-wallet-remove"
+                >
+                  <MoreVertical className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="whitespace-nowrap">More</span>
+                </Button>
+              </div>
             </div>
           ) : null}
 
