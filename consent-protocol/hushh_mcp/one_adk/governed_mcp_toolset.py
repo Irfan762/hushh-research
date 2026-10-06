@@ -59,7 +59,7 @@ from hushh_mcp.services.external_mcp_client import (
     _list_session_tools,
     _normalize_and_cap,
     model_facing_schema,
-    schema_validator,
+    schema_is_valid,
 )
 from hushh_mcp.services.mcp_public_http import create_bounded_mcp_http_client, validate_mcp_endpoint
 
@@ -441,7 +441,7 @@ def validated_mcp_arguments(schema: dict, args: Any) -> dict[str, Any]:
         ) from None
     # Never validates under a guessed dialect, and never fetches a reference.
     try:
-        valid = schema_validator(schema).is_valid(arguments)
+        valid = schema_is_valid(schema, arguments)
     except (RecursionError, Unresolvable, ArithmeticError, re.error):
         # A reference that does not resolve inside the schema, or a schema that
         # recurses without end: refused as a schema problem, not a crash.
