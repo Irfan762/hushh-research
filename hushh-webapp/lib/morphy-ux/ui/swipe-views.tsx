@@ -3,6 +3,7 @@
 import React, {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -322,6 +323,8 @@ function resolveSelectedIndex(api: EmblaCarouselType, optionsLength: number): nu
 }
 
 interface SwipeViewsProps {
+  /** Prevent gestures while the workspace cannot accept a selection. */
+  disabled?: boolean;
   children: React.ReactNode;
   options: readonly { label: string; value: string }[];
   tabSetId: string;
@@ -358,6 +361,7 @@ interface SwipeViewsProps {
 }
 
 export function SwipeViews({
+  disabled = false,
   children,
   options,
   tabSetId,
@@ -370,9 +374,16 @@ export function SwipeViews({
   holdHeightDuringTransition = true,
   className,
 }: SwipeViewsProps) {
+  // Embla compares callback source text when resolving option changes, so a
+  // new closure alone cannot refresh a loading/locked gesture guard.
+  const disabledRef = useRef(disabled);
+  useLayoutEffect(() => {
+    disabledRef.current = disabled;
+  }, [disabled]);
   const watchDrag = useCallback(
     (emblaApi: EmblaCarouselType, event: Event) => {
       if (
+        disabledRef.current ||
         isNestedHorizontalScrollTarget(event.target) ||
         isNestedSwipeViewsTarget(event.target, emblaApi.rootNode())
       ) {
