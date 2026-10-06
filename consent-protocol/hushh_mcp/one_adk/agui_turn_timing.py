@@ -271,10 +271,16 @@ _KNOWN_ERROR_CODES = frozenset(
 
 
 def _error_code(code: Any) -> str:
-    """A run error's code when it is one we know, else a fixed placeholder."""
+    """A run error's code when it is one we know, else a fixed placeholder.
+
+    Dotted and lower-case on purpose: the log redactor masks any 24-128 character
+    token made of letters, digits, `_` and `-` as a possible identifier, which
+    would turn `BACKGROUND_EXECUTION_ERROR` into `[REDACTED]` in the very line it
+    is meant to explain.
+    """
     if not isinstance(code, str):
         return "untyped"
-    return code if code in _KNOWN_ERROR_CODES else "unlisted"
+    return code.lower().replace("_", ".") if code in _KNOWN_ERROR_CODES else "unlisted"
 
 
 @dataclass

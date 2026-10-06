@@ -133,9 +133,9 @@ def _fields(caplog) -> dict[str, str]:
 @pytest.mark.parametrize(
     ("code", "expected"),
     [
-        ("EXECUTION_ERROR", "EXECUTION_ERROR"),
-        ("BACKGROUND_EXECUTION_ERROR", "BACKGROUND_EXECUTION_ERROR"),
-        ("RESOURCE_EXHAUSTED", "RESOURCE_EXHAUSTED"),
+        ("EXECUTION_ERROR", "execution.error"),
+        ("BACKGROUND_EXECUTION_ERROR", "background.execution.error"),
+        ("RESOURCE_EXHAUSTED", "resource.exhausted"),
         ("PRIVATE_OWNER_VALUE", "unlisted"),
         (None, "untyped"),
     ],
@@ -170,3 +170,16 @@ def test_the_timing_line_counts_the_tools_every_model_step_is_offered(caplog):
     caplog.set_level(logging.INFO, logger=agui_turn_timing.logger.name)
     timing.log()
     assert _fields(caplog)["tools_peak"] == "127"
+
+
+def test_a_logged_code_survives_the_log_redactor(caplog):
+    """The redactor masks long identifier-like tokens; the code must not look like one."""
+    from mcp_modules.log_redaction import REDACTED, redact_log_value
+
+    for code in (
+        "BACKGROUND_EXECUTION_ERROR",
+        "TOOL_RESULT_PROCESSING_ERROR",
+        "TOOL_RESULT_BUFFER_ERROR",
+    ):
+        logged = agui_turn_timing._error_code(code)
+        assert redact_log_value(logged) != REDACTED, code
