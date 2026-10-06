@@ -516,3 +516,77 @@ async def test_stand_in_name_is_stable_unique_and_never_a_provider_tool_name(reg
     assert len(set(names)) == 2
     assert all(name.startswith("connector_unavailable_") for name in names)
     assert not any(name.startswith("mcp_") for name in names)
+
+
+# --- listing is reused across the model steps of one turn --------------------------
+
+
+def epoch_toolset(tools, epoch=3):
+    return SimpleNamespace(catalog_epoch=epoch, get_tools=AsyncMock(return_value=tools))
+
+
+async def test_a_connector_is_listed_once_per_turn_not_once_per_model_step(registry):
+    tool = SimpleNamespace(name="mcp_one", description="Read", epoch=3)
+    toolset = epoch_toolset([tool])
+    async with mcp_turn_scope("thread") as scope:
+        scope.acquire = AsyncMock(return_value=toolset)
+        view = module.RegisteredMcpToolset()
+        first = await view.get_tools(context())
+        second = await view.get_tools(context())
+        third = await view.get_tools(context())
+        assert toolset.get_tools.await_count == 1
+        assert scope.acquire.await_count == 1
+    assert [t.name for t in first] == [t.name for t in second] == [t.name for t in third]
+    # Each step still gets its own labelled copy; labels never accumulate on the original.
+    assert second[0] is not first[0]
+    assert second[0].description.count("Connected app:") == 1
+    assert tool.description == "Read"
+
+
+async def test_a_refreshed_catalog_is_listed_again(registry):
+    tool = SimpleNamespace(name="mcp_one", description="Read", epoch=3)
+    toolset = epoch_toolset([tool])
+    async with mcp_turn_scope("thread") as scope:
+        scope.acquire = AsyncMock(return_value=toolset)
+        view = module.RegisteredMcpToolset()
+        await view.get_tools(context())
+        # A refresh bumps the epoch, which invalidates every tool listed before it.
+        toolset.catalog_epoch = 4
+        toolset.get_tools.return_value = [SimpleNamespace(name="mcp_two", description="", epoch=4)]
+        refreshed = await view.get_tools(context())
+        assert toolset.get_tools.await_count == 2
+    assert [t.name for t in refreshed] == ["mcp_two"]
+
+
+async def test_tools_that_carry_no_epoch_are_never_reused(registry):
+    toolset = SimpleNamespace(
+        catalog_epoch=3,
+        get_tools=AsyncMock(return_value=[SimpleNamespace(name="mcp_one", description="Read")]),
+    )
+    async with mcp_turn_scope("thread") as scope:
+        scope.acquire = AsyncMock(return_value=toolset)
+        view = module.RegisteredMcpToolset()
+        await view.get_tools(context())
+        await view.get_tools(context())
+        assert toolset.get_tools.await_count == 2
+
+
+async def test_an_empty_listing_is_not_held_so_a_later_step_can_try_again(registry):
+    toolset = epoch_toolset([])
+    async with mcp_turn_scope("thread") as scope:
+        scope.acquire = AsyncMock(return_value=toolset)
+        view = module.RegisteredMcpToolset()
+        await view.get_tools(context())
+        await view.get_tools(context())
+        assert toolset.get_tools.await_count == 2
+
+
+async def test_a_listing_is_never_carried_into_another_turn(registry):
+    tool = SimpleNamespace(name="mcp_one", description="Read", epoch=3)
+    toolset = epoch_toolset([tool])
+    view = module.RegisteredMcpToolset()
+    for _ in range(2):
+        async with mcp_turn_scope("thread") as scope:
+            scope.acquire = AsyncMock(return_value=toolset)
+            await view.get_tools(context())
+    assert toolset.get_tools.await_count == 2

@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from copy import copy
+from typing import Any
 
 from google.adk.tools import FunctionTool
 from google.adk.tools.base_toolset import BaseToolset
@@ -43,6 +44,20 @@ _RECONNECT_CODES = frozenset(
 _REASON_QUIET = "quiet"
 _REASON_RECONNECT = "reconnect"
 _REASON_UNAVAILABLE = "unavailable"
+
+
+def _still_current(toolset: Any, tools: Any) -> bool:
+    """True while every listed tool still belongs to the toolset's current catalog epoch.
+
+    A refresh bumps the epoch and invalidates the listed tools, so a changed catalog is
+    never served from here. A toolset or tool without an epoch is never reused.
+    """
+    epoch = getattr(toolset, "catalog_epoch", None)
+    return (
+        bool(tools)
+        and epoch is not None
+        and all(getattr(tool, "epoch", None) == epoch for tool in tools)
+    )
 
 
 def _unavailable_reason(error: BaseException) -> str:
@@ -239,27 +254,36 @@ class RegisteredMcpToolset(BaseToolset):
             if known is not None:
                 # Failed earlier this turn: do not wait on it for every step.
                 return note_unavailable(connector_id, display_name, known)
-            async with semaphore:
-                try:
-                    async with asyncio.timeout(per_connector):
-                        toolset = await scope.acquire(
-                            context, connector_id, authorize_call=review_or_resume_call
-                        )
-                        tools = await toolset.get_tools(context)
-                except Exception as error:
-                    # A disconnected, revoked or slow provider must not disable
-                    # the other connectors or the turn. Never log a message or
-                    # body: provider diagnostics can include private details.
-                    reason = _unavailable_reason(error)
-                    if reason != _REASON_QUIET:
-                        logger.warning(
-                            "mcp_connector_unavailable connector=%s reason=%s type=%s code=%s",
-                            connector_id,
-                            reason,
-                            type(error).__name__,
-                            getattr(error, "code", None),
-                        )
-                    return note_unavailable(connector_id, display_name, reason)
+            held = scope.catalog_tools.get(connector_id)
+            if held is not None and _still_current(*held):
+                # Listed earlier this turn and nothing has refreshed it since. Each model
+                # step used to re-list every connector (a handshake and a tools/list apiece,
+                # seconds on a tool-using turn); every call still revalidates its connection.
+                tools = held[1]
+            else:
+                async with semaphore:
+                    try:
+                        async with asyncio.timeout(per_connector):
+                            toolset = await scope.acquire(
+                                context, connector_id, authorize_call=review_or_resume_call
+                            )
+                            tools = await toolset.get_tools(context)
+                    except Exception as error:
+                        # A disconnected, revoked or slow provider must not disable
+                        # the other connectors or the turn. Never log a message or
+                        # body: provider diagnostics can include private details.
+                        reason = _unavailable_reason(error)
+                        if reason != _REASON_QUIET:
+                            logger.warning(
+                                "mcp_connector_unavailable connector=%s reason=%s type=%s code=%s",
+                                connector_id,
+                                reason,
+                                type(error).__name__,
+                                getattr(error, "code", None),
+                            )
+                        return note_unavailable(connector_id, display_name, reason)
+                if tools:
+                    scope.catalog_tools[connector_id] = (toolset, tools)
             labeled_tools = []
             for tool in tools:
                 # ADK may return the same tool object on repeated
